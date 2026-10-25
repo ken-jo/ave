@@ -1,8 +1,4 @@
-/**
- * Shared fixture for the MCP app panel suites (fullscreen, PiP, view): the
- * payload each renders and the webview query each asserts on. Three suites
- * carried both; nothing here touches a subject's mocks.
- */
+/** Shared MCP app payload and webview selectors for panel suites; subject mocks stay in each suite. */
 import type { McpUiPayload } from "../../../../mcp/types.js";
 
 export function mcpUiPayload(serverId: string): McpUiPayload {

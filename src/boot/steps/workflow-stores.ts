@@ -1,13 +1,4 @@
-/**
- * Boot step — workflow system stores, workflow tool deps, and builtin tool
- * registration (§4.2 Step 4 + §4.4, extracted from boot.ts C18).
- *
- * Constructs the workflow-tool-backing stores (session tasks, skills, agent
- * profiles, persona prompts, skill overlay/approvals, ask-user gate), assembles
- * the {@link WorkflowToolDeps} closure bundle (late-binding the sub-agent runner
- * through a ref), registers the builtin + meta tools, and wires the idle
- * scheduler.
- */
+/** Construct workflow stores, register builtin tools, and late-bind the sub-agent runner. */
 import { SessionTasksStore } from "../../main/session-tasks-store.js";
 import { SessionGoalStore } from "../../main/session-goal-store.js";
 import { AskUserQuestionGate } from "../../main/ask-user-question-gate.js";
@@ -37,16 +28,13 @@ import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { ensureAgentTerminal, typeAgentTerminalCommand, verifyAgentTerminalShell } from "../../main/terminal/pty-manager.js";
 import { findSessionMainWindowContents, mainWindowForContents, sideChatOwnerWindow } from "../../main/app-state.js";
 import { browserOrigin } from "../../tools/browser-tools.js";
+import { createRootSessionResolver } from "../../permissions/root-session-resolver.js";
+import { setApprovalConversationRootResolver } from "../../permissions/user-approval-store.js";
 
 const log = createLogger("ave");
 
-/**
- * @param sessionMetadataStores every MemoryManager that owns conversation
- *   sidecars (main, side-chat, sub-agent), main first. A session's task list
- *   is persisted in the sidecar of whichever store already holds that
- *   session; a session no store has seen yet is a brand-new main conversation
- *   whose transcript is flushed at the end of its first turn.
- */
+/** @param sessionMetadataStores every MemoryManager that owns conversation sidecars (main, side-chat, sub-agent), main first. A session's task list is persisted in the
+ * sidecar of whichever store already holds that session; a session no store has seen yet is a brand-new main conversation whose transcript is flushed at the end of its first turn. */
 export async function setupWorkflowStores(
   ctx: BootContext,
   sessionMetadataStores: readonly MemoryManager[],
@@ -70,9 +58,7 @@ export async function setupWorkflowStores(
     load: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId)?.tasks ?? [],
     save: (sessionId, items) => sessionOwner(sessionId).saveSessionTasks(sessionId, items),
   });
-  // The goal rides in the SAME sidecar as the task list, resolved through the
-  // same owner lookup: the two are one session's bookkeeping and must never
-  // land in two different files.
+  // Keep goals and tasks in the same owner-resolved session sidecar.
   const sessionGoalStore = new SessionGoalStore({
     load: (sessionId) => sessionOwner(sessionId).loadSessionMetadata(sessionId)?.goal ?? null,
     save: (sessionId, goal) => sessionOwner(sessionId).saveSessionGoal(sessionId, goal),
@@ -88,14 +74,10 @@ export async function setupWorkflowStores(
       (err as Error).message,
     );
   });
-  // Spawn and skill events are filtered by session in each renderer; every
-  // open main window receives them.
+  // Broadcast to all main windows; each renderer filters by session.
   const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
   const askUserQuestionGate = new AskUserQuestionGate(
-    // Lazy resolver — dev-mode reloads destroy the captured webContents, and
-    // several main windows may be open. Looking it up on every send, by the
-    // asking session, sends the card to the window showing that conversation
-    // (else the window in use), across reloads and closed windows.
+    // Resolve the requesting session's live window per send so reloads and closed windows cannot strand cards.
     promptSurfaceResolver(ctx.host, getMainWindow),
     undefined,
     notificationService,
@@ -111,10 +93,7 @@ export async function setupWorkflowStores(
     skillOverlay,
     skillApprovalsStore,
     getAskUserQuestionGate: () => askUserQuestionGate,
-    // The gate is constructed up-front (before initPluginRuntime), so it is
-    // held by value like every other gate wiring. skill_load reuses the same
-    // gate the executor uses so user-authored skills open the approval dock on
-    // first load (and only on first load).
+    // Reuse the preconstructed approval gate for skills; first load asks, subsequent loads do not.
     approvalGate,
     getSubAgentRunner: () => subAgentRunnerRef.fn,
     getAgentSendRuntime: () => {
@@ -148,12 +127,7 @@ export async function setupWorkflowStores(
     },
     networkFetch,
     singleHopNetworkFetch,
-    // The workspace terminal and the browser tabs exist only in the desktop
-    // host. A conversation reaches the window that shows it: a chat tile's
-    // session the window whose tile holds it, the side chat the window it was
-    // last typed in, a pane chat its pane's window. A sub-agent inherits its parent's (session-window-scope.ts);
-    // routine and work-board loops are shown nowhere and get neither. Read at
-    // call time: the loops are wired after this step.
+    // Resolve each conversation's desktop window at call time; sub-agents inherit their parent's scope, while routines and work boards get none.
     ...(ctx.host.desktop !== undefined
       ? (() => {
         const desktop = ctx.host.desktop!;
@@ -165,7 +139,6 @@ export async function setupWorkflowStores(
           if (ctx.sideChatConversationLoop.getSessionId() === sessionId) {
             return sideChatOwnerWindow()?.id ?? null;
           }
-          // A pane chat reaches the window its pane is in.
           return ctx.paneChatLoops.holding(sessionId)?.windowId ?? null;
         };
         const liveOriginSessionId = (sessionId: string): string | undefined =>
@@ -182,7 +155,6 @@ export async function setupWorkflowStores(
             liveOriginSessionId,
             activeTerminalTabId: (windowId: number): string | undefined =>
               browserTabRegistry.activeTerminalTabId(windowId),
-            // A pane chat's own terminal (or its page, which has none).
             boundSurface: (windowId: number, hostSessionId: string) =>
               browserTabRegistry.conversationSurface(windowId, hostSessionId),
             ensureAgentTerminal,
@@ -204,7 +176,7 @@ export async function setupWorkflowStores(
             liveOriginSessionId,
             tabs: browserTabRegistry,
             pickUploadFiles: desktop.pickBrowserUploadFiles,
-            // Page actions (CDP) load on first use, outside the initial bundle.
+            // Load page actions lazily outside the initial bundle.
             loadActions: async () => {
               const { createBrowserPageActions } = await import("../../main/browser/browser-actions.js");
               return createBrowserPageActions(browserTabRegistry, browserOrigin, desktop.browserGuestContentOrigin);
@@ -218,10 +190,7 @@ export async function setupWorkflowStores(
       if (!ctx.mcpManager) throw new Error("Connector manager is unavailable");
       return ctx.mcpManager.getStudioConnectorSummary(serverId);
     },
-    // Resolved lazily: `ctx.mcpManager` is assigned by the MCP boot step, which runs
-    // AFTER this one. Between the two, this returns undefined and the tools say so
-    // rather than reporting a generic failure — the tools are registered either way,
-    // because registration happens once and the window is short.
+    // Resolve the later-built protocol manager per call; register tools once and report temporary unavailability explicitly.
     getMcpResourceAccess: () => {
       const manager = ctx.mcpManager;
       if (!manager) return undefined;
@@ -233,14 +202,11 @@ export async function setupWorkflowStores(
     },
   };
 
-  // §4.2 Step 4: builtin tools + request_plugin / tool_search meta tools.
   registerBuiltinTools(toolRegistry, settingsService, workflowDeps);
   registerRequestPluginMetaTool(toolRegistry);
-  // Statically registered; visible whenever builtins are in scope because
-  // tool-level deferral is the only plugin/MCP schema exposure path.
+  // Statically registered; visible whenever builtins are in scope because tool-level deferral is the only plugin/MCP schema exposure path.
   registerToolSearchMetaTool(toolRegistry);
 
-  // §6.1 IdleSchedulerService.
   const idleScheduler = await wireIdleScheduler(ctx.host.desktop?.powerMonitor);
 
   ctx.sessionTasksStore = sessionTasksStore;
@@ -252,5 +218,10 @@ export async function setupWorkflowStores(
   ctx.skillApprovalsStore = skillApprovalsStore;
   ctx.askUserQuestionGate = askUserQuestionGate;
   ctx.subAgentRunnerRef = subAgentRunnerRef;
+  // Share one restored-ancestry resolver for session approvals and the judge; separate roots must never share consent.
+  ctx.resolveRootSessionId = createRootSessionResolver(
+    (sessionId) => subAgentRunnerRef.fn?.resolveOriginSessionId(sessionId),
+  );
+  setApprovalConversationRootResolver(ctx.resolveRootSessionId);
   ctx.idleScheduler = idleScheduler;
 }

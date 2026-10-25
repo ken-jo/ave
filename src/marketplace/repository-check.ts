@@ -1,19 +1,4 @@
-/**
- * Check a marketplace repository's working tree the way the app reads it
- * (design §4, §5, §10.4).
- *
- * The app refuses or drops what breaks a rule when it syncs and installs.
- * This runs the same rules over a checkout before anything is published, so
- * a marketplace's CI can fail a pull request instead of a user's install
- * failing later. Every rule here is the one the install path uses: the
- * catalog validators, the descriptor-to-index comparison, the MCP launcher
- * grammar, the content file rules and the content parsers. Nothing is
- * restated.
- *
- * The official repository runs a bundle of this module (its
- * `tools/vendor/`), built from an ave ref, so its CI and the app never
- * disagree about what is valid.
- */
+/** Repository checks reuse install validators so publication and runtime acceptance agree. */
 import { messages } from "../i18n/messages/index.js";
 import { MARKETPLACE_INDEX_FILE as INDEX_PATH, MARKETPLACE_DESCRIPTOR_FILE, type IndexPackage, type IndexVersion, type PackageDescriptor, type PluginArtifactPins, type PluginAuthority } from "./catalog/types.js";
 import { validateConditionalRevocationsText, validateDescriptorText, validateIndexText, validateRevocationsText } from "./catalog/validate.js";
@@ -29,40 +14,26 @@ import { errorMessage } from "../shared/error-message.js";
 import { isRecord } from "../shared/is-record.js";
 import { compareSemver, isSemver } from "../shared/semver-compare.js";
 
-/** Read access to a repository tree. Paths are repository-relative with `/` separators. */
 export interface RepositoryTree {
-  /** The file's bytes, or null when there is no file at `path`. */
   read(path: string): Buffer | null;
-  /** Every file under `dir` (recursively), as repository-relative paths; `""` is the root. */
   list(dir: string): string[];
 }
 
 export interface RepositoryCheckOptions {
-  /** Published stable app version carrying the complete alerts contract. No guessed default. */
+  /** Requires the published stable alerts-contract version; never guesses a default. */
   alertsReleaseVersion: string;
-  /** The source id the index must carry when `official` (the official source is `ave`). */
   sourceId: string;
   official: boolean;
-  /**
-   * The `plugin.json` inside released artifacts, by `name@version`, for the
-   * versions whose release the caller downloaded. Each is held to the
-   * git-install manifest rules against its index version, as the ladder
-   * holds the staged manifest (design §5.3, §6.2). A yanked version may
-   * still carry `installPolicy` and `publisher`: it is a field pin kept only
-   * so installs of that exact zip keep their grant (design §16.3), and
-   * nothing installs it.
-   */
+  /** Validate each downloaded release manifest against its own index version; yanked pins preserve grants only. */
   releasedManifests?: ReadonlyMap<string, unknown>;
 }
 
 export interface RepositoryProblem {
-  /** `kind/name`, a file path, or `marketplace.json`. */
   subject: string;
   message: string;
 }
 
 const REVOCATIONS_PATH = "policy/revocations.json";
-/** Files a plugin's tree rung installs (design §6.2), besides the descriptor. */
 const TREE_TOP_LEVEL = new Set(["plugin.json", "dist", "assets"]);
 
 function packageFiles(tree: RepositoryTree, dir: string): Array<{ path: string; data: Buffer }> {
@@ -84,7 +55,6 @@ function newestVersion(entry: IndexPackage): IndexVersion | null {
   return entry.versions?.[0] ?? null;
 }
 
-/** Plugin fields every version copies from the descriptor, compared after key canonicalization. */
 function pluginCopyDiffers(descriptor: PackageDescriptor, version: IndexVersion): string[] {
   const payload = descriptor.payload as { authority: PluginAuthority; artifact: PluginArtifactPins };
   const differs: string[] = [];
@@ -106,7 +76,7 @@ function manifestMismatches(document: unknown, descriptor: PackageDescriptor, de
   }, descriptorPath);
 }
 
-/** The manifest of a field pin without the `installPolicy` and `publisher` of its era; every other rule still holds. */
+/** Legacy field pins omit historical installPolicy and publisher fields; other checks still apply. */
 function withoutLegacyFields(document: unknown): unknown {
   const extensions = isRecord(document) ? document.extensions : undefined;
   const ave = isRecord(extensions) ? extensions[AVE_EXTENSION_NAMESPACE] : undefined;
@@ -133,8 +103,7 @@ function checkReleasedManifests(entry: IndexPackage, released: ReadonlyMap<strin
       report(`a released plugin.json was supplied for ${key}, which the index does not list`);
       continue;
     }
-    // Each version is held to its own released manifest: the process rules
-    // reach only a version whose plugin.json has a process entry (§9.7 P4).
+    // Apply process-entry rules only to the released manifest version that declares a process.
     const expected = {
       name: entry.name,
       version: version.version,
@@ -171,7 +140,7 @@ function checkPlugin(
     }
     return;
   }
-  // A plugin.json in the package directory declares the tree rung (design §6.2): hold it to that rung's layout.
+  // A package plugin.json declares a tree rung and must satisfy its layout.
   const prefix = entry.path === "" ? "" : `${entry.path}/`;
   for (const path of tree.list(entry.path)) {
     const top = path.slice(prefix.length).split("/")[0]!;
@@ -187,8 +156,7 @@ function checkPlugin(
     return;
   }
   for (const mismatch of manifestMismatches(document, descriptor, repoPath(entry.path, MARKETPLACE_DESCRIPTOR_FILE))) report(`${manifestPath}: ${mismatch}`);
-  // A plugin.json in the package directory is itself a tree rung (design §6.2),
-  // which a process entry never installs from.
+  // Process manifests cannot install from an implicit tree rung.
   if (hasProcessEntry(document)) {
     report(`${manifestPath}: a process entry is never installed from the tree rung, which this file declares; publish it as a pinned release or archive only`);
   }
@@ -267,7 +235,6 @@ function checkPackage(tree: RepositoryTree, entry: IndexPackage, options: Reposi
   }
 }
 
-/** Every descriptor in the tree that no index entry points at. */
 function unlisted(tree: RepositoryTree, listed: ReadonlySet<string>): string[] {
   return tree
     .list("")
@@ -277,11 +244,7 @@ function unlisted(tree: RepositoryTree, listed: ReadonlySet<string>): string[] {
     .sort();
 }
 
-/**
- * Every rule the repository breaks, in the order the app would meet them:
- * the index, each listed package, descriptors the index leaves out, and the
- * revocations file. Empty = the app accepts every package as it stands.
- */
+/** Report violations in runtime order: index, listed packages, unlisted descriptors, revocations. */
 export function checkMarketplaceRepository(tree: RepositoryTree, options: RepositoryCheckOptions): RepositoryProblem[] {
   if (typeof options.alertsReleaseVersion !== "string" || !isSemver(options.alertsReleaseVersion) || /[-+]/.test(options.alertsReleaseVersion)) {
     return [{ subject: "alertsReleaseVersion", message: "Set alertsReleaseVersion to the published stable app version carrying the complete alerts contract before checking a repository" }];
@@ -293,7 +256,6 @@ export function checkMarketplaceRepository(tree: RepositoryTree, options: Reposi
   if (!index.ok) return [{ subject: INDEX_PATH, message: index.error }];
   for (const diagnostic of index.value.diagnostics) problems.push(diagnostic);
   for (const entry of index.value.index.packages) checkPackage(tree, entry, options, problems);
-  // checkReleasedManifests consumes the keys of listed plugins; any other key names nothing to check against.
   const plugins = new Set(index.value.index.packages.filter((entry) => entry.kind === "plugin").map((entry) => entry.name));
   for (const key of options.releasedManifests?.keys() ?? []) {
     if (!plugins.has(key.slice(0, key.lastIndexOf("@")))) {

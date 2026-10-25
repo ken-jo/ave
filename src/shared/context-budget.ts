@@ -1,16 +1,4 @@
-/**
- * Usable context budget — Ave model-tier fixed reservations.
- *
- * Browser-safe (no Node imports) so both the renderer hook
- * (`use-context-budget`) and engine paths can derive the same usable
- * denominator.
- *
- * Why fixed buffers not a percentage:
- *   Small models (64K) need proportionally more reservation for output.
- *   With 32K typical max output, 0.85× of 64K (= 54K) leaves only 10K
- *   headroom — single tool-result rounds blow past it. Ave reserves fixed
- *   output/safety buffers (27K / 30K / 40K) to prevent this asymmetric pinch.
- */
+/** Use fixed output reservations so small windows retain enough headroom for tool-result rounds. */
 import { FALLBACK_CONTEXT_WINDOW, MAX_CREDIBLE_CONTEXT_WINDOW } from "./model-host-policy.js";
 import {
   activeLlmRouteModel,
@@ -37,19 +25,7 @@ import { activeModelCatalog } from "./model-catalog/active.js";
 import { allowsImplicitModelLimits, lookupCatalogModel, resolveCatalogKey, type CatalogModelHit } from "./model-catalog/resolve.js";
 import type { MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
 
-/**
- * Reserve buffer for output + safety, return the *usable* portion of the
- * context window. Caller divides used-tokens by this to get the displayed
- * percentage.
- *
- * - 64,000     → 37,000 (reserved 27K — small models, output-heavy reasoning)
- * - 128,000    → 98,000 (reserved 30K)
- * - 200,000    → 160,000 (reserved 40K — Anthropic default tier)
- * - any other  → max(ctx − 40,000, 0.8 × ctx)
- *               picks the larger of "−40K floor" and "20% reservation",
- *               so 1M ⇒ 960K usable, 32K ⇒ ~25.6K, ≤40K ⇒ 80% (avoids
- *               negative usable on tiny windows).
- */
+/** Reserve output and safety space; tiny windows retain at least 80% usable capacity. */
 export function getUsableContext(contextWindow: number, inputLimit?: number): number {
   if (!Number.isFinite(contextWindow) || contextWindow <= 0) return 0;
   return Math.min(reservedUsableContext(contextWindow), promptCap(inputLimit));
@@ -62,11 +38,7 @@ function reservedUsableContext(contextWindow: number): number {
   return Math.max(contextWindow - 40_000, Math.floor(contextWindow * 0.8));
 }
 
-/**
- * A model's prompt cap bounds the usable budget on its own: a window of 264K
- * whose prompt may hold 128K is a 128K budget, whatever the reservation for
- * output leaves of the window. An absent or malformed cap bounds nothing.
- */
+/** A valid prompt cap independently bounds usable capacity even when the context window is larger. */
 function promptCap(inputLimit: number | undefined): number {
   return typeof inputLimit === "number" && Number.isSafeInteger(inputLimit) && inputLimit > 0 ? inputLimit : Number.POSITIVE_INFINITY;
 }
@@ -78,28 +50,14 @@ export function getPreflightThreshold(contextWindow: number, inputLimit?: number
   return Math.floor(usable * 0.8);
 }
 
-/**
- * Which input the resolved context window came from, in priority order.
- *
- * `model-catalog` is the generated catalog (`docs/design/model-capability-catalog.md`).
- *
- * `fallback` means nothing knew the model's real capacity and the conservative
- * {@link FALLBACK_CONTEXT_WINDOW} is in use. That is the case worth reporting:
- * a served model whose true window is larger gets compacted far earlier than it
- * needs to be, and one whose true window is smaller is never compacted early
- * enough.
- */
+/** Fallback marks unknown capacity; compacting against a guess may be too early or too late. */
 export type ContextWindowSource =
   | "vendor-setting"
   | "provider-reported"
   | "model-catalog"
   | "fallback";
 
-/**
- * Who stated a model's prompt cap. Only the catalog's `limits.input` does
- * today: no `/models` endpoint Ave calls reports a prompt cap apart from the
- * window (GitHub Models' `limits.max_input_tokens` is read as the window).
- */
+/** Only catalog input limits currently state a prompt cap independently of the window. */
 type InputLimitSource = "model-catalog";
 
 export interface ResolvedContextWindow {
@@ -107,44 +65,19 @@ export interface ResolvedContextWindow {
   readonly source: ContextWindowSource;
   /** The catalog entry that supplied the window or prompt cap, `<provider>/<id>`. */
   readonly catalogEntry?: string;
-  /**
-   * The model's prompt cap, when a source states one below the window. The
-   * usable budget and the compaction threshold are bounded by it
-   * ({@link getUsableContext}); the window itself is still what is reported.
-   */
+  /** Prompt caps bound usable budget and compaction, not the reported window. */
   readonly inputLimit?: number;
   readonly inputLimitSource?: InputLimitSource;
 }
 
-/**
- * A token count only counts as an answer when it is a usable positive integer
- * within {@link MAX_CREDIBLE_CONTEXT_WINDOW}. Anything else is treated as
- * absent, so the next source answers instead.
- */
+/** Ignore non-positive, non-integer, or implausible counts so the next source can answer. */
 function positiveTokenCount(value: number | undefined): number | undefined {
   if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) return undefined;
   if (value > MAX_CREDIBLE_CONTEXT_WINDOW) return undefined;
   return value;
 }
 
-/**
- * The context window to budget a model against, and where that number came
- * from. The single place the four possible answers are ordered.
- *
- * 1. `configured` — an explicit `llm.vendors.<vendor>.contextWindow`. The user
- *    declared the capacity of the endpoint they own; nothing outranks that.
- * 2. `reported` — what the provider itself said about this model in its
- *    `/v1/models` handshake. An external value, so the caller parses it
- *    defensively and passes `undefined` when the field was absent or malformed.
- * 3. The model catalog's entry: the one the user named for this route
- *    (`llm.vendors.<vendor>.catalogModel`), else the one the vendor's model id
- *    resolves to ({@link resolveCatalogKey}).
- * 4. The host's conservative fallback window ({@link FALLBACK_CONTEXT_WINDOW}).
- *
- * The prompt cap is resolved beside the window: the catalog entry's
- * `limits.input`, kept only when it is below the window. A declared window
- * carries none — the user stated the capacity of the endpoint they run.
- */
+/** Window precedence: configured, reported, named or matched catalog, then conservative fallback. Explicit windows carry no catalog prompt cap. */
 export function resolveModelContextWindow(params: {
   vendor: string;
   model: string;
@@ -175,12 +108,7 @@ export function resolveModelContextWindow(params: {
     : window;
 }
 
-/**
- * The catalog entry for a model: the one the user named, when they named one,
- * else the one the vendor's model id resolves to. A named entry that is not in
- * the catalog answers nothing rather than falling back to the name: the user
- * said which model this is, and a name match could be a different one.
- */
+/** A missing named catalog entry does not fall back to name matching; that could describe a different model. */
 export function catalogModelFor(vendor: string, model: string, catalogModel?: string, baseUrl?: string): CatalogModelHit | undefined {
   const catalog = activeModelCatalog();
   if (catalogModel !== undefined) return lookupCatalogModel(catalog, catalogModel);
@@ -188,17 +116,7 @@ export function catalogModelFor(vendor: string, model: string, catalogModel?: st
   return resolveCatalogKey(catalog, vendor, model);
 }
 
-/**
- * Whether a route's own `/models` answer can prove one of its models retired
- * (design `model-capability-catalog.md` §6.1): a public vendor that serves its
- * own models, reached on its native host. Local runtimes, self-hosted and
- * custom endpoints (no catalog provider), gateways, Azure deployments and any
- * custom `baseUrl` list what that endpoint happens to route, so a missing id
- * there says nothing about the model. Vertex AI's SDK selects its endpoint
- * from project and location and never answers a standard `/models`, so a
- * listing at its key is a dormant `baseUrl`'s (as `resolveContextWindowForRoute`
- * already treats it).
- */
+/** Only native public model listings can prove retirement; custom, gateway, local, and SDK-derived routes cannot. */
 export function listingJudgesRetirement(vendor: string, baseUrl?: string): boolean {
   if (!isLLMVendor(vendor) || CATALOG_PROVIDERS_BY_VENDOR[vendor].length === 0) return false;
   if (vendor === "vertex-ai") return false;
@@ -206,27 +124,7 @@ export function listingJudgesRetirement(vendor: string, baseUrl?: string): boole
   return allowsImplicitModelLimits(vendor, baseUrl);
 }
 
-/**
- * Which retirement tier `model` is in on this route, or `undefined` when
- * nothing says it is going away.
- *
- * - `"unlisted"` (retired, blocks the route): the route's last successful
- *   listing was complete, comes from a route that
- *   {@link listingJudgesRetirement}, and names no id equal to `model` ignoring
- *   case. A failed, partial or missing listing proves nothing. Only a model
- *   the active catalog knows by that exact id, under the vendor's mapped
- *   provider, can be judged: an id it does not know (a fine-tune, an
- *   account-scoped deployment or endpoint, a model newer than the snapshot)
- *   may be served without appearing in the public list.
- * - `"catalog-deprecated"` (deprecated, does not block): the active catalog
- *   marks the model the route serves `deprecated` — judged only where the
- *   route itself establishes that identity; a user's `catalogModel`
- *   declaration describes a model's shape, not whether this host still
- *   serves it.
- *
- * The listing outranks the catalog: a model the vendor no longer serves is
- * retired even when the catalog only calls it deprecated.
- */
+/** Complete fresh listings may retire known exact ids; catalog deprecation only warns, and explicit shape declarations establish no serving identity. */
 export function resolveModelRetirement(params: {
   vendor: string;
   model: string;
@@ -249,15 +147,7 @@ export function resolveModelRetirement(params: {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/**
- * Whether a listing was taken before the model existed, by the catalog's
- * release date: a stale answer cannot prove gone a model released after it
- * (design `model-capability-catalog.md` §6.1). The whole period the date
- * names counts as before: the release day, since a listing that day may
- * predate the launch, and the whole month (or year) of a date the catalog
- * gives only to that precision. A listing whose time cannot be read is as
- * stale as one can be.
- */
+/** Listings must postdate the entire stated release period; unknown times cannot prove a model gone. */
 function listingPredatesRelease(listing: LlmModelListCacheEntry, releaseDate: string | undefined): boolean {
   if (releaseDate === undefined) return false;
   const releasedBy = releasePeriodEnd(releaseDate);
@@ -276,7 +166,6 @@ function releasePeriodEnd(releaseDate: string): number | undefined {
   return Number.isFinite(released) ? released + DAY_MS : undefined;
 }
 
-/** {@link resolveModelRetirement} for a model on the active route's address. */
 export function resolveRouteModelRetirement(
   llm: LlmRouteSettings,
   installedProviderPresets?: readonly LlmRouteProviderPreset[],
@@ -291,7 +180,6 @@ export function resolveRouteModelRetirement(
   });
 }
 
-/** The settings a route's context window is read out of. */
 export interface LlmRouteSettings {
   readonly provider: LLMVendor;
   readonly vendors: LLMVendorSettingsMap;
@@ -299,28 +187,16 @@ export interface LlmRouteSettings {
   readonly modelListCache?: LlmModelListCache;
 }
 
-/** A marketplace preset, as far as finding its catalogue row needs to know. */
 export interface LlmRouteProviderPreset {
   readonly providerId: string;
   readonly baseUrl: string;
-  /**
-   * Whether the preset discovers its models or declares them. A caller that
-   * refreshes the catalogue has to honour this: a preset declaring a static or
-   * manual list is saying its endpoint must not be probed.
-   */
+  /** Static or manually declared preset lists must never trigger endpoint probing. */
   readonly modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
 }
 
-/** Where a model's output ceiling came from: the endpoint's own report, or the catalog. */
 export type OutputCeilingSource = "provider-reported" | "model-catalog";
 
-/**
- * A route's output limit: what was asked for, what the model allows, and the
- * smaller of the two that a request carries. An unknown ceiling clamps
- * nothing. The output that would still fit the remaining context is NOT a
- * part of this — it is reported in a run's diagnostics only, never used to
- * shrink a request (owner decision, #2501).
- */
+/** Clamp requested output to the model ceiling; remaining context is diagnostic only and never shrinks the request. */
 export interface ResolvedOutputTokenLimit {
   readonly requested: number;
   readonly requestedSource: LlmOutputTokenLimitSource;
@@ -331,10 +207,7 @@ export interface ResolvedOutputTokenLimit {
   readonly effectiveSource: LlmOutputTokenLimitSource | OutputCeilingSource;
 }
 
-/**
- * The model's output ceiling: what its endpoint reported, else the catalog
- * entry's `limits.output`. Values outside a credible range are ignored.
- */
+/** Use credible endpoint output limits before catalog limits. */
 export function resolveOutputCeiling(params: {
   vendor: string;
   model: string;
@@ -348,7 +221,6 @@ export function resolveOutputCeiling(params: {
   return catalog === undefined ? undefined : { ceiling: catalog, source: "model-catalog" };
 }
 
-/** The requested limit clamped to the model's ceiling, with both sources. */
 export function resolveOutputTokenLimit(params: {
   vendor: string;
   model: string;
@@ -378,7 +250,6 @@ export function resolveOutputTokenLimit(params: {
   };
 }
 
-/** The kinds of input a model accepts, and who stated them. */
 export interface ResolvedInputModalities {
   /** As the source spells them: `text`, `image`, `pdf`, `audio`, `video`. */
   readonly input: readonly string[];
@@ -388,19 +259,13 @@ export interface ResolvedInputModalities {
   readonly catalogEntry?: string;
 }
 
-/**
- * A model's input modalities: the user's image declaration or named entry,
- * then its endpoint's report, then the catalog match. `undefined` when
- * neither states them: unknown, which the image gate (`supportsVision`) does
- * not read as image support. An empty reported list states nothing. A reported list is
- * an external value, folded to lower case so `Image` reads as the catalog's `image`.
- */
+/** Input precedence: user image choice or named entry, endpoint report, then catalog. Missing or empty reports never imply vision support. */
 export function resolveInputModalities(params: {
   vendor: string;
   model: string;
   reported?: readonly string[];
   catalogModel?: string;
-  /** The route's endpoint: an implicit name match follows the same identity rule as its limits (§4). */
+  /** Implicit model matches require endpoint identity. */
   baseUrl?: string;
   imageInput?: boolean;
 }): ResolvedInputModalities | undefined {
@@ -419,31 +284,22 @@ export function resolveInputModalities(params: {
   return resolved;
 }
 
-/**
- * What the active route resolved about its model's inputs, for a caller that
- * gates on them: `inputModalities` absent means nobody stated them.
- */
+/** Absent input modalities mean unknown support. */
 export interface RouteInputModalities {
   readonly inputModalities?: ResolvedInputModalities;
 }
 
-/** Whether a route takes tool definitions, with the authority that states it. */
 export type ResolvedToolCallSupport =
   | { readonly supported: true; readonly source: "provider-reported" }
   | { readonly supported: boolean; readonly source: "model-catalog"; readonly catalogEntry: string };
 
-/**
- * The user's named tool capability takes precedence over an endpoint report.
- * Otherwise explicit endpoint support for `tools` overrides the catalog.
- * A missing parameter is not a denial: only a catalog `toolCall: false`
- * withholds tools. Absent means unknown and sends tools as before.
- */
+/** Named tool capability outranks reports; missing parameters are unknown, and only explicit catalog denial withholds tools. */
 export function resolveToolCallSupport(params: {
   vendor: string;
   model: string;
   reported?: readonly string[];
   catalogModel?: string;
-  /** The route's endpoint: an implicit name match follows the same identity rule as its limits (§4). */
+  /** Implicit model matches require endpoint identity. */
   baseUrl?: string;
 }): ResolvedToolCallSupport | undefined {
   const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
@@ -459,16 +315,10 @@ export function resolveToolCallSupport(params: {
     : undefined;
 }
 
-/**
- * The request parameter an endpoint's `/models` report names for reasoning,
- * in the order the engine prefers it (design `model-capability-catalog.md`
- * §5.1): OpenRouter's unified `reasoning` object, the OpenAI-style
- * `reasoning_effort` level, and the `include_reasoning` switch.
- */
+/** Prefer the reported reasoning object, then effort level, then inclusion switch. */
 const REPORTED_REASONING_CONTROLS = ["reasoning", "reasoning_effort", "include_reasoning"] as const;
 export type ReportedReasoningControl = (typeof REPORTED_REASONING_CONTROLS)[number];
 
-/** Whether a route's model reasons, with the authority that states it. */
 export type ResolvedReasoningSupport =
   | {
       readonly supported: true;
@@ -484,26 +334,18 @@ export type ResolvedReasoningSupport =
       readonly efforts?: readonly string[];
     };
 
-/** What a `/models` row says about reasoning: its parameters and its prices. */
 export interface ReportedReasoningFacts {
   readonly supportedParameters?: readonly string[];
   readonly pricing?: { readonly internalReasoning?: string };
 }
 
-/**
- * One rule for whether a route's model reasons, shared by the settings
- * chooser and the engine. The user's named catalog entry decides first; then
- * the endpoint's report — a reasoning parameter in `supported_parameters`, or
- * an `internal_reasoning` price; then the catalog where the route establishes
- * the model. A report that names no reasoning parameter is not a denial.
- * `undefined` means nobody states it (the host fallback).
- */
+/** Reasoning precedence: named entry, reported parameter or price, then established catalog identity; missing parameters are not denial. */
 export function resolveReasoningSupport(params: {
   vendor: string;
   model: string;
   reported?: ReportedReasoningFacts;
   catalogModel?: string;
-  /** The route's endpoint: an implicit name match follows the identity rule (§4). */
+  /** Implicit model matches require endpoint identity. */
   baseUrl?: string;
 }): ResolvedReasoningSupport | undefined {
   const hit = catalogModelFor(params.vendor, params.model, params.catalogModel, params.baseUrl);
@@ -534,55 +376,20 @@ export interface RouteModelCapabilities extends RouteInputModalities {
 }
 
 export interface RouteContextWindow extends ResolvedContextWindow, RouteModelCapabilities {
-  /** The model this route runs on — `activeLlmRouteModel`'s answer. */
   readonly model: string;
   /** The endpoint used to establish model identity; absent on an SDK-managed route. */
   readonly baseUrl?: string;
-  /** The named identity eligible for this model, shared with its reasoning decision. */
   readonly catalogModel?: string;
-  /**
-   * The provider's own ceiling on a completion for this model, when it
-   * reported one. Carried beside the window for a caller that needs an output
-   * ceiling; the budget math does not use it.
-   */
+  /** Carry output ceiling separately; context budget math does not use it. */
   readonly maxOutputTokens?: number;
-  /** The prices the route's own `/models` answer reported for this model, for `resolveModelPricing`. */
   readonly reportedPricing?: LlmModelListPricing;
-  /**
-   * The output limit a chat request on this route carries, resolved once for
-   * the engine and the renderer's cost estimate alike.
-   */
   readonly output: ResolvedOutputTokenLimit;
-  /**
-   * The `llm.vendors.<vendor>.catalogModel` the user named for this route when
-   * the catalog has no such entry. The window then comes from the next source;
-   * the engine reports the miss once, so a typo does not pass silently.
-   */
+  /** Report missing named entries once so configuration typos cannot silently become fallback budgets. */
   readonly unresolvedCatalogModel?: string;
 }
 
-/**
- * The window the ACTIVE route should be budgeted against, read straight from
- * the settings both the engine and the renderer already hold.
- *
- * This exists so there is one answer to "how big is this model's context". The
- * engine budgets compaction against it and the renderer's context-fill ring
- * divides by it; resolving it separately on each side is how the ring came to
- * show a 128K denominator for a model the gateway had reported at 229,376.
- *
- * The declared window comes off the vendor block. The reported one comes off
- * the catalogue row that route's last `/models` handshake left in the cache —
- * keyed by the address the row actually synced, which for a marketplace preset
- * is the preset's own endpoint rather than the generic custom-provider block's.
- */
-/**
- * Where a route's `/models` answer lives in the cache: the vendor, the address
- * that row actually synced against, and the preset scope it synced under.
- *
- * Exported because a caller that wants to REFRESH that row has to name the
- * same coordinates the reader looks it up by — key it differently and the
- * refreshed answer is never found, so the probe repeats forever.
- */
+/** Engine and renderer share active-route capacity; preset reports are keyed by their own endpoint. */
+/** Readers and refreshers must use the same vendor, address, and preset cache coordinates. */
 export interface LlmRouteCatalogAddress {
   readonly vendor: LLMVendor;
   readonly baseUrl?: string;
@@ -597,14 +404,10 @@ export function llmRouteCatalogAddress(
   const presetId = llm.provider === "openai-compatible"
     ? llm.marketplaceProviderPresetId?.trim()
     : undefined;
-  // A preset is a provider in its own right reached through the
-  // openai-compatible vendor: its catalogue synced against its own endpoint,
-  // not the generic custom-provider block's.
   const preset = presetId
     ? installedProviderPresets?.find((installed) => installed.providerId === presetId)
     : undefined;
-  // This SDK derives its endpoint from project/location and ignores baseUrl.
-  // A dormant field and its cached model list must not describe that route.
+  // SDK project/location routing ignores baseUrl and its cached reports.
   const baseUrl = llm.provider === "vertex-ai" ? undefined : preset?.baseUrl ?? block.baseUrl;
   return {
     vendor: llm.provider,
@@ -621,13 +424,10 @@ export function resolveContextWindowForRoute(
   const model = activeLlmRouteModel(llm, modelOverride);
   const block = getLlmVendorSettings(llm.vendors, llm.provider);
   const address = llmRouteCatalogAddress(llm, installedProviderPresets);
-  // Standard model-list reports do not describe a project/location SDK route.
-  // Older probes may have stored a dormant endpoint's report at the default key.
   const entry = llm.provider === "vertex-ai"
     ? undefined
     : cachedModelListEntry(llm.modelListCache, { ...address, model });
-  // A named entry describes the block's own model, not a preset or a child
-  // running a different model through the same endpoint.
+  // A named entry describes only the configured block model, not presets or different child models.
   const catalogModel = address.credentialScope === undefined && model === block.model.trim()
     ? block.catalogModel
     : undefined;

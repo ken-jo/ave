@@ -1,48 +1,33 @@
 #!/usr/bin/env node
-/**
- * check-sandboxed-preloads.mjs — a preload a sandboxed frame runs must load there.
- *
- * Electron's sandboxed preloads get a `require` polyfill that resolves only
- * `electron` and the Node modules `events`, `timers` and `url` (bare or
- * `node:`-prefixed) — and no files, so no webpack chunks either
- * (https://www.electronjs.org/docs/latest/tutorial/sandbox#preload-scripts).
- * Anything else throws `module not found` before the preload exposes its
- * bridge, and the window comes up with nothing behind it. The floating dock
- * shipped exactly that: its preload imported `node:path`, webpack kept
- * `require("node:path")`, and the dock had no bridge at all.
- *
- * Where each fact comes from:
- *   - The preloads and the sandbox each runs in: `src/shared/preload-bundles.json`,
- *     the table the window and session code take their `preload` and `sandbox`
- *     values from (`test/scripts/preload-sites.test.ts` holds every site to it).
- *   - Which preloads are built: every `electron-preload` config in
- *     `webpack.config.cjs` must be a `webpack` row of the table with the same
- *     entry and output, and every `webpack` row must have its config. A `copy`
- *     row must be one `scripts/lib/build-assets.mjs` copies into `dist/src`.
- *   - Each row's built file in `dist/src`: a sandboxed one may require only the
- *     modules above, nothing by a computed name, and may have no chunks.
- * It does not scan `dist/src` for other files: a preload reaches a frame only
- * through a site the sites test holds to the table. Run after the build has
- * bundled and copied the preloads:
- *   node scripts/check-sandboxed-preloads.mjs [--root <repo>]
- */
+// Sandboxed preloads can load only the runtime-provided modules, with no chunks or removed globals.
+// Check built bytes and require every preload build/copy entry to match the shared table.
 import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-/** What a sandboxed preload's `require` can resolve. */
 export const SANDBOXED_PRELOAD_MODULES = new Set([
   "electron",
-  "events",
-  "timers",
-  "url",
-  "node:events",
-  "node:timers",
-  "node:url",
+  "electron/renderer",
+  "electron/common",
 ]);
 
-/** Every `require(` call in a bundle: its literal module, or null when the argument is not a string literal. */
+// Globals unavailable in sandboxed preloads.
+export const REMOVED_SANDBOXED_PRELOAD_GLOBALS = ["Buffer", "setImmediate", "clearImmediate"];
+
+// Count bare global references, excluding members, quoted names and object keys.
+export function removedGlobalReferences(source) {
+  const pattern = new RegExp(`(?<![\\w$.'"\`])(${REMOVED_SANDBOXED_PRELOAD_GLOBALS.join("|")})(?![\\w$'"\`])`, "gu");
+  const named = new Set();
+  for (const match of source.matchAll(pattern)) {
+    const before = source.slice(Math.max(0, match.index - 64), match.index);
+    const after = source.slice(match.index + match[1].length, match.index + match[1].length + 64);
+    if (/[{,]\s*$/u.test(before) && /^\s*:(?!:)/u.test(after)) continue;
+    named.add(match[1]);
+  }
+  return [...named];
+}
+
 export function requireCalls(source) {
   const calls = [];
   const pattern = /(?<![\w$.])require\s*\(\s*(?:(["'])([^"'\n]+)\1\s*\)|([^)\s][^)]*)\))/gu;
@@ -55,9 +40,8 @@ export function requireCalls(source) {
 const isPreloadTarget = (target) => (Array.isArray(target) ? target : [target]).some((value) => String(value).startsWith("electron-preload"));
 const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 
-/** The problems with the preloads under `root`; empty when every one is classified and can load where it runs. */
 export async function checkPreloads(rootPath) {
-  // The config resolves its entries from its real `__dirname`; compare in the same terms.
+  // Resolve entries from the configuration's own directory.
   const root = realpathSync(rootPath);
   const problems = [];
   const table = JSON.parse(readFileSync(join(root, "src/shared/preload-bundles.json"), "utf8"));
@@ -100,7 +84,11 @@ export async function checkPreloads(rootPath) {
     for (const name of built.filter((candidate) => chunk.test(candidate))) {
       problems.push(`${name}: a chunk of ${row.file}, which a sandboxed preload cannot load (${row.runsIn})`);
     }
-    for (const call of requireCalls(readFileSync(join(dist, row.file), "utf8"))) {
+    const source = readFileSync(join(dist, row.file), "utf8");
+    for (const name of removedGlobalReferences(source)) {
+      problems.push(`${row.file}: names ${name}, a global a sandboxed preload no longer has (${row.runsIn})`);
+    }
+    for (const call of requireCalls(source)) {
       if (call.module === null) {
         problems.push(`${row.file}: require(${call.expression}) — a sandboxed preload cannot load files or chunks (${row.runsIn})`);
       } else if (!SANDBOXED_PRELOAD_MODULES.has(call.module)) {

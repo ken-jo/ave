@@ -1,12 +1,3 @@
-/**
- * ConversationLoop turn-runtime types.
- *
- * the public turn contract (`TurnCallbacks`,
- * `TurnStopReason`, `TurnResult`, `ConversationLoopDeps`) plus the internal
- * scope / diagnostics types shared across the `engine/turn/` units. These are
- * re-exported byte-identically from `engine/conversation-loop.js` so external
- * importers (ipc/domains/chat, subagent-runner, boot) keep the same surface.
- */
 import type {
   GenericMessage,
   LLMProvider,
@@ -52,49 +43,31 @@ import type {
   UnattendedTurnAuthority,
 } from "../../shared/authorization-required.js";
 
-// ─── Types ──────────────────────────────────────────
-
 export interface WorkspaceRootRevocationOptions {
-  /** The removed root was part of the pre-persist global turn scope snapshot. */
+  // The removed root belonged to the pre-persist global scope snapshot.
   globalScopeWasAuthorized?: boolean;
-  /** Separately registered descendants that remain authorized. */
+  // Independently registered descendants retain their own authorization.
   preserveRoots?: readonly string[];
 }
 
-/** Non-user origin of an injected guidance batch, for renderer attribution. */
 export interface GuidanceInjectionSource {
   kind: "sub-agent";
-  /** Sanitized child title; absent when one batch mixed several children. */
+  // Omit a child title when multiple children share the batch.
   title?: string;
 }
 
-/** The history row an injected guidance batch committed. */
 interface GuidanceInjectionRow {
-  /**
-   * Durable identity of the appended user row. Carried so the bubble the
-   * renderer draws for an injected batch names the same row a reloaded
-   * transcript names, and the row-addressed actions work on it either way.
-   */
+  // Match live injected bubbles and reloaded row actions through one durable user-row ID.
   messageId: string;
-  /**
-   * Present only when EVERY delivered guide in this batch was a sub-agent
-   * report, so the renderer can draw the child-report box without
-   * mislabelling a batch that also carried the user's own guide text.
-   */
+  // Child-report framing applies only when every entry is child-authored.
   source?: GuidanceInjectionSource;
 }
 
-/**
- * The loop branches a turn's outcome can be attributed to. One kind per
- * decision the loop makes on its own — a budget it hit, a recovery it chose,
- * an exit it took — never per provider call.
- */
+// Decisions classify loop branches, not individual provider calls.
 export type TurnDecisionKind =
   | "tool_batch"
   | "tool_schema.drop"
-  // The model emitted a tool call whose arguments were not a usable object.
-  // The call is answered with an error instead of being executed, so a run can
-  // count how often generation breaks mid-arguments.
+  // Malformed argument calls receive an error result instead of execution.
   | "tool_call.invalid_arguments"
   | "length.continuation"
   | "reasoning_only.continuation"
@@ -102,25 +75,15 @@ export type TurnDecisionKind =
   | "plugin.expansion"
   | "compact.micro"
   | "progress.nudge"
-  // The round-loop preflight gate: real same-session compaction attempted
-  // between rounds because the turn's own growth crossed the threshold.
-  // `compact.micro` is a different thing — it stubs stale tool results on the
-  // wire and never calls a model.
+  // In-turn preflight invokes summary compaction; micro-compaction only stubs stale wire results.
   | "compact.auto"
   | "early_exit";
 
 export interface TurnDecisionEvent {
   kind: TurnDecisionKind;
-  /** Which way the branch went, in this kind's own vocabulary. */
   branch: string;
-  /** Machine-stable cause, when the branch alone does not name it. */
   reason?: string;
-  /**
-   * The small numbers the branch turned on — a batch size, a continuation
-   * index, a token floor. Never prompt text, tool input, or tool output: the
-   * transcript already holds those and this payload crosses process and
-   * export boundaries the transcript does not.
-   */
+  // Export only branch counts and bounds, never prompts or tool input/output.
   data?: Record<string, string | number | boolean>;
 }
 
@@ -129,7 +92,6 @@ export interface TurnCallbacks {
   onTextDelta?: (text: string) => void;
   onToolStart?: (name: string, input: Record<string, unknown>, meta: ToolCallMeta,
   ) => void;
-  /** Display-only live output of a running host shell tool. */
   onToolOutput?: (name: string, text: string, meta: ToolCallMeta) => void;
   onPermissionReview?: (event: PermissionReviewEvent) => void;
   onToolEnd?: (
@@ -146,40 +108,25 @@ export interface TurnCallbacks {
     thought: string;
     stopReason: "end_turn" | "tool_use" | "max_tokens";
     hasToolCalls: boolean;
-    /** Durable identity of the assistant row this round just committed. */
     messageId: string;
   }) => void;
   onTurnComplete?: (fullText: string) => void;
   onPermissionModeChanged?: (mode: ExecutionMode,
   ) => void;
   onError?: (error: string, systemNotice?: "context-error" | "stream-error",
-    /**
-     * Provider error classification computed where the raw error exists
-     * (`classifyProviderError`); consumed by `deriveTurnFailureSummary` to
-     * build the share-safe failure summary. Never raw error text.
-     */
+    // Pass classification only; shared failure summaries must never receive raw error text.
     classifierCategory?: string,
   ) => void;
   onCompactOccurred?: (result: {
     removedMessages: number;
     freedTokens: number;
-    /** Post-compact history token estimate (estimateMessagesTokens after the
-     *  boundary applied). Renderer uses this as the SOT for the ring;
-     *  freedTokens alone undercounts when only one small message was summarized. */
+    // Renderer fullness uses the post-compact estimate, not freed tokens alone.
     estimatedAfter: number;
-    /**
-     * Compact trigger — `"auto-compact"` (token preflight) | `"manual"` (`/compact`).
-     * UI CheckpointDivider uses this to choose the auto/manual label.
-     */
     trigger?: "auto-compact" | "manual";
 
 
 
     summary?: string;
-    /**
-     * Compact sequence number — passed to CheckpointDivider to enable
-     * view-mode and branch-from-checkpoint actions.
-     */
     compactNum?: number;
 
 
@@ -191,180 +138,74 @@ export interface TurnCallbacks {
     truncatedDir?: string;
   }) => void;
 
-
-
   onCompactStarted?: (info: {
     triggerSource: CompactTriggerSource;
     estimatedBefore: number;
     preflight: number;
   }) => void;
-  /**
-   * Fired when force-recover budget is exhausted (#917). Renderer must surface
-   * a persistent banner informing the user that auto-compact can no longer
-   * recover the session and manual intervention (model change / chat reset) is
-   * required.
-   */
+  // Recovery exhaustion requires a persistent renderer notice that manual intervention is needed.
   onRecoveryExhausted?: () => void;
   onFallback?: (from: string, to: string) => void;
   onLlmStatus?: (status: FallbackStatus) => void;
 
-
-
   onGuidanceInjected?: (text: string, row: GuidanceInjectionRow) => void;
-  /**
-   * Fired once at turn end if any queued guide utterances never reached a
-   * round boundary (single-round turn — typical of short text-only
-   * answers). Renderer surfaces this so the user knows their direction-
-   * adjustment was NOT applied, otherwise the silent-drop UX is worse
-   * than the pre-redesign abort-and-restart behavior (critic MAJOR #3).
-   */
+  // Report undelivered guidance at turn end so users know their adjustment was not applied.
   onGuidanceDropped?: (text: string) => void;
-  /**
-   * One branch the turn took, reported where the loop chose it. Observation
-   * only: the loop behaves identically whether or not anyone listens. It is
-   * what lets an outcome be attributed to the path that produced it — as a
-   * tracing span event, as a `loop.decision` conversation event, and as the
-   * per-kind counts on {@link TurnSummary}.
-   */
+  // Decision observation cannot change behavior; tracing, event projection, and summaries share this signal.
   onDecision?: (event: TurnDecisionEvent) => void;
-  /**
-   * Turn aggregate footer (§ chat transcript per-turn footer) — fires once
-   * after the turn fully resolves with cumulative wall-clock / step-count /
-   * token totals. Renderer maps the payload to a `kind: "turn_summary"`
-   * chat entry placed under the final assistant message.
-   *
-   * `cumulativeToolMs` is the sum of per-tool durationMs when available;
-   * 0 when the executor has not yet been instrumented (companion PR
-   * `feat/tool-execution-duration-display` provides the missing field).
-   * `breakdown` carries `{ count, ms }` per tool name; omitted when no
-   * tools ran (the footer hides the expand affordance in that case).
-   */
+  // Emit completed-turn aggregate usage and duration once; omit per-tool breakdown when no tools ran.
   onTurnSummary?: (summary: TurnSummary) => void;
 }
 
-/**
- * Per-turn options accepted by `ConversationLoop.runTurn` and threaded verbatim
- * into `engine/turn/run-turn.ts`. One declaration so the public method and the
- * unit that implements it cannot drift apart.
- */
 export interface RunTurnOptions {
-  /**
-   * Multimodal user content parts — appended after the text input as
-   * additional content blocks (vision images, files). When omitted the
-   * user message is a plain string (current behavior).
-   */
+  // Omitted attachment parts leave plain-string user input.
   attachments?: UserContentPart[];
   originSource?: string | null;
-  /**
-   * C3(a): hard cap on assistant rounds for this turn. When set,
-   * queryLoop terminates cleanly between rounds once the cap is hit
-   * regardless of tool_use chains the LLM still wants to run. Used by
-   * SubAgentRunner to enforce the host-assigned `maxRounds` budget at
-   * the loop boundary instead of using user-cancel semantics.
-   */
+  // Round budgets stop cleanly between rounds and remain distinct from user cancellation.
   maxRounds?: number;
-  /**
-   * C3(c): override session id used by the executor's
-   * ToolExecutionContext.metadata.sessionId. SubAgentRunner threads
-   * the child session id here so audit entries from the sub-agent's
-   * tool calls are attributed to the child, not the parent.
-   */
+  // Child overrides attribute tool audits to the child session rather than the parent.
   sessionIdOverride?: string;
-  /**
-   * C3(b): spawn depth carried through to the executor's metadata.
-   * Sub-agents see depth >= 1 and reject any nested agent_spawn call
-   * before it reaches the LLM-visible registry.
-   */
+  // Spawn depth must reach execution so nested agent_spawn calls are refused.
   spawnDepth?: number;
-  /** Internal provenance label prepended to ApprovalGate reasons. */
   approvalReasonPrefix?: string;
-  /** Host-owned remote-controller authority, never parsed from chat input. */
+  // Remote-controller authority is host-owned and never parsed from input.
   remoteControllerAuthority?: RemoteControllerAuthority;
-  /**
-   * Host-issued unattended lane for a windowless one-shot turn. Never parsed
-   * from chat input; see {@link UnattendedTurnAuthority}.
-   */
+  // Unattended authority is host-issued for one turn, never parsed from chat input.
   unattendedAuthority?: UnattendedTurnAuthority;
-  /** DLP-masked durable child messages joined to this turn after the prompt gate. */
+  // Join DLP-masked child messages only after the prompt gate.
   initialGuidance?: string;
-  /**
-   * Marks the child messages this turn carries as a sub-agent report. Stamped
-   * onto whichever message holds them — the `agent-message` turn input on a
-   * wake turn, the guidance message when they ride a user turn — so a reload
-   * replays the report box instead of a bubble attributed to the user.
-   */
+  // Stamp the row actually holding child reports so reload cannot misattribute them to the user.
   subAgentReport?: { title?: string };
-  /** Host-owned causal hop inherited from durable A2A guidance. */
   a2aCausalContext?: A2AAgentCausalContext;
   inputOrigin: ChatInputOrigin;
-  /** Host-validated, DLP-before-send keyboard text used only for anchoring. */
   requestAnchorRawIntent?: string;
   rolePrompt?: ActiveRolePrompt;
-  /**
-   * User-visible text for the transcript row, when the durable content carries more
-   * than the user wrote. Forwarded by the replay paths, which fold a turn's text
-   * parts into the body: without it, a replayed resource turn shows the server's
-   * fenced body inside the user's own bubble.
-   */
+  // Preserve user display text when replay folds server attachment bodies into durable input.
   displayText?: string;
-  /**
-   * The user row this turn appends is Continue after a turn the app's exit
-   * interrupted: a host-written instruction, not a new request. Stamped on the
-   * row so the session keeps the title of what the user actually asked.
-   */
+  // Host-exit continuation is a host instruction; retain the original user request as the title source.
   resumesInterruptedTurn?: true;
-  /**
-   * Identity to stamp on the user row this turn appends. Supplied by the
-   * caller that already announced the row on the timeline, so the row the
-   * surface is showing and the row stored here are the same row.
-   */
+  // Use the caller-announced ID for the same appended user row.
   userMessageId?: string;
-  /**
-   * Set by SubAgentRunner: a clean end of this child turn dispatches
-   * SubagentStop (which may continue the run) instead of a continuable Stop.
-   * `onDispatched` tells the runner it need not fire its own SubagentStop.
-   */
+  // Clean child ends dispatch continuable SubagentStop; report dispatch to prevent runner duplication.
   subagentStop?: { agentId?: string; agentType?: string; onDispatched: () => void };
 }
 
-/**
- * Why the turn ended. Centralized so the queryLoop return type, TurnResult,
-
- * and the willEmit/notification gates all reference one source — adding a new
- * reason later means changing one union (and then auditing the gates).
- */
+// Adding a stop reason requires auditing summary and notification gates against this shared union.
 export type TurnStopReason =
   | "end_turn"
   | "tool_use"
-  // Output-token cap hit. After the continuation loop exhausts its cap
-  // (MAX_LENGTH_CONTINUATIONS) the turn returns with this reason so the
-  // UI/notification gates surface the residual truncation explicitly.
+  // Preserve residual output truncation after continuation exhaustion so UI can report it.
   | "max_tokens"
   | "interrupted"
   | "context-error"
   | "stream-error"
-  // The turn used up its round budget (queryLoop `effectiveMaxRounds`) before
-  // the LLM produced a natural end_turn. Only a SUB-AGENT turn can reach this:
-  // the budget comes from the host-assigned `maxRounds` the runner passes, and
-  // a parent turn with no `maxRounds` runs `PARENT_UNLIMITED_ROUNDS` — there is
-  // no global round constant. The returned text is the PARTIAL work so far —
-  // the task did not finish. Distinct from `interrupted` (user-initiated) and
-  // `max_tokens` (single-answer output cap): this is a host-imposed round
-  // budget. Sub-agents surface it to the parent as a budget SUSPENSION with a
-  // `resumeId` (see SubAgentSpawnResult), so the parent continues the same
-  // child rather than starting over. turn_summary / notification gates treat it
-  // like a completed turn (real partial output + usage), NOT like an error.
+  // Round-cap is resumable partial success with usage, distinct from interruption and output limits.
   | "round-cap"
-  // A sub-agent deliberately ended the current round to wait for an answer.
-  // The loop is fully terminated; continuation re-hydrates the persisted
-  // session through SubAgentRunner.resume() rather than parking a coroutine.
+  // Input-required ends the loop; continuation rehydrates persisted state rather than parking a coroutine.
   | "input-required"
-  // The invocation requires a local authorization, but this host process has
-  // no approval surface. This is a terminal control outcome, not a tool error
-  // the model may repair by retrying or rewriting the command.
+  // Authorization-required is terminal without a local approval surface; retries cannot repair authority.
   | "authorization-required"
-  // #811 m2 — a trusted UserPromptSubmit hook (or its fail-closed dispatch)
-  // REFUSED the prompt before queryLoop ran. The turn never reached the LLM.
+  // Blocking hook refusal occurs before the model receives the prompt.
   | "blocked";
 
 export interface TurnInputRequired {
@@ -379,214 +220,106 @@ export interface TurnResult {
   route: string;
   usage?: TokenUsage;
   usageByModel?: TokenUsageByModel[];
-  /** Non-billable subscription telemetry; never normalized as API usage. */
   subscriptionUsage?: SubscriptionUsageTelemetry[];
   stopReason?: TurnStopReason;
-  /** Structured terminate-and-resume request emitted with input-required. */
   inputRequired?: TurnInputRequired;
-  /** Safe metadata for a host-issued authorization-required termination. */
   authorizationRequired?: AuthorizationRequiredState;
 }
 
 export interface ConversationLoopDeps {
   settingsService: SettingsService;
-  /**
-   * Main-owned factory for a subscription-authenticated provider. It receives
-   * only the settings-normalized runtime selection; the returned provider is
-   * otherwise subject to the ordinary ConversationLoop contracts.
-   */
+  // Subscription factories accept only normalized runtime selection and retain ordinary loop gates.
   subscriptionProviderFactory?: (
     selection: SubscriptionChatRuntimeSelection,
-    /**
-     * Parent selection used only when a transient sub-agent Codex model
-     * override is no longer present in the main-owned live catalog.
-     */
     fallbackSelection?: SubscriptionChatRuntimeSelection,
   ) => LLMProvider | null;
   systemPromptBuilder: SystemPromptBuilder;
   inputClassifier: InputClassifier;
   routeEngine: RouteEngine;
   toolRegistry: ToolRegistry;
-  /**
-   * Boot-published host seam for guarded rationale orchestration. The query
-   * loop enables that path only when this concrete runtime is available;
-   * otherwise it preserves the legacy batch and approval flow.
-   */
+  // Enable rationale orchestration only with a concrete host runtime; otherwise preserve legacy approval flow.
   rationaleCoordinatorFactory?: RationaleCoordinatorFactory;
-  /** Invalidates host rationale authority before this loop changes sessions. */
   closeRationaleSession?: (sessionId: string) => void;
-  /**
-   * Whether another of the window's conversation loops — the primary or a
-   * chat group — is holding `sessionId`. A session belongs to one loop at a
-   * time: two loops on one id would each flush their own history to the same
-   * file, and the turn that settled last would erase the other's. The host
-   * owns the set of loops, so it supplies the predicate; `loadSession`
-   * refuses on `true`. Loops with their own session namespace (side chat,
-   * sub-agents) do not take it.
-   */
+  // One loop may own a session file; simultaneous owners would overwrite each other on save.
   sessionHeldElsewhere?: (sessionId: string) => boolean;
-  /** Test-only override; ignored unless NODE_ENV is exactly "test". */
+  // Ignore this override outside exact test NODE_ENV.
   enableDormantRationaleForTesting?: boolean;
-  /** Host-owned capability; omitted/false surfaces cannot accept background parent delivery. */
+  // Background parent delivery requires explicit host capability.
   supportsA2AParentDelivery?: boolean;
   memoryManager: MemoryManager;
-  /** Explicit user memory writes must go through this host-owned LLM review gate. */
+  // Explicit memory writes require the host-owned review gate.
   memoryCaptureService?: Pick<MemoryCaptureService, "captureExplicit">;
-  /** Recap compaction shares the host-owned, no-tool Memory Reviewer lane. */
+  // Recap generation shares the no-tool reviewer lane.
   memoryReviewer?: Pick<MemoryReviewerService, "review">;
-  /**
-   * Notify all renderer windows that the directory config mutated.
-   * Wired by boot from `ipc/domains/permissions.ts`. Called by
-   * `addSessionAdditionalDirectory` so dialog-driven (executor-side)
-   * grants reach the PermissionsTab subscribers, not only slash-dispatch
-   * grants. Closes the round-3 architect Q5 / critic M1 / security Q6 gap.
-   */
+  // Executor-side directory grants must notify permission views in every renderer window.
   broadcastPermissionConfigChanged?: () => void;
   permissionManager?: import("../../permissions/permission-manager.js").PermissionManager;
   routineEngine?: RoutineEngine;
-  /**
-   * The session-goal store, present on the loops that can actually revive
-   * themselves (the primary chat and its tiles). Absent on routine and
-   * side-chat loops, which have no revival driver — `/goal` says so there
-   * rather than registering a goal nothing would act on.
-   */
+  // Register goals only on loops with a revival driver; other loops must report unavailability.
   sessionGoalStore?: import("../../main/session-goal-store.js").SessionGoalStore;
 
   idleScheduler?: IdleSchedulerService;
-  /** Agent 6: post-turn hook chain (compact → saveSession → extractMemory → audit → idle-poke) */
   postTurnHookChain?: PostTurnHookChain;
 
   bashAstValidator?: import("../../main/bash-ast-validator.js").BashAstValidator;
 
   approvalGate?: import("../../permissions/approval-gate.js").ApprovalGate;
-  /**
-   * In-process hook runner used by focused unit tests and old internal
-   * extension points. Production Permission policy script hooks are carried by
-   * scriptHookManager, not by hooks.json external loading.
-   */
+  // In-process hooks serve focused tests; production policy uses the trusted script manager.
   hookRunner?: HookRunner;
-
-
 
   pluginRuntime?: {
     listPluginIds(): string[];
     getGenerationAccess?():
       | import("../../plugins/plugin-host-generation.js").PluginRuntimeGenerationAccess | undefined;
-    /**
-     * #1176 — whether a loaded plugin is active (its tools may be exposed).
-     * `enabled !== false` in the registry; absent → active (migration-safe).
-     * Used by {@link resolveToolScope} to drop inactive plugins from scope.
-     */
+    // Undefined enabled state is migration-safe active; false removes plugin model scope.
     isPluginEnabled?(pluginId: string): boolean;
-    /**
-     * Record a plugin as session-activated for `sessionId` so Gate 4
-     * ({@link pluginRuntimeToolDelegate}) allows its tool calls for that
-     * session. NEVER persists enabled state — `setPluginEnabled` NOT called.
-     * Per-session scoping ensures session A's activation is never wiped by
-     * session B starting.
-     */
+    // Session-only activation must not persist enabled state or affect other sessions.
     setSessionActivated?(sessionId: string, pluginId: string): void;
-    /**
-     * Clear on-demand activations for `sessionId` ONLY. Does not affect
-     * any other session. Called at session-reset and routine loop completion.
-     */
+    // Clear only the named session on reset or discarded routine completion.
     clearSessionActivated?(sessionId: string): void;
   };
-  /** Process-wide Host authority shared by every plugin-tool execution surface. */
   pluginOperationGrants?: import("../../permissions/plugin-operation-grant.js").PluginOperationGrantCoordinator;
-  /** Resolves immutable Host identity for model/sub-agent governed plugin calls. */
   pluginOperationIdentityProvider?: import("../../tools/invocation-services.js").PluginOperationIdentityProvider;
-  /**
-   * Fixed-scope support for callers that already made a plugin-scope decision.
-   * These plugin ids are always eligible for catalog and fixed-surface checks.
-   */
   forcedActivePluginIds?: ReadonlySet<string>;
-  /**
-   * Explicit tool-schema allowlist for fixed-surface callers such as
-   * sub-agents. These names enter `tools[]` directly.
-   */
   forcedActiveToolNames?: ReadonlySet<string>;
-  /**
-   * Model override: a sub-agent profile's model, or the session's `/model`
-   * choice (see `ConversationLoop.setSessionModelOverride`, which restores the
-   * constructed value on a session switch). API-key providers use it in place of the active
-   * vendor block's model after profile resolution. For Codex subscription
-   * runtimes it is only forwarded when it is a bounded, clean string; the
-   * main-owned runtime revalidates it against the live subscription catalog.
-   * ACP subscription runtimes retain their persisted default model because
-   * they do not expose a selectable model surface.
-   */
+  // Session and profile overrides replace API model selection; verify subscription candidates against the live catalog.
+  // Runtimes without model selection retain their persisted defaults.
   modelOverride?: string;
-  /**
-   * Hard plugin allowlist for scoped callers such as routines. When set,
-   * forced plugins and request_plugin expansions are intersected with this set.
-   */
+  // Intersect forced scope and plugin activations with this hard allowlist.
   allowedPluginIds?: ReadonlySet<string>;
-  /** Background/routine loop: write tools must ask and cannot rely on auto/allow cache. */
+  // Background writes must ask and cannot rely on automatic or cached allows.
   headless?: boolean;
-  /** Approval UI capability, intentionally independent of routine tool scope. */
+  // Approval UI capability is independent of routine tool scope.
   approvalSurface?: ApprovalSurface;
-  /** Additional filesystem roots explicitly granted to this loop. */
   additionalDirectories?: readonly string[];
-  /** Live reader for foreground settings-backed additional directories. */
   getAdditionalDirectories?: () => readonly string[];
-  /** Runtime predicate for the app-managed default workspace project root. */
   isDefaultProjectRoot?: (projectRoot: string) => boolean;
-  /** Default project for main conversations when the user has not selected one. */
   getDefaultProject?: () => { projectRoot?: string; projectName?: string; isDefault?: boolean;
   };
-  /** Re-authorize and canonicalize a stored or renderer-supplied project root. */
+  // Reauthorize and canonicalize roots from persisted state or renderer input.
   authorizeProject?: (
     projectRoot: string,
     projectName?: string,
   ) => { projectRoot: string; projectName?: string; isDefault?: boolean;
   } | null;
-  /**
-   * Script hooks. Boot owns discovery/trust and injects the manager;
-   * the executor only invokes the already-trusted generic hook contract.
-   */
+  // Boot owns hook discovery and trust; execution invokes only the trusted contract.
   scriptHookManager?: import("../../hooks/script-hook-manager.js").ScriptHookManager;
-  /** Hook trust command storage override. Production uses default hook paths. */
   hookTrustCommandOptions?: Omit<HookTrustCommandOptions, "manager">;
-  /** Disable normal ~/.ave/sessions persistence for isolated child loops. */
+  // Isolated children must not write normal main-session persistence.
   disableSessionPersistence?: boolean;
-  /**
-   * Per-conversation read-skill registry (authorizes `skill_read`). Holds no
-   * skill bodies — those live in history as `skill_load` tool_results — and is
-   * cleared when the conversation is replaced (`newConversation`).
-   */
+  // Skill registry authorizes reads but holds no bodies; clear it only when replacing the conversation.
   skillOverlay?: { clear(sessionId: string): void };
-  /**
-   * Whether `/<name>` names a skill in the index. A user message starting with
-   * a non-built-in `/<skill-name>` is then sent to the model (which reads the
-   * skill with `skill_load`) instead of failing as an unknown command.
-   */
+  // Indexed non-builtin slash names run as model skill requests rather than unknown commands.
   isSkillName?: (name: string) => boolean;
-  /**
-   * Issue #260: optional system notification service. When supplied, the
-   * loop fires a `turn-end` notification when runTurn resolves successfully
-   * (not aborted, not interrupted). Routine / sub-agent / trigger loops
-   * intentionally omit this so background turns don't spam the user.
-   */
+  // Omit notifications for background loops to avoid turn-end spam.
   notificationService?: import("../../main/notification-service.js").NotificationService;
-  /** Shared boot audit logger. Tool execution audit writes to this HMAC chain. */
+  // Tool audits append to the shared authenticated chain.
   auditLogger?: AuditLogger;
-  /** Rebuilds reviewer classifier/cache bindings after `/permission reviewer ...`. */
   rewireReviewerAgent?: () => void;
-  /** Main-process fetch implementation for Azure Foundry private-endpoint calls. */
   llmFetch?: typeof fetch;
-  /**
-   * The host's outbound transport for provider calls that run through the
-   * network guard (self-hosted endpoints, marketplace presets). Required
-   * rather than optional: an absent transport used to mean "use Node's", which
-   * ignores the machine's proxy configuration and its trust store.
-   */
+  // Require host outbound transport so guarded calls honor machine proxy and trust-store configuration.
   networkFetch: typeof fetch;
-  /**
-   * Boot-configured tracer. Absent — the default — means no provider was
-   * registered and the turn creates no span objects at all; the loop's
-   * behaviour is the same either way.
-   */
+  // Missing tracer means no provider registration or span allocation.
   tracer?: import("@opentelemetry/api").Tracer;
 }
 
@@ -603,41 +336,20 @@ export type CompactTriggerSource =
 
 export interface PreflightGuardOptions {
   forceReason?: "rate-limit";
-  /**
-   * Set by the round-loop gate, which evaluates the guard in the middle of a
-   * turn rather than between turns.
-   *
-   * It changes what counts as "recent" for the compactor's preserve floor:
-   * inside a turn the unit is the turn's own assistant tool rounds, because a
-   * user-turn floor protects everything an agent turn appended and leaves the
-   * compactor nothing of that turn to reduce.
-   */
+  // Mid-turn preservation counts assistant tool rounds; user-turn floors would prevent active-turn reduction.
   intraTurn?: boolean;
 }
-
 
 export interface ToolScope {
   activePluginIds: Set<string>;
 
-
-
   activeToolNames: Set<string>;
-  /** Tools kept visible by an explicit fixed-surface allowlist. */
   forcedToolNames: Set<string>;
   includeBuiltins: boolean;
-  /**
-   * Expose builtins that can reach a model-chosen external URL. Off in
-   * unattended (headless/routine) lanes — see {@link Tool.arbitraryEgress}.
-   */
+  // Arbitrary model-chosen egress is off for unattended lanes.
   includeEgress: boolean;
   includeMcp: boolean;
-  /**
-   * #1176 deferral gate. `false` → eager full-schema exposure of every
-   * in-scope plugin/MCP tool (no `tool_search` discovery). `true` → per-tool
-   * deferral where only `activeToolNames` load and the rest live in the compact
-   * catalog. Set by {@link resolveToolScope} from the eligible tool count vs
-   * {@link EAGER_TOOL_EXPOSURE_CEILING}.
-   */
+  // Eager mode exposes all eligible schemas; deferral loads active names and catalogs the remainder.
   deferral: boolean;
 }
 
@@ -653,16 +365,8 @@ export interface ToolExposureMetrics {
   deferredMcpServerIds: string[];
   toolSchemaTokens: number;
   projectedRequestInputTokens: number | null;
-  /**
-   * Deferral effectiveness signal for the default-on dogfood gate. Counts only
-   * deferral-eligible (plugin + MCP) tools — builtins are never deferred so
-   * they would otherwise dilute the ratio. `deferralEligibleLoadedCount` is the
-   * plugin/MCP slice of the loaded schemas; `deferredLoadedRatio` is
-   * deferred / (deferred + loaded-eligible), structurally bounded to [0, 1]
-   * (the numerator `catalogEntries.length` is a strict subset of the
-   * denominator, so no clamp is needed). Null when no deferral-eligible tool
-   * exists this turn (denominator is zero, ratio is undefined).
-   */
+  // Ratio counts only plugin/MCP tools: deferred / (deferred + loaded eligible).
+  // Return null for an empty universe; builtins would dilute the metric.
   deferralEligibleLoadedCount: number;
   deferredLoadedRatio: number | null;
 }

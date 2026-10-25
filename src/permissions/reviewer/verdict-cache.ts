@@ -1,38 +1,4 @@
-/**
- * Permission policy — Layer 5 Reviewer Agent: verdict cache.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 5
- * verdict cache, §11 v2.1 binding decision (selective by invalidationKey).
- *
- * Storage: `~/.ave/permissions/reviewer-cache.jsonl` (append-only,
- * per-feature namespace per CLAUDE.md storage rule).
- *
- * Cache key: sha256Hex(toolName + source + category + trustOrigin +
- * approvalCacheKey + canonicalInputIdentity + conversationContext +
- * toolPolicyIdentity).
- *   - canonicalInputShape replaces every value with its type-name and
- *     deep-sorts keys for categories whose deterministic reviewer rules
- *     do not inspect literal values.
- *   - shell/network/read/write are value-sensitive: command literals,
- *     hosts, and target paths drive the deterministic risk classifier, so
- *     those keys use sorted literal JSON.
- *
- * invalidationKey: sha256Hex(allowedDirectories.sorted ‖ scope.json.sorted ‖
- * sandboxWrapState.json.sorted).
- *   - When settings change (additionalDirectories, scope) the cached
- *     entries with stale invalidationKey are dropped on next read.
- *   - When ASRT reviewer relaxation depends on a long-lived worker being
- *     wrapped, that worker's live wrap marker is part of the key. A relaxed
- *     verdict therefore cannot outlive the confinement that justified it.
- *     Cold-start hit rate is preserved for entries whose context is
- *     still valid.
- *
- * TTL: 24h. HIGH verdicts cached too (avoid re-classify obvious
- * dangers — caching ≠ fallback per v2 code-reviewer m2).
- *
- * NOT a circuit breaker: provider quota exhaustion routes through
- * `fallbackOnError` (rule | deny), NOT through cache.
- */
+// Value-sensitive shell/network/read/write cache keys retain canonical literals; other categories may use shapes. Include scope, policy, conversation and live wrap state so relaxed verdicts cannot outlive confinement; invalidate only stale contexts, cache HIGH too, and expire after 24h (docs/architecture/permission-policy-design.md).
 import { resolve as pathResolve } from "node:path";
 import type { RiskVerdict } from "./risk-classifier.js";
 import type { ToolCategory, ToolSource, ToolTrustOrigin } from "../../tools/types.js";
@@ -47,12 +13,12 @@ const TTL_MS = 24 * 60 * 60 * 1000;
 export const MAX_VERDICT_CACHE_ENTRIES = 500;
 
 export interface VerdictCacheEntry {
-  /** sha256Hex(toolName+source+category+trustOrigin+approvalCacheKey+canonicalInputIdentity) */
+  // sha256Hex(toolName+source+category+trustOrigin+approvalCacheKey+canonicalInputIdentity)
   key: string;
   verdict: RiskVerdict;
-  /** Unix ms, expiresAt = createdAt + TTL_MS */
+  // Unix ms, expiresAt = createdAt + TTL_MS
   expiresAt: number;
-  /** sha256 over (allowedDirectories sorted, scope JSON sorted). */
+  // sha256 over (allowedDirectories sorted, scope JSON sorted).
   invalidationKey: string;
 }
 
@@ -60,12 +26,7 @@ export interface VerdictCacheLookupKey {
   toolName: string;
   source: ToolSource;
   category: ToolCategory;
-  /**
-   * Permission policy architect round-4: cache identity must include trust origin.
-   * A `user-keyboard` verdict cached for a write must NOT be served to
-   * an `llm-tool-arg` invocation of the same shape — the underlying
-   * intent (and therefore the safe verdict) differs.
-   */
+  // Permission policy architect cache identity must include trust origin. A `user-keyboard` verdict cached for a write must NOT be served to an `llm-tool-arg` invocation of the same shape — the underlying intent (and therefore the safe verdict) differs.
   trustOrigin: ToolTrustOrigin;
   approvalCacheKey?: string;
   conversationContext?: {
@@ -81,13 +42,9 @@ export interface VerdictCacheLookupKey {
 
 export interface VerdictCacheContext {
   allowedDirectories: string[];
-  /** Free-form scope object (RoutineScope or `{}` for non-routine paths). */
+  // Free-form scope object (RoutineScope or `{}` for non-routine paths).
   scope: Record<string, unknown>;
-  /**
-   * Live sandbox substrate marker for reviewer invalidation. This is separate
-   * from `scope` because routine/settings scope changes and long-lived-worker
-   * wrap/un-wrap changes are different invalidation axes.
-   */
+  // Live sandbox substrate marker for reviewer invalidation. This is separate from `scope` because routine/settings scope changes and long-lived-worker wrap/un-wrap changes are different invalidation axes.
   sandboxWrapState?: unknown;
 }
 
@@ -95,18 +52,9 @@ function defaultPath(): string {
   return pathResolve(aveHome(), "permissions", "reviewer-cache.jsonl");
 }
 
-// ─── Canonical-shape derivation ──────────────────────────────────────
+// Canonical-shape derivation
 
-/**
- * Replace every leaf with its type-name and deep-sort keys. The
- * resulting JSON string is the cache identity for inputs.
- *
- *   { path: "/a/b", count: 5 }
- *     → '{"count":"number","path":"string"}'
- *
- *   { items: [1, "two", null] }
- *     → '{"items":["number","string","null"]}'
- */
+// Replace every leaf with its type-name and deep-sort keys. The resulting JSON string is the cache identity for inputs. { path: "/a/b", count: 5 } → '{"count":"number","path":"string"}' { items: [1, "two", null] } → '{"items":["number","string","null"]}'
 export function canonicalInputShape(input: Record<string, unknown>): string {
   return JSON.stringify(shapeOf(input));
 }
@@ -136,7 +84,7 @@ function shapeOf(v: unknown): unknown {
   }
 }
 
-// ─── Hash helpers ────────────────────────────────────────────────────
+// Hash helpers
 
 export function computeCacheKey(lookup: VerdictCacheLookupKey): string {
   const shape = isValueSensitiveCategory(lookup.category)
@@ -145,12 +93,7 @@ export function computeCacheKey(lookup: VerdictCacheLookupKey): string {
   const conversationContext = canonicalInputValue({
     conversationContext: lookup.conversationContext ?? null,
   });
-  // #885 v6 (§5.4): `writesToOwnSandbox` REMOVED from the hashed identity. This
-  // shrinks the canonical JSON of EVERY entry, so sha256Hex(new) ≠ sha256Hex(old) for
-  // all keys — the pre-migration on-disk cache becomes unreachable (mass
-  // re-classify on first lookup, never a stale HIT that could replay an old
-  // dead-rule verdict). `ownerPluginSandboxRoot` STAYS — the auto-LOW now DEPENDS
-  // on it, so a plugin rename/reinstall must (and does) invalidate a cached LOW.
+  // v6: `writesToOwnSandbox` REMOVED from the hashed identity. This shrinks the canonical JSON of EVERY entry, so sha256Hex(new) ≠ sha256Hex(old) for all keys — the pre-migration on-disk cache becomes unreachable (mass re-classify on first lookup, never a stale HIT that could replay an old dead-rule verdict). `ownerPluginSandboxRoot` STAYS — the auto-LOW now DEPENDS on it, so a plugin rename/reinstall must (and does) invalidate a cached LOW.
   const toolPolicyIdentity = canonicalInputValue({
     pathFields: lookup.pathFields ?? null,
     ownerPluginSandboxRoot: lookup.ownerPluginSandboxRoot ?? null,
@@ -182,20 +125,20 @@ function sortedReplacer(_key: string, value: unknown): unknown {
   return value;
 }
 
-// ─── Cache implementation ────────────────────────────────────────────
+// Cache implementation
 
 export interface VerdictCacheLookupResult {
   hit: boolean;
   verdict?: RiskVerdict;
-  /** Why a hit/miss happened — useful for audit-trail "from cache" hint. */
+  // Why a hit/miss happened — useful for audit-trail "from cache" hint.
   reason: "hit" | "miss-stale" | "miss-expired" | "miss-not-found";
 }
 
 export class VerdictCache {
   private readonly file: JsonlRecordFile<VerdictCacheEntry>;
-  /** In-memory mirror of the file. Loaded lazily on first read. */
+  // In-memory mirror of the file. Loaded lazily on first read.
   private entries: VerdictCacheEntry[] | null = null;
-  /** Best-effort rewrites scheduled by synchronous lookup pruning. */
+  // Best-effort rewrites scheduled by synchronous lookup pruning.
   private readonly pendingRewrites = new Set<Promise<void>>();
 
   constructor(filePath?: string) {
@@ -210,31 +153,19 @@ export class VerdictCache {
           typeof entry.expiresAt === "number",
         );
       },
-      // A malformed line is dropped, not fatal: the cache file is
-      // non-authoritative scratch storage, and the next write produces a
-      // clean record.
+      // A malformed line is dropped, not fatal: the cache file is non-authoritative scratch storage, and the next write produces a clean record.
       onMalformedLine: (line) => log.warn(`skipping malformed cache line: ${line.trim().slice(0, 80)}`),
       onReadFailure: (err) => log.warn(`failed to read cache: %s`, (err as Error).message),
     });
   }
 
-  /**
-   * Ensure the in-memory mirror is populated. Reads the JSONL file once
-   * per cache instance (subsequent calls are no-op when entries !== null).
-   * Tests call resetForTests() to force a re-read.
-   */
+  // Ensure the in-memory mirror is populated. Reads the JSONL file once per cache instance (subsequent calls are no-op when entries !== null). Tests call resetForTests to force a re-read.
   private ensureLoaded(): void {
     if (this.entries !== null) return;
     this.entries = this.file.loadSync();
   }
 
-  /**
-   * Look up a verdict. Returns:
-   *   - hit:true + verdict   — entry matches key + invalidationKey + not expired
-   *   - hit:false miss-stale  — entry found but invalidationKey doesn't match
-   *   - hit:false miss-expired — entry found but expired
-   *   - hit:false miss-not-found
-   */
+  // Look up a verdict. Returns: - hit:true + verdict — entry matches key + invalidationKey + not expired - hit:false miss-stale — entry found but invalidationKey doesn't match - hit:false miss-expired — entry found but expired - hit:false miss-not-found
   lookup(
     lookup: VerdictCacheLookupKey,
     ctx: VerdictCacheContext,
@@ -268,10 +199,7 @@ export class VerdictCache {
     return { hit: false, reason: missReason ?? "miss-not-found" };
   }
 
-  /**
-   * Store a verdict. Appends to file + in-memory. Caller is expected to
-   * have already classified — store() does not validate verdict.
-   */
+  // Store a verdict. Appends to file + in-memory. Caller is expected to have already classified — store does not validate verdict.
   async store(
     lookup: VerdictCacheLookupKey,
     ctx: VerdictCacheContext,
@@ -293,12 +221,7 @@ export class VerdictCache {
     }
   }
 
-  /**
-   * Walk cache file and drop entries whose invalidationKey doesn't
-   * match the current context. Called when settings change.
-   *
-   * Returns the count of dropped entries (for audit/UX).
-   */
+  // Walk cache file and drop entries whose invalidationKey doesn't match the current context. Called when settings change. Returns the count of dropped entries (for audit/UX).
   async invalidateMismatching(currentCtx: VerdictCacheContext): Promise<number> {
     this.ensureLoaded();
     const ivk = computeInvalidationKey(currentCtx);
@@ -311,20 +234,14 @@ export class VerdictCache {
     return dropped;
   }
 
-  /**
-   * Wait for background rewrites scheduled by lookup pruning to finish.
-   *
-   * Lookup stays synchronous, so stale and expired entries are rewritten on a
-   * best-effort background path. Lifecycle owners can await this boundary
-   * before removing the cache directory or otherwise retiring the instance.
-   */
+  // Wait for background rewrites scheduled by lookup pruning to finish. Lookup stays synchronous, so stale and expired entries are rewritten on a best-effort background path. Lifecycle owners can await this boundary before removing the cache directory or otherwise retiring the instance.
   async flush(): Promise<void> {
     while (this.pendingRewrites.size > 0) {
       await Promise.all([...this.pendingRewrites]);
     }
   }
 
-  /** Reset in-memory mirror (test helper). */
+  // Reset in-memory mirror (test helper).
   resetForTests(): void {
     this.entries = null;
   }

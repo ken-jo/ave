@@ -5,18 +5,13 @@ import { CommittedPluginGenerationPublicationError } from "./committed-generatio
 interface PluginGenerationIdentity {
   pluginId: string;
   pluginVersion: string;
-  /** Stable signed-content identity used by contribution trust decisions. */
   artifactGenerationId: string;
-  /** Unique runtime activation identity used by leases and retirement. */
   generationId: string;
   manifestSha256: string;
   receiptSha256: string;
 }
 
-/**
- * One immutable view of every plugin-owned projection. Subsystem-specific
- * objects are prepared while hidden and must never be mutated after publish.
- */
+/** Prepare subsystem projections hidden and never mutate the immutable view after publication. */
 export interface ActivePluginGeneration<TState = unknown> extends PluginGenerationIdentity {
   contributions: readonly MaterializedPluginContribution[];
   state: TState;
@@ -28,11 +23,8 @@ export interface PluginGenerationLease<TState = unknown> {
 }
 
 export interface PublishedPluginGenerationTransition {
-  /** Completes after predecessor leases drain and exact-generation cleanup finishes. */
   readonly retired: Promise<void>;
-  /** Open candidate dispatch only after host-owned post-publication readiness completes. */
   markDispatchReady(): Promise<void>;
-  /** Keep candidate dispatch unavailable after retirement or readiness failure. */
   markDispatchUnavailable(error: unknown): void;
 }
 
@@ -49,10 +41,8 @@ interface GenerationState<TState> {
   transitionTail: Promise<void>;
 }
 
-/** A generation whose retirement has begun and not yet finished. */
 export interface RetiringPluginGeneration<TState = unknown> {
   readonly generation: ActivePluginGeneration<TState>;
-  /** Settles when the generation's leases have drained and its retirement ran. */
   readonly retired: Promise<void>;
 }
 
@@ -78,24 +68,12 @@ function freezeGeneration<TState>(candidate: ActivePluginGeneration<TState>): Ac
   });
 }
 
-/**
- * Owns the in-process linearization seam for plugin generations.
- *
- * Candidate construction happens before `commit`. `durableCommit` is the last
- * fallible pre-linearization operation. Once it resolves, publishing is one
- * synchronous pointer assignment; retirement happens only after old leases
- * drain. This class deliberately performs no filesystem or provider work.
- */
+// Durable commit is the last fallible pre-pointer step; publish prepared projections in the same turn.
+// Retire the predecessor only after its leases drain.
 export class PluginGenerationCoordinator<TState = unknown> {
   private readonly plugins = new Map<string, GenerationState<TState>>();
   private readonly retirements = new Map<Promise<void>, ActivePluginGeneration<TState>>();
-  /**
-   * Set once, when admission closes for good (host shutdown). From then on no
-   * lease is granted — a caller arriving later and one still queued behind a
-   * transition or a readiness barrier both receive `reason(pluginId)` — and
-   * no candidate is published. Leases granted earlier stay valid until their
-   * holders release them.
-   */
+  /** Closing admission permanently refuses queued and new leases and candidate publication; existing leases remain valid. */
   private admissionClosure: { readonly reason: (pluginId: string) => Error } | undefined;
   private readonly admissionClosureWaiters = new Set<() => void>();
   private readonly admittedGenerations = new AsyncLocalStorage<
@@ -125,11 +103,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
     return this.stateFor(pluginId).active;
   }
 
-  /**
-   * Close admission for good. Every queued acquisition is woken and rejected,
-   * every later one is rejected, and a candidate commit not yet published is
-   * refused. Idempotent: the first reason stands.
-   */
+  /** Close once, preserve the first reason and reject every queued acquisition. */
   closeAdmission(reason: (pluginId: string) => Error): void {
     if (this.admissionClosure) return;
     this.admissionClosure = Object.freeze({ reason });
@@ -141,12 +115,10 @@ export class PluginGenerationCoordinator<TState = unknown> {
     return this.admissionClosure !== undefined;
   }
 
-  /** The error admission refuses `pluginId` with once closed; undefined while open. */
   admissionClosedError(pluginId: string): Error | undefined {
     return this.admissionClosure?.reason(pluginId);
   }
 
-  /** Generations whose retirement has begun and not yet finished. */
   listRetiring(): readonly RetiringPluginGeneration<TState>[] {
     return Object.freeze(
       [...this.retirements].map(([retired, generation]) => Object.freeze({ generation, retired })),
@@ -157,11 +129,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
     if (this.admissionClosure) throw this.admissionClosure.reason(pluginId);
   }
 
-  /**
-   * Wait for `waited`, or until admission closes, whichever is first; then
-   * reject if admission has closed. A queued caller therefore never outlives
-   * the closure.
-   */
+  /** Reject waits promptly when admission closes. */
   private async waitWhileAdmissionOpen(pluginId: string, waited: Promise<unknown>): Promise<void> {
     this.assertAdmissionOpen(pluginId);
     let wake!: () => void;
@@ -212,8 +180,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
       }
       generation = candidate;
     }
-    // Checked where the lease is granted: admission may have closed in the
-    // turns between the last wait and this one.
+    // Check closure at actual lease creation, after every await.
     this.assertAdmissionOpen(pluginId);
     return this.createLease(state, generation);
   }
@@ -247,16 +214,12 @@ export class PluginGenerationCoordinator<TState = unknown> {
     return lease;
   }
 
-  /**
-   * Run host-owned post-publication startup under the committed candidate's
-   * exact admission while its public readiness gate remains closed.
-   */
+  /** Run committed host startup under exact admission while public dispatch remains closed. */
   async runPostCommitWithGeneration<T>(
     pluginId: string,
     generationId: string,
     operation: () => Promise<T>,
   ): Promise<T> {
-    // Post-commit startup is new work in the generation: none once closed.
     this.assertAdmissionOpen(pluginId);
     const state = this.stateFor(pluginId);
     const generation = state.active;
@@ -311,12 +274,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
     return admitted?.isActive() ? admitted.generation.generationId : undefined;
   }
 
-  /**
-   * Carry one already-counted lease through approval, Hook, runtime, MCP, and
-   * audit awaits. Nested exact acquisitions reuse the admitted immutable view,
-   * including after the active pointer advances, so an invocation can never
-   * switch generations midway through its pipeline.
-   */
+  /** Reuse one exact immutable lease through nested approval, runtime and audit awaits, even after the pointer advances. */
   runWithLease<T>(
     lease: PluginGenerationLease<TState>,
     operation: () => Promise<T>,
@@ -364,9 +322,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
     const priorTail = state.transitionTail;
     let releaseTail!: () => void;
     state.transitionTail = new Promise<void>((resolve) => { releaseTail = resolve; });
-    // Close the admission barrier synchronously. An acquire requested in the
-    // same turn must not slip into the predecessor while this transition waits
-    // for its serialized durable-commit slot.
+    // Close the admission barrier before yielding to the serialized commit slot.
     state.pendingTransitions += 1;
     await priorTail;
 
@@ -378,9 +334,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
     let publishError: unknown;
     try {
       try {
-        // A candidate is never published once admission has closed: refused
-        // here before anything durable happens, and again below if admission
-        // closed while the durable commit ran.
+        // Check admission before durable work and again after it settles.
         if (prepared) this.assertAdmissionOpen(pluginId);
         predecessor = state.active;
         if (prepared) {
@@ -396,11 +350,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
         }
         await durableCommit();
         if (prepared && this.admissionClosure) {
-          // Durable state names the candidate, but the host is shutting down:
-          // the pointer stays where it is and nothing publishes. The caller
-          // still owns the candidate and releases it; the next start loads
-          // what was durably committed. Reported as a publication failure
-          // after the durable commit, so no caller rolls that commit back.
+          // Shutdown after durable commit withholds publication without rolling back; next launch loads the committed bytes.
           const refusal = this.admissionClosure.reason(pluginId);
           dispatchSettled = true;
           rejectDispatch?.(refusal);
@@ -417,13 +367,10 @@ export class PluginGenerationCoordinator<TState = unknown> {
             "withheld",
           );
         }
-        // Linearization point: durable state and the immutable generation
-        // pointer are now inseparable. No projection work may be inserted here.
+        // No projection work may split durable commit from pointer assignment.
         state.active = prepared;
         state.dispatchReadiness = candidateReadiness;
-        // Synchronous in-process projections publish in the same turn as the
-        // pointer assignment. Every publication closure was fully prepared and
-        // is assignment-only; the admission barrier remains closed throughout.
+        // Publish prepared assignment-only projections in the pointer turn with admission still closed.
         try {
           publish();
         } catch (error) {
@@ -505,12 +452,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
     return transition;
   }
 
-  /**
-   * Run an in-place projection transition for the current immutable runtime
-   * generation. New admissions are blocked and every already-admitted lease is
-   * drained before `publish` runs, so resources may be hidden or re-exposed
-   * without replacing (and therefore stopping) the runtime instance.
-   */
+  /** Block new admissions and drain existing leases before in-place projection changes; do not restart the runtime. */
   async quiesce(
     pluginId: string,
     expectedGenerationId: string,
@@ -526,8 +468,7 @@ export class PluginGenerationCoordinator<TState = unknown> {
 
     try {
       try {
-        // A projection publication (an MCP or Hook projection, a trust change)
-        // is a publication: none once admission has closed.
+        // Projection changes also stop once admission closes.
         this.assertAdmissionOpen(pluginId);
         const active = state.active;
         if (!active || active.generationId !== expectedGenerationId) {

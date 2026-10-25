@@ -110,18 +110,13 @@ describe("TOOL_TIMEOUT_POLICY — single source of truth invariants", () => {
   });
 
   it("the scaled sub-agent ceiling reproduces the shipped constant at the default round budget", () => {
-    // The per-round allowance is DERIVED from the pair the policy already
-    // shipped, so scaling is a generalization of the old constant, not a
-    // retune of it. (The module also asserts this at load time.)
+    // Derive allowance per round from the policy defaults so configured rounds remain reachable.
     expect(resolveSubAgentCeilingMs(SUBAGENT_MAX_ROUNDS_DEFAULT)).toBe(
       TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs,
     );
   });
 
   it("a larger round budget buys proportionally more wall clock", () => {
-    // The failure this removes: rounds were made user-configurable with no
-    // maximum, so a 600-round agent under a fixed 600s clock died of the clock
-    // at round ~60 — the setting was silently inert past the default.
     expect(resolveSubAgentCeilingMs(SUBAGENT_MAX_ROUNDS_DEFAULT * 10)).toBe(
       TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs * 10,
     );
@@ -156,8 +151,7 @@ describe("TOOL_TIMEOUT_POLICY — single source of truth invariants", () => {
 
 describe("normalizeShutdownCleanupTimeoutMs", () => {
   it("accepts a positive number or its string form identically", () => {
-    // The setting arrives as a number and the environment variable as a string;
-    // one rule means they cannot disagree about what is acceptable.
+    // Settings numbers and environment strings must share the same bounds.
     expect(normalizeShutdownCleanupTimeoutMs(30_000)).toBe(30_000);
     expect(normalizeShutdownCleanupTimeoutMs("30000")).toBe(30_000);
     expect(normalizeShutdownCleanupTimeoutMs("  30000  ")).toBe(30_000);

@@ -44,6 +44,7 @@ describe("foreground approval memory — sealed host shell plan", () => {
       "builtin",
       {
         scope: "session",
+        sessionId: "11111111-1111-4111-8111-111111111111",
         verdictAtApproval: "low",
         nlJustification: null,
         trustOrigin: "user-keyboard",
@@ -79,14 +80,15 @@ describe("foreground approval memory — sealed host shell plan", () => {
       undefined,
       undefined,
       sealedPlan,
+      undefined,
+      "11111111-1111-4111-8111-111111111111",
     );
 
     expect(result).toMatchObject({
       decision: "allow",
       layer: 5,
     });
-    // No live capability was published in this test. An accidental recompute
-    // would report `none`; the audit proves the same invocation plan was used.
+    // No live capability was published in this test. An accidental recompute would report `none`; the audit proves the same invocation plan was used.
     expect(emitSandboxAuditMock).toHaveBeenCalledWith(expect.objectContaining({
       sandbox: expect.objectContaining({
         kind: "asrt",

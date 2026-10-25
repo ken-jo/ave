@@ -1,11 +1,4 @@
-/**
- * ave:plugins:runtime-updated renderer subscription.
- *
- * Main broadcasts this channel after a plugin runtime restart/reload
- * (boot/steps/plugin-runtime.ts onEnable). The renderer must re-fetch the plugin UI
- * extension list so PluginUiHostView remounts the webview with the fresh
- * runtimeRevision, and refresh its plugin cards.
- */
+// Runtime updates refresh UI extensions and performance state so guests remount with the new revision.
 import "./setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { waitFor, act } from "@testing-library/react";

@@ -1,32 +1,4 @@
-/**
- * SQLite FTS5 cross-session search index (#1500 / E3).
- *
- * Replaces the JSONL linear-scan `MemoryManager.searchSessions()` used to run
- * (50-file cap, one match per session, whole-file reads on every keystroke).
- * `better-sqlite3` is already a production `dependencies` entry (v13 is N-API
- * and ships a per-platform prebuild — `prebuilds/<platform>-<arch>.node` — so
- * no per-Electron-ABI `electron-rebuild` step is needed) — this module is its
- * first runtime consumer, so the native module load path is exercised by the
- * packaged-app smoke test (see `scripts/smoke-packaged-app.mjs`).
- *
- * Storage: `<aveDir>/search/index.db` — resolved from the *same* `aveDir`
- * the owning `MemoryManager` instance uses (never a global singleton), so
- * the main / side-chat / sub-agent `MemoryManager` instances each get their
- * own isolated index, mirroring how `sessionsDir` is derived. Directory is
- * created 0o700; the DB file is chmod'd 0o600 after `better-sqlite3` opens
- * it (the project's `openFeatureNamespace` atomic-write helpers don't apply
- * to a database file that better-sqlite3 manages itself — POSIX-only, a
- * no-op on win32 like every other mode-bit call in this codebase).
- *
- * Schema: one FTS5 row PER SESSION (not per message) — this preserves the
- * pre-existing "one match per session" search semantics. `content` is the
- * concatenation of every message's searchable text; excerpting for the
- * `matchedMessage` field uses FTS5's `snippet()`.
- *
- * No-Fallback: query()/upsertSession() failures never fall back to a linear
- * scan. Corruption or a missing DB is only ever repaired by `rebuild()` —
- * `MemoryManager.verifyOrRebuildSearchIndex()` is the sole boot-time caller.
- */
+// Namespace-local FTS search with fail-closed queries; JSONL rebuild is the only corruption recovery path.
 import { promises as fsPromises, mkdirSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import { createRequire } from "node:module";
@@ -37,16 +9,7 @@ import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
 
 const log = createLogger("session-search-index");
 
-/**
- * Lazy, cached SYNCHRONOUS load of the native (asarUnpack'd) better-sqlite3
- * addon via `createRequire`. Kept lazy — only invoked from `open()` — so
- * merely importing this module pulls no native addon into contexts that
- * never search (renderer type-checking, most tests); this preserves the same
- * "load on first use" property the old dynamic `import()` had. It is
- * synchronous (better-sqlite3 is a CJS native addon) so `open()` can stay
- * synchronous, which lets the sync read path (`searchSessions`) open the
- * index on demand without forcing every caller onto an async signature.
- */
+// Load the native database synchronously on first open so imports alone require no native addon.
 let _sqliteCtor: typeof BetterSqlite3 | null = null;
 function loadSqlite(): typeof BetterSqlite3 {
   if (_sqliteCtor) return _sqliteCtor;
@@ -55,25 +18,9 @@ function loadSqlite(): typeof BetterSqlite3 {
   return _sqliteCtor;
 }
 
-/** True only under the vitest test runner (VITEST is injected by vitest). */
 const IS_TEST_ENV = process.env.VITEST !== undefined;
 
-/**
- * A native-addon load failure (e.g. an ABI/NODE_MODULE_VERSION mismatch — the
- * better-sqlite3 binary compiled for Electron but loaded under node/bun) throws
- * from `require("better-sqlite3")` inside {@link loadSqlite}. In production that
- * is caught by {@link SessionSearchIndex.open} and degraded fail-closed to a
- * `[]`-returning index (No-Fallback: never a linear scan). But in TESTS that
- * same swallow turns a real "the native module can't even load" defect into a
- * whole search suite that silently 0-hits — signal loss that once let an
- * Electron-ABI CI binary pass local review. So we distinguish a *native-load*
- * failure (module never loaded) from a *runtime* failure (a bad file / PRAGMA
- * on an already-loaded module): the former re-throws under VITEST so the suite
- * fails LOUDLY at the binding, while the latter stays swallowed so the
- * corruption-recovery (`deleteFile` → `rebuild`) path is still exercised by its
- * own tests. Heuristic: the addon is considered "loaded" once {@link loadSqlite}
- * has cached the constructor.
- */
+// Rethrow native-addon load failures in tests; production fails closed without a transcript-scan fallback.
 function isNativeLoadFailure(err: unknown): boolean {
   if (_sqliteCtor) return false; // constructor already cached ⇒ not a load failure
   const msg = (err as Error)?.message ?? "";
@@ -87,12 +34,7 @@ function isNativeLoadFailure(err: unknown): boolean {
 export interface IndexedSessionInput {
   sessionId: string;
   content: string;
-  /**
-   * The session's actual last-modified time (ISO 8601), sourced by the caller
-   * from the session JSONL's on-disk mtime — NOT the index-write wall clock.
-   * The search UI renders this as the conversation's timestamp, so index-time
-   * would wrongly show old sessions as "just now" after a reindex/rebuild.
-   */
+  // Use transcript mtime for conversation timestamps; rebuild time must not make old sessions appear new.
   timestamp: string;
   sessionKind: SessionKind;
   routineId?: string;
@@ -117,44 +59,23 @@ export interface SessionSearchIndexHit {
 }
 
 const DEFAULT_LIMIT = 50;
-/** FTS5 snippet context size in tokens (approximates the old ±100 char excerpt). */
 const SNIPPET_TOKENS = 20;
-/**
- * SQLite FTS5's trigram tokenizer physically cannot MATCH a query of fewer than
- * 3 Unicode code points (a trigram is 3 code points). This is the floor at
- * which the fast index path stops working. A query of exactly 2 code points —
- * which for a CJK-first product is the single most common query shape (`매출`,
- * `분기`, `회의`) — is served by the LIKE fallback below instead.
- */
+// Trigram MATCH needs three code points; use literal LIKE for two-character queries.
 const TRIGRAM_MIN_CODEPOINTS = 3;
-/** ESCAPE character for the LIKE fallback so a query's own `%`/`_` stay literal. */
 const LIKE_ESCAPE = "\\";
 
-/** Counts Unicode CODE POINTS (not UTF-16 units) — a Korean syllable is 1. */
 export function codePointLength(s: string): number {
   return [...s].length;
 }
 
-/**
- * Escapes a raw user query into an FTS5 phrase (`"..."`) so operators like
- * `AND`/`OR`/`NOT`/`NEAR`/`*`/`-` are never parsed as FTS5 syntax — the
- * entire input is always matched as a literal token sequence. Internal
- * double-quotes are doubled per FTS5's own escaping rule.
- */
+// Escape user text as one FTS phrase so operators and quotes remain literal.
 export function escapeFtsQuery(raw: string): string {
   return `"${raw.replace(/"/g, '""')}"`;
 }
 
-/** ± context chars for the LIKE-branch excerpt (mirrors the old ±100 scan window). */
 const LIKE_EXCERPT_RADIUS = 100;
 
-/**
- * Builds a ±{@link LIKE_EXCERPT_RADIUS}-char excerpt of `content` centred on the
- * first case-insensitive occurrence of `needle` (LIKE branch — `snippet()` is
- * MATCH-only so it can't be used here). Mirrors the old linear-scan excerpt.
- * Falls back to a head slice when the needle isn't located (shouldn't happen —
- * the row already matched the LIKE — but keeps the return bounded).
- */
+// LIKE cannot use snippet(); derive a bounded excerpt centered on the first match.
 export function excerptAroundMatch(content: string, needle: string): string {
   const idx = content.toLowerCase().indexOf(needle.toLowerCase());
   if (idx < 0) return content.slice(0, LIKE_EXCERPT_RADIUS * 2);
@@ -164,13 +85,7 @@ export function excerptAroundMatch(content: string, needle: string): string {
   return `${start > 0 ? "…" : ""}${core}${end < content.length ? "…" : ""}`;
 }
 
-/**
- * Escapes a raw query into the RHS of a `content LIKE ? ESCAPE '\\'` predicate.
- * The three LIKE metacharacters (`%`, `_`, and the escape char itself) are
- * prefixed with the ESCAPE char so a query containing them matches them
- * literally (e.g. searching for the literal string `50%` must not wildcard).
- * The caller wraps the result in `%…%` for a substring match.
- */
+// Escape percent, underscore, and the escape character before adding substring wildcards.
 export function escapeLikePattern(raw: string): string {
   return raw.replace(/[\\%_]/g, (ch) => `${LIKE_ESCAPE}${ch}`);
 }
@@ -184,11 +99,7 @@ function ensureDirSync(dir: string): void {
   }
 }
 
-/**
- * Thin wrapper around a single `sessions_fts` SQLite FTS5 virtual table.
- * One instance per owning `MemoryManager` (keyed by that manager's
- * `aveDir`), never shared globally.
- */
+// Keep each database instance bound to its owning manager's namespace.
 export class SessionSearchIndex {
   private readonly dbPath: string;
   private readonly dir: string;
@@ -199,28 +110,14 @@ export class SessionSearchIndex {
     this.dbPath = join(this.dir, "index.db");
   }
 
-  /** Absolute path to the backing `index.db` file (test/diagnostic use). */
   getDbPath(): string {
     return this.dbPath;
   }
 
-  /**
-   * Opens (creating if absent) the database and ensures the `sessions_fts`
-   * table exists. Synchronous — the native addon loads via `createRequire`
-   * (see {@link loadSqlite}) — so the sync `searchSessions` read path and the
-   * write path can both open on demand. Directory is created 0o700; the file
-   * is chmod'd 0o600 after open (best-effort — POSIX only, matches
-   * feature-namespace.ts). Returns `false` when the native module or the file
-   * itself is unavailable/corrupt — callers must NOT fall back to a scan; the
-   * boot integrity check is the only recovery path.
-   */
+  // Open synchronously on demand; return false on recoverable failure and keep stored search data private.
   open(): boolean {
     if (this.db) return true;
-    // Hoisted so the catch can close a handle that opened but then threw on a
-    // later PRAGMA/CREATE (better-sqlite3 opens a junk file lazily and only
-    // throws "file is not a database" on first use). Leaving it open would
-    // leak the handle AND — on Windows — block the corruption-recovery
-    // `deleteFile`/`rmSync` with EPERM, defeating the rebuild path.
+    // Close handles even if setup fails after opening; leaked handles block Windows corruption recovery.
     let db: BetterSqlite3.Database | null = null;
     try {
       ensureDirSync(this.dir);
@@ -228,19 +125,7 @@ export class SessionSearchIndex {
       db = new Database(this.dbPath);
       db.exec("PRAGMA journal_mode = WAL;");
       db.exec(
-        // tokenize='trigram' (not the fts5 default 'unicode61') — the old
-        // linear-scan search did a raw `indexOf` substring match with no
-        // notion of word boundaries. unicode61 is whole-TOKEN matching, so a
-        // literal-phrase MATCH can never find a substring inside a longer
-        // unbroken run (e.g. a URL, a code identifier, or a CJK compound) —
-        // a real regression relative to the old behavior, not an edge case.
-        // Trigram restores substring semantics on the SAME FTS5 engine (no
-        // second index). Case-insensitive by default, matching the old
-        // `toLowerCase()` comparison. Trade-off: the trigram tokenizer
-        // cannot serve queries under 3 unicode codepoints, so 2-codepoint
-        // queries (common 2-syllable Korean nouns) are served by the bound
-        // LIKE branch in `query()` against this same table; only queries
-        // under 2 codepoints never match. See the `query()` JSDoc.
+        // Use trigram tokenization to preserve substring matches inside identifiers, URLs, and compound words.
         `CREATE VIRTUAL TABLE IF NOT EXISTS sessions_fts USING fts5(
           sessionId UNINDEXED,
           content,
@@ -256,10 +141,7 @@ export class SessionSearchIndex {
       try {
         chmodSync(this.dbPath, PRIVATE_FILE_MODE);
       } catch (chmodErr) {
-        // Stays best-effort/non-fatal (Windows ignores mode bits; a pre-existing
-        // file may already be correct) — but on POSIX a real chmod failure means
-        // the DB file may be world-readable, so emit a debug signal instead of
-        // fully swallowing it. Not a warn: this is not itself a functional break.
+        // Mode-bit failure is non-fatal, but log it because search data may remain readable on POSIX.
         if (process.platform !== "win32") {
           log.debug(
             "chmod 0o600 on index.db failed (file may be world-readable): %s",
@@ -270,21 +152,14 @@ export class SessionSearchIndex {
       return true;
     } catch (err) {
       log.warn("open failed: %s", (err as Error).message);
-      // Close the partially-opened handle so it does not leak / block deletion.
       if (db) {
         try {
           db.close();
         } catch {
-          /* ignore */
         }
       }
       this.db = null;
-      // Test-env hardening: a native-addon LOAD failure (ABI mismatch, missing
-      // binary) must NOT be swallowed under vitest — that is exactly the silent
-      // 0-hit signal loss an Electron-ABI CI binary once caused. Re-throw so the
-      // suite fails at the binding instead of every query returning []. Runtime
-      // failures (corrupt file / bad PRAGMA on a loaded module) stay swallowed so
-      // the deleteFile→rebuild recovery path is still testable.
+      // Tests must surface native-load failures; runtime database errors remain recoverable through deletion and rebuild.
       if (IS_TEST_ENV && isNativeLoadFailure(err)) {
         throw new Error(
           `better-sqlite3 native load failed (corrupt prebuild?) — search index cannot open. ` +
@@ -296,7 +171,6 @@ export class SessionSearchIndex {
     }
   }
 
-  /** Number of rows currently in the FTS table, or -1 if not open. */
   rowCount(): number {
     if (!this.db) return -1;
     try {
@@ -309,12 +183,7 @@ export class SessionSearchIndex {
     }
   }
 
-  /**
-   * Upserts one session's row (delete-then-insert — sessions are rewritten
-   * wholesale on every save, so there is no incremental-append case to
-   * optimize for). Swallowed on failure: search-index maintenance must never
-   * block session persistence, which remains the source of truth.
-   */
+  // Index maintenance must never block source transcript persistence.
   upsertSession(input: IndexedSessionInput): void {
     if (!this.db) return;
     try {
@@ -338,7 +207,6 @@ export class SessionSearchIndex {
     }
   }
 
-  /** Removes a session's row (extension point — no active caller yet). */
   deleteSession(sessionId: string): void {
     if (!this.db) return;
     try {
@@ -348,34 +216,7 @@ export class SessionSearchIndex {
     }
   }
 
-  /**
-   * Runs a query against the FTS table. HYBRID by query length (Unicode code
-   * points), so a CJK-first product does not silently regress on its most
-   * common query shape:
-   *
-   *  - **3+ code points** → FTS5 `MATCH` on the trigram index (fast path).
-   *    `rawQuery` is escaped into a literal FTS5 phrase (see
-   *    {@link escapeFtsQuery}) so user input can never be parsed as FTS
-   *    operators.
-   *  - **exactly 2 code points** → `content LIKE '%'||?||'%' ESCAPE '\\'` on the
-   *    SAME `sessions_fts` table. The trigram tokenizer physically cannot MATCH
-   *    a 2-code-point query (a trigram is 3), but the old JSONL linear scan did
-   *    a raw 2-char substring match — so Korean 2-syllable queries (`매출`,
-   *    `분기`, `회의`) that the old search found would silently return [] under a
-   *    MATCH-only implementation. This is NOT the No-Fallback linear-scan revival
-   *    the module header forbids: it is a different QUERY FORM against the exact
-   *    same index table (no JSONL re-read, no second index), so a 2-char query
-   *    is answered from the index like every other query. ASCII case-folding
-   *    (old `toLowerCase()` parity) is done with `lower()` on both sides;
-   *    `lower()` is ASCII-only in stock SQLite, which is fine — Korean has no
-   *    case, and the old scan's `toLowerCase()` only ever changed ASCII too.
-   *  - **fewer than 2 code points** → never reaches here (guarded upstream in
-   *    `MemoryManager.searchSessions`); returns [] defensively if it does.
-   *
-   * Scope filters (`kind`/`routineId`/`projectRoot`) are applied identically as
-   * SQL WHERE clauses over the UNINDEXED columns in both branches. Returns `[]`
-   * (never throws, never scans JSONL) on any failure.
-   */
+  // Match three-plus code points with escaped trigram FTS, two with escaped LIKE, and reject shorter queries.
   query(rawQuery: string, options: SessionSearchIndexQueryOptions = {}): SessionSearchIndexHit[] {
     if (!this.db) return [];
     const trimmed = rawQuery.trim();
@@ -388,16 +229,11 @@ export class SessionSearchIndex {
 
       const clauses: string[] = [];
       const params: unknown[] = [];
-      // Match predicate + the excerpt expression differ per branch; scope
-      // clauses that follow are identical.
       let matchedMessageExpr: string;
       if (useLike) {
-        // Substring match on content, case-insensitive for ASCII (lower()).
         clauses.push("lower(content) LIKE lower(?) ESCAPE ?");
         params.push(`%${escapeLikePattern(trimmed)}%`, LIKE_ESCAPE);
-        // snippet() is MATCH-only; for the LIKE branch return the raw content
-        // (caller/UI already truncates for display, and the JS excerpt below
-        // trims it centred on the match).
+        // LIKE returns raw content for the bounded match-centered excerpt because snippet() requires MATCH.
         matchedMessageExpr = "content";
       } else {
         clauses.push("sessions_fts MATCH ?");
@@ -452,27 +288,21 @@ export class SessionSearchIndex {
     }
   }
 
-  /** Closes the underlying database handle (test cleanup / process shutdown). */
   close(): void {
     if (!this.db) return;
     try {
       this.db.close();
     } catch {
-      /* ignore close races */
     }
     this.db = null;
   }
 
-  /**
-   * Deletes the on-disk database file entirely (used when `open()`
-   * indicates corruption so the next `open()` starts from a clean file).
-   */
+  // Delete corrupt storage so the next open creates a clean database.
   static async deleteFile(dbPath: string): Promise<void> {
     for (const suffix of ["", "-wal", "-shm"]) {
       try {
         await fsPromises.unlink(`${dbPath}${suffix}`);
       } catch {
-        /* missing file is fine */
       }
     }
   }

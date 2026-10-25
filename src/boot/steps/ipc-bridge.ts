@@ -1,16 +1,4 @@
-/**
- * IPC bridge (plugin event -> renderer).
- *
- * Extracted from boot.ts. Responsibilities:
- *   • Collect event types declared by manifest.emittedEvents.
- *   • For each type, register a main→renderer forwarder on the host event bus.
- *     High-frequency *.transcript.updated events are coalesced (100ms debounce;
- *     final events flush immediately).
- *   • Tie lifecycle to window `closed` so macOS activate-recreated windows
- *     get a fresh bridge.
- *
- * No plugin-id / event-literal hard-codes — everything is manifest-driven.
- */
+/** Coalesce transcript events; flush final events immediately and dispose subscriptions with the window. */
 import type { BrowserWindow } from "electron";
 import type { PluginRuntime } from "../../plugins/runtime.js";
 import { onEvent } from "../types.js";
@@ -19,20 +7,11 @@ import { createLogger } from "../../lib/logger.js";
 import { CHANNELS } from "../../contract/app-contract.js";
 const log = createLogger("ave");
 
-/** True if the event type is a high-frequency transcript stream event. */
 export function isTranscriptEvent(type: string): boolean {
   return type.endsWith(".transcript.updated");
 }
 
-/**
- * Core coalescing debounce logic for a single event type.
- * Accepts a `sendFn` that performs the actual delivery. Callers are
- * responsible for any guard logic (e.g. `win.isDestroyed()` check) inside
- * `sendFn` — see `registerPluginEventBridge` for the production usage.
- *
- * Exported so unit tests can import and exercise the production coalescing
- * behaviour directly rather than duplicating the debounce implementation.
- */
+/** The delivery callback owns window-liveness checks. */
 export function makeCoalescingSend(
   sendFn: (data: unknown) => void,
 ): (data: unknown) => void {
@@ -62,22 +41,7 @@ export function makeCoalescingSend(
   };
 }
 
-/**
- * Collect plugin emitted event types from `manifest.emittedEvents`, plus the
- * host-derived `${id}.auth.changed` for any manifest that declares an `auth`
- * block (R3, 0.5.2).
- *
- * This is the ONE chokepoint where a manifest-declared name becomes a bridged
- * name, so the private-namespace gate lives here and covers BOTH the declared
- * and the host-derived spelling. A private-namespace type
- * (`classifySubscription` = "private": memory.private.*, settings.apiKey.*,
- * audit.*, dlp.*) is never bridged: both consumers of
- * `CHANNELS.pluginBridge.event` — `plugin-preload.ts` (plugin webviews) and
- * `preload/internal-api-surface.ts` — receive whatever main sends on that
- * channel, and only the latter re-checks the namespace. Filtering at the
- * registration site keeps the host from ever putting such a payload on the
- * wire.
- */
+/** Filter private namespaces before registration so neither renderer bridge consumer can receive them. */
 function collectPluginEventTypes(pluginRuntime: PluginRuntime): Set<string> {
   const types = new Set<string>();
   const addBridgeable = (candidate: string, pluginId: unknown): void => {
@@ -98,14 +62,7 @@ function collectPluginEventTypes(pluginRuntime: PluginRuntime): Set<string> {
         if (typeof t === "string") addBridgeable(t, raw["id"]);
       }
     }
-    // R3 — when a manifest declares `auth`, host-derive `${id}.auth.changed`
-    // and bridge it even if the author omitted it from emittedEvents[], so
-    // plugin authors need not re-list the fixed derived name. The renderer's
-    // `usePluginAuthStatuses` subscribes via the LITERAL manifest id
-    // (architecture.md §9.4a — NO `_`↔`-` normalization), so the derived name
-    // uses `manifest.id` verbatim: a plugin with id `foo-bar` emits
-    // `foo-bar.auth.changed`, never `foo_bar.auth.changed`. The Set dedupes
-    // against an author who still lists it, so the bridge registers exactly once.
+    // Derive auth events from the literal manifest id; never normalize dashes and underscores.
     const id = manifest.id;
     if (raw["auth"] && typeof id === "string" && id.length > 0) {
       addBridgeable(`${id}.auth.changed`, id);
@@ -114,10 +71,7 @@ function collectPluginEventTypes(pluginRuntime: PluginRuntime): Set<string> {
   return types;
 }
 
-/**
- * Register the plugin event bridge for the given window. Returns an
- * `unsubscribeAll` disposer; additionally auto-disposes on `closed`.
- */
+/** Returns a disposer and also unsubscribes when the window closes. */
 export function registerPluginEventBridge(
   pluginRuntime: PluginRuntime,
   win: BrowserWindow | null,

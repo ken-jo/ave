@@ -125,7 +125,6 @@ describe("AskpassBroker", () => {
       expect(existsSync(live)).toBe(true);
       expect(existsSync(settingUp)).toBe(true);
       expect(existsSync(unrelated)).toBe(true);
-      // The new broker names its own process, so the next start keeps it.
       const second = await AskpassBroker.start({ getToken: () => null, parentDir: parent });
       expect(existsSync(broker.launcherPath)).toBe(true);
       await second.close();

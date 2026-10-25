@@ -1,11 +1,4 @@
-/**
- * AuditLogger.logSandboxGate() — boot-time OS-sandbox activation telemetry.
- *
- * ONE record per boot, written to the DEDICATED `<date>.sandbox-gate.jsonl`
- * channel (kept separate from the canonical telemetry channel). Lets the
- * real-world activate / degrade / abort / skip rates be monitored before the
- * Linux/Windows osToolSandbox default is flipped on (the staged rollout).
- */
+/** Write one activation record per boot to the dedicated sandbox-gate channel. */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import {
   existsSync,
@@ -64,7 +57,6 @@ describe("AuditLogger.logSandboxGate() — activation telemetry", () => {
     expect(e.onSignal).toBe("default-settings");
     expect(e.outcome).toBe("activate");
     expect(e.reason).toBe("deps-present");
-    // timestamp is stamped by the logger (caller does not supply it).
     expect(new Date(e.timestamp).toISOString()).toBe(e.timestamp);
   });
 
@@ -101,24 +93,13 @@ describe("AuditLogger.logSandboxGate() — activation telemetry", () => {
   });
 
   it("swallows a failed telemetry write instead of surfacing it at boot", async () => {
-    // The failure has to be real for this to prove anything, and the previous
-    // version's was not. It pointed the logger at `<auditDir>/missing/deeper`
-    // and removed `auditDir`, on the premise that a "non-creatable" parent makes
-    // the append fail. Both halves were wrong: the constructor creates its audit
-    // dir with a recursive `mkdir`, and so does the write path — so the tree came
-    // straight back and the append SUCCEEDED. (Worse, it came back after the
-    // teardown had removed it.)
-    //
-    // Occupying the directory's name with a FILE after construction cannot be
-    // undone by `mkdir -p` on any platform, so the write genuinely fails here.
+    // Replace the audit directory with a file after construction so recursive mkdir cannot undo the failure.
     const gateDir = join(auditDir, "gate");
     const logger = new AuditLogger(gateDir);
     rmSync(gateDir, { recursive: true, force: true });
     writeFileSync(gateDir, "not a directory", "utf-8");
 
-    // The call itself only enqueues, so "does not throw" is about boot never
-    // seeing a telemetry error — the write's own failure surfaces later, or not
-    // at all, which is the point.
+    // Telemetry write failures must not propagate into boot.
     expect(() =>
       logger.logSandboxGate({
         platform: "win32",
@@ -128,9 +109,7 @@ describe("AuditLogger.logSandboxGate() — activation telemetry", () => {
       }),
     ).not.toThrow();
 
-    // Draining must not reject either, and the write must be accounted as
-    // dropped — that is what "swallowed" means here, and it is 0 if the append
-    // quietly succeeded instead of failing.
+    // Drain must resolve and count a dropped write, proving the failure was swallowed.
     await expect(logger.flush()).resolves.toBeUndefined();
     expect(logger.getWriterStats().droppedWrites).toBe(1);
   });

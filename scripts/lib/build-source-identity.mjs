@@ -10,12 +10,8 @@ const ambientGitVariables = [
   "GIT_OBJECT_DIRECTORY", "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_PREFIX",
 ];
 
-/**
- * Describe the committed build inputs and separately inventory encoder-only
- * generated output differences. `dirty` never exempts handwritten or untracked
- * files. The generator's manifest and its existing decoded-image checker own
- * which tracked outputs qualify; the packager consumes this same function.
- */
+// Only manifest-owned pixel-identical generated outputs qualify as encoder-only changes.
+// Handwritten and untracked files never qualify.
 export function readBuildSourceIdentity(repoRoot) {
   const root = resolve(repoRoot);
   const env = { ...process.env };
@@ -34,8 +30,7 @@ export function readBuildSourceIdentity(repoRoot) {
     }
     const candidates = changed.filter((path) => manifest.includes(path));
     if (candidates.length > 0) {
-      // Force the real comparison on every platform. A platform SKIP cannot
-      // establish that a dirty image still depicts its committed source.
+      // Force comparison on every platform; a skipped guard cannot justify dirty output.
       const check = spawnSync(process.execPath, [generatedAssetChecker, "--root", root], {
         env: { ...env, AVE_GENERATED_ASSETS_FORCE: "1" }, encoding: "utf8",
       });

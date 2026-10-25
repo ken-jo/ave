@@ -1,13 +1,6 @@
 import { t } from "../i18n/index.js";
 
-/**
- * The renderer-safe detail emitted when a provider retries or changes over
- * before it has produced assistant content.
- *
- * This is deliberately a structural subset of both `ChatStreamEvent` and the
- * engine's provider callback so each transcript consumer shares visible retry
- * wording.
- */
+/** Share renderer-safe retry details across stream consumers. */
 export interface LlmStatusMessageInput {
   phase?: "attempt" | "retry" | "fallback";
   attempt?: number;
@@ -30,11 +23,7 @@ function retryCounts(status: LlmStatusMessageInput): { attempt: number; max: num
   return { attempt, max: maxAttempts };
 }
 
-/**
- * Returns no entry for an ordinary provider attempt; the generic progress UI
- * remains authoritative. Retry counts must come from the provider status
- * contract rather than an invented renderer default.
- */
+/** Ordinary attempts use generic progress; retry counts must come from the provider contract. */
 export function formatLlmStatusMessage(status: LlmStatusMessageInput): string {
   if (status.phase === "fallback") {
     const to = status.to ? ` (${status.to})` : "";

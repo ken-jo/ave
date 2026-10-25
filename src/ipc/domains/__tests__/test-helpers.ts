@@ -22,14 +22,7 @@ export function makeAppIpcInvoker(
     invokeAppIpcHandler(handlers, channel, ...args);
 }
 
-/**
- * Invoke a registered handler as a sender frame at `url`.
- *
- * The frame-guard suites vary the URL per call — that is the axis they test —
- * where {@link invokeAppIpcHandler} pins it to the host frame. Only the event
- * differs; the lookup-and-refuse ladder is the same one, and two suites had
- * written that ladder out again to get the URL in.
- */
+// Vary sender URLs while preserving the shared invoker's event shape.
 export function invokeAppIpcHandlerFromFrame(
   handlers: Map<string, (...args: unknown[]) => unknown>,
   channel: string,

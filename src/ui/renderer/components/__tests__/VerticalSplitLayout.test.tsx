@@ -34,8 +34,8 @@ describe("VerticalSplitLayout", () => {
 
   it("keeps the separator's hit track separate from its thin visual line", () => {
     renderLayout(45);
-    // This structural check keeps the scalable hit track and visual line
-    // distinct; the browser check measures the pixel floor at every font scale.
+    // This structural check keeps the scalable hit track and visual line distinct; the browser check measures the pixel floor
+    // at every font scale.
     const layout = screen.getByTestId("split");
     expect(layout.style.gridTemplateRows).toContain("1.25rem");
     const line = screen.getByTestId("splitter").querySelector("span");
@@ -45,8 +45,8 @@ describe("VerticalSplitLayout", () => {
   it("draws no divider other than the separator's line (no double line above the resize handle)", () => {
     renderLayout(45);
     const layout = screen.getByTestId("split");
-    // The panes are the first + last grid children; neither carries its own
-    // border, so the ONLY horizontal divider is the separator's thin line.
+    // The panes are the first + last grid children; neither carries its own border, so the ONLY horizontal divider is the
+    // separator's thin line.
     const panes = layout.querySelectorAll(":scope > div:not([role='separator'])");
     for (const pane of panes) {
       expect(pane.className).not.toMatch(/border-b\b/);
@@ -85,8 +85,8 @@ describe("VerticalSplitLayout", () => {
   it("drags in percent of the measured layout, and commits once on release", () => {
     const onDragChange = vi.fn();
     const onCommit = vi.fn();
-    // jsdom lays nothing out; the layout has to be told it is 1000px tall so
-    // there is a px→percent conversion for the pointer to go through.
+    // jsdom lays nothing out; the layout has to be told it is 1000px tall so there is a px→percent conversion for the pointer
+    // to go through.
     const clientHeight = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(1000);
     try {
       render(
@@ -116,8 +116,8 @@ describe("VerticalSplitLayout", () => {
   it("a zero-height layout guards the drag against NaN (no callback)", () => {
     const { onDragChange } = renderLayout(45);
     const splitter = screen.getByTestId("splitter");
-    // jsdom getBoundingClientRect returns all-zero, so rect.height <= 0 → the
-    // drag start must early-return without emitting a NaN percent.
+    // jsdom getBoundingClientRect returns all-zero, so rect.height <= 0 → the drag start must early-return without emitting a
+    // NaN percent.
     fireEvent.pointerDown(splitter, { clientY: 100 });
     expect(onDragChange).not.toHaveBeenCalled();
   });

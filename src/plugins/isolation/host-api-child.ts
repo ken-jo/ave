@@ -1,47 +1,4 @@
-/**
- * The CHILD half of every hostApi member the boundary carries
- * (`docs/blueprints/plugin-process-isolation.md` §3.1, §3.2, §3.4).
- *
- * One module because it is one stub table. `plugin-child-runtime.ts` builds a
- * single `Record<HostApiPath, ChildHostApiMember>` and the four groups here are
- * spread into it at one site; none of them is reachable from anywhere else, and
- * splitting them by category only bought four copies of the same relay guard.
- * The mirror of `host-api-dispatcher.ts`: where the host decodes, this encodes,
- * and where the host encodes, this reconstructs. A plugin holding one of these
- * stubs sees the signature `public-contract.ts` publishes — a real `Response`, a
- * real `SpawnedPluginWorker` handle, a credential lease it can release — built out of the
- * JSON that actually crossed.
- *
- * THREE STUBS DO SOMETHING; THE REST RELAY. `storage.read` decodes a tagged byte
- * payload, `storage.write` encodes one, `storage.resolve` never leaves — and
- * every other storage or interaction member sends its arguments as they are and
- * hands back what the host answered. That split is DERIVED from the contract SOT
- * rather than assumed: {@link assertRelayable} refuses to build a relaying stub
- * for a path whose contract says something else, so a member that later grows an
- * `encoded` axis cannot silently keep crossing through a relay that does no
- * encoding.
- *
- * WHY THE HOST'S ANSWERS ARE NOT RE-CHECKED. The threat model runs one way —
- * the host does not trust the child — and a plugin that cannot trust its own
- * host has already lost. So a member whose contract says `plain-json` takes the
- * reply as the type the contract declares, and a host-side argument rule is
- * never mirrored here: a child-side copy would be a second, weaker copy of a
- * security rule sitting in the least-trusted process, which is a place a plugin
- * can edit.
- *
- * The `emitEvent` capability test is duplicated to preserve a synchronous
- * throw that the wire cannot carry; the host still makes the authority decision.
- *
- * TRAILING OPTIONALS ARE OMITTED, NOT SENT AS `undefined`. `describeNonJson`
- * refuses `undefined` INSIDE an array — there it does not mean absent, it
- * becomes `null` — and `args` is an array. A stub that forwarded its own
- * unsupplied parameter would turn `readText(path)` into a rejected call.
- *
- * ELECTRON-FREE, and it must be: this runs inside the child, which is a plain
- * Node process. It reaches `capabilities.ts`, `manifest-validation.ts` and
- * `plugin-storage-containment.ts`, all of which are pure and Electron-free
- * (verified by import walk), and nothing else host-side.
- */
+/** Child HostApi stubs own marshalling and local handles; imports must remain free of host state. */
 import { canEmitEvent } from "../capabilities.js";
 import { getDeclaredEmittedEvents } from "../runtime/manifest-validation.js";
 import { resolvePluginStoragePath } from "../plugin-storage-containment.js";
@@ -98,16 +55,9 @@ import { errorMessage } from "../../shared/error-message.js";
 const WORKER_PRE_LISTENER_EVENT_MAX = 256;
 const WORKER_PRE_LISTENER_BYTES_MAX = 1024 * 1024;
 
-/** One hostApi member as the child's stub table holds it. */
 export type ChildHostApiMember = (...args: unknown[]) => unknown;
 
-/**
- * Refuse to relay a member whose contract does not say "send it as it is".
- *
- * Fail-closed at stub construction rather than at the call: a path that gains
- * an `encoded` axis would otherwise keep crossing through a relay that does no
- * encoding, and the symptom would be a wrong value rather than a failure.
- */
+/** Fail stub construction if a plain relay contract gains an encoded axis. */
 function assertRelayable(path: HostApiPath): void {
   const contract = HOSTAPI_PATH_CONTRACTS[path];
   if (
@@ -123,19 +73,7 @@ function assertRelayable(path: HostApiPath): void {
   }
 }
 
-
-// ─────────────────────────────────────────────────────────────────────────
-// Interaction members: what puts something in front of the user (§3.4)
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * Build this group's child-side stubs.
- *
- * Every stub goes through {@link HostApiCaller}, which is the one place a call
- * becomes its `ave/host/*` request and the one place a reply's error identity
- * is rebuilt. A stub that assembled its own request would be a second encoding
- * of the method name and params that could disagree with the first.
- */
+/** Route every stub through the shared caller so method and params encoding has one implementation. */
 export function createInteractionChildMembers(
   call: HostApiCaller,
 ): Record<InteractionHostApiPath, (...args: unknown[]) => Promise<unknown>> {
@@ -150,72 +88,31 @@ export function createInteractionChildMembers(
   return members;
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Service members: what reaches a host service (§3.1, §3.2)
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * What these stubs need from the child runtime.
- *
- * Passed in rather than imported so the runtime owns the ledgers and this module
- * owns only the marshalling — the same split that lets the payload helpers be
- * tested without standing up a runtime.
- */
+/** The runtime owns ledgers; inject them so this module owns only marshalling. */
 export interface ServiceChildMemberDeps {
   readonly pluginId: string;
   readonly manifest: PluginManifest;
-  /**
-   * Send one hostApi call and settle it. The runtime's single call path; a
-   * `signal` cancels the request rather than crossing.
-   */
+  /** Abort signals cancel requests and never cross the wire. */
   readonly call: HostApiCaller;
-  /**
-   * Register a child-side handler under a HOST-allocated id.
-   *
-   * The four subscription members allocate their own ids, but a `handle` result
-   * is named by the host, so the child adopts. Returns the disposer that ends
-   * the registration and tells the host.
-   */
+  /** Adopt host-allocated handle IDs; disposing closes both registrations. */
   readonly adoptSubscription: (
     path: HostApiPath,
     subscriptionId: string,
     handler: (payload: unknown) => void,
-    /**
-     * Run when the HOST revokes the registration — state the ledger cannot drop
-     * on its own, because it lives in the stub's closure rather than in the
-     * entry.
-     */
+    /** Host revocation must also clear state held in member closures. */
     onRevoked?: (reason: "revoked" | "peer-gone") => void,
   ) => () => void;
-  /**
-   * `context.log`, so a failure with no caller left to throw at is still seen.
-   *
-   * `emitEvent` and `logEvent` return `void`, so a host-side refusal reaches the
-   * child after the plugin's call has already returned. Reported through the
-   * child's log channel rather than dropped: an unhandled rejection would take
-   * the process down, and a swallowed one would make a refused emit look
-   * identical to an accepted one.
-   */
+  /** Report asynchronous void-member refusals without unhandled rejections. */
   readonly report: (message: string, meta?: unknown) => void;
 }
 
-/**
- * Drop trailing `undefined` arguments before the call goes on the wire.
- *
- * `f(a)` and `f(a, undefined)` are the same call in JavaScript, and they must
- * stay the same call across the boundary. They do not by default: `undefined`
- * inside an ARRAY is not "absent", it is `null` after `JSON.stringify`, so the
- * host would see an explicit null where the plugin passed nothing — and the
- * dispatcher's JSON gate refuses the array outright rather than let that
- * through. Trimming here is what makes an omitted optional argument omitted.
- */
+/** Trim trailing undefined options; undefined array elements are invalid wire values. */
 function positional(...args: unknown[]): readonly unknown[] {
   let end = args.length;
   while (end > 0 && args[end - 1] === undefined) end -= 1;
   return args.slice(0, end);
 }
 
-/** Read a `handle` reply, refusing anything that is not one. */
 function requireHandle(value: unknown, path: HostApiPath): HostApiHandle {
   const handle = value as HostApiHandle | null;
   if (handle === null || typeof handle !== "object" || typeof handle.handleId !== "string") {
@@ -228,26 +125,17 @@ function requireHandle(value: unknown, path: HostApiPath): HostApiHandle {
   return handle;
 }
 
-/**
- * The stubs for this group, keyed by path.
- *
- * Every one of them is `async` where the published signature is async and plain
- * where it is not — `emitEvent` and `logEvent` return `void` synchronously,
- * because that is what the in-process contract promises and a plugin that
- * ignores a returned promise would otherwise never learn it existed.
- */
+/** Preserve sync/async signatures so void calls report late errors without returning ignored promises. */
 export function createServiceChildMembers(
   deps: ServiceChildMemberDeps,
 ): Record<ServiceHostApiPath, ChildHostApiMember> {
   const { call, pluginId } = deps;
 
-  /** One wording for the two members whose failure arrives after they returned. */
   const reportDetached = (path: HostApiPath, error: unknown): void => {
     deps.report(`hostApi.${path} failed after returning`, {
       error: errorMessage(error),
     });
   };
-
 
   return {
     getSecret: async (...args) =>
@@ -261,17 +149,13 @@ export function createServiceChildMembers(
     hasRoutineBySource: async (...args) =>
       call("hasRoutineBySource", positional(args[0])) as Promise<boolean>,
 
-    // Unlike `emitEvent`, no local pre-check: `proposeWork` is Promise-returning,
-    // so the host's refusal arrives at the plugin's own await. Re-deriving the
-    // granted kinds here would be a second copy of the authorization rule with
-    // nothing to gain — the host is already the one that answers.
+    // Promise-returning proposeWork receives the host refusal at await; do not duplicate grant checks.
     proposeWork: async (...args) =>
       call("proposeWork", positional(args[0])) as Promise<WorkProposalResult>,
 
     withdrawWorkProposal: async (...args) =>
       call("withdrawWorkProposal", positional(args[0], args[1])) as Promise<boolean>,
 
-    // No local pre-check either: the host answers every refusal with a status.
     raiseAlert: async (...args) =>
       call("raiseAlert", positional(args[0])) as Promise<AlertResult>,
 
@@ -284,12 +168,7 @@ export function createServiceChildMembers(
     resolveMappedDriveRoot: async (...args) =>
       call("resolveMappedDriveRoot", positional(args[0])) as Promise<string | null>,
 
-    /**
-     * Synchronous throw preserved. The host cannot answer in time to make a
-     * denied emit throw at the plugin's own call site, so the child re-runs
-     * `canEmitEvent` against the manifest it already holds. The host re-decides
-     * and writes the denial audit — this check controls TIMING, never access.
-     */
+    /** Recheck emit policy locally only for synchronous-throw timing; the host still decides access and audit. */
     emitEvent: (...args) => {
       const eventType = args[0] as string;
       const declared = getDeclaredEmittedEvents(deps.manifest);
@@ -318,11 +197,7 @@ export function createServiceChildMembers(
       return (await call("callLlm", positional(args[0], wire), options?.signal)) as string;
     },
 
-    /**
-     * `input` is flattened to a string because a `URL` is a class instance and
-     * would round-trip into something else. The host reads the string exactly as
-     * an in-process `fetch` would.
-     */
+    /** Flatten URL instances to strings before JSON to preserve fetch input semantics. */
     hostFetch: async (...args) => {
       const input = args[0] as string | URL;
       const init = args[1] as import("../public-contract.js").HostFetchInit | undefined;
@@ -335,7 +210,6 @@ export function createServiceChildMembers(
       return decodeWireHttpResponse(reply, "hostFetch(result)");
     },
 
-    /** Adopt the host's registration so release and closure share its id. */
     resolveApiKey: async (...args) => {
       const opts = args[0] as {
         purpose: WireResolveApiKeyOptions["purpose"];
@@ -357,16 +231,13 @@ export function createServiceChildMembers(
       const dispose = deps.adoptSubscription(
         "resolveApiKey",
         handle.handleId,
-        // A lease carries no events. One arriving means the host is pushing
-        // on a registration it has nothing to push for, which is reported
-        // rather than ignored: silently dropping it would hide a real
-        // disagreement about what this member's id means.
+        // A lease cannot carry events; report them as a protocol disagreement.
         () => {
           deps.report("hostApi.resolveApiKey: the host pushed an event on a lease", {
             handleId: handle.handleId,
           });
         },
-        // A closure before adoption is replayed by the child runtime.
+        // Replay revocations that arrive before the handle is adopted.
         (reason) => {
           closedReason = reason;
           if (!released) for (const listener of listeners) listener(reason);
@@ -402,22 +273,10 @@ export function createServiceChildMembers(
       };
     },
 
-    /**
-     * The plugin gets a handle whose methods are local: `stop()` ends the
-     * registration (the host stops the process it still owns), and the three
-     * listener members fan out host pushes. The process itself never crosses,
-     * which is the security improvement §3.2 names — in-process the plugin holds
-     * a live `ChildProcess`-derived object in the same heap.
-     */
+    /** Handle methods stay local; process ownership and stop remain with the host. */
     listAudioInputDevices: async () =>
       call("listAudioInputDevices", positional()) as Promise<readonly AudioCaptureDevice[]>,
-    /**
-     * The capture handle, rebuilt on this side from a host-allocated id.
-     *
-     * Frames arrive as host notifications and are fanned out to child-local
-     * listeners here — the listener functions themselves never cross, which is
-     * the same property that makes `spawnWorker`'s `onStdout` safe.
-     */
+    /** Fan out host capture notifications through child-local listeners; media objects never cross. */
     startAudioCapture: async (...args) => {
       const request = args[0] as AudioCaptureRequest;
       const reply = await call("startAudioCapture", [request]);
@@ -427,8 +286,7 @@ export function createServiceChildMembers(
       const dispose = deps.adoptSubscription("startAudioCapture", handle.handleId, (payload) => {
         const event = asWireAudioCaptureEvent(payload, "startAudioCapture(event)");
         if (event.kind === "frame") {
-          // Decoded once, here, and handed to every listener: decoding per
-          // listener would copy a frame of audio for each one.
+          // Decode each audio frame once before fan-out.
           const pcm = new Uint8Array(Buffer.from(event.pcm, "base64"));
           for (const listener of frames) listener({ seq: event.seq, pcm, peak: event.peak });
           return;
@@ -439,8 +297,7 @@ export function createServiceChildMembers(
             ...(event.detail === undefined ? {} : { detail: event.detail }),
           });
         }
-        // Not disposed here, for the reason spelled out on `spawnWorker`: the
-        // host owns the capture, so the host owns the news that it ended.
+        // The host owns capture completion and releases its registration.
       });
       const capture: AudioCaptureHandle = {
         captureId: handle.captureId,
@@ -463,24 +320,14 @@ export function createServiceChildMembers(
       };
       return capture;
     },
-    /**
-     * The dock slot, rebuilt on this side.
-     *
-     * `detach()` is the SUBSCRIPTION's dispose, not a call: the wire carries
-     * calls by path and a handle is a host-side object this side holds a
-     * receipt for, so releasing the receipt is what "detach" means across the
-     * boundary. `resize` is the opposite case — it needs an answer back, so it
-     * goes out as its own addressable path carrying the panel id.
-     */
+    /** Detach disposes the subscription; resize is a separately addressed request carrying the panel ID. */
     attachFloatingPanel: async (...args) => {
       const request = args[0] as AttachFloatingPanelRequest;
       const reply = await call("attachFloatingPanel", [request]);
       const handle = requireHandle(reply, "attachFloatingPanel") as unknown as WireFloatingPanelHandle;
       const listeners: ((reason: DetachReason) => void)[] = [];
       let height = handle.height;
-      // The REASON, not a flag. A late subscriber has to be told the same
-      // thing an early one was, and a boolean cannot carry it — see
-      // `onDetached` below for what inventing one costs.
+      // Retain the actual detach reason for subscribers arriving after closure.
       let detachedAs: DetachReason | null = null;
       const dispose = deps.adoptSubscription("attachFloatingPanel", handle.handleId, (payload) => {
         const event = asWireFloatingPanelEvent(payload, "attachFloatingPanel(event)");
@@ -488,8 +335,7 @@ export function createServiceChildMembers(
         detachedAs = event.reason as DetachReason;
         for (const listener of listeners) listener(detachedAs);
         listeners.length = 0;
-        // Not disposed here, for the reason spelled out on `spawnWorker`: the
-        // host owns the slot, so the host owns the news that it closed.
+        // The host owns slot closure and releases its registration.
       });
       const panel: FloatingPanelHandle = {
         panelId: handle.panelId,
@@ -505,18 +351,7 @@ export function createServiceChildMembers(
         },
         onDetached: (listener) => {
           if (detachedAs) {
-            // Late subscriber on a slot that is already gone. Silence would
-            // leave it waiting for an event that has already happened — and
-            // answering with a GUESS is worse than silence.
-            //
-            // This used to say `"requested"` unconditionally while holding the
-            // real reason one closure away. The window is narrow (a plugin
-            // subscribes in the same turn the attach resolves in) but it is
-            // real, and `"requested"` is the one value that means "the plugin
-            // asked for this". A recorder that hears it after the USER closed
-            // the dock concludes the teardown was its own and leaves the
-            // recording running with nothing on screen driving it, which is
-            // the exact failure the reason exists to prevent.
+            // Late subscribers must receive the original detach reason so requested closure cannot mask an orphaned capture.
             listener(detachedAs);
             return;
           }
@@ -595,12 +430,7 @@ export function createServiceChildMembers(
         for (const listener of exit) {
           listener(terminalExit);
         }
-        // This side does NOT let go here. The host owns the process, so the
-        // host owns the news that it ended: it releases its own registration
-        // and the closed notification that follows drops this one. Disposing
-        // here as well would be a second authority for one fact, and it was
-        // only ever written because a host-side release could not reach the
-        // child — which it now can.
+        // Wait for the host-owned exit notification; child listeners do not decide process lifetime.
       };
       let subscriptionId: string | undefined;
       let handle: WireWorkerHandle;
@@ -662,37 +492,21 @@ export function createServiceChildMembers(
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────
-// Storage members: `hostApi.storage.*` (§3.1, §3.2)
-// ─────────────────────────────────────────────────────────────────────────
-
-/**
- * The three members whose stub is not a plain relay: two carry an `encoded`
- * axis and one never crosses at all.
- */
+/** Only read/write require payload codecs; resolve never crosses. */
 const NON_RELAYED_STORAGE_PATHS: readonly StorageHostApiPath[] = [
   "storage.resolve",
   "storage.read",
   "storage.write",
 ];
 
-/**
- * Drop trailing `undefined`s so an unsupplied optional argument crosses as
- * absent rather than as a rejected array element. Interior `undefined`s are
- * left alone: a caller that skipped a middle argument means `null`, and
- * silently shortening the list would shift every argument after it.
- */
+/** Trim only trailing undefined; interior holes must refuse rather than shift arguments. */
 function withoutTrailingAbsent(args: readonly unknown[]): unknown[] {
   const wire = [...args];
   while (wire.length > 0 && wire[wire.length - 1] === undefined) wire.pop();
   return wire;
 }
 
-/**
- * `data` for `storage.write`. Refused here, at the plugin's own call site, so
- * the failure carries the plugin's stack rather than arriving as a dispatcher
- * rejection whose stack points at the transport.
- */
+/** Refuse invalid write data at the plugin call site so diagnostics retain its stack. */
 function requireBytesOrText(pluginId: string, value: unknown): string | Uint8Array {
   if (typeof value === "string" || value instanceof Uint8Array) return value;
   throw new HostApiBoundaryError(
@@ -701,15 +515,7 @@ function requireBytesOrText(pluginId: string, value: unknown): string | Uint8Arr
   );
 }
 
-/**
- * Build this group's child-side stubs.
- *
- * Every stub that crosses goes through {@link HostApiCaller}, which is the one
- * place a call becomes its `ave/host/*` request and the one place a reply's
- * error identity is rebuilt. A stub that assembled its own request would be a
- * second encoding of the method name and params that could disagree with the
- * first.
- */
+/** Use the shared caller for every storage request to avoid duplicate wire encoding. */
 export function createStorageChildMembers(
   call: HostApiCaller,
   context: Pick<PluginChildContext, "pluginId" | "pluginDataDir">,
@@ -720,14 +526,11 @@ export function createStorageChildMembers(
     assertRelayable(path);
   }
   return {
-    // The same root the host's storage operates in: the plugin's host-only
-    // storage directory beside its data directory.
+    // Resolve storage against the host-only sibling root.
     "storage.resolve": (...segments) =>
       resolvePluginStoragePath(pluginId, resolvePluginHostStorageDir(pluginDataDir), segments),
 
-    // The one reply that is not JSON. `decodeWireBinary` also refuses a
-    // utf8-tagged payload, so a host that answered with text instead of bytes
-    // is a loud failure rather than a `Uint8Array`-shaped string.
+    // Require binary tagging so text replies cannot masquerade as byte arrays.
     "storage.read": async (relPath) =>
       decodeWireBinary(await call("storage.read", [relPath]), "storage.read(result)"),
 
@@ -745,8 +548,7 @@ export function createStorageChildMembers(
     "storage.exists": async (relPath) =>
       (await call("storage.exists", [relPath])) as boolean,
 
-    // The one argument list that is not JSON. The tag is what stops a base64
-    // string the plugin meant verbatim from being written decoded.
+    // Tag literal text separately from bytes so base64-looking strings are not decoded.
     "storage.write": async (relPath, data, encoding) => {
       const bytes = encodeWireBytes(
         requireBytesOrText(pluginId, data),
@@ -779,74 +581,29 @@ export function createStorageChildMembers(
   };
 }
 
-/**
- * The CHILD half of the config members and the four subscription members
- * (`docs/blueprints/plugin-process-isolation.md` §3.1).
- *
- * WHAT A `handler-registration` MEMBER ACTUALLY DOES. The plugin passes a
- * function; a function cannot cross. The child registers it locally under an id
- * IT allocates, sends the id, and hands the plugin back a disposer that closes
- * the LOCAL registration. The id is child-allocated rather than host-allocated
- * because the handler has to be reachable before the first event can arrive: a
- * child that waited for the reply to learn its id would have a window in which
- * an event has nowhere to go.
- *
- * WHY THE SUBSCRIBE REQUEST IS NOT AWAITED. All four members return
- * synchronously in the in-process contract — three a disposer, `onShutdown`
- * nothing — and a process boundary is not synchronous. Returning a Promise
- * would be a contract change for every plugin. So the local registration is the
- * synchronous part and the round trip runs behind it; a subscribe that FAILS is
- * reported through the log channel and the local registration is dropped, never
- * left half-open pretending to be subscribed.
- *
- * The payload codecs this group decodes with live in `host-api-wire.ts`, beside
- * the encoders the host dispatches through, so the two halves of one payload
- * cannot drift.
- */
+/** Child subscriptions need local registration before asynchronous host acknowledgement, with failure cleanup. */
 
-/** One child-side registration, as `plugin-child-runtime.ts` hands it back. */
 interface ChildSubscriptionHandle {
   readonly subscriptionId: string;
   readonly dispose: () => void;
 }
 
-/** What the child runtime lends this group so it does not re-derive any of it. */
 export interface ConfigSubscriptionChildDeps {
   readonly pluginId: string;
-  /** The one place a call becomes its `ave/host/*` request. */
   readonly call: HostApiCaller;
-  /** The one child-side subscription ledger, shared with every other member. */
+  /** Share one child subscription ledger across all members. */
   readonly openSubscription: (
     path: HostApiPath,
     handler: (payload: unknown) => void,
   ) => ChildSubscriptionHandle;
-  /**
-   * The child's copy of the resolved config, seeded from the construction push.
-   *
-   * MUTABLE and shared with `config.set`, which writes into it only after the
-   * host has confirmed the write. That is what makes a plugin's own
-   * set-then-get see its own value: `set` is awaited, and the snapshot is
-   * current by the time it resolves.
-   */
+  /** Update the shared config snapshot only after host confirmation and before set resolves. */
   readonly config: Record<string, unknown>;
-  /** `context.log`, so an async failure with no caller to throw to is still seen. */
   readonly report: (message: string, meta?: unknown) => void;
-  /**
-   * The plugin's `onShutdown` handlers, by the id each registered under. The
-   * host runs one through `ave/instance/shutdown`, a request it awaits, so a
-   * handler is looked up and awaited rather than delivered as a payload.
-   */
+  /** Shutdown handlers are awaited requests, not event deliveries. */
   readonly shutdownHandlers: Map<string, () => void | Promise<void>>;
 }
 
-/**
- * Reject a member argument the plugin got wrong, at the plugin's own call site.
- *
- * These are plugin bugs, not wire failures, and the in-process version answers
- * several of them with a silent `undefined` — `config.get(42)` reads as "unset"
- * rather than "you passed a number". A member that cannot tell those apart is a
- * member whose answer cannot be trusted, so this throws instead.
- */
+/** Throw invalid member arguments locally; a boundary failure must not masquerade as an unset value. */
 function requireStringArgument(
   pluginId: string,
   member: string,
@@ -875,15 +632,7 @@ function requireFunctionArgument(
   return value as (...args: unknown[]) => unknown;
 }
 
-/**
- * Open a subscription: register locally, then ask the host to wire its side.
- *
- * The round trip is deliberately not awaited (see the group's header). What it
- * MUST not do is fail silently — a plugin holding a disposer for a
- * subscription the host never opened would receive nothing and have no way to
- * find out, which is the same symptom as a working subscription for an event
- * that never fires.
- */
+/** Register locally before host subscribe; report refusals and remove the local half. */
 function subscribe(
   deps: ConfigSubscriptionChildDeps,
   path: HostApiPath,
@@ -896,29 +645,19 @@ function subscribe(
       subscriptionId: subscription.subscriptionId,
       error: errorMessage(error),
     });
-    // Drop the local half too. Keeping it would leave the plugin holding a
-    // disposer for a registration that exists on neither side.
+    // A refused host subscription must also drop the local registration.
     subscription.dispose();
   });
   return subscription;
 }
 
-/**
- * The six members, wired to the boundary.
- *
- * Returned as a partial map rather than installed directly so
- * `plugin-child-runtime.ts` composes the groups in one place — four authors
- * adding four spreads, instead of four authors editing one switch.
- */
+/** Compose partial groups over throwing defaults so unwired paths remain explicit refusals. */
 export function createConfigSubscriptionChildMembers(
   deps: ConfigSubscriptionChildDeps,
 ): Record<ConfigSubscriptionPath, ChildHostApiMember> {
   const { pluginId } = deps;
   return {
-    // No round trip: the resolved config was pushed at construction and the
-    // child reads its own copy. `config.get` is synchronous in the contract and
-    // a process boundary is not, so this is the member the design answers by
-    // never sending it — the dispatcher refuses it if it ever arrives.
+    // Synchronous config.get reads the pushed snapshot and must never make a round trip.
     "config.get": (...args) =>
       deps.config[requireStringArgument(pluginId, "config.get", "key", args[0])],
 
@@ -926,9 +665,7 @@ export function createConfigSubscriptionChildMembers(
       const key = requireStringArgument(pluginId, "config.set", "key", args[0]);
       const value = args[1];
       await deps.call("config.set", [key, value]);
-      // Only AFTER the host confirms. Writing the snapshot optimistically would
-      // make a rejected write (a `format: "secret"` key, an inactive
-      // incarnation) readable through `config.get` as though it had persisted.
+      // Update the snapshot only after persistence succeeds.
       deps.config[key] = value;
     },
 
@@ -946,17 +683,9 @@ export function createConfigSubscriptionChildMembers(
         (subscriptionId) => [key, subscriptionId],
         (payload) => {
           const change = decodeConfigChange(payload);
-          // The snapshot moves BEFORE the callback runs, so a callback that
-          // reads `config.get(key)` sees the value it was just handed rather
-          // than the one it replaced.
+          // Refresh the snapshot before the callback can reread it.
           if (change.value === SECRET_REDACTED_SENTINEL) {
-            // The sentinel is NOT a config value and must never enter the
-            // snapshot. A secret lives in the keychain and is stripped out of
-            // the cleartext `pluginConfigs` record the host resolves, so the
-            // in-process `config.get` answers `undefined` for a secret key —
-            // and the secret-set path deletes any stray cleartext copy. Storing
-            // the sentinel here would make `config.get` hand the plugin a
-            // Symbol that no in-process plugin can ever see.
+            // Secret sentinels are notifications only and must never enter cleartext config.
             delete deps.config[change.key];
           } else {
             deps.config[change.key] = change.value;
@@ -1005,15 +734,7 @@ export function createConfigSubscriptionChildMembers(
       };
     },
 
-    // The odd one of the four: it returns NOTHING, because the host ends it
-    // (`lifetime: "host-terminated"`). The child still holds a ledger entry so
-    // the registration dies with the host rather than outliving it, but the
-    // plugin is given no disposer — matching the in-process signature exactly.
-    //
-    // No payload is ever delivered to it. The host runs the handler through
-    // `ave/instance/shutdown`, a request it awaits with a bound, so the
-    // handler's settling is the reply and a throw crosses as an error the
-    // host logs beside every other plugin's shutdown failure.
+    // The host owns shutdown termination; retain a ledger entry so its handler can be awaited once.
     onShutdown: (...args) => {
       const handler = requireFunctionArgument(pluginId, "onShutdown", "handler", args[0]);
       const subscription: ChildSubscriptionHandle = subscribe(
@@ -1026,9 +747,7 @@ export function createConfigSubscriptionChildMembers(
         try {
           await handler();
         } finally {
-          // Ran once, whichever way it settled: the host fires shutdown once,
-          // and releasing the registration keeps its ledger entry from
-          // outliving the only thing it was for.
+          // Release shutdown registration after either success or failure.
           deps.shutdownHandlers.delete(subscription.subscriptionId);
           subscription.dispose();
         }

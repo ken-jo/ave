@@ -1,15 +1,4 @@
-/**
- * The PII-redaction policy reader must be installed by the boot step that
- * creates the settings service, because a headless `--exec` / `--set-secret`
- * launch runs its whole turn and quits before any IPC handler is registered.
- * Installed in the IPC layer instead, the reader would keep its uninjected
- * default on exactly those unattended runs: a user with
- * `privacy.piiRedactEnabled` on would get audit records and display payloads
- * carrying the personal data they asked the host to mask.
- *
- * Separate from `services-locale.test.ts` so each file keeps naming the one
- * boot policy it covers.
- */
+/** Install the PII policy during service boot; headless runs finish before IPC registration. */
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -68,16 +57,13 @@ describe("applyBootPiiRedactionPolicy", () => {
 });
 
 describe("PII-redaction policy install site", () => {
-  // Read through a mapped list rather than a literal specifier: a literal one
-  // reads as an import edge to the static analysis the knip gate runs, which
-  // would mark every export of the scanned module used and blind that gate.
+  // Literal scan paths become static import edges and can hide unused exports from analysis.
   const [bootSource, ipcSource] = ["../services.ts", "../../ipc/index.ts"].map(
     (relativePath) => readFileSync(new URL(relativePath, import.meta.url), "utf8"),
   ) as [string, string];
 
   it("is installed by the boot step that creates the settings service", () => {
     expect(bootSource).toContain("initPiiRedactionPolicy(");
-    // Called inside bootstrapCoreServices, right after the service it reads.
     expect(bootSource).toContain("applyBootPiiRedactionPolicy(settingsService);");
   });
 

@@ -55,12 +55,7 @@ export function displayShellWord(word: ShellWord): string {
   return word.parts.map((part) => part.kind === "literal" || part.kind === "pattern" ? part.value : part.kind === "parameter" ? `$${part.name}` : "").join("");
 }
 
-/**
- * True when an unresolved word is still guaranteed to occupy exactly one argv
- * slot. Known expansion is lowered to a literal before this check. Keep this
- * proof with the word AST so command-specific policies do not invent their own
- * quote and field-splitting rules.
- */
+/** Keep single-argv-slot proof with the word AST so policies cannot invent conflicting quote or field-splitting rules. */
 export function shellWordHasSingleField(word: ShellWord): boolean {
   return word.parts.every((part) => {
     if (part.kind === "literal" || part.kind === "unicode-escaped" || part.kind === "arithmetic-data") return true;
@@ -73,9 +68,7 @@ export function shellWordHasSingleField(word: ShellWord): boolean {
 type LoweredWordPart = ShellWordPart | { kind: "unquoted-bracket"; value: "[" | "]" };
 
 function classifyBracketParts(parts: readonly LoweredWordPart[]): ShellWordPart[] {
-  // Quoted and escaped brackets are already literals. Pair across the complete
-  // word so quoted members do not hide a real expansion. Closed ambiguous forms
-  // remain patterns; only an opening without an unquoted closer is literal.
+  // Pair brackets across the whole word; quoted members do not hide expansions, and only unmatched unquoted openings are literal.
   const lastCloser = parts.findLastIndex((part) => part.kind === "unquoted-bracket" && part.value === "]");
   return parts.map((part, index) => part.kind === "unquoted-bracket"
     ? { kind: part.value === "[" && index < lastCloser ? "pattern" : "literal", value: part.value }
@@ -157,8 +150,7 @@ function lowerStatement(node: ShellSyntaxNode, source: ShellSource): ShellStatem
     if (statement.kind === "command") {
       statement = { ...statement, source: location, redirects: redirects.map((redirect) => lowerRedirect(redirect, source)) };
     } else {
-      // Inherited input needs descriptor and consumption provenance. Until the
-      // execution model owns it, only fixed output descriptors are supported.
+      // Inherited input needs descriptor and consumption provenance; support only fixed output descriptors until execution owns that proof.
       if (redirects.some((redirect) => ![">", ">>", ">|", ">&", "&>", "&>>"].includes(value(redirect, "Op"))
         || (redirect.N && !/^0*[1-9][0-9]*$/.test(value(child(redirect, "N"), "Value"))))) {
         return { kind: "unsupported", source: location, reason: "Unsupported compound input or dynamic descriptor redirection" };
@@ -295,10 +287,7 @@ function lowerWordPart(node: ShellSyntaxNode, source: ShellSource, context: Word
       const location = span(node, source);
       const cooked = source.escapedStrings[JSON.stringify([location.start, location.end])];
       if (cooked === undefined) return [{ kind: "unknown", reason: "Unsupported escaped-string bytes" }];
-      // The grammar owns the complete quoted string and its static expansion.
-      // These two escape families require an additional native contract:
-      // Unicode depends on the selected interpreter/locale, while control
-      // escapes are not implemented by the upstream static expander.
+      // Unicode escapes depend on interpreter and locale; control escapes lack static-expander support, so both require native proof.
       const raw = node.Value === undefined ? "" : value(node, "Value");
       let unicode = false;
       for (let index = 0; index < raw.length; index += 1) {
@@ -347,8 +336,7 @@ function lowerWordPart(node: ShellSyntaxNode, source: ShellSource, context: Word
   }
 }
 
-// Only the typed arithmetic tree establishes whether evaluation can write or
-// invoke nested code. The numeric result remains unknown to path authority.
+// Only the typed arithmetic tree proves writes or nested execution; its numeric result grants no path authority.
 function pureArithmeticVariables(node: ShellSyntaxNode): string[] | undefined {
   switch (node.Type) {
     case "Word": {

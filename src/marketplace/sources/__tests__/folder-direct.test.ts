@@ -1,8 +1,3 @@
-/**
- * A folder that is one package, added directly (design §18.4.7): its version
- * is synthesized from its files, and `allowDirectInstall: false` refuses it at
- * the preview, the add and the plan — for a git URL alike.
- */
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,7 +6,6 @@ import { FakeVolume, TEST_FOLDER_LIMITS } from "../../__tests__/fixtures/folder-
 import { folderService } from "../../__tests__/fixtures/folder-service.js";
 import { FIXTURE_POLICY_PATH, policyLoad, policySource } from "../../__tests__/fixtures/policy.js";
 
-/** An extension namespace Ave does not own: another vendor's data, never Ave fields. */
 const UNKNOWN_NAMESPACE = "xyz.example";
 
 const SKILL = (body: string) => `---\nname: note\ndescription: A note skill\n---\n${body}\n`;
@@ -79,7 +73,6 @@ describe("allowDirectInstall: false (§12)", () => {
     policy.change(policyLoad({ allowDirectInstall: false }));
     await expect(harness.service.addSource({ previewId: preview.previewId, id: "note" })).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "direct-install-blocked" } });
 
-    // Added while it was allowed, then turned off: the plan refuses.
     policy.change(policyLoad());
     const again = await harness.service.previewSource({ input: "/opt/note", auth: "none" });
     if (again.type !== "package") throw new Error("expected a package preview");
@@ -113,7 +106,6 @@ describe("a direct agent plugin with a folder for an extension namespace Ave doe
 
 describe("a read failure inside a direct bundle keeps its own reason (§18.4.5, §18.8)", () => {
   const INNER = "---\nname: inner\ndescription: inner skill\n---\nBody\n";
-  /** A direct agent-plugin bundle at C:\m whose skills link to `link`, with the classifier answering `Z:` as given. */
   function bundle(link: string | null, z: "broken" | "network") {
     const fs = new FakeVolume("win32", { drives: { "C:": "\\Device\\HarddiskVolume3", "Z:": "\\Device\\Mup\;LanmanRedirector\\files\\share" } })
       .file("C:\\m\\plugin.json", JSON.stringify({ $schema: "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json", name: "bundle", version: "1.0.0", description: "A bundle" }))

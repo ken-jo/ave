@@ -1,6 +1,3 @@
-/**
- * Permission policy Phase 3 — `/permission reviewer` slash + settings persistence tests.
- */
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import {
@@ -16,7 +13,7 @@ import {
 } from "../permission-settings-store.js";
 import { PermissionTestResources } from "./test-resources.js";
 
-/** Only ever named in a fault; `normalizePermissionSettings` reads no file. */
+// Only ever named in a fault; `normalizePermissionSettings` reads no file.
 const SETTINGS_PATH = "/nonexistent/settings.json";
 
 const resources = new PermissionTestResources();
@@ -53,19 +50,15 @@ describe("parsePermissionReviewerCommand", () => {
     });
   });
 
-  it("rejects reviewer-local provider changes", () => {
-    expect(parsePermissionReviewerCommand("provider openai")).toEqual({
-      ok: false,
-      error: expect.stringContaining("active LLM settings"),
-    });
-  });
-
-  it("rejects reviewer-local model changes", () => {
-    expect(parsePermissionReviewerCommand("model gpt-4o-mini")).toEqual({
-      ok: false,
-      error: expect.stringContaining("active LLM settings"),
-    });
-  });
+  it.each(["provider openai", "model gpt-4o-mini"])(
+    "has no reviewer provider/model subcommand: %s",
+    (raw) => {
+      expect(parsePermissionReviewerCommand(raw)).toEqual({
+        ok: false,
+        error: expect.stringMatching(/^unknown subcommand/),
+      });
+    },
+  );
 
   it("parses 'fallback deny'", () => {
     expect(parsePermissionReviewerCommand("fallback deny")).toEqual({
@@ -226,14 +219,10 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     const r = await dispatchPermissionReviewerCommand({ verb: "show", value: "" }, path);
     expect(r.ok).toBe(true);
     if (r.ok && r.verb === "show") {
-      // Default reviewer is "llm" (strongest classifier). Boot wiring degrades
-      // to rule at runtime when no LLM provider is configured (fresh install),
-      // but the persisted/default mode is "llm" so intent stays visible.
-      // interactive.autoApprove defaults to "medium" so LOW/MEDIUM foreground
-      // calls are silently allowed; HIGH still surfaces.
+      // Default reviewer is "llm" (strongest classifier). Boot wiring degrades to rule at runtime when no LLM provider is configured (fresh install), but the persisted/default mode is "llm" so intent stays visible. interactive.autoApprove defaults to "medium" so LOW/MEDIUM foreground calls are silently allowed; HIGH still surfaces.
       expect(r.settings.mode).toBe("llm");
-      expect(r.settings.provider).toBe("openai");
-      expect(r.settings.model).toBe("");
+      expect(r.settings).not.toHaveProperty("provider");
+      expect(r.settings).not.toHaveProperty("model");
       expect(r.settings.fallbackOnError).toBe("deny");
       expect(r.settings.interactive.autoApprove).toBe("medium");
     }
@@ -246,28 +235,41 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     expect(settings.permissions.reviewer.mode).toBe("rule");
   });
 
-  it("provider changes are rejected and leave legacy settings untouched", async () => {
+  it("loads an older file's reviewer provider/model cleanly and drops them on the next save", async () => {
     const path = tmpSettingsPath();
-    const result = await dispatchPermissionReviewerCommand(
-      { verb: "provider", value: "anthropic" } as never,
+    writeFileSync(
       path,
+      JSON.stringify({
+        permissions: {
+          reviewer: {
+            mode: "llm",
+            provider: "anthropic",
+            model: "claude-haiku-4-5",
+            fallbackOnError: "rule",
+            interactive: { autoApprove: "low" },
+          },
+        },
+      }),
     );
-    const settings = readPermissionSettings(path);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("active LLM settings");
-    expect(settings.permissions.reviewer.provider).toBe("openai");
+    const loaded = readPermissionSettings(path).permissions.reviewer;
+    expect(loaded).toMatchObject({ mode: "llm", fallbackOnError: "rule", interactive: { autoApprove: "low" } });
+    expect(loaded).not.toHaveProperty("provider");
+    expect(loaded).not.toHaveProperty("model");
+
+    const result = await dispatchPermissionReviewerCommand({ verb: "mode", value: "rule" }, path);
+    expect(result.ok).toBe(true);
+    const saved = JSON.parse(readFileSync(path, "utf-8")).permissions.reviewer;
+    expect(saved).toMatchObject({ mode: "rule", fallbackOnError: "rule", interactive: { autoApprove: "low" } });
+    expect(saved).not.toHaveProperty("provider");
+    expect(saved).not.toHaveProperty("model");
   });
 
-  it("model changes are rejected and leave legacy settings untouched", async () => {
+  it("rejects a reviewer patch that names the removed provider/model keys", async () => {
     const path = tmpSettingsPath();
-    const result = await dispatchPermissionReviewerCommand(
-      { verb: "model", value: "claude-haiku-4-5" } as never,
-      path,
-    );
-    const settings = readPermissionSettings(path);
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toContain("active LLM settings");
-    expect(settings.permissions.reviewer.model).toBe("");
+    await expect(
+      setReviewerSettingsPersist({ mode: "rule", provider: "openai" } as never, path),
+    ).rejects.toThrow(/unsupported keys: provider.*permissions\.judge\.model/);
+    expect(readPermissionSettings(path).permissions.reviewer.mode).toBe("llm");
   });
 
   it("fallback rule persists when explicitly selected", async () => {
@@ -290,7 +292,6 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
 
   it("interactive off persists as an explicit fail-closed choice", async () => {
     const path = tmpSettingsPath();
-    // First flip to low, then back to off — confirms the toggle is bidirectional.
     await dispatchPermissionReviewerCommand({ verb: "interactive", value: "low" }, path);
     await dispatchPermissionReviewerCommand({ verb: "interactive", value: "off" }, path);
     const settings = readPermissionSettings(path);
@@ -318,14 +319,13 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     if (!r.ok) expect(r.error).toMatch(/invalid mode/);
   });
 
-  it("invalid provider subcommand returns the active-LLM guidance", async () => {
+  it("a provider verb reaching dispatch is an unknown reviewer command", async () => {
     const path = tmpSettingsPath();
     const r = await dispatchPermissionReviewerCommand(
       { verb: "provider", value: "ollama" } as never,
       path,
     );
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/active LLM settings/);
+    expect(r).toEqual({ ok: false, error: "unknown reviewer command 'provider'" });
   });
 
   it("invalid fallback returns ok:false", async () => {
@@ -338,18 +338,15 @@ describe("dispatchPermissionReviewerCommand — persistence", () => {
     if (!r.ok) expect(r.error).toMatch(/invalid fallback/);
   });
 
-  it("empty model subcommand returns the active-LLM guidance", async () => {
+  it("a model verb reaching dispatch is an unknown reviewer command", async () => {
     const path = tmpSettingsPath();
     const r = await dispatchPermissionReviewerCommand({ verb: "model", value: "" } as never, path);
-    expect(r.ok).toBe(false);
-    if (!r.ok) expect(r.error).toMatch(/active LLM settings/);
+    expect(r).toEqual({ ok: false, error: "unknown reviewer command 'model'" });
   });
 
   it("setReviewerSettingsPersist preserves additionalDirectories", async () => {
     const path = tmpSettingsPath();
-    // Seed: write directories first.
     await writePermissionSettings({ additionalDirectories: ["/foo"] }, path);
-    // Now change reviewer.
     await setReviewerSettingsPersist({ mode: "rule" }, path);
     const settings = readPermissionSettings(path);
     expect(settings.permissions.additionalDirectories).toEqual(["/foo"]);
@@ -382,12 +379,8 @@ describe("normalizePermissionSettings — reviewer block", () => {
   it("missing reviewer block → defaults", () => {
     const settings = normalizePermissionSettings({}, SETTINGS_PATH);
     expect(settings.permissions.reviewer).toEqual({
-      // Default reviewer mode is "llm" (strongest classifier; degrades to rule
-      // at boot when no provider is configured). interactive.autoApprove "medium"
-      // silently allows LOW/MEDIUM foreground calls.
+      // Default reviewer mode is "llm" (strongest classifier; degrades to rule at boot when no provider is configured). interactive.autoApprove "medium" silently allows LOW/MEDIUM foreground calls.
       mode: "llm",
-      provider: "openai",
-      model: "",
       fallbackOnError: "deny",
       interactive: { autoApprove: "medium" },
       parentAdjudication: {
@@ -412,12 +405,11 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
-    // Unknown enum values fall back to the new "llm" default (external
-    // boundary: hand-edited settings file with bad values).
+    // Unknown enum values fall back to the new "llm" default (external boundary: hand-edited settings file with bad values).
     expect(settings.permissions.reviewer.mode).toBe("llm");
-    expect(settings.permissions.reviewer.provider).toBe("openai");
     expect(settings.permissions.reviewer.fallbackOnError).toBe("deny");
-    expect(settings.permissions.reviewer.model).toBe("");
+    expect(settings.permissions.reviewer).not.toHaveProperty("provider");
+    expect(settings.permissions.reviewer).not.toHaveProperty("model");
   });
 
   it("valid reviewer block round-trips (absent interactive → default medium)", () => {
@@ -431,10 +423,9 @@ describe("normalizePermissionSettings — reviewer block", () => {
         },
       },
     }, SETTINGS_PATH);
+    // The retired provider/model keys are dropped on load.
     expect(settings.permissions.reviewer).toEqual({
       mode: "llm",
-      provider: "anthropic",
-      model: "claude-haiku-4-5",
       fallbackOnError: "deny",
       // Only absent fields take the new default; explicit fields above are kept.
       interactive: { autoApprove: "medium" },
@@ -450,8 +441,7 @@ describe("normalizePermissionSettings — reviewer block", () => {
   });
 
   it("explicit mode:rule + autoApprove:off are preserved (not overwritten by new defaults)", () => {
-    // Backward-compat: a user who explicitly configured the pre-change defaults
-    // must keep them. Only ABSENT fields fall to the new "llm"/"low" defaults.
+    // Backward-compat: a user who explicitly configured the pre-change defaults must keep them. Only ABSENT fields fall to the new "llm"/"low" defaults.
     const settings = normalizePermissionSettings({
       permissions: {
         reviewer: {
@@ -476,8 +466,6 @@ describe("settings file persistence — reviewer block format", () => {
         additionalDirectories: ["/Users/example/work"],
         reviewer: {
           mode: "llm",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "rule",
         },
       },
@@ -487,7 +475,7 @@ describe("settings file persistence — reviewer block format", () => {
     const parsed = JSON.parse(raw);
     expect(parsed.permissions.additionalDirectories).toEqual(["/Users/example/work"]);
     expect(parsed.permissions.reviewer.mode).toBe("llm");
-    expect(parsed.permissions.reviewer.provider).toBe("openai");
+    expect(parsed.permissions.reviewer).not.toHaveProperty("provider");
   });
 
   it("hand-edited bad enum is normalized on read but bad write rejected", async () => {

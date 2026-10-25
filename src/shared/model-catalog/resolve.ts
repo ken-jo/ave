@@ -1,32 +1,4 @@
-/**
- * Find the catalog entry for a model an Ave vendor serves.
- *
- * The one place a `(vendor, model)` pair becomes a catalog key. Each step is
- * tried across the vendor's catalog providers, in the order the provider map
- * lists them, before the next step is tried:
- *
- *  1. the id exactly as given;
- *  2. an Ave-owned alias ({@link MODEL_CATALOG_ALIASES}), and the id with a
- *     Vertex version tag (`@default`, `@20250929`) dropped from either side:
- *     Vertex lists Claude as `claude-opus-4-6@default`, Ave names it
- *     `claude-opus-4-6`;
- *  3. an entry whose `canonicalId` is the id given (`<lab>/<model>`);
- *  4. the id without a release-date suffix (`-20250514`, `-2025-04-16`, `-0125`);
- *  5. the id with case and version separators folded (`4-6` against `4.6`);
- *  6. the same, ignoring a path prefix on either side (`openai/gpt-5.4`
- *     against `gpt-5.4`): gateways disagree about whether the lab is part of
- *     the id.
- *
- * The version-tag match and steps 3, 5 and 6 answer only when exactly one entry matches. Two candidates
- * mean the id does not say which model it is, and a guessed entry would put
- * another model's window and price on this one. No match is an answer too:
- * the model is unknown to the catalog, and the caller's next source decides.
- *
- * A vendor whose map entry is empty (a self-hosted endpoint, a local runtime)
- * never matches by name. The user may name the entry the endpoint serves
- * (`llm.vendors.<vendor>.catalogModel`, `<provider>/<id>`), which is looked up
- * exactly with {@link lookupCatalogModel}.
- */
+/** Try matching steps across mapped providers in order; ambiguous matches remain unknown. Unmapped endpoints require explicit catalog identity. */
 import { MODEL_CATALOG_ALIASES } from "./aliases.js";
 import { CATALOG_PROVIDERS_BY_VENDOR } from "./provider-map.js";
 import type { CatalogModel, ModelCatalogDocument } from "./types.js";
@@ -35,9 +7,7 @@ import { isLLMVendor, isOpenAICompatiblePresetVendor, OPENAI_COMPATIBLE_VENDOR_P
 type CatalogMatch = "exact" | "alias" | "version-tag" | "canonical" | "date-suffix" | "folded" | "unprefixed" | "named";
 
 export interface CatalogModelHit {
-  /** Catalog provider id. */
   readonly provider: string;
-  /** The entry's id within that provider. */
   readonly id: string;
   /** Which step found it. */
   readonly match: CatalogMatch;
@@ -46,13 +16,9 @@ export interface CatalogModelHit {
 
 type Catalog = Pick<ModelCatalogDocument, "providers">;
 
-/**
- * A release-date snapshot suffix: `-YYYYMMDD`, `-YYYY-MM-DD`, or the month-day
- * `-MMDD` OpenAI (`gpt-3.5-turbo-0125`), DeepSeek and Moonshot use. Four digits
- * that are no month and day are a version, not a snapshot.
- */
+/** Recognize date-shaped suffixes only; four-digit versions that are not month/day remain intact. */
 const DATE_SUFFIX = /-(?:\d{8}|\d{4}-\d{2}-\d{2}|(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01]))$/u;
-/** Vertex AI's model version tag: `@default` or a release date. */
+/** Version tags may name default or release-date snapshots. */
 const VERSION_TAG = /@(?:default|\d{8})$/u;
 
 function fold(id: string): string {
@@ -81,15 +47,9 @@ const OPENAI_NATIVE_API_HOSTS: readonly string[] = [
   "mtls.api.openai.com", "mtls-us.api.openai.com", "mtls-eu.api.openai.com",
 ];
 
-/**
- * A mapped vendor's model name describes its limits only at its own endpoint.
- * A gateway may alias that name to a different deployment. Explicit settings
- * and endpoint reports still answer; unmapped vendors keep their existing
- * pricing rows until the legacy table is removed.
- */
+/** Implicit model identity holds only on the vendor’s native route; explicit settings and endpoint reports remain independent. */
 export function allowsImplicitModelLimits(vendor: string, baseUrl?: string): boolean {
-  // This API addresses arbitrary deployment aliases, not public model ids.
-  // A resource hostname alone cannot identify the model behind an alias.
+  // Deployment aliases and resource hostnames cannot establish public model identity.
   if (vendor === "azure-foundry") return false;
   // Without an override, the route uses the vendor's native default.
   if (providersFor(vendor).length === 0 || !baseUrl?.trim()) return true;
@@ -123,7 +83,7 @@ function exact(catalog: Catalog, providers: readonly string[], id: string, match
   return undefined;
 }
 
-/** The single entry `accept` picks out across the providers, or none when zero or several do. */
+/** Return only a unique accepted entry across providers. */
 function unique(
   catalog: Catalog,
   providers: readonly string[],
@@ -175,11 +135,7 @@ export function resolveCatalogKey(
   return unique(catalog, providers, "unprefixed", (id) => fold(lastSegment(id)) === bare);
 }
 
-/**
- * The entry a user named for an endpoint the catalog cannot match by name:
- * `<provider>/<id>`, looked up exactly. A name that is malformed or not in
- * the catalog answers nothing; the settings surface reports that, not this.
- */
+/** Explicit catalog keys use exact lookup; missing or malformed keys remain unresolved for UI reporting. */
 export function lookupCatalogModel(catalog: Catalog, named: string): CatalogModelHit | undefined {
   const slash = named.indexOf("/");
   if (slash <= 0 || slash === named.length - 1) return undefined;

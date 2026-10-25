@@ -101,7 +101,7 @@ describe("normalizeSourceUrl", () => {
     ["https://github.com/acme/tools#main", { reason: "format" }],
     ["https://github.com/acme/to ols", { reason: "format" }],
     ["https://github.com/acme\\tools", { reason: "format" }],
-    // A `<helper>::` address runs git-remote-<helper>, a program (§18.3 #1): named before any other check.
+    // Helper transports launch programs, so reject them before other address checks.
     ["ext::sh", { reason: "helper-transport", scheme: "ext" }],
     ["ext::sh -c touch% /tmp/pwned", { reason: "helper-transport", scheme: "ext" }],
     ["fd::3", { reason: "helper-transport", scheme: "fd" }],
@@ -167,7 +167,6 @@ describe("source patterns", () => {
     expect(matchesSourcePattern(url("ACME/Tools"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("git@github.com:acme/tools.git"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("acme/tools-2"), pattern)).toBe(false);
-    // A nested repository (GitLab subgroups) is another repository; only a download lives beneath one.
     expect(matchesSourcePattern(url("https://github.com/acme/tools/sub"), pattern)).toBe(false);
     expect(matchesSourcePattern(url("https://github.com/acme/tools/sub"), pattern, "download")).toBe(true);
   });
@@ -177,7 +176,6 @@ describe("source patterns", () => {
     expect(matchesSourcePattern(url("acme/tools"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("https://github.com/acme/tools/sub"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("acme-corp/tools"), pattern)).toBe(false);
-    // Neither scheme, port nor case may sidestep a pattern.
     expect(matchesSourcePattern(url("git@github.com:acme/tools"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("https://github.com:8443/acme/tools"), pattern)).toBe(true);
     expect(matchesSourcePattern(url("Acme/tools"), pattern)).toBe(true);

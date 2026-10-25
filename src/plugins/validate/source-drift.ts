@@ -1,30 +1,4 @@
-/**
- * What a plugin's code names against what its manifest declares
- * (`docs/design/plugin-hostapi-protocol.md` §9.7 P2, §10.2 item 3).
- *
- * Ported from the drift scripts the official repository's plugins carry
- * (`plugins/meeting/source/scripts/validate-hostapi.mjs` checks 4-7 and its
- * `ui-bridge-usage.mjs` scan), so a plugin repository can retire them for the
- * validator:
- *
- *  - `hostApi.emitEvent("…")` / `hostApi.onEvent("…")` literals in
- *    `src/**\/*.ts` and `dist/**\/*.js` against `emittedEvents` /
- *    `eventSubscriptions` — the host refuses an undeclared emit and never
- *    wires an undeclared subscription;
- *  - `bridge.callTool("…")` in `src/ui/**` against the tools that carry `app`
- *    visibility — the host accepts no other;
- *  - `bridge.onEvent("…")` in `src/ui/**` against the events a plugin webview
- *    can receive: the plugin's own emits, its subscriptions, and the host's
- *    public broadcasts.
- *
- * The scripts' three `permissions` checks are not ported: the host enforces no
- * `permissions` entry, so a check on one would be a claim about nothing.
- *
- * A literal is what is matched — a member call whose first argument is a
- * quoted string, after comments are stripped. A name built at run time, a
- * destructured method or bracket access is invisible to the scan, exactly as
- * it is to the scripts it replaces; the scan never guesses at a value.
- */
+/** Compare literal source references to declared manifest values; never guess computed values. */
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative, sep } from "node:path";
 import type { PluginManifest } from "../types.js";
@@ -32,7 +6,7 @@ import { PUBLIC_HOST_EVENT_TYPES } from "../capabilities.js";
 import { failed, notExercised, passed, type ReportRow } from "./report.js";
 
 const BLOCK_COMMENT = /\/\*[\s\S]*?\*\//g;
-// Only where `//` begins a line: after code it looks the same as `https://`.
+// Recognize only line-leading // so URL text cannot be mistaken for a comment.
 const LINE_COMMENT = /^[ \t]*\/\/.*$/gm;
 
 const HOST_EMIT = /\bhostApi\??\.emitEvent\??\.?\(\s*["']([^"']+)["']/g;
@@ -78,7 +52,6 @@ function references(root: string, files: readonly string[], pattern: RegExp): Re
   return found;
 }
 
-/** One row per undeclared reference, or one passed row when every one is declared. */
 function crossCheck(
   check: string,
   scanned: readonly string[],
@@ -95,7 +68,6 @@ function crossCheck(
   return undeclared.map((reference) => failed(check, explain(reference.name), reference.file));
 }
 
-/** The source-drift rows for the plugin at `pluginRoot`. */
 export function scanSourceDrift(pluginRoot: string, manifest: PluginManifest): ReportRow[] {
   const hostFiles = [
     ...walk(join(pluginRoot, "src"), isTsSource, true),

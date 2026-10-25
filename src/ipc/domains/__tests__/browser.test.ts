@@ -1,7 +1,3 @@
-/**
- * Browser-tab / active-surface IPC: host-renderer only, scoped to the
- * sender's own main window, malformed payloads refused.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import { CHANNELS } from "../../../contract/app-contract.js";
@@ -89,7 +85,6 @@ describe("browser IPC", () => {
       .toEqual({ ok: false, error: "guest-not-hosted" });
     expect(invoke(CHANNELS.browser.bindTab, fromWindow(), { tabId: "", webContentsId: 41 }))
       .toEqual({ ok: false, error: "bad-request" });
-    // A host frame that is not a main window's renderer binds nothing.
     expect(invoke(CHANNELS.browser.bindTab, hostFrameEvent(), { tabId: "browser:1", webContentsId: 41 }))
       .toEqual({ ok: false, error: "bad-request" });
     expect(browserTabRegistry.listTabs(7).map((tab) => tab.url)).toEqual(["https://a.example/"]);

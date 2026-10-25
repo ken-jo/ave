@@ -1,9 +1,4 @@
-/**
- * Unit tests for deriveSandboxWritePaths — the namespace-scoped OS sandbox
- * write-jail derivation. Pure logic: asserts the derived capability set
- * (union of owner plugin sandbox root + allowed directories, canonicalized
- * and de-duplicated) without invoking any OS sandbox primitive.
- */
+// Derive the canonical, deduplicated union of the plugin data root and allowed directories without invoking OS isolation.
 import { afterEach, describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { deriveSandboxWritePaths } from "../sandbox-write-jail.js";
@@ -84,8 +79,7 @@ describe("deriveSandboxWritePaths", () => {
 
   it("canonicalizes paths (the OS jail and the reviewer see identical strings)", () => {
     const base = resources.makeTmpDir("ave-jail-canon-");
-    // A path with a redundant '.' segment must canonicalize to the same
-    // string the reviewer's sensitive-path layer produces.
+    // A path with a redundant '.' segment must canonicalize to the same string the reviewer's sensitive-path layer produces.
     const dotted = join(base, ".", "");
     const result = deriveSandboxWritePaths({ allowedDirectories: [dotted] });
     expect(result).toEqual([canonicalizePathForMatch(dotted)]);
@@ -93,9 +87,7 @@ describe("deriveSandboxWritePaths", () => {
   });
 
   it("does not admit the owner plugin's installed bundle into the write jail", () => {
-    // Producers derive the owner root via resolvePluginWritableRoot, so the
-    // jail covers `<pluginRoot>/data` only. `dist/` — the module the next load
-    // imports into the Electron main process — stays outside it.
+    // Producers derive the owner root via resolvePluginWritableRoot, so the jail covers `<pluginRoot>/data` only. `dist/` — the module the next load imports into the Electron main process — stays outside it.
     const cwd = resources.makeTmpDir("ave-jail-bundle-cwd-");
     const writableRoot = resolvePluginWritableRoot("ave-plugin-jail-fixture");
     const result = deriveSandboxWritePaths({

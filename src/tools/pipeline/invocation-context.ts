@@ -1,37 +1,5 @@
-/**
- * Tool pipeline — per-invocation mutable-state contract + initial-state factory
- * + the self-contained user-abort terminal helper.
- *
- * ── C8 decomposition (SECURITY-CRITICAL trust boundary) ───────────────────────
- * invocation-runner.ts owns the per-invocation mutable state. The highest-
- * risk of them participate in the TWO MUTUALLY-EXCLUSIVE sandbox
- * FILESYSTEM-CONTAINMENT relaxation blocks (one flips a plugin read auto-allow
- * to `ask` only when `!sandboxFsContainedProvider(tool)`; the other relaxes a
- * foreground plugin `ask` to `allow` only when `sandboxFsContainedProvider(tool)`).
- * Those blocks MUST stay together in invocation-authorization.ts — a denied WRITE must never
- * become an allowed one, and the read-relaxation must fire under exactly the same
- * conditions. This module therefore extracts ONLY the genuinely self-contained
- * pieces that do NOT participate in that relaxation mutation:
- *
- *   1. {@link InvocationContext} — documents the per-invocation state contract.
- *   2. {@link createInvocationContext} — builds the INITIAL per-invocation state
- *      (Layer-1 allowed scope, runtime allowed dirs, parent + own effect ledgers)
- *      exactly as the former top-of-executeOne initializers did.
- *   3. {@link returnUserAbort} — the terminal user-abort ToolResult builder. It
- *      runs only on the abort short-circuit (never on the relaxation path) and
- *      touches no permission decision — it always emits a fixed `deny`/error row.
- *
- * The state is split only at named stage boundaries:
- *   - permissionResult / invocationCategory / invocationAllowedScope /
- *     invocationRuntimeAllowedDirectories reassignments (relaxation-block state);
- *   - the two sandbox relaxation blocks + the relaxed perm-hook preservation
- *     stay together in invocation-authorization.ts;
- *   - applyApprovedDirectory (reassigns the scope `let` locals in place);
- *   - requestOutOfAllowedDirectoryAccess / propagateGrantScope (approval flow);
- *   - makeEvaluationContext (already a thin adapter over buildPermissionEvaluation-
- *     Context, and two of its callsites live inside the left-inline approval
- *     closure — extracting it would force edits there for no behavioral gain).
- */
+// Keep complementary containment relaxation and read-approval blocks together in invocation-authorization.
+// A denied write must never become allowed; read relaxation must retain exactly the same conditions.
 import {
   buildAllowedScope,
   buildRuntimeAllowedDirectories,
@@ -55,62 +23,26 @@ import type {
 import type { AuditWriter } from "./audit-writer.js";
 import { emitToolStart } from "./display-mask.js";
 
-/**
- * The per-invocation mutable-state contract threaded through the ordered
- * 8-step pipeline. Documents the load-bearing values that mutate as a single
- * tool call flows through permission resolution, the sandbox-relaxation blocks,
- * and execution.
- *
- * NOTE: the preparation runner holds these as individual `let`/`const` locals,
- * object. Several fields (permissionResult, invocationCategory, allowedScope,
- * runtimeAllowedDirectories) are reassigned by the SECURITY-CRITICAL sandbox
- * filesystem-containment relaxation blocks and by applyApprovedDirectory; boxing
- * them into one shared mutable object would couple independent stages. This
- * interface is the CONTRACT/record of that state;
- * {@link createInvocationContext} seeds the initial values ({@link
- * InitialInvocationState}).
- */
+// Record per-invocation state while stage-local permission, category, and scope mutations remain coordinated at authorization boundaries.
 export interface InvocationContext {
-  /**
-   * Layer-3 permission verdict. Reassigned across authorization as the call
-   * flows through the category matrix, the sandbox relaxation blocks, the
-   * reviewer / memory-skip lanes, and the ApprovalGate. LEFT as a `let` local in
-   * authorization — the relaxation blocks reassign it together.
-   */
+  // Permission changes across reviewer, memory, approval, and coordinated containment relaxation.
   permissionResult: PermissionCheckResult | undefined;
-  /** Tool source (builtin / plugin / mcp) — set once after the Step-1 lookup. */
   source: ToolSource;
-  /** Trust level derived from the source — set once after the Step-1 lookup. */
   trust: TrustLevel;
-  /**
-   * Effective category. Starts as the declared category, may be swapped by
-   * resolveEnforcedCategory (flag-gated) and re-read by the relaxation blocks.
-   * Held as a `let` local by the preparation runner.
-   */
+  // Category may be host-reclassified before containment relaxation reads it.
   invocationCategory: ToolCategory;
   /** Layer-1 allowed scope; widened in place by applyApprovedDirectory. */
   allowedScope: { directories: string[] };
-  /**
-   * Runtime allowed dirs handed to tool.execute (Step 6); widened alongside
-   * allowedScope by applyApprovedDirectory.
-   */
+  // Runtime directories widen together with allowedScope after an approved grant.
   runtimeAllowedDirectories: string[];
-  /** Per-invocation effect ledger (observability only); bound around Step 6. */
+  // Observability-only invocation ledger bound around execution.
   effectLedger: EffectLedger;
   /** Ambient parent ledger, captured BEFORE opening this invocation's own. */
   parentEffectLedger: EffectLedger | undefined;
-  /**
-   * additionalDirectories snapshot at executeOne entry (fresh view when a getter
-   * is wired). Reused by applyApprovedDirectory as the merge base.
-   */
+  // Fresh additional-directory snapshot used as the merge base for grants.
   baseAdditionalDirectories: readonly string[];
 }
 
-/**
- * The subset of {@link InvocationContext} that {@link createInvocationContext}
- * seeds up front. The remaining fields (source / trust / invocationCategory /
- * permissionResult) are set by the preparation and authorization stages.
- */
 export type InitialInvocationState = Pick<
   InvocationContext,
   | "baseAdditionalDirectories"
@@ -120,19 +52,11 @@ export type InitialInvocationState = Pick<
   | "effectLedger"
 >;
 
-/**
- * Build the initial per-invocation state at the top of the preparation stage —
- * the former inline initializers. No permission decision is made here.
- */
 export function createInvocationContext(
   permissionContext: ToolPermissionContext,
   executionCwd: string,
 ): InitialInvocationState {
-  // Within-round freshness: when the caller provided a getter we read the
-  // *current* additional-directories view at the top of this executeOne (rather
-  // than the snapshot taken when executeAll() was dispatched). This makes an
-  // `allow-once`/`allow-session` grant applied by an earlier tool visible to
-  // later tools in the same ordered run.
+  // Refresh additional directories per invocation so earlier grants in an ordered batch are visible.
   const baseAdditionalDirectories: readonly string[] =
     permissionContext.getAdditionalDirectories?.()
     ?? permissionContext.additionalDirectories
@@ -142,17 +66,9 @@ export function createInvocationContext(
     baseAdditionalDirectories,
     executionCwd,
   );
-  // Capture any AMBIENT (parent) ledger BEFORE opening this invocation's own
-  // ledger. For a top-level tool this is undefined; for a re-entrant
-  // `callTool(M)` it is the OUTER wrapper's ledger, so a MUTATING inner tool
-  // can propagate a child-mutation marker back onto the wrapper (a
-  // read-declared wrapper that mutates via delegation must not look like a read).
+  // Capture the parent ledger first so delegated mutations propagate to wrappers and cannot appear read-only.
   const parentEffectLedger = currentEffectLedger();
-  // Per-invocation effect ledger (observability only — no enforcement). A
-  // fresh ledger per executeOne; bound to the async chain around Step 6 so the
-  // in-process plugin hostApi closures record their host-mediated effects here.
-  // Created BEFORE resolveEnforcedCategory so its correlationId threads into
-  // BOTH the category shadow (pre-exec) and the effect shadow (post-exec).
+  // Create a fresh observability ledger before classification so category and effect audit share correlationId.
   const effectLedger = createEffectLedger();
   return {
     baseAdditionalDirectories,
@@ -163,15 +79,8 @@ export function createInvocationContext(
   };
 }
 
-/**
- * Dependency bundle for {@link returnUserAbort}. A named-field object (not a
- * positional list) so the wide capture surface of the original closure threads
- * without positional-arg mistakes. `auditWriter.auditToolCall` is called
- * directly — the former private `auditToolCall` was a pure pass-through
- * delegator to it, so this is byte-identical.
- */
 export interface UserAbortDeps {
-  /** Args to attribute to the aborted call (`toolUse.input` or the post-hook `finalInput`). */
+  // Attribute cancellation to post-hook finalInput when available.
   input: Record<string, unknown>;
   toolUse: ToolUseBlock;
   meta: ToolCallMeta;
@@ -187,13 +96,7 @@ export interface UserAbortDeps {
   audit?: ToolExecutionAuditMetadata;
 }
 
-/**
- * Terminal user-abort path: emit the standard cancellation ToolResult + audit
- * row. Extracted verbatim from the former `returnUserAbort` closure — same
- * fixed `deny` / "user aborted turn" permission shape, same `"user-abort"`
- * termination reason, same emit/onToolEnd/audit ordering. Never participates in
- * the sandbox-relaxation decision.
- */
+// Emit cancellation result and fixed denial audit without participating in containment relaxation.
 export async function returnUserAbort(deps: UserAbortDeps): Promise<ToolResult> {
   const {
     input,

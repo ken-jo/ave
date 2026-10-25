@@ -16,12 +16,7 @@ import { hasOnlyKeys, isRecord, isStringArray } from "../shared/is-record.js";
 import { isSafeStructuralId } from "../shared/dlp-safe-id.js";
 
 const MESSAGE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,255}$/;
-/**
- * Own-key allow-lists of the A2A `Message` and `Part` wire objects. The task
- * store and the subagent handler validate the same objects off the same wire
- * and the same persisted record, so they import these rather than restate
- * them: one list, one answer to "is this key part of the shape".
- */
+// Share own-key allowlists across wire and persisted-record validation.
 export const A2A_MESSAGE_KEYS: ReadonlySet<string> = new Set([
   "messageId",
   "contextId",
@@ -277,14 +272,7 @@ function readTaskState(message: A2AMessage): string {
   return typeof raw === "string" && TASK_STATE_PATTERN.test(raw) ? raw : "unknown";
 }
 
-/**
- * Host-composed stand-in for a report whose parts render to nothing.
- *
- * A bare envelope (`[Sub-Agent: title] (task …, message …)`) is unactionable:
- * the parent LLM receives an id and no instruction, so the turn ends without a
- * response. The producer is expected to always carry content; this is the
- * last-line defense so no delivery can reach the parent as an id-only line.
- */
+/** Supply actionable host text when a producer report has no renderable parts. */
 function hostComposedEmptyBody(
   address: AgentMessageAddress,
   message: A2AMessage,
@@ -295,13 +283,7 @@ function hostComposedEmptyBody(
   });
 }
 
-/**
- * Prefix a delivered child report with the host's judgment instruction.
- *
- * Applied at the two parent CONSUMPTION points (mid-turn guidance injection and
- * the next-turn mailbox drain), never inside the canonical `formattedText` that
- * the mailbox persists and revalidates — so a report can never be wrapped twice.
- */
+/** Add the judgment instruction only at consumption; persisted canonical text stays unwrapped. */
 export function wrapChildReportForParentJudgment(text: string): string {
   return `${t("be_a2aSubAgentMessage.parentJudgmentInstruction")}\n\n${text}`;
 }
@@ -354,8 +336,7 @@ export type CanonicalAgentMessageResult =
       formattedText: string;
       approvalLabel: string;
       childTitle: string;
-      /** The producer sent no renderable content; `formattedText` carries the
-       *  host-composed stand-in instead. Callers audit this as a warning. */
+      // Audit reports whose empty parts required a host-composed body.
       emptyBody: boolean;
     }
   | { ok: false; reason: "invalid-message" | "unsupported-part" };
@@ -443,14 +424,7 @@ function validateInboundA2ASubAgentMessage(
   return null;
 }
 
-/**
- * Decode one loopback A2A user Message into the only values the runner needs.
- *
- * Caller-supplied metadata remains inert protocol history: it is recursively
- * DLP-masked but is never rendered into the prompt or projected into origin,
- * title, cwd, project, tool-scope, or ApprovalGate options. Those controls are
- * host-owned at the runner boundary.
- */
+/** DLP-mask wire metadata as inert history; it must never control prompts, origin, scope, or approvals. */
 export function canonicalizeInboundA2ASubAgentMessage(
   message: unknown,
 ): CanonicalInboundA2ASubAgentMessageResult {

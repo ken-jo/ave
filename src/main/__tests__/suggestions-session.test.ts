@@ -1,13 +1,4 @@
-/**
- * The dedicated Suggestions conversation exists before anything is addressed
- * to it.
- *
- * Main makes it exist synchronously as it stages a suggestion, so the row is
- * listed by the time the renderer re-reads the list. It is an ordinary `main`
- * conversation: created empty, never replacing a transcript the user already
- * has there, and moved up the recency-ordered list only when something new
- * arrives — not when a window merely pulls cards staged earlier.
- */
+// Staging suggestions must synchronously create the conversation without replacing an existing transcript.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, statSync, utimesSync } from "node:fs";
 import { tmpdir } from "node:os";

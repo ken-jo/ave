@@ -1,13 +1,3 @@
-/**
- * Tool-Level Deferral — handleToolSearch pure-logic unit tests.
- *
- * Mirror of the request_plugin intercept semantics one layer down:
- *   - matched catalog tools are promoted into activeToolNames
- *   - a tool_result is synthesized per intercepted tool_use (tool-pair invariant)
- *   - non-tool_search tool_uses pass through as `remaining`
- *   - per-turn / per-session caps are enforced
- *   - missing query / no-match → error tool_result without mutating scope
- */
 import { describe, it, expect } from "vitest";
 
 import {
@@ -86,9 +76,7 @@ describe("handleToolSearch", () => {
   });
 
   it("does not promote on a sub-minimum-length token but does on a valid one", () => {
-    // Every catalog description contains the single char "e", so a 1-char query
-    // would broadly over-promote without the min-token guard. A name token of
-    // valid length ("email") must still promote its tool.
+    // Sub-minimum query tokens must not broadly promote tools through common description substrings.
     const state = freshState({
       catalog: [
         { name: "meeting_start", description: "begin a recorded meeting" },
@@ -107,9 +95,7 @@ describe("handleToolSearch", () => {
   });
 
   it("does not let a sub-minimum-length token contribute to scoring", () => {
-    // Mixed query: a sub-min token ("a") plus a valid token ("meeting"). Only
-    // the valid token may drive promotion — the short token must contribute no
-    // score even though it is a substring of every catalog entry.
+    // Mixed queries must score only valid-length tokens, never short ubiquitous substrings.
     const state = freshState({
       catalog: [
         { name: "meeting_start", description: "a meeting helper" },
@@ -118,7 +104,6 @@ describe("handleToolSearch", () => {
     });
     const out = handleToolSearch([search("tu-1", "a meeting")], state);
     expect(out.results[0].is_error).toBe(false);
-    // calendar_add only matches via the sub-min "a" token → must NOT promote.
     expect(out.promotedToolNames).toEqual(["meeting_start"]);
     expect(state.activeToolNames.has("calendar_add")).toBe(false);
   });
@@ -208,43 +193,27 @@ describe("handleToolSearch", () => {
   });
 });
 
-/**
- * Direct scoring-guard tests — exercising `scoreCatalogEntry` via its
- * test-only export so the MIN_CATALOG_MATCH_TOKEN_LENGTH guards inside the
- * function are covered independently of the tokenizeQuery pre-filter.
- * (The handleToolSearch tests above exercise the tokenizer path; these pin
- * the scoring boundary itself, so deleting either guard fails a test.)
- */
+// Exercise scorer guards independently of tokenizer filtering so either boundary can catch short tokens.
 describe("_scoreCatalogEntryForTest — scoring-boundary MIN_CATALOG_MATCH_TOKEN_LENGTH guard", () => {
   const entry = { name: "meeting_start", description: "begin a recorded meeting" };
 
   it("gives zero score to a token below the minimum length", () => {
-    // Passing a raw sub-min token directly to the scorer, bypassing tokenizeQuery.
-    // The guard on line 105 of tool-search.ts must catch it; without the guard
-    // "a" would score 30 via description.includes("a") on 'begin a recorded meeting'.
+    // Bypass tokenization to prove the scorer itself rejects sub-minimum tokens.
     const score = _scoreCatalogEntryForTest("a", ["a"], entry);
     expect(score).toBe(0);
   });
 
   it("scores a token of exactly the minimum length normally", () => {
-    // A 2-char token exactly at the threshold must still contribute score.
-    // "me" is a prefix of "meeting_start" → name.startsWith → +350.
     const score = _scoreCatalogEntryForTest("me", ["me"], entry);
     expect(score).toBeGreaterThan(0);
   });
 
   it("ignores sub-min tokens in a mixed array but scores valid tokens", () => {
-    // ["a", "meeting"] — "a" must contribute nothing; "meeting" (nameToken match)
-    // must contribute +300.  This directly pins both guards (lines 100 and 105).
     const score = _scoreCatalogEntryForTest("a meeting", ["a", "meeting"], entry);
-    // Only "meeting" contributes: name.startsWith("meeting") → 350
-    // plus description.includes("meeting") → 30.
     expect(score).toBe(380);
   });
 
   it("gives zero score when the whole query is below the minimum length", () => {
-    // The exact-match guard (query.length >= MIN_CATALOG_MATCH_TOKEN_LENGTH) on
-    // line 100 must prevent a 1-char query from scoring 1000 on a 1-char name.
     const tiny = { name: "m", description: "shorthand tool" };
     const score = _scoreCatalogEntryForTest("m", ["m"], tiny);
     expect(score).toBe(0);
@@ -263,8 +232,8 @@ describe("computeIdfWeights — IDF ranking", () => {
     ];
     const weights = _computeIdfWeightsForTest(catalog, ["list", "reconcile"]);
     expect(weights.get("list")!).toBeLessThan(weights.get("reconcile")!);
-    expect(weights.get("list")!).toBeLessThan(0.7); // common (3/4) → damped
-    expect(weights.get("reconcile")!).toBeGreaterThan(0.9); // rare (1/4) → ~1.0
+    expect(weights.get("list")!).toBeLessThan(0.7);
+    expect(weights.get("reconcile")!).toBeGreaterThan(0.9);
   });
 
   it("clamps a near-ubiquitous token to the 0.2 floor in a large catalog", () => {
@@ -281,7 +250,6 @@ describe("computeIdfWeights — IDF ranking", () => {
       entry("reconcile_x", "reconcile x"),
     ];
     const weights = _computeIdfWeightsForTest(catalog, ["list", "reconcile"]);
-    // Both are whole-name-token matches (tier 700); IDF breaks the tie.
     const listScore = _scoreCatalogEntryForTest("list", ["list"], entry("list_a", "list a"), weights);
     const rareScore = _scoreCatalogEntryForTest("reconcile", ["reconcile"], entry("reconcile_x", "reconcile x"), weights);
     expect(rareScore).toBeGreaterThan(listScore);

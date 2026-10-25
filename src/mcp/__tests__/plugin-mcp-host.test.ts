@@ -1,13 +1,4 @@
-/**
- * `PluginMcpHost` integration (mcp-alignment-design.md §3.1, first-party arm).
- *
- * Proves the production first-party path end-to-end: an Ave manifest →
- * PluginMcpServer → loopback transport → PluginMcpHost discovers + registers the
- * plugin's tools into a real ToolRegistry under their NATURAL names with PLUGIN
- * authority (category from _meta), and tools/call round-trips to the delegate.
- * This is the reusable host the untrusted-stdio milestone re-points to a stdio
- * transport without changing registration.
- */
+/** Verify natural-name plugin tool registration and delegated calls through the production loopback host. */
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { PluginMcpHost } from "../plugin-mcp-host.js";
 import { LoopbackTransport } from "../loopback-transport.js";
@@ -26,10 +17,8 @@ import {
 } from "../../permissions/sandbox-capability.js";
 import { testLoopbackHost } from "./plugin-mcp-test-helpers.js";
 
-/** A `_meta` vendor prefix the host does not own; it must never be read as `ave/*`. */
 const UNKNOWN_META_PREFIX = "xyz.example/";
 
-// #885 v6 — the loopback consumes the NORMALIZED pure `Tool[]` (manifest == wire).
 const MANIFEST: PluginManifest = {
   id: "com.example.notes",
   name: "Notes",
@@ -88,28 +77,22 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
 
     const registered = await publishTestHost(host, MANIFEST.id, registry);
 
-    // Natural names — NO mcp_ namespace (first-party plugin, not external server).
     expect(registered).toEqual(["notes_read", "notes_save"]);
 
     const read = registry.findByName("notes_read");
     expect(read?.source).toBe("plugin");
     expect(read?.pluginId).toBe("com.example.notes");
-    // #885 v6 — category is REMOVED from the wire; the reverse projection
-    // registers the host-derived write-equivalent baseline (effective category
-    // is computed host-side per invocation).
+    // The wire cannot attest risk; register the strict baseline and derive effective risk in the host.
     expect(read?.category).toBe("write");
     expect(read?.pathFields).toEqual(["path"]);
-    // wire carries no per-tool version → createDynamicTool "1.0.0" default.
     expect(read?.version).toBe("1.0.0");
 
     const save = registry.findByName("notes_save");
     expect(save?.category).toBe("write");
-    // v6 — no self-attested worker identity or writesToOwnSandbox on the wire;
-    // both stay undefined so the reviewer cannot relax on a plugin self-claim.
+    // Never trust wire worker identity or sandbox claims to relax review.
     expect(save?.workerId).toBeUndefined();
     expect(save?.writesToOwnSandbox).toBeUndefined();
 
-    // tools/call round-trips host → loopback → server → delegate → back.
     const result = await read!.execute({ path: "/a.md" }, {} as never);
     expect(delegate).toHaveBeenCalledWith("notes_read", { path: "/a.md" });
     expect(result).toMatchObject({
@@ -119,8 +102,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
         uiPayload: { resourceUri: "ui://notes/read.html" },
       },
     });
-    // A `csp` on the TOOL result is IGNORED — per spec it lives on the RESOURCE, and
-    // main derives the sandbox-proxy CSP header from there.
+    // CSP comes only from resource metadata, never the tool result.
     expect(
       (result.metadata as { uiPayload?: Record<string, unknown> }).uiPayload,
     ).not.toHaveProperty("csp");
@@ -189,9 +171,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
   });
 
   it("IGNORES a rawResult under an unknown vendor _meta prefix — only ave/rawResult is read", async () => {
-    // rawResult is a DATA channel (not a security field). The host reads it from
-    // `ave/rawResult` alone: a plugin emitting it ONLY under another vendor's
-    // prefix surfaces NO metadata.rawResult.
+    // Read raw result data only from the owned metadata key.
     const delegate: PluginToolDelegate = vi.fn(async () => ({
       content: [{ type: "text", text: "ok" }],
       _meta: { [`${UNKNOWN_META_PREFIX}rawResult`]: { note: "structured" } },
@@ -304,7 +284,7 @@ describe("PluginMcpHost — first-party loopback registration + round-trip", () 
     const host = testLoopbackHost(badManifest, delegate, registry);
 
     const registered = await publishTestHost(host, badManifest.id, registry);
-    expect(registered).toEqual(["good_tool"]); // bad_tool dropped fail-soft
+    expect(registered).toEqual(["good_tool"]);
     expect(registry.findByName("bad_tool")).toBeUndefined();
   });
 

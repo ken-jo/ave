@@ -1,24 +1,4 @@
-/**
- * Continuous transcript durability.
- *
- * The turn's persistence points all sit AFTER `queryLoop` returns (the
- * post-turn hook chain, the no-hook-chain fallback, and the turn_summary
- * save). Any throw between the user append and those points therefore used to
- * discard the entire turn — the user's own message included — because the
- * history it lived in is in-memory state.
- *
- * These tests pin the invariants that make the record survive:
- *   1. the user message is durable before the first provider call,
- *   2. a tool that rejects its own input at the authorization boundary costs
- *      that ONE call, not the turn — earlier rounds stay durable and the loop
- *      keeps going,
- *   3. a provider stream failure keeps its partial round + error marker,
- *   4. the persisted turn replays through `historyToEntries`.
- *
- * The loops built here carry no `postTurnHookChain`, which is also how
- * `SubAgentRunner` constructs a child loop — so these cases exercise the same
- * persistence path a sub-agent transcript takes into `~/.ave/subagent/`.
- */
+// Persist accepted input before provider calls; failed calls or streams must retain prior rounds.
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -44,7 +24,6 @@ class ScriptedProvider implements LLMProvider {
   private index = 0;
 
   constructor(
-    /** An `Error` entry makes that round's stream throw — a transport failure. */
     private readonly turns: (StreamEvent[] | Error)[],
     private readonly onStreamStart?: () => void,
   ) {}
@@ -78,14 +57,7 @@ function buildLoop(
   return loop;
 }
 
-/**
- * A tool whose approval-cache key throws — the shape that lost the reported
- * turn. `approvalCacheKeyFor` runs the tool's own zod parse (BashTool's
- * `approvalCacheKey` does exactly this) at the invocation runner's authority
- * boundary, which sits before the per-call execution boundary. The invocation
- * runner now absorbs that rejection into an `is_error` tool_result, so these
- * cases pin that ONE call fails rather than the whole `ave:chat:send`.
- */
+// Authorization-key parse failures must become per-call error results, never reject the turn.
 function inputRejectingTool(message: string) {
   return createDynamicTool({
     name: "input_rejecting_tool",
@@ -197,9 +169,6 @@ describe("transcript durability", () => {
         ],
       ]);
 
-      // The turn SETTLES. Before the absorption the same call rejected
-      // `ave:chat:send`, so one malformed argument ended the user's turn and
-      // the earlier round survived only because the transcript was flushed.
       const result = await buildLoop(memoryManager, toolRegistry, provider).runTurn(
         "두 라운드 작업",
         undefined,
@@ -220,9 +189,7 @@ describe("transcript durability", () => {
         (m) => m.role === "tool_result" && m.toolUseId === "call-2",
       );
       expect(rejected).toMatchObject({ isError: true });
-      // The model is told what it got wrong, so the next round can fix it.
       expect(String(rejected?.content)).toContain("timeoutSeconds too_big");
-      // And the loop went on to produce a real reply.
       expect(
         messages.some(
           (m) => m.role === "assistant" && m.content === "인자를 고쳐서 다시 시도하겠습니다",
@@ -274,8 +241,7 @@ describe("transcript durability", () => {
         inputOrigin: "user-keyboard",
       });
 
-      // Reload the way the app does: engine load (which repairs the unpaired
-      // tool_use tail) then the renderer's persisted-history projection.
+      // Reload repairs tool pairs before the renderer projects persisted history.
       const reloadLoop = buildLoop(memoryManager, new ToolRegistry(), provider);
       expect(await reloadLoop.loadSession(SESSION_ID)).toBe(true);
       const entries = historyToEntries(
@@ -331,8 +297,7 @@ describe("transcript durability", () => {
         { inputOrigin: "user-keyboard" },
       );
 
-      // Reload through an EMPTY registry: whatever the panel can still say about
-      // these calls has to have come off disk, not from a live lookup.
+      // An empty registry proves tool attribution was persisted rather than looked up live.
       const reloadLoop = buildLoop(memoryManager, new ToolRegistry(), provider);
       expect(await reloadLoop.loadSession(SESSION_ID)).toBe(true);
       const serialized = reloadLoop

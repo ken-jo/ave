@@ -207,11 +207,7 @@ describe("PlatformBridgeInboundGateway", () => {
   });
 
   it("refuses the control characters a hand-written C0 range walks past", async () => {
-    // The inbound class used to be spelled out here as a C0 range plus DEL. It
-    // therefore admitted U+009B (CSI, the 8-bit ANSI escape introducer) and
-    // U+2028 (LINE SEPARATOR) in provider-supplied text and identifiers, while
-    // refusing U+001B and "\n" -- the same categories, written two ways. The
-    // shared class covers all of them.
+    // Use the shared control-character class to reject C0, DEL, C1 escapes, and Unicode line separators consistently.
     for (const hostile of ["\u009b", "\u0085", "\u2028", "\u2029"]) {
       const inText = createFixture({ verify: () => envelope({ text: `hello${hostile}world` }) });
       await expect(inText.gateway.handleWebhook(request())).resolves.toBe("invalid-envelope");
@@ -338,8 +334,7 @@ describe("PlatformBridgeInboundGateway", () => {
 
     await expect(fixture.gateway.handleWebhook(request())).resolves.toBe("accepted");
 
-    // The exact same provider delivery remains independently idempotent for
-    // a different already-hashed host actor; no raw account/channel joins the key.
+    // The exact same provider delivery remains independently idempotent for a different already-hashed host actor; no raw account/channel joins the key.
     authorization = { ...defaultAuthorization(), actorDigest: secondActorDigest };
     await expect(fixture.gateway.handleWebhook(request())).resolves.toBe("accepted");
 

@@ -1,12 +1,5 @@
 import type { SecretEncryption } from "../data/secret-document-store.js";
-/**
- * Composition glue between the owner's durable connection state and the
- * bridge activation.
- *
- * It exists so `main.ts` does not have to know how a stored pairing becomes an
- * egress authority, and so the credential is read at activation time from the
- * encrypted store rather than being held anywhere longer-lived.
- */
+// Read encrypted credentials at activation time instead of holding them in longer-lived connection state.
 import type { SecretStore } from "../audit/hmac-chain.js";
 import type { ConversationSurfaceRuntime } from "../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "./conversation-command-port.js";
@@ -32,52 +25,21 @@ export interface StartTelegramConnectionActivationOptions {
   readonly conversationSurfaceRuntime: ConversationSurfaceRuntime;
   readonly conversationCommandPort: ConversationCommandPort;
   readonly getCurrentConversationId: () => string;
-  /**
-   * The transport this activation's Bot API requests run on. REQUIRED: Node's
-   * ambient `fetch` reads neither the machine's proxy configuration nor its
-   * trust store, so an activation issued on it would go direct on a machine
-   * whose configuration says otherwise. Composition supplies Chromium's stack.
-   */
+  // Require the configured desktop transport: ambient fetch omits the machine proxy and trust store.
   readonly networkFetch: typeof fetch;
-  /**
-   * Stops this activation. Wired to the same owner-initiated teardown the
-   * settings surface uses, so a fatal poll outcome and a manual disconnect
-   * converge on one path.
-   */
+  // Stops this activation. Wired to the same owner-initiated teardown the settings surface uses, so a fatal poll outcome and a manual disconnect converge on one path.
   readonly stopBridge: () => Promise<void>;
-  /**
-   * The host approval gate behind the remote-approval card feature. Read at
-   * activation time by the composition owner (`main.ts`); absent — in tests
-   * and in any boot without a gate — keeps approvals desk-only.
-   */
+  // The host approval gate behind the remote-approval card feature. Read at activation time by the composition owner (`main.ts`); absent — in tests and in
+  // any boot without a gate — keeps approvals desk-only.
   readonly approvalGate?: TelegramRemoteApprovalGatePort;
-  /**
-   * Whether Telegram is answering this activation's poll loop. The owner
-   * service reads it so a share does not keep reading `active` while every poll
-   * is failing.
-   */
+  // Whether Telegram is answering this activation's poll loop. The owner service reads it so a share does not keep reading `active` while every poll is failing.
   readonly onPollHealth?: (health: TelegramPollHealth) => void;
-  /** Test-only injection; production reads Electron's OS-encrypted store. */
+  // Test-only injection; production reads Electron's OS-encrypted store.
   readonly secretStore?: SecretStore;
   readonly log?: (message: string) => void;
 }
 
-/**
- * The composed answer to "this refusal deserves a word back".
- *
- * Extracted because the bug it replaces was invisible everywhere else. The
- * ingress decides WHICH notice a refusal earns — "nothing is shared" and
- * "commands are not supported" are different problems with different repairs —
- * and passes it as the second argument. This binding was written taking only
- * the chat id, so the notice was dropped and every refusal was answered with a
- * hardcoded "nothing is shared". An owner mid-share who sent a slash command
- * was told, falsely, that they had shared nothing.
- *
- * Nothing caught it: a callback declared with fewer parameters than it is
- * handed is not a type error, and the ingress suite injects its own notifier,
- * so its assertions never reached this composition. Making the binding a named
- * function gives that seam somewhere to be tested.
- */
+// Forward the ingress-selected notice reason as well as chatId; callbacks with fewer parameters still typecheck.
 export function createUnroutableNotifier(
   controlReplies: Pick<TelegramControlReplySender, "notify">,
 ): (chatId: string, notice: TelegramControlNotice) => Promise<void> {
@@ -86,18 +48,7 @@ export function createUnroutableNotifier(
   };
 }
 
-/**
- * Tell the phone a pairing took.
- *
- * The ingress already called `onPaired` after a successful redemption, but
- * nothing was bound to it: the owner typed the code into Telegram and got
- * silence, which reads the same as a bot that never received it. The reference
- * remote surfaces confirm a pairing on the paired device; this sends the one
- * fixed host notice for it. It runs only after the durable store accepted the
- * code, so its recipient is the paired owner by construction, and it is a
- * named function for the same reason {@link createUnroutableNotifier} is.
- * Delivery is best-effort: the sender swallows a provider failure.
- */
+// Confirm pairing only after durable redemption accepted the owner; delivery is best-effort fixed host text.
 function createPairedNotifier(
   controlReplies: Pick<TelegramControlReplySender, "notify">,
 ): (senderId: string) => Promise<void> {
@@ -106,26 +57,12 @@ function createPairedNotifier(
   };
 }
 
-/**
- * Name this machine's actor key to the durable store, and let it retire a
- * pairing that key can no longer derive.
- *
- * Separate from {@link startTelegramConnectionActivation} because of WHEN it has
- * to run rather than what it does. The bot token and the actor key live in the
- * same OS credential store, so the ordinary real failure — a keychain reset —
- * takes both; an activation that reads the credential first never gets here at
- * all, and the owner surface, which reads the store rather than the bridge,
- * goes on claiming an account nothing on this machine can name. The connection
- * service owns that ordering and calls this ahead of its own credential read.
- *
- * A store with no bot identity is a no-op: no digest could have been minted
- * under an older key yet, and adopting a name here would be adopting one for a
- * document that has nothing to lose.
- */
+// Reconcile actor-key identity before reading bot credentials because keychain reset usually loses both.
+// Without a stored bot identity there is no old digest to invalidate or adopt.
 export async function reconcileTelegramActorKey(options: {
   readonly encryption: SecretEncryption;
   readonly store: TelegramConnectionStore;
-  /** Test-only injection; production reads Electron's OS-encrypted store. */
+  // Test-only injection; production reads Electron's OS-encrypted store.
   readonly secretStore?: SecretStore;
 }): Promise<void> {
   const botFingerprint = options.store.botFingerprint();
@@ -138,17 +75,7 @@ export async function reconcileTelegramActorKey(options: {
   await options.store.reconcileActorKey(digestActor.actorKeyDigest);
 }
 
-/**
- * Bring up the owner-driven activation for whatever is currently stored.
- *
- * A missing credential or fingerprint is a no-op rather than an error: the
- * owner service is the only thing that decides whether a connection should
- * exist, and it reports that state through its own snapshot.
- *
- * The actor-key reconcile is deliberately NOT done here. It has to precede the
- * credential read, and this function is only ever reached after the service has
- * already made one — see {@link reconcileTelegramActorKey}.
- */
+// Missing credential or bot identity is a no-op decided by the owner facade; actor-key reconciliation must already have preceded credential reads.
 export async function startTelegramConnectionActivation(
   options: StartTelegramConnectionActivationOptions,
 ): Promise<void> {
@@ -202,24 +129,13 @@ export async function startTelegramConnectionActivation(
     ...(options.onPollHealth ? { onPollHealth: options.onPollHealth } : {}),
     ...(options.approvalGate ? { approvalGate: options.approvalGate } : {}),
     onFatal: async (code) => {
-      // Best-effort, and deliberately not allowed to skip the teardown below.
-      // One fatal code says the store itself cannot be written, so the call
-      // that records it is the one most likely to throw — and a throw here used
-      // to abandon the teardown, leaving egress attached for exactly the
-      // failure that needs it detached most.
+      // Error persistence is best-effort and must never skip teardown, especially when an unwritable store caused the fatal outcome.
       try {
         await store.setLastError(code);
       } catch {
         options.log?.("[telegram-activation] the fatal poll outcome could not be recorded");
       }
-      // A fatal poll outcome ends ingress but left egress attached, so a bridge
-      // showing an error badge kept streaming assistant text to the phone.
-      // Tear the activation down: a surface that cannot receive must not send.
-      //
-      // Deliberately not awaited. This handler runs inside the poll loop and the
-      // teardown waits for that loop to finish, so awaiting here would leave each
-      // side waiting on the other. Starting it and returning lets the loop unwind
-      // into the stop that is already in flight.
+      // Fatal ingress must also stop egress. Start teardown without awaiting it here because teardown waits for this poll loop to finish.
       void options.stopBridge().catch(() => {
         options.log?.("[telegram-activation] teardown after a fatal poll failed");
       });
@@ -228,16 +144,10 @@ export async function startTelegramConnectionActivation(
   });
 }
 
-/**
- * The one conversation-digest derivation for this feature, re-exported so the
- * store and the owner service are wired from the same symbol. Two injections of
- * the same function is deliberate: the store compares them on every write, so a
- * future second derivation is refused instead of writing grants nothing can
- * resolve.
- */
+// Inject the same conversation-digest function into store and owner service; mismatched derivations must refuse writes.
 export { telegramConversationDigest };
 
-/** Re-exported so `main.ts` composes one conversation-digest derivation. */
+// Re-exported so `main.ts` composes one conversation-digest derivation.
 export function telegramConversationDigestFor(
   store: TelegramConnectionStore,
   conversationId: string,

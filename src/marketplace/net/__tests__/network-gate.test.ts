@@ -8,7 +8,7 @@ import { NetworkGate, downloadUrlForPolicy, type CatalogSource } from "../networ
 import { normalizeSourceUrl, parseSourcePattern } from "../source-url.js";
 import { downloadBounded } from "../../resolve/download.js";
 
-/** What the gate logs, unscrubbed: a test of what it hands the logger, not of the scrubber. */
+/** Captures pre-scrub logger arguments so gate disclosures are tested independently. */
 const logged = vi.hoisted(() => ({ warn: [] as unknown[][] }));
 vi.mock("../../log.js", () => ({
   createMarketplaceLogger: () => ({
@@ -28,15 +28,10 @@ interface RecordedCall {
   url: string;
   headers: Headers;
   redirect: RequestRedirect | undefined;
-  /** The answers the gate let the connection use. */
   kept: readonly string[];
 }
 
-/**
- * A pinned transport over a route table: each hop "resolves" its host from
- * `dns` (an IP literal resolves to itself), hands the answers to the gate's
- * `select` exactly once, and records what the hop carried and kept.
- */
+/** Each transport hop resolves once and records the gate-selected answers and forwarded headers. */
 function fakeTransport(routes: Record<string, () => Response>, dns: Record<string, readonly string[]> = {}): { transport: AddressCheckedFetch; calls: RecordedCall[]; lookups: string[] } {
   const calls: RecordedCall[] = [];
   const lookups: string[] = [];
@@ -106,7 +101,7 @@ describe("NetworkGate.checkRemote", () => {
     expect((http as ConfirmationRequiredError).warnings).toEqual([{ warning: "unencrypted", host: "1.1.1.1", address: null }]);
     expect((http as ConfirmationRequiredError).detail).toEqual({ reason: "unencrypted", host: "1.1.1.1" });
 
-    // Confirmed: http is allowed, but no sign-in travels over it until token-unencrypted is confirmed too.
+    // HTTP consent does not authorize sending credentials without token-unencrypted consent.
     expect(gate().checkRemote(remote("http://1.1.1.1/acme/market"), holding("unencrypted"))).toMatchObject({ allowHttp: true, credentialsAllowed: false });
     expect(gate().checkRemote(remote("http://1.1.1.1/acme/market"), holding("unencrypted", "token-unencrypted"))).toMatchObject({ allowHttp: true, credentialsAllowed: true });
   });
@@ -119,7 +114,6 @@ describe("NetworkGate.checkRemote", () => {
     expect(code(() => gate(load).checkRemote(remote("https://1.1.1.1/acme/market"), OTHER))).toBe("passed");
     expect(code(() => gate(load).checkRemote(remote("https://1.1.1.1/acme/secret"), OTHER))).toBe("SOURCE_POLICY_BLOCKED");
     expect(code(() => gate(load).checkRemote(remote("https://1.0.0.1/acme/market"), OTHER))).toBe("SOURCE_POLICY_BLOCKED");
-    // The allow list binds the official source too (§7.4: every target passes one gate).
     expect(code(() => gate(load).checkRemote(remote("https://1.0.0.1/acme/market"), OFFICIAL))).toBe("SOURCE_POLICY_BLOCKED");
   });
 
@@ -291,7 +285,6 @@ describe("NetworkGate.fetch", () => {
     expect(response.status).toBe(200);
     expect(hops).toEqual(["https://1.1.1.1/asset", "http://1.0.0.1/blob"]);
 
-    // A hop the gate refuses is never reported.
     const refused: string[] = [];
     const blocked = fakeTransport({ "https://1.1.1.1/asset": redirect("https://1.0.0.1/blob") });
     const load = policy({ block: [parseSourcePattern("host:1.0.0.1")] });
@@ -305,11 +298,10 @@ describe("NetworkGate.fetch", () => {
       "https://1.1.1.1/asset-2": ok,
     });
     const tamper = (hop: unknown): void => {
-      // A URL object handed over would let this redirect the request (and its Authorization) elsewhere.
+      // Observation must receive an immutable URL snapshot, not a mutable redirect target.
       try {
         (hop as { href: string }).href = "https://1.0.0.1/stolen";
       } catch {
-        // A string snapshot cannot be assigned to.
       }
     };
     const response = await gate(undefined, false, transport).fetch("https://1.1.1.1/asset", {
@@ -348,7 +340,6 @@ describe("NetworkGate.fetch", () => {
       logged.warn.length = 0;
     });
 
-    /** A body that answers once and then ends, or never ends, recording whether it was read to the end or cancelled. */
     function trackedBody(ends: boolean) {
       const state = { closed: false, cancelled: false };
       let sent = false;
@@ -361,7 +352,6 @@ describe("NetworkGate.fetch", () => {
             controller.close();
             state.closed = true;
           }
-          // An unending body stays silent after its first chunk.
         },
         cancel() {
           state.cancelled = true;
@@ -438,9 +428,7 @@ describe("NetworkGate.fetch", () => {
       Object.defineProperty(Smuggling, "name", { value: "sigCanaryCtor5d2e" });
       const thrownValues: unknown[] = [
         new Smuggling("x"),
-        // A non-Error whose constructor carries the canary.
         new (Object.defineProperty(class {}, "name", { value: "sigCanaryCtor5d2e" }))(),
-        // A Proxy whose getPrototypeOf trap throws: unreadable, and still no escape.
         new Proxy({}, { getPrototypeOf: () => { throw new Error("sigCanaryCtor5d2e"); } }),
         "sigCanaryCtor5d2e",
       ];
@@ -468,7 +456,6 @@ describe("NetworkGate.fetch", () => {
     );
     const seen: string[] = [];
     await expect(gate(undefined, false, transport).fetch("https://1.1.1.1/asset", { official: false, catalog: CATALOG, onHop: (hop) => seen.push(String(hop)) })).rejects.toThrow();
-    // The metadata hop was resolved and refused: nothing connected to it, and it is not reported.
     expect(calls.map((call) => call.url)).toEqual(["https://1.1.1.1/asset"]);
     expect(seen).toEqual(["https://1.1.1.1/asset"]);
   });
@@ -480,7 +467,6 @@ describe("NetworkGate.fetch", () => {
     );
     expect((await gate(undefined, false, transport).fetch("https://cdn.example/asset", { official: false, catalog: CATALOG })).status).toBe(200);
     expect(lookups).toEqual(["cdn.example", "mirror.example"]);
-    // The metadata answer is dropped; the public one is used.
     expect(calls.map((call) => call.kept)).toEqual([["1.1.1.1"], ["1.0.0.1"]]);
   });
 
@@ -559,14 +545,13 @@ describe("NetworkGate.fetch for a catalog's downloads (§18.2.3)", () => {
     expect(error.code).toBe("SOURCE_URL_REJECTED");
     expect(error.detail).toEqual({ reason: "catalog-this-computer", source: "Dev market", host: "127.0.0.1" });
     expect(elsewhere.calls).toHaveLength(0);
-    // internal-downloads never opens this computer.
+    // Internal-download consent never authorizes another service on this computer.
     const anyway = fetchFrom({ ...local, acknowledged: new Set([...local.acknowledged, "internal-downloads"]) }, "http://127.0.0.1:9090/admin");
     expect(await codeOf(anyway.result)).toBe("SOURCE_URL_REJECTED");
   });
 
   it("refuses another service on this computer even when the policy lists that host (§18.3 #4 before any exemption)", async () => {
     const listed = policy({ allowHttpHosts: new Set(["127.0.0.1", "localhost"]) });
-    // An unrelated public catalog, holding nothing.
     const publicCatalog: CatalogSource = { ...CATALOG, url: remote("https://public.test/repo"), acknowledged: NONE };
     for (const url of ["http://127.0.0.1:9555/admin", "http://localhost:9555/admin"]) {
       const attempt = fetchFrom(publicCatalog, url, listed, { localhost: ["127.0.0.1"] });
@@ -575,11 +560,9 @@ describe("NetworkGate.fetch for a catalog's downloads (§18.2.3)", () => {
       expect(error.detail).toMatchObject({ reason: "catalog-this-computer" });
       expect(attempt.calls).toHaveLength(0);
     }
-    // A listed loopback source's own catalog: its own port inherits, another port on the same host is refused.
     const local: CatalogSource = { id: "dev", label: "Dev market", url: remote("http://127.0.0.1:8080/ave/market"), acknowledged: NONE };
     expect((await fetchFrom(local, "http://127.0.0.1:8080/releases/x.tgz", listed).result).status).toBe(200);
     expect(await codeOf(fetchFrom(local, "http://127.0.0.1:9090/admin", listed).result)).toBe("SOURCE_URL_REJECTED");
-    // The listing still exempts an internal host from internal-downloads.
     expect((await fetchFrom(publicCatalog, "https://10.0.0.9/x.tgz", policy({ allowHttpHosts: new Set(["10.0.0.9"]) })).result).status).toBe(200);
   });
 
@@ -599,7 +582,6 @@ describe("NetworkGate.fetch policy on download paths", () => {
     expect(await codeOf(gate(block, false, transport).fetch("https://1.1.1.1//evil/r", { official: false, catalog: null }))).toBe("SOURCE_URL_REJECTED");
     expect(calls).toHaveLength(0);
 
-    // The same exact pattern in an allow list lets that repository's downloads through.
     const allow = policy({ allow: [parseSourcePattern("https://1.1.1.1/acme/tools")] });
     const served = fakeTransport({ "https://1.1.1.1/acme/tools/releases/download/v1/x.tgz": ok });
     expect((await gate(allow, false, served.transport).fetch("https://1.1.1.1/acme/tools/releases/download/v1/x.tgz", { official: false, catalog: null })).status).toBe(200);
@@ -617,7 +599,6 @@ describe("downloadUrlForPolicy", () => {
       url: "https://github.com/acme/market/releases",
     });
     expect(downloadUrlForPolicy(new URL("http://git.corp.example:8080/a")).url).toBe("http://git.corp.example:8080/a");
-    // A service endpoint at the root is a path like any other.
     expect(downloadUrlForPolicy(new URL("https://ave.corp.example/?x=1")).path).toBe("/");
   });
 });

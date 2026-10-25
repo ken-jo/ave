@@ -1,12 +1,3 @@
-/**
- * SkillStore — C2 traversal-rejection coverage.
- *
- * Three failure modes must be enforced before the markdown body is read:
- *   1. Filenames outside `[a-zA-Z0-9_-]+` (e.g. `..`, `/`) are rejected.
- *   2. Symlinks pointing outside the skills directory are rejected.
- *   3. Frontmatter `name:` outside the allowlist is rejected.
- *   4. Bodies larger than SKILL_MAX_BODY_BYTES are rejected.
- */
 import { describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
@@ -101,9 +92,7 @@ describe("SkillStore — C2 traversal & allowlist", () => {
           platform() === "win32" ? ("file" as const) : undefined,
         );
       } catch {
-        // Symlinks unsupported on this CI runner — pass the test as a no-op
-        // rather than fail; the production code path is still exercised by
-        // the other allowlist tests below.
+        // Symlinks unsupported on this CI runner — pass the test as a no-op rather than fail; the production code path is still exercised by the other allowlist tests below.
         return;
       }
       const store = new SkillStore({ userDir: dir });
@@ -119,9 +108,7 @@ describe("SkillStore — C2 traversal & allowlist", () => {
   it("rejects filenames that don't match the allowlist", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-skills-"));
     try {
-      // Filenames with `.` (other than the .md extension), spaces, etc are
-      // rejected. We use a name with a leading dot so the allowlist check
-      // (^[a-zA-Z0-9_-]+$) misses it.
+      // Filenames with `.` (other than the .md extension), spaces, etc are rejected. We use a name with a leading dot so the allowlist check (^[a-zA-Z0-9_-]+$) misses it.
       writeFileSync(join(dir, ".sneaky.md"), "---\nname: x\n---\nbody", "utf-8");
       writeFileSync(
         join(dir, "good-skill.md"),
@@ -190,11 +177,7 @@ describe("SkillStore — C2 traversal & allowlist", () => {
   });
 
   it("packages built-in staff-perspective skills as files under resources/skills/", async () => {
-    // Built-in skills are seeded as files into `~/.ave/skills/` on first
-    // boot so users can edit or remove each prompt. Loading `resources/
-    // skills/` through the real SkillStore parser exercises the same path
-    // a user disk would, and catches frontmatter or body-size regressions
-    // before any file is shipped.
+    // Parse shipped skill files through SkillStore before seeding them into editable user storage.
     const here = fileURLToPath(new URL(".", import.meta.url));
     const repoRoot = resolvePath(here, "../../..");
     const resourcesSkillsDir = resolvePath(repoRoot, "resources", "skills");
@@ -298,11 +281,8 @@ describe("SkillStore — C2 traversal & allowlist", () => {
   });
 });
 
-/**
- * Paths a bundled-resource read must refuse. Backslash/UNC/drive forms use a
- * doubled backslash on purpose — `"a\b.md"` is the BACKSPACE escape and would
- * only exercise the control-character branch, never the backslash rule.
- */
+// Paths a bundled-resource read must refuse. Backslash/UNC/drive forms use a doubled backslash on purpose — `"a\b.md"` is the BACKSPACE escape and would
+// only exercise the control-character branch, never the backslash rule.
 const BAD_RESOURCE_PATHS = [
   "../SKILL.md",
   "../../etc/passwd",
@@ -374,8 +354,7 @@ describe("SkillStore — bundled resources (stage-3)", () => {
   it("refuses resources for a FLAT skill so it cannot read its siblings", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-skills-"));
     try {
-      // A flat skill's parent directory IS the shared skills root; treating it
-      // as a bundle root would expose every sibling skill's bytes.
+      // A flat skill's parent directory IS the shared skills root; treating it as a bundle root would expose every sibling skill's bytes.
       writeFileSync(join(dir, "flat.md"), "---\nname: flat\ndescription: d\n---\nbody");
       makeDirSkill(dir, "secret", "SECRET BODY");
       const store = new SkillStore({ userDir: dir });
@@ -390,9 +369,8 @@ describe("SkillStore — bundled resources (stage-3)", () => {
   it("refuses a flat skill literally named SKILL.md at the skills root", async () => {
     const dir = mkdtempSync(join(tmpdir(), "ave-skills-"));
     try {
-      // Regression: gating on `basename(filePath) === "SKILL.md"` alone let a
-      // flat `<root>/SKILL.md` skill (name "SKILL") pass, making the SHARED
-      // skills root its bundle root — one approval then read every sibling.
+      // Regression: gating on `basename(filePath) === "SKILL.md"` alone let a flat `<root>/SKILL.md` skill (name "SKILL") pass, making the SHARED skills root
+      // its bundle root — one approval then read every sibling.
       writeFileSync(join(dir, "SKILL.md"), "---\nname: SKILL\ndescription: d\n---\nattacker");
       makeDirSkill(dir, "secret", "SECRET BODY");
       const store = new SkillStore({ userDir: dir });

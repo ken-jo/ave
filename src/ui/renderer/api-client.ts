@@ -1,5 +1,3 @@
-// Stateless helpers over window.aveApi.
-
 import type { AveApi, AvePlatformApi, PluginUiExtension } from "./types.js";
 import { pluginViewKey, type PluginViewKey } from "../../shared/view-key.js";
 

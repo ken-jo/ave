@@ -17,7 +17,6 @@ vi.mock("electron", () => ({
   },
 }));
 
-/** The app's shutdown hooks, run by the test instead of `before-quit`. */
 const shutdownHooks = new Map<string, () => void>();
 vi.mock("../../../main/app-shutdown.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../main/app-shutdown.js")>()),
@@ -57,7 +56,7 @@ describe("git runtime IPC boundary", () => {
   });
 
   it("scrubs the status and install answers and a failed step's progress, as every marketplace string (§18.8)", async () => {
-    // A real token shape, assembled here so no whole token sits in the source.
+    // Assemble credential-shaped fixtures at runtime so no complete token appears in source.
     const token = `gh${"p_"}${"A1b2C3d4".repeat(5).slice(0, 36)}`;
     const service = await setup();
     const leaky: GitRuntimeStatus = {
@@ -125,7 +124,6 @@ describe("git runtime IPC boundary", () => {
     const send = vi.fn();
     const window = { isDestroyed: () => false, webContents: { send } };
     const deps = { auditLogger: { log: vi.fn() }, getMainWindow: () => window, getAppWindows: () => [window], settingsService: { get: () => ({}) } };
-    // The marketplace domain as the app registers it: with the app's shared lifetime, which the runtime's sender reads.
     const home = mkdtempSync(join(tmpdir(), "ave-git-runtime-ipc-"));
     try {
       registerGitMarketplaceHandlers(deps as never, async () => null, async () => ({ service: {} as never, close: async () => {} }), async () => {}, home);

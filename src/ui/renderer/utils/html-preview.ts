@@ -1,5 +1,3 @@
-// Pure parsing + highlight helpers.
-
 import React from "react";
 import type { RenderHtmlPayload } from "../types.js";
 import {

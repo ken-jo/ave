@@ -188,8 +188,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       memoryManager: { saveSession: () => {}, listSessions: () => [] },
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 
-    // Handshake-only: an empty model means "not configured" — never send a
-    // fabricated/seed id to the endpoint. The user must pick from the live list.
+    // Empty model IDs mean unconfigured; never fabricate an endpoint model selection.
     expect(createProvider).not.toHaveBeenCalled();
   });
 
@@ -356,8 +355,7 @@ async function collectStream(iterable: AsyncIterable<unknown>,
       routeEngine: new RouteEngine(),
       toolRegistry,
       memoryManager: { saveSession: () => {}, listSessions: () => [] },
-      // The guarded provider fetch runs on the transport the host wires; the
-      // assertions below are about WHAT the guard is handed, so it must be here.
+      // Supply the host transport so the guarded-fetch assertions exercise the real boundary.
       networkFetch: unusedNetworkFetch,
     } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
 

@@ -59,7 +59,6 @@ describe("secret document exact file identity", () => {
     inspectStats = (stats) => Object.assign(stats, {
       ino: inode + (observations++ % 4 === changedObservation ? 1n : 0n),
     });
-    // A mismatch at open retries before the read-side observations occur.
     if (changedObservation === 1) {
       inspectStats = (stats) => Object.assign(stats, { ino: inode + BigInt(observations++ % 2) });
     }
@@ -76,7 +75,6 @@ describe("secret document exact file identity", () => {
     inspectStats = (stats) => Object.assign(stats, {
       ino: 2n ** 60n + (observations++ === changedObservation ? 1n : 0n),
     });
-    // Windows has no POSIX mode to repair, so migrate() skips repair and leaves the file untouched.
     if (process.platform === "win32") {
       const before = { bytes: readFileSync(store.path), stats: statSync(store.path, { bigint: true }) };
       await expect(store.migrate()).resolves.toBe(false);

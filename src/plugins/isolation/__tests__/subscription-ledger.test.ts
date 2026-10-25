@@ -1,11 +1,4 @@
-/**
- * The two-sided lifetime, exercised for every way it can end.
- *
- * A subscription leak is the failure mode with no symptom: nothing throws,
- * nothing fails, memory grows, and a retired plugin's callbacks keep firing.
- * So the assertions here are on the COUNTS on both sides, not on behaviour that
- * happens to still work.
- */
+/** Assert registration counts on both sides for every termination path; live callbacks alone cannot reveal leaks. */
 import { describe, expect, it, vi } from "vitest";
 import {
   DuplicateSubscriptionError,
@@ -45,8 +38,7 @@ describe("SubscriptionLedger", () => {
     let reentered = 0;
     const id = ledger.open("a", () => {
       reentered += 1;
-      // A plugin disposer that calls itself is not exotic; a ledger that ran
-      // the release again here would double-release for real.
+      // Reentrant disposal must not double-release.
       ledger.close(id, "disposed");
     });
     ledger.close(id, "disposed");
@@ -100,8 +92,7 @@ describe("SubscriptionLedger", () => {
     });
     const second = ledger.open("b", (v) => released.push(v));
     expect(first).not.toBe(second);
-    // Two registrations, two releases, no double-run — the count reports the
-    // ones `end` itself closed, and the sibling it closed is not counted twice.
+    // Count every registration once even when a release closes its sibling.
     expect(ledger.end("peer-gone")).toBe(1);
     expect(released).toEqual(["a", "b"]);
     expect(ledger.openCount).toBe(0);

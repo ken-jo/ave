@@ -1,23 +1,4 @@
-/**
- * The sensitive-path hard-blocklist has ONE authority
- * (`SENSITIVE_PATH_ENTRIES`) and TWO enforcement points that project it: the
- * in-process host-tool guard (glob form, reached here through the REAL tool
- * caller `assertReadableFilePath`) and the OS sandbox read deny floor
- * (`getDefaultSensitiveReadDenyPaths`, literal form).
- *
- * These tests fail if a path is secret on one surface and readable on the
- * other. That drift was real: the sandbox floor denied `~/.git-credentials`,
- * `~/.gitconfig`, `~/.config/gh`, `~/.config/git` and the whole `~/.aws` dir
- * that the host guard let through, while the host guard denied `/etc/shadow`,
- * `~/.config/ave/hooks` and the REPL/editor histories that the sandbox floor
- * let through.
- * Primary saved history is the deliberate exception: builtin file reads may
- * inspect it, while the shared sandbox floor still denies raw worker reads.
- *
- * The host assertions go through `assertReadableFilePath` — the guard the
- * builtin file tools actually run — with the anchor root handed in as an
- * allowed directory, so Layer 1 cannot mask a missing Layer 0 deny.
- */
+// Host guards and sandbox floors project one sensitive-path table; no secret may be readable through either. Saved history deliberately permits builtin reads only. Put the test target inside allowed scope so directory policy cannot hide a missing hard deny.
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -52,11 +33,7 @@ function entryPath(entry: SensitiveEntry): string {
   return join(anchorRoot(entry.anchor), ...entry.segments);
 }
 
-/**
- * The REAL host-tool read guard. `allowedRoot` is granted at Layer 1 so a
- * `sensitive-path` verdict can only come from Layer 0 — otherwise a missing
- * blocklist row would hide behind a generic `path-not-allowed`.
- */
+// The REAL host-tool read guard. `allowedRoot` is granted at Layer 1 so a `sensitive-path` verdict can only come from Layer 0 — otherwise a missing blocklist row would hide behind a generic `path-not-allowed`.
 function hostDeniesAsSensitive(absPath: string, allowedRoot: string): boolean {
   const result = assertReadableFilePath(absPath, CWD, [allowedRoot]);
   return result.ok === false && result.error === "sensitive-path";
@@ -102,10 +79,7 @@ describe("sensitive paths — one table, two projections", () => {
     }
   });
 
-  // ── Content pins, independent of the table ───────────────────────────
-  //
-  // The loop above stays green when a row is DELETED (both projections shrink
-  // together). These name the path, so a deletion reds a specific case.
+  // Content pins, independent of the table The loop above stays green when a row is DELETED (both projections shrink together). These name the path, so a deletion reds a specific case.
 
   it.each([
     ["routine", join(FAKE_AVE_HOME, "routine", "session-1.jsonl")],
@@ -125,10 +99,7 @@ describe("sensitive paths — one table, two projections", () => {
     expect(sandboxDenies(target)).toBe(true);
   });
 
-  // ── The disagreement set, pinned independently of the table ──────────
-  //
-  // Deleting the corresponding row must red these even if the loop above is
-  // still self-consistent.
+  // The disagreement set, pinned independently of the table Deleting the corresponding row must red these even if the loop above is still self-consistent.
 
   describe("paths the OS sandbox denied but the host guard let through", () => {
     it.each([
@@ -143,9 +114,7 @@ describe("sensitive paths — one table, two projections", () => {
     });
 
     it("denies the default Electron userData dir on both surfaces", () => {
-      // Not a table row (the exact dir is runtime-only), so this pins the two
-      // hand-written projections against each other on the default layout.
-      // Win32 directory rows carry a trailing separator.
+      // Not a table row (the exact dir is runtime-only), so this pins the two hand-written projections against each other on the default layout. Win32 directory rows carry a trailing separator.
       const target = getDefaultSensitiveReadDenyPaths().map((p) => p.replace(/[\\/]$/, "")).find((p) =>
         p.endsWith("Ave"),
       );
@@ -177,7 +146,7 @@ describe("sensitive paths — one table, two projections", () => {
     });
   });
 
-  // ── Documented one-sided entries stay one-sided, on purpose ──────────
+  // Documented one-sided entries stay one-sided, on purpose
 
   it("keeps glob-only patterns host-guard-only (bwrap/seatbelt cannot glob)", () => {
     const globOnly = [
@@ -196,13 +165,34 @@ describe("sensitive paths — one table, two projections", () => {
     }
   });
 
-  it("keeps the recorded Keychain/Cookies sandbox exclusion", () => {
-    for (const target of [
-      join(HOME, "Library", "Keychains", "login.keychain-db"),
-      join(HOME, "Library", "Cookies", "Cookies.binarycookies"),
+  // Parity with main: main's builtin shell denies the whole real HOME, which kept these unreadable; without it each store is a floor row on both surfaces.
+  it.each([
+    ["Library", "Keychains", "login.keychain-db"],
+    ["Library", "Cookies", "Cookies.binarycookies"],
+    ["Library", "Application Support", "Google", "Chrome", "Default", "Cookies"],
+    ["Library", "Application Support", "Firefox", "Profiles", "abc.default", "key4.db"],
+    [".mozilla", "firefox", "abc.default-release", "logins.json"],
+    [".config", "google-chrome", "Default", "Login Data"],
+    [".local", "share", "keyrings", "login.keyring"],
+    [".password-store", "email.gpg"],
+    [".config", "op", "config"],
+    ["AppData", "Local", "Google", "Chrome", "User Data", "Default", "Network", "Cookies"],
+    ["AppData", "Roaming", "Mozilla", "Firefox", "Profiles", "abc.default", "logins.json"],
+  ])("denies the credential store ~/%s/... on both surfaces", (...segments) => {
+    const target = join(HOME, ...segments);
+    expect(hostDeniesAsSensitive(target, HOME)).toBe(true);
+    expect(sandboxDenies(target)).toBe(true);
+  });
+
+  it("keeps ordinary home files readable on both surfaces", () => {
+    for (const benign of [
+      join(HOME, "projects", "x", "README.md"),
+      join(HOME, ".config", "nvim", "init.lua"),
+      join(HOME, ".local", "share", "fonts", "a.ttf"),
+      join(HOME, "Library", "Application Support", "Code", "User", "settings.json"),
     ]) {
-      expect(hostDeniesAsSensitive(target, HOME)).toBe(true);
-      expect(sandboxDenies(target)).toBe(false);
+      expect(hostDeniesAsSensitive(benign, HOME)).toBe(false);
+      expect(sandboxDenies(benign)).toBe(false);
     }
   });
 

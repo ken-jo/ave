@@ -1,7 +1,10 @@
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { ChildProcess, spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { t } from "../../i18n/index.js";
 
 vi.mock("node:child_process", async (original) => ({
   ...await original<typeof import("node:child_process")>(), spawn: vi.fn(),
@@ -19,7 +22,8 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 }));
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import * as sandbox from "../../permissions/asrt-sandbox.js";
+import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { POWER_SHELL_AST_PARSER } from "../powershell-ast.js";
 import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool, createBashKillTool, endShellSession } from "../shell-tools.js";
 
@@ -43,13 +47,19 @@ afterEach(() => {
 
 describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
   describe.each(["bash", "powershell"] as const)("%s", (dialect) => {
-    async function start(captureFactory?: () => ToolOutputCapture) {
-      setSandboxRequestedAtBoot(route === "sandbox");
+    const temporaryRoots = new Set<string>();
+    async function start(captureFactory?: () => ToolOutputCapture, failure?: "abort" | "empty" | "sync-throw") {
+      setShellSandboxRequestedAtBoot(route === "sandbox");
       if (route === "sandbox") setActiveSandboxCapability({
         kind: "asrt", confidence: "verified", platform: process.platform,
         reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
       });
       const child = childProcess();
+      const controller = new AbortController();
+      if (failure !== undefined) vi.mocked(sandbox.wrapToolCommand).mockImplementationOnce(async () => {
+        if (failure === "abort") controller.abort();
+        return { argv: failure === "empty" ? [] : ["shell"], env: {}, notices: ["narrowing reason"], cleanupCompleted: Promise.resolve({ notice: "quarantine restore location" }) };
+      });
       vi.mocked(spawn).mockImplementation((_command, args) => {
         if (args?.includes(POWER_SHELL_AST_PARSER)) {
           const parser = childProcess();
@@ -59,17 +69,93 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
           });
           return parser;
         }
+        if (failure === "sync-throw") throw new Error("native spawn refused");
         return child;
       });
-      const controller = new AbortController();
       const tool = dialect === "bash" ? new BashTool() : new PowerShellTool();
       const pending = tool.execute({ command: dialect === "bash" ? "echo ready" : "Write-Output ready", timeoutSeconds: 1 }, {
         cwd: process.cwd(), extraAllowedDirectories: [], metadata: captureFactory ? { toolOutputCaptureFactory: captureFactory } : {}, abortSignal: controller.signal,
       });
       await vi.advanceTimersByTimeAsync(0);
-      expect(child.listenerCount("close")).toBeGreaterThan(0);
+      if (failure === undefined) expect(child.listenerCount("close")).toBeGreaterThan(0);
+      if (failure === undefined && route === "sandbox" && dialect === "bash") {
+        const env = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env;
+        expect(env?.TMPDIR).toBeTypeOf("string");
+        const temporary = env!.TMPDIR!;
+        expect(env!.TMP).toBe(temporary);
+        expect(env!.TEMP).toBe(temporary);
+        expect(dirname(temporary)).toBe(env!.HOME);
+        expect(basename(temporary)).toMatch(/^shell-tmp-/);
+        expect(readdirSync(temporary)).toEqual([]);
+        expect(temporaryRoots.has(temporary)).toBe(false);
+        temporaryRoots.add(temporary);
+      }
       return { child, controller, pending };
     }
+
+    it.runIf(route === "sandbox")("reports cleanup failure despite an exit-zero child", async () => {
+      vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({
+        argv: ["shell"], env: {}, cleanupCompleted: Promise.resolve({ failure: "cleanup refused" }),
+      });
+      const f = await start();
+      close(f.child, 0, null);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(await f.pending).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true } });
+    });
+
+    it.runIf(route === "sandbox").each(["abort", "empty", "sync-throw"] as const)("preserves notices on post-wrap %s", async failure => {
+      const f = await start(undefined, failure);
+      const result = await f.pending;
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("narrowing reason");
+      expect(result.output).toContain("quarantine restore location");
+    });
+
+    it.runIf(route === "sandbox").each([false, true])("preserves notices on an asynchronous child error with live child=%s", async live => {
+      vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({
+        argv: ["shell"], env: {}, notices: ["narrowing reason"],
+        cleanupCompleted: live ? new Promise<sandbox.SandboxCleanupOutcome>(() => {}) : Promise.resolve({ notice: "quarantine restore location" }),
+      });
+      const f = await start();
+      if (live) Object.assign(f.child, { pid: 999_999, exitCode: null, signalCode: null });
+      f.child.emit("error", new Error("native spawn refused"));
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await f.pending;
+      expect(result.isError).toBe(true);
+      expect(result.output).toContain("narrowing reason");
+      expect(result.output).toContain(live ? t("sandboxPolicy.cleanupPending") : "quarantine restore location");
+      close(f.child, null, "SIGKILL");
+    });
+
+    it.runIf(route === "sandbox").each(["timeout", "cancel"] as const)("settles %s while post-exit cleanup remains pending", async stop => {
+      vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({
+        argv: ["shell"], env: {}, cleanupCompleted: new Promise<sandbox.SandboxCleanupOutcome>(() => {}),
+      });
+      const f = await start();
+      Object.assign(f.child, { pid: 999_999, exitCode: null, signalCode: null });
+      if (stop === "cancel") f.controller.abort();
+      else await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await f.pending;
+      expect(result).toMatchObject({ isError: true, metadata: { sandboxCleanupFailed: true } });
+      expect(result.output).toContain(t("sandboxPolicy.cleanupPending"));
+      close(f.child, null, "SIGKILL");
+    });
+
+    it.runIf(route === "sandbox")("returns narrowed-write and quarantine notices on an exit-zero result", async () => {
+      const notice = 'Sandbox protected Git entries were moved to quarantine (not deleted): "/project/config" -> "/quarantine/slot/config"';
+      vi.mocked(sandbox.wrapToolCommand).mockResolvedValueOnce({
+        argv: ["shell"], env: {}, notices: ["Project too large to scan; write access narrowed to /project/child"],
+        cleanupCompleted: Promise.resolve({ notice }),
+      });
+      const f = await start();
+      close(f.child, 0, null);
+      await vi.advanceTimersByTimeAsync(0);
+      const result = await f.pending;
+      expect(result.isError).toBe(false);
+      expect(result.output).toContain("write access narrowed to /project/child");
+      expect(result.output).toContain(notice);
+    });
 
     it.each(["close", "error", "timeout", "cancel"] as const)("awaits one artifact publication on %s", async (cause) => {
       const chunks: Buffer[] = [];

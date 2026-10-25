@@ -1,13 +1,4 @@
-/**
- * Boot §4.2 Step 3-5 — plugin lifecycle callbacks (C6 extraction).
- *
- * Behavior-preserving move of the preparePluginStart / onDisable /
- * onActiveStateChange / onEnable closures out of initPluginRuntime. These fire
- * on post-boot lifecycle events (and onEnable during startAll), so the mutable
- * `pluginRuntime` + `loopbackManager` bindings are read through getters — never
- * value-captured at factory construction (both are assigned AFTER this factory
- * is built).
- */
+/** Read runtime and loopback bindings through getters; both are assigned after callback construction. */
 import type { BrowserWindow } from "electron";
 import { t } from "../../../i18n/index.js";
 import { createLogger } from "../../../lib/logger.js";
@@ -21,7 +12,6 @@ import type { PluginBundleLifecycleHandler } from "../../../plugins/plugin-bundl
 
 const log = createLogger("ave");
 
-/** Explicit deps for the lifecycle callbacks. Lazy bindings arrive as getters. */
 export interface LifecycleDeps {
   getAppWindows: () => BrowserWindow[];
   getAlertsService: () => import("../../../alerts/service.js").AlertsService | undefined;
@@ -33,11 +23,6 @@ export interface LifecycleDeps {
   getBundleLifecycle: () => PluginBundleLifecycleHandler | undefined;
 }
 
-/**
- * Build the four PluginRuntime lifecycle callbacks. Returned as a
- * `Pick<PluginRuntimeOptions, ...>` so the closure params keep the same
- * contextual types they had inline in `new PluginRuntime({...})`.
- */
 export function createLifecycleCallbacks(
   deps: LifecycleDeps,
 ): Pick<PluginRuntimeOptions, "preparePluginStart" | "onDisable" | "onActiveStateChange" | "onEnable"> {
@@ -102,21 +87,13 @@ export function createLifecycleCallbacks(
         lateBinding.conversationLoopRef.fn?.onPluginDisabled(pluginId);
       }
     },
-    // Symmetric to `onDisable` — re-registers tools after a successful
-    // restart/add/reload. Without this every chat-surface tool call hits
-    // `도구를 찾을 수 없습니다` post-restart. Non-fatal:
-    // a sync exception is logged but does not become `runtime reload failed`.
+    // Resync tools on enable; a sync failure must not turn a successful reload into a runtime failure.
     onEnable: (pluginId) => {
       reconcileAlerts();
-      // Register the partition preload on every live enable/reload path so the
-      // refreshed plugin UI receives window.avePlugin immediately.
+      // Re-register partition preloads on every enable so refreshed views receive their bridge.
       installLoadedPluginPartitionPolicy(pluginId);
-      // legacy-removal flag-day: ALL plugins register through the loopback manager
-      // (server/discover → tools/list → reverse projection from `_meta`) — the
-      // legacy `pluginToolsForRegistration` direct path is gone.
-      // Best-effort renderer refresh signal. Runtime/tool registry state is
-      // already updated; a closed window must not make reload fail —
-      // the fan-out owns the isDestroyed guard + send try/catch.
+      // All plugin tool registration goes through loopback discovery.
+      // Renderer refresh is best-effort; closed windows must not fail runtime reload.
       fanOutToAllWindows(deps.getAppWindows(), "ave:plugins:runtime-updated", { pluginId }, { logger: log });
     },
   };

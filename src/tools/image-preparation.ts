@@ -151,11 +151,7 @@ export async function prepareImageFile(
   return prepareImageRequest(request, undefined, callerSignal);
 }
 
-/**
- * Normalize broker-returned bytes in the same isolated decoder used for local
- * files. The controller validates and copies the bounded input before queueing;
- * the child receives the binary payload through stdin, never argv/base64.
- */
+// Copy and bound broker input before queuing; pass bytes through stdin to the isolated decoder, never argv or base64.
 export async function prepareImageBytes(
   bytes: Uint8Array,
   requested: Partial<ImagePreparationOptions> = {},

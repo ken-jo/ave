@@ -33,9 +33,7 @@ function makeRequest(overrides: Partial<AskUserQuestionRequest> = {}): AskUserQu
   };
 }
 
-// ---------------------------------------------------------------------------
 // Single-question flow
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — single question keyboard Enter", () => {
   it("calls respondAndClose exactly once and does NOT call goNext a second time", async () => {
@@ -110,17 +108,12 @@ describe("AskUserQuestionCard — single question keyboard Enter", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Multi-step flow — intermediate step
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — multi-step keyboard Enter (intermediate step)", () => {
   it("does NOT call respondAndClose — advances step only", async () => {
-    /**
-     * On an intermediate step of a multi-question flow, pressing Enter after
-     * selecting a choice should advance to the next step (goNext) but must NOT
-     * call respondAndClose yet.
-     */
+    /** On an intermediate step of a multi-question flow, pressing Enter after selecting a choice should advance to the next
+     * step (goNext) but must NOT call respondAndClose yet. */
     const api = askUserQuestionApi();
     const onResolved = vi.fn();
     const request = makeRequest({
@@ -150,11 +143,6 @@ describe("AskUserQuestionCard — multi-step keyboard Enter (intermediate step)"
   });
 
   it("calls respondAndClose exactly once on the final step after all answers given", async () => {
-    /**
-     * After navigating through all multi-step questions via keyboard, the final
-     * "보내기" button submit path should call respondAndClose exactly once.
-     * This test ensures no extra submit is triggered by the keyboard handler.
-     */
     const api = askUserQuestionApi();
     const onResolved = vi.fn();
     const request = makeRequest({
@@ -237,9 +225,7 @@ describe("AskUserQuestionCard — multi-step keyboard Enter (intermediate step)"
   });
 });
 
-// ---------------------------------------------------------------------------
 // Answer-mode matrix — every mode the card supports, and their combinations.
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — answer modes", () => {
   it("draws no free-text field for a choice-only question", async () => {
@@ -387,7 +373,6 @@ describe("AskUserQuestionCard — answer modes", () => {
     await act(async () => {
       fireEvent.change(input, { target: { value: "10개" } });
     });
-    // Enter on the last free-text keystroke moves to the next question.
     await act(async () => {
       fireEvent.keyDown(input, { key: "Enter" });
     });
@@ -477,9 +462,7 @@ describe("AskUserQuestionCard — answer modes", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // ChoiceResult — click path (no regression)
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — mouse click path (single question)", () => {
   it("calls respondAndClose exactly once on click — no keyboard involved", async () => {
@@ -501,17 +484,7 @@ describe("AskUserQuestionCard — mouse click path (single question)", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// 4-direction card-level navigation (regression: ArrowUp/Down broken after
-// composer redesign + message queue PR #720 merge)
-// ---------------------------------------------------------------------------
-
 describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () => {
-  /**
-   * ArrowLeft / ArrowRight on the card container must navigate between questions
-   * in a multi-step flow. These were working before PR #720; verify they remain
-   * intact while we fix Up/Down.
-   */
   it("ArrowLeft and ArrowRight navigate between questions from card surface", async () => {
     const api = askUserQuestionApi();
     const request = makeRequest({
@@ -525,7 +498,6 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
       <AskUserQuestionCard api={api as never} request={request} onResolved={vi.fn()} />,
     );
 
-    // Click A to complete Q1 draft so ArrowRight can advance.
     await act(async () => { fireEvent.click(getByText("A").closest("button")!); });
 
     const card = getByTestId("ask-user-question-card");
@@ -541,11 +513,6 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
     expect(queryByText("Q2")).toBeNull();
   });
 
-  /**
-   * ArrowDown on the card container must move focus from the visible cursor
-   * at answer 1 to the next choice button.
-   * Regression: before this fix, ArrowUp/Down on the card surface had no effect.
-   */
   it("ArrowDown from card surface moves focus to next choice answer", async () => {
     const api = askUserQuestionApi();
     const request = makeRequest({
@@ -561,8 +528,7 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
     const card = getByTestId("ask-user-question-card");
     card.focus();
 
-    // The page starts with answer 1 ("빨강") as the visible cursor, so
-    // ArrowDown from the card surface moves to answer 2 ("파랑").
+    // The page starts with answer 1 ("빨강") as the visible cursor, so ArrowDown from the card surface moves to answer 2 ("파랑").
     await act(async () => { fireEvent.keyDown(card, { key: "ArrowDown" }); });
 
     expect(document.activeElement).not.toBe(card);
@@ -570,10 +536,7 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
     expect(document.activeElement?.textContent).toContain("파랑");
   });
 
-  /**
-   * ArrowUp on the card container must move focus to the previous choice button
-   * (wraps around to last when at index 0).
-   */
+  /** ArrowUp on the card container must move focus to the previous choice button (wraps around to last when at index 0). */
   it("ArrowUp from card surface moves focus to a choice answer (wraps to last)", async () => {
     const api = askUserQuestionApi();
     const request = makeRequest({
@@ -598,10 +561,8 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
     expect(document.activeElement?.textContent).toContain("초록");
   });
 
-  /**
-   * Full 4-direction sequence: ArrowDown navigates choices, ArrowRight advances
-   * questions — both work together without interfering.
-   */
+  /** Full 4-direction sequence: ArrowDown navigates choices, ArrowRight advances questions — both work together without
+   * interfering. */
   it("ArrowDown navigates choices then ArrowRight advances question (4-dir together)", async () => {
     const api = askUserQuestionApi();
     const request = makeRequest({
@@ -625,7 +586,6 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
     // Still on Q1, not Q2.
     expect(queryByText("Q2")).toBeNull();
 
-    // Select A via click so the draft is complete.
     await act(async () => { fireEvent.click(getByText("A").closest("button")!); });
 
     // ArrowRight from card → should advance to Q2.
@@ -635,16 +595,11 @@ describe("AskUserQuestionCard — 4-direction card-level arrow navigation", () =
   });
 });
 
-// ---------------------------------------------------------------------------
 // Med-3: confirm step — ArrowDown must NOT jump into prior question choices
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — ArrowDown suppressed on confirm step", () => {
-  /**
-   * After all questions answered and confirm step is shown (step === total),
-   * there is no QuestionForm mounted, so card-level ArrowDown must not
-   * move focus into prior question choices.
-   */
+  /** After all questions answered and confirm step is shown (step === total), there is no QuestionForm mounted, so card-level
+   * ArrowDown must not move focus into prior question choices. */
   it("ArrowDown on card at confirm step does not move focus to a choice button", async () => {
     const api = askUserQuestionApi();
     const request = makeRequest({
@@ -683,10 +638,8 @@ describe("AskUserQuestionCard — ArrowDown suppressed on confirm step", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
 // Auto-focus on mount/step change — focus starts at answer 1 so arrow keys
 // have a visible cursor and do not inherit the prior page's cursor position.
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — auto-focus on mount enables arrow nav", () => {
   it("focuses the first answer immediately when the request mounts", async () => {
@@ -743,9 +696,7 @@ describe("AskUserQuestionCard — auto-focus on mount enables arrow nav", () => 
   });
 });
 
-// ---------------------------------------------------------------------------
 // Multi-select (allowMultiple: true)
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — multi-select", () => {
   it("clicking a choice toggles its membership and does NOT auto-submit", async () => {
@@ -830,7 +781,6 @@ describe("AskUserQuestionCard — multi-select", () => {
 
     await act(async () => { fireEvent.click(getByText("AI").closest("button")!); });
     await act(async () => { fireEvent.click(getByText("보안").closest("button")!); });
-    // Toggle "AI" back off.
     await act(async () => { fireEvent.click(getByText("AI").closest("button")!); });
 
     expect(getByText("AI").closest("button")!.getAttribute("aria-selected")).toBe("false");
@@ -874,9 +824,7 @@ describe("AskUserQuestionCard — multi-select", () => {
 
 });
 
-// ---------------------------------------------------------------------------
 // 4-question card — confirms the cap is honored end-to-end through the UI
-// ---------------------------------------------------------------------------
 
 describe("AskUserQuestionCard — 4-question pagination", () => {
   it("paginates through 4 questions and submits all answers", async () => {

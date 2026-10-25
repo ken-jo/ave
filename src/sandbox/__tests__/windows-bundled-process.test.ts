@@ -1,13 +1,10 @@
-/**
- * `spawnWindowsBundledProcess`: a bundled hook or MCP stdio server under
- * srt-win. What it holds (the ACL grant, the throwaway HOME), what it hands
- * the confined spawn, and that every failure gives all of it back. The relay
- * and the grant are each tested where they live; this is the composition.
- */
+/** `spawnWindowsBundledProcess`: a bundled hook or MCP stdio server under srt-win. What it holds (the ACL grant, the throwaway HOME), what it hands
+ * the confined spawn, and that every failure gives all of it back. The relay and the grant are each tested where they live; this is the composition. */
 import { EventEmitter } from "node:events";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
 const SANDBOX_HOME = "C:\\sandbox\\home-1";
 const homeCleanup = vi.fn();
@@ -65,6 +62,7 @@ const input = {
   cwd: "C:\\p\\gen",
   allowRead: ["C:\\p\\gen"],
   allowWrite: ["C:\\p\\data"],
+  egressOwner: TEST_WORKER_EGRESS_OWNER,
 };
 
 describe("spawnWindowsBundledProcess", () => {

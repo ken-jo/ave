@@ -1,25 +1,5 @@
-/**
- * SkillStore — markdown-with-frontmatter skill loader for the `skill_load`
- * LLM tool. Skills live under `~/.ave/skills/` as either
- * `skills/<name>/SKILL.md` (preferred agent-platform layout) or
- * `skills/<name>.md` flat files. Built-in skills ship as files under
- * `resources/skills/` and are seeded into `~/.ave/skills/` on first boot
- * by `seed-ave-home-docs.ts`, so the user can freely edit each prompt.
- *
- * Front matter contract: the `skillComponent` definition of the host-owned
- * skill package schema, `schemas/skill-package.schema.json` — `name` and `description` required, `triggers`, `license`,
- * `compatibility`, `metadata` and `allowed-tools` optional. The same
- * definition governs a skill shipped as a standalone marketplace package and a
- * skill bundled in a plugin's `skills[]` directory, so both paths through this
- * module keep the same fields.
- *
- *   ---
- *   name: <skill name>           # required, unique, path-safe
- *   description: <one line>      # surfaced as the badge subtitle
- *   triggers: [alpha, beta]      # keyword hints, surfaced on the catalog
- *   ---
- *   <markdown body>              # loaded into the current-turn prompt overlay
- */
+// Flat and directory skills share the skillComponent contract in schemas/skill-package.schema.json. Both standalone and plugin-bundled delivery must
+// preserve its fields; seeded skills remain user-editable.
 import { readFile, readdir, realpath, stat, open } from "node:fs/promises";
 import { closeSync, openSync, readdirSync, readSync, realpathSync } from "node:fs";
 import { resolve, join, relative, isAbsolute, dirname, basename, sep } from "node:path";
@@ -32,39 +12,15 @@ import type { ActivePluginGeneration } from "../plugins/plugin-generation-coordi
 import type { MaterializedPluginContribution } from "../plugins/plugin-contributions.js";
 const log = createLogger("ave");
 
-/**
- * C2(b): allowlist for skill names. Skill files live in
- * `~/.ave/skills/<name>/SKILL.md`; any name with `/`, `..`, NUL, or other
- * non-printable noise is rejected up-front so an attacker cannot use the
- * `skillName` arg to navigate outside the directory or smuggle shell
- * metacharacters into the resolved file path.
- *
- * This charset is ALSO the authoring contract: it is what
- * `$defs/skillComponent/properties/name` of the host manifest schema carries, so a name
- * the marketplace admits is a name this host can install. A test reads the
- * pattern out of the committed schema snapshot rather than restating it
- * (`__tests__/skill-front-matter-contract.test.ts`). The regex stays written
- * out here because it is a path gate first: its security property has to be
- * readable where it is enforced.
- *
- * The charset is ALL the host checks. The schema's 64-character ceiling is an
- * admission rule — it bounds what the marketplace publishes — and the host
- * does not re-police it: a name is the author's, and a long one that reached
- * the disk is not a safety problem, only an unusually long directory name.
- */
+// Skill names use the schema’s path-safe charset; reject traversal and control characters at the filesystem boundary.
+// Publication owns the length ceiling; the host deliberately does not re-police it.
 export const SKILL_NAME_ALLOWLIST = /^[a-zA-Z0-9_-]+$/;
 
-/**
- * Bounds on the keyword hints a skill declares. Applied where the record is
- * built, not where it is rendered, so every consumer inherits them —
- * `skill_list`, the IPC catalog and the prompt section all read the same
- * already-bounded list rather than each re-deriving one. A skill cannot buy
- * itself room in a token-budgeted catalog by declaring hundreds of them.
- */
+// Bound keyword hints at record construction so every catalog consumer shares one token budget.
 export const MAX_SKILL_TRIGGERS = 8;
 export const MAX_SKILL_TRIGGER_CHARS = 48;
 
-/** Cap the declared hints in count and length; order and spelling are kept. */
+// Cap the declared hints in count and length; order and spelling are kept.
 function boundedTriggers(triggers: readonly string[] | undefined): readonly string[] {
   if (!triggers || triggers.length === 0) return Object.freeze([]);
   return Object.freeze(
@@ -73,43 +29,30 @@ function boundedTriggers(triggers: readonly string[] | undefined): readonly stri
     ),
   );
 }
-// Built from the ONE selector pattern (src/shared/plugin-skill-selector.ts), so
-// the catalog, `skill_load`/`skill_read`, and the turn-scope gate cannot drift.
+// Built from the ONE selector pattern (src/shared/plugin-skill-selector.ts), so the catalog, `skill_load`/`skill_read`, and the turn-scope gate cannot drift.
 const PLUGIN_SKILL_SELECTOR_ALLOWLIST = new RegExp(`^${PLUGIN_SKILL_SELECTOR_PATTERN}$`);
 const AGENT_PLUGIN_SKILL_SELECTOR_ALLOWLIST = new RegExp(`^${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN}$`);
 export const SKILL_SELECTOR_ALLOWLIST = new RegExp(
   `^(?:[a-zA-Z0-9_-]+|${PLUGIN_SKILL_SELECTOR_PATTERN}|${AGENT_PLUGIN_SKILL_SELECTOR_PATTERN})$`,
 );
 
-/** C2(e): skills with a body larger than this are refused at load time. */
+// C2(e): skills with a body larger than this are refused at load time.
 export const SKILL_MAX_BODY_BYTES = 8 * 1024;
 
-/**
- * Bundled-resource (stage-3) bounds. A skill may ship `references/`, `assets/`
- * … next to its SKILL.md; those files are surfaced as a manifest and read only
- * on demand through `skill_read`. Every bound below is a hard cap so untrusted
- * bundled content cannot flood the prompt, the context, or the scan.
- */
+// Cap bundled skill scans, manifests, and on-demand reads so untrusted resources cannot flood prompts or context.
 const SKILL_RESOURCE_MAX_BYTES = 256 * 1024;
 const SKILL_RESOURCE_COUNT_CAP = 64;
 const SKILL_RESOURCE_DEPTH_CAP = 4;
 const SKILL_RESOURCE_SCAN_LIMIT = 256;
 const SKILL_RESOURCE_PATH_MAX_CHARS = 256;
 
-/**
- * A bundled resource path is host-facing *and* model-facing (it is rendered in
- * the trusted `<ave-skill>` overlay), so it must be inert on both sides:
- * relative, no traversal, no absolute/drive/UNC form, no backslash, no `:`
- * (NTFS alternate data streams), and no control characters — a newline in a
- * filename would otherwise inject extra lines into trusted guidance.
- */
+// Resource names enter both filesystem paths and trusted guidance; reject traversal, absolute paths, backslashes, ADS colons, controls, and fence metacharacters.
 function isSafeResourcePath(resourcePath: string): boolean {
   if (typeof resourcePath !== "string") return false;
   if (resourcePath.length === 0 || resourcePath.length > SKILL_RESOURCE_PATH_MAX_CHARS) return false;
   for (const char of resourcePath) {
     const code = char.codePointAt(0) ?? 0;
-    // Control characters (a newline in a filename would inject extra lines
-    // into the trusted overlay), plus fence/path metacharacters.
+    // Control characters (a newline in a filename would inject extra lines into the trusted overlay), plus fence/path metacharacters.
     if (code <= 0x1f || code === 0x7f) return false;
     if (char === "<" || char === ">" || char === "\\" || char === ":") return false;
   }
@@ -125,61 +68,43 @@ function assertSafeResourcePath(resourcePath: string): void {
   }
 }
 
-/**
- * Does a `relative()` result leave its root? Checked precisely: a plain
- * `startsWith("..")` would also reject a legitimate `..notes.md` filename.
- */
+// Does a `relative()` result leave its root? Checked precisely: a plain `startsWith("..")` would also reject a legitimate `..notes.md` filename.
 function escapesRoot(rel: string): boolean {
   return rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
 }
 
-/**
- * `skill_read` is a TEXT surface: content is decoded as UTF-8 and handed to the
- * model. Refuse NUL-bearing content — the reliable marker of a binary file —
- * rather than return corrupted bytes that read like content. (Invalid UTF-8
- * WITHOUT a NUL still decodes lossily; it is inert data on this channel.)
- */
+// skill_read decodes text as UTF-8; reject NUL-bearing binary content rather than returning corrupted bytes.
 function assertTextResource(content: string, resourcePath: string): void {
   if (content.includes("\u0000")) {
     throw new Error(`resource is not UTF-8 text: ${resourcePath}`);
   }
 }
 
-/** One bundled file next to a skill's SKILL.md. Metadata only — never content. */
+// One bundled file next to a skill's SKILL.md. Metadata only — never content.
 export interface SkillResourceRef {
-  /** Skill-root-relative POSIX path (never `SKILL.md`). */
+  // Skill-root-relative POSIX path (never `SKILL.md`).
   path: string;
   bytes: number;
 }
 
-/** Content of one bundled resource, returned by `skill_read`. */
+// Content of one bundled resource, returned by `skill_read`.
 export interface SkillResourceContent {
   path: string;
   content: string;
   bytes: number;
 }
 
-/**
- * SKILL.md front matter — every field `$defs/skillComponent` declares.
- *
- * The optional five used to be read and thrown away. They are kept now because
- * the schema promises them to an author on both delivery paths: dropping
- * `triggers` in particular meant a skill could declare keyword hints that
- * nothing downstream ever saw.
- */
+// Preserve every declared skillComponent field on both delivery paths, including trigger hints.
 export interface SkillFrontmatter {
   name: string;
   description?: string;
-  /** Keyword hints, surfaced on the catalog the model reads. */
+  // Keyword hints, surfaced on the catalog the model reads.
   triggers?: string[];
   license?: string;
   compatibility?: string;
   metadata?: Record<string, unknown>;
-  /**
-   * Space-delimited tools the skill declares itself pre-approved to use.
-   * Carried and surfaced; NOT enforced — the permission layer is unchanged by
-   * this field, and a skill cannot widen its own reach by declaring it.
-   */
+  // Space-delimited tools the skill declares itself pre-approved to use. Carried and surfaced; NOT enforced — the permission layer is unchanged by this
+  // field, and a skill cannot widen its own reach by declaring it.
   allowedTools?: string;
 }
 
@@ -203,9 +128,8 @@ function materializedSkill(
     fingerprint: contribution.fingerprint,
   });
   const selector = `plugin:${owner.pluginId}:${owner.localId}`;
-  // Stage-3 manifest, derived with ZERO filesystem access: the generation's
-  // files are already materialized + sha256-verified in memory, so the manifest
-  // is metadata over trusted bytes. `SKILL.md` itself is never a resource.
+  // Stage-3 manifest, derived with ZERO filesystem access: the generation's files are already materialized + sha256-verified in memory, so the manifest is
+  // metadata over trusted bytes. `SKILL.md` itself is never a resource.
   const prefix = `${contribution.path}/`;
   const resources: SkillResourceRef[] = [];
   for (const file of contribution.files) {
@@ -229,11 +153,8 @@ function materializedSkill(
   });
 }
 
-/**
- * Project parsed front matter onto the fields a skill record carries. One
- * function so the plugin path and the user-directory path cannot drift into
- * keeping different subsets.
- */
+// Project parsed front matter onto the fields a skill record carries. One function so the plugin path and the user-directory path cannot drift into
+// keeping different subsets.
 function skillComponentFields(fm: SkillFrontmatter): SkillComponentFields {
   const fields: SkillComponentFields = { triggers: boundedTriggers(fm.triggers) };
   if (fm.license !== undefined) fields.license = fm.license;
@@ -243,20 +164,14 @@ function skillComponentFields(fm: SkillFrontmatter): SkillComponentFields {
   return fields;
 }
 
-/**
- * The declared fields a skill record carries beyond its identity and body.
- *
- * One shape for both delivery paths — a skill loaded from `~/.ave/skills/`
- * and a skill materialized out of a plugin generation — so a field cannot be
- * kept on one path and dropped on the other, which is the state this replaced.
- */
+// Use one metadata shape for disk-loaded and plugin-provided skills so neither delivery path drops fields.
 interface SkillComponentFields {
-  /** Keyword hints the author declared; empty when the header carries none. */
+  // Keyword hints the author declared; empty when the header carries none.
   triggers: readonly string[];
   license?: string;
   compatibility?: string;
   metadata?: Record<string, unknown>;
-  /** Declared, surfaced, and NOT enforced — see {@link SkillFrontmatter}. */
+  // Declared, surfaced, and NOT enforced — see {@link SkillFrontmatter}.
   allowedTools?: string;
 }
 
@@ -265,27 +180,15 @@ export interface LoadedSkill extends SkillComponentFields {
   description: string;
   body: string;
   filePath: string;
-  /** Exact cache/approval identity for plugin-owned materialized bytes. */
+  // Exact cache/approval identity for plugin-owned materialized bytes.
   approvalKey?: string;
   pluginOwner?: PluginSkillOwner;
   agentPluginOwner?: { packageName: string; version: string; digest: string };
-  /**
-   * Bundled files shipped next to SKILL.md (stage-3). Metadata only — contents
-   * load on demand through `skill_read`. Always present; empty for flat skills.
-   */
+  // Bundled files shipped next to SKILL.md (stage-3). Metadata only — contents load on demand through `skill_read`. Always present; empty for flat skills.
   resources: readonly SkillResourceRef[];
 }
 
-/**
- * Catalog row for prompt assembly and `skill_list`.
- *
- * `triggers` rides along because it is the field that only means anything on
- * a listing: keyword hints exist to help pick a skill, and the catalog is
- * where picking happens. A row appears when the skill is registered and is
- * gone when it is removed, so the hints have exactly the skill's lifetime.
- * The remaining declared fields stay off the catalog — it is a bounded
- * prompt surface, and they are reachable on the loaded skill.
- */
+// Catalog rows carry bounded selection hints for the skill’s lifetime; other fields stay available on the loaded skill.
 export interface SkillCatalogEntry {
   name: string;
   description: string;
@@ -318,23 +221,15 @@ const SKILL_FRONTMATTER_READ_BYTES = 16 * 1024;
 const SKILL_CATALOG_DESCRIPTION_MAX_CHARS = 1024;
 
 export interface FrontmatterBlock {
-  /** `key` → the raw text after the colon (untrimmed, quotes intact). Last key wins. */
+  // `key` → the raw text after the colon (untrimmed, quotes intact). Last key wins.
   fields: ReadonlyMap<string, string>;
-  /** The block between the `---` fences, verbatim; empty when there is none. */
+  // The block between the `---` fences, verbatim; empty when there is none.
   block: string;
-  /** Everything after the closing `---`; the whole input when there is no block. */
+  // Everything after the closing `---`; the whole input when there is no block.
   body: string;
 }
 
-/**
- * Split a markdown document into its `---` frontmatter block and body.
- *
- * Two views of the same block come back. `fields` is the flat `key: value`
- * reading — enough for agent profiles and persona prompts, whose headers are
- * scalars and inline lists. `block` is the verbatim text, for a caller whose
- * contract has structure the flat reading cannot represent: skill front matter
- * declares `metadata` as a mapping, which no line-at-a-time parser can carry.
- */
+// Return both scalar fields for simple headers and verbatim frontmatter for structured mappings such as metadata.
 export function parseFrontmatterBlock(raw: string): FrontmatterBlock {
   const fmRegex = /^---\s*\r?\n([\s\S]*?)\r?\n---\s*\r?\n?/;
   const match = raw.match(fmRegex);
@@ -351,15 +246,7 @@ export function parseFrontmatterBlock(raw: string): FrontmatterBlock {
   return { fields, block, body: raw.slice(full.length) };
 }
 
-/**
- * Read a frontmatter value that the contract types as a list of strings.
- *
- * YAML gives a sequence; a hand-written header may still spell it as one line
- * (`a, b` or `[a, b]`), which is what agent profiles have always accepted.
- * Both readings land here so the two stores cannot disagree about what a list
- * is. Non-string entries are dropped rather than coerced — a trigger is a
- * keyword, and a number that reached this field is a mistake in the file.
- */
+// Accept YAML string sequences and legacy inline/comma-separated lists; drop non-string entries instead of coercing them.
 export function parseFrontmatterStringList(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.filter((item): item is string => typeof item === "string" && item.length > 0);
@@ -375,26 +262,13 @@ export function parseFrontmatterStringList(value: unknown): string[] {
     .filter((s) => s.length > 0);
 }
 
-/** Trim a frontmatter scalar and unwrap one pair of surrounding quotes (single or double). */
+// Trim a frontmatter scalar and unwrap one pair of surrounding quotes (single or double).
 export function unquoteFrontmatterValue(raw: string): string {
   return raw.trim().replace(/^["']|["']$/g, "");
 }
 
-/**
- * The skill header, as `$defs/skillComponent` describes it.
- *
- * Front matter is YAML — that is what the Agent Skills specification the
- * schema follows says it is — and the component has a mapping field
- * (`metadata`) and a sequence field (`triggers`), so it is read with a YAML
- * parser rather than line by line. Malformed YAML throws; every caller here
- * already treats a header it cannot read as a skill that does not load, which
- * is the honest outcome for a file whose contract cannot be established.
- *
- * Undeclared keys are ignored rather than refused. Admission against the
- * schema happens where publication does, in the marketplace; a second refusal
- * here would mean a newer contract field breaks every already-installed
- * skill that uses it until the host ships a new snapshot.
- */
+// Use YAML for structured frontmatter; malformed headers refuse loading.
+// Ignore undeclared keys so newly published fields do not break installed skills on older hosts.
 export function parseFrontmatter(raw: string): {
   fm: SkillFrontmatter;
   body: string;
@@ -425,27 +299,13 @@ export function parseFrontmatter(raw: string): {
   if (doc.metadata && typeof doc.metadata === "object" && !Array.isArray(doc.metadata)) {
     fm.metadata = doc.metadata as Record<string, unknown>;
   }
-  // The schema spells this key `allowed-tools`; the TS field is camel-cased
-  // because the rest of this record is, and the hyphen is not addressable.
+  // The schema spells this key `allowed-tools`; the TS field is camel-cased because the rest of this record is, and the hyphen is not addressable.
   const allowedTools = scalar("allowed-tools");
   if (allowedTools !== undefined) fm.allowedTools = allowedTools;
   return { fm, body };
 }
 
-/**
- * Say so when YAML read less of a line than the author probably wrote.
- *
- * `description: cost #1 priority` is, to YAML, the value `cost` followed by a
- * comment — the rest is gone, and gone silently, which is the one way a
- * correct parser is worse than the line reader it replaced. The flat reading
- * of the same line still holds the whole text, so the two can be compared and
- * the difference reported.
- *
- * Only unquoted scalars are compared. For a quoted one YAML's reading is
- * authoritative and the flat reading is a crude approximation of it (escapes,
- * embedded colons), so a difference there means nothing. The YAML value is
- * kept either way: this reports the loss, it does not paper over it.
- */
+// Warn when YAML truncates an unquoted scalar at a comment marker; retain YAML’s authoritative value and skip comparisons for quoted scalars.
 function warnOnShortenedScalar(
   key: string,
   rawLine: string | undefined,
@@ -465,7 +325,7 @@ function warnOnShortenedScalar(
 }
 
 export interface SkillStoreOptions {
-  /** Override user-skills directory. */
+  // Override user-skills directory.
   userDir?: string;
 }
 
@@ -474,24 +334,19 @@ export class SkillStore {
   private pluginSkills = new Map<string, LoadedSkill>();
   private agentPluginSkills = new Map<string, LoadedSkill>();
   private agentPluginResources = new Map<string, ReadonlyMap<string, Buffer>>();
-  /**
-   * Skills installed as marketplace packages (design §2): name → the
-   * installed package directory, which holds SKILL.md and its bundle. A
-   * user skill of the same name wins; the marketplace refuses to install
-   * over one, so that happens only when the user adds it later.
-   */
+  // User skills shadow installed packages of the same name, including skills added after package installation.
   private packageDirs = new Map<string, string>();
 
   constructor(opts: SkillStoreOptions = {}) {
     this.userDir = opts.userDir ?? userSkillsDir();
   }
 
-  /** Replace the installed skill packages; the installed-content service calls this after each load. */
+  // Replace the installed skill packages; the installed-content service calls this after each load.
   setInstalledPackages(packages: ReadonlyArray<{ name: string; dir: string }>): void {
     this.packageDirs = new Map(packages.filter((item) => SKILL_NAME_ALLOWLIST.test(item.name)).map((item) => [item.name, item.dir]));
   }
 
-  /** Publish skills from already-verified package bytes; this replaces the prior package snapshot. */
+  // Publish skills from already-verified package bytes; this replaces the prior package snapshot.
   setInstalledAgentPlugins(packages: readonly InstalledAgentPlugin[]): void {
     const next = new Map<string, LoadedSkill>();
     const nextResources = new Map<string, ReadonlyMap<string, Buffer>>();
@@ -548,7 +403,7 @@ export class SkillStore {
     return { path, content, bytes: data.length };
   }
 
-  /** The SKILL.md of an installed package, realpath-contained in its directory; null when absent or escaping. */
+  // The SKILL.md of an installed package, realpath-contained in its directory; null when absent or escaping.
   private async packageSkillFile(dir: string): Promise<string | null> {
     try {
       const canonicalDir = await realpath(dir);
@@ -571,12 +426,12 @@ export class SkillStore {
     }
   }
 
-  /** The file of the user's own skill with this name, or null: an installed package of that name would never apply. */
+  // The file of the user's own skill with this name, or null: an installed package of that name would never apply.
   async userSkillFile(name: string): Promise<string | null> {
     return (await this.scanDir(this.userDir)).find((skill) => skill.name === name)?.filePath ?? null;
   }
 
-  /** List user skills, then installed package skills a user skill does not shadow, then plugin skills. */
+  // List user skills, then installed package skills a user skill does not shadow, then plugin skills.
   async list(): Promise<LoadedSkill[]> {
     const out = await this.scanDir(this.userDir);
     const byName = new Map<string, LoadedSkill>();
@@ -589,10 +444,7 @@ export class SkillStore {
     return [...byName.values(), ...this.pluginSkills.values(), ...this.agentPluginSkills.values()];
   }
 
-  /**
-   * Synchronous lightweight catalog for prompt assembly. It returns only
-   * metadata; skill bodies stay behind `skill_load` and the approval gate.
-   */
+  // Synchronous lightweight catalog for prompt assembly. It returns only metadata; skill bodies stay behind `skill_load` and the approval gate.
   listCatalogSync(): SkillCatalogEntry[] {
     const out = this.scanCatalogDirSync(this.userDir);
     const byName = new Map<string, SkillCatalogEntry>();
@@ -685,7 +537,7 @@ export class SkillStore {
     return packageDir ? this.loadPackageSkill(name, packageDir) : null;
   }
 
-  /** Resolve a plugin Skill only from an already-admitted immutable generation. */
+  // Resolve a plugin Skill only from an already-admitted immutable generation.
   loadPluginGeneration(generation: ActivePluginGeneration, selector: string): LoadedSkill | null {
     const prefix = `plugin:${generation.pluginId}:`;
     if (!selector.startsWith(prefix)) return null;
@@ -696,14 +548,7 @@ export class SkillStore {
     return contribution ? materializedSkill(generation, contribution) : null;
   }
 
-  /**
-   * Read one bundled resource of a PLUGIN skill — zero filesystem access.
-   *
-   * The generation's files were materialized and sha256-verified at install and
-   * are held frozen in memory, so an exact `path` match against that set is the
-   * whole integrity story: there is no disk re-read and therefore no TOCTOU.
-   * Returns null when the selector, contribution, or resource does not exist.
-   */
+  // Read only exact paths from the frozen generation manifest, already hash-verified at install; never reread plugin resources from disk.
   readPluginResource(
     generation: ActivePluginGeneration,
     selector: string,
@@ -730,15 +575,7 @@ export class SkillStore {
     return { path: resourcePath, content: file.content, bytes };
   }
 
-  /**
-   * Read one bundled resource of a USER skill, contained inside that skill's
-   * own directory.
-   *
-   * A flat `<name>.md` skill is REFUSED before any filesystem access: its
-   * `dirname` is the shared skills root, so treating it as a bundle root would
-   * let one approved skill read every sibling skill's bytes — approval is
-   * per-skill and body-hash-bound, and that must not become transitive.
-   */
+  // Refuse flat-file skill bundles before filesystem access; using the shared skills root would make one approval authorize sibling files.
   async readUserResource(
     skill: Pick<LoadedSkill, "filePath"> & { pluginOwner?: LoadedSkill["pluginOwner"] },
     resourcePath: string,
@@ -746,15 +583,13 @@ export class SkillStore {
     if (skill.pluginOwner) throw new Error("plugin skill resources load through readPluginResource");
     assertSafeResourcePath(resourcePath);
     const skillDir = dirname(skill.filePath);
-    // Every filesystem resolution below runs inside a try: a raw ENOENT would
-    // otherwise carry the absolute host path into the error text, which
-    // `skill_read` returns verbatim to the model.
+    // Every filesystem resolution below runs inside a try: a raw ENOENT would otherwise carry the absolute host path into the error text, which `skill_read`
+    // returns verbatim to the model.
     let canonicalDir: string;
     try {
       canonicalDir = await realpath(skillDir);
     } catch (err) {
-      // Log the true cause locally (EACCES vs ENOENT vs ELOOP); the model only
-      // ever sees the sanitized text.
+      // Log the true cause locally (EACCES vs ENOENT vs ELOOP); the model only ever sees the sanitized text.
       log.warn(`skill resources: skill directory unresolvable: %s`, (err as Error).message);
       throw new Error(`skill directory unavailable for resource: ${resourcePath}`);
     }
@@ -775,9 +610,7 @@ export class SkillStore {
     if (rel.split(sep).join("/") === "SKILL.md") {
       throw new Error("SKILL.md is the skill body, not a resource");
     }
-    // Bind the size check and the read to ONE file handle: re-opening by path
-    // after `stat` leaves a swap window (mirrors the fd-bound read in
-    // `tools/file-tools.ts`).
+    // Bind the size check and the read to ONE file handle: re-opening by path after `stat` leaves a swap window (mirrors the fd-bound read in `tools/file-tools.ts`).
     let handle: Awaited<ReturnType<typeof open>>;
     try {
       handle = await open(canonicalFile, "r");
@@ -788,9 +621,7 @@ export class SkillStore {
     try {
       const info = await handle.stat();
       if (!info.isFile()) throw new Error("skill resource is not a regular file");
-      // A hardlink can name an out-of-tree inode from inside the directory, so
-      // containment alone would not hold — the plugin ingest path rejects
-      // `nlink > 1` for the same reason.
+      // A hardlink can name an out-of-tree inode from inside the directory, so containment alone would not hold — the plugin ingest path rejects `nlink > 1` for the same reason.
       if (info.nlink > 1) throw new Error("skill resource is a hardlink");
       if (info.size > SKILL_RESOURCE_MAX_BYTES) {
         throw new Error(`skill resource exceeds ${SKILL_RESOURCE_MAX_BYTES} bytes`);
@@ -803,17 +634,7 @@ export class SkillStore {
     }
   }
 
-  /**
-   * A bundle root must be the skill's OWN directory: a DIRECT CHILD of the
-   * skills root, entered through `<name>/SKILL.md`.
-   *
-   * Anchoring on the skills root rather than on the filename is what makes this
-   * safe. A flat file named `SKILL.md` sitting at the skills root — or a
-   * `<name>/SKILL.md` symlinked to the root — has a `SKILL.md` basename yet its
-   * directory IS the shared root, which would turn one approved skill into a
-   * reader of every sibling skill's bytes. Approval is per-skill and
-   * body-hash-bound; it must never become transitive.
-   */
+  // Bundle roots must be direct skill-directory children, never the shared root or a symlink back to it; approval cannot become transitive.
   private async isBundleRoot(canonicalDir: string, entryFileName: string): Promise<boolean> {
     if (entryFileName !== "SKILL.md") return false;
     // An installed package's own directory is its skill's bundle.
@@ -835,23 +656,17 @@ export class SkillStore {
     return rootRel.split(sep).length === 1;
   }
 
-  /** Publish materialized Skill bytes for exactly one active plugin generation. */
+  // Publish materialized Skill bytes for exactly one active plugin generation.
   publishPluginGeneration(generation: ActivePluginGeneration): void {
     this.preparePluginGeneration(generation).publish();
   }
 
-  /** Parse and prebuild the complete Skill snapshot before durable commit. */
+  // Parse and prebuild the complete Skill snapshot before durable commit.
   preparePluginGeneration(generation: ActivePluginGeneration): PreparedPluginSkillGeneration {
     const skills: LoadedSkill[] = [];
     for (const contribution of generation.contributions) {
       if (contribution.kind !== "skill") continue;
-      // One unreadable SKILL.md drops ITS skill, not the plugin. A header the
-      // YAML parser refuses is a defect in one contributed file, and letting
-      // it throw here would take the whole activation down with it — every
-      // other skill and every tool the plugin contributes. The user-directory
-      // scan has always contained a bad entry this way; the bundled path now
-      // matches it. The duplicate-selector check below still throws: that is
-      // the generation contradicting itself, not one file being malformed.
+      // A malformed contributed skill drops only that skill; duplicate selectors still fail the generation because its declarations contradict each other.
       let skill: LoadedSkill;
       try {
         skill = materializedSkill(generation, contribution);
@@ -864,9 +679,8 @@ export class SkillStore {
       }
       skills.push(skill);
     }
-    // Selectors are plugin-scoped, so this refuses only a generation that
-    // contradicts itself. Publish applies `skills` to the live catalog, which
-    // keeps any plugin published while this one awaited its commit.
+    // Selectors are plugin-scoped, so this refuses only a generation that contradicts itself. Publish applies `skills` to the live catalog, which keeps any
+    // plugin published while this one awaited its commit.
     this.pluginSkillsWith(generation.pluginId, skills);
     let published = false;
     return Object.freeze({
@@ -880,7 +694,7 @@ export class SkillStore {
     });
   }
 
-  /** The live plugin catalog with `pluginId`'s Skills replaced by `skills`. */
+  // The live plugin catalog with `pluginId`'s Skills replaced by `skills`.
   private pluginSkillsWith(pluginId: string, skills: readonly LoadedSkill[]): Map<string, LoadedSkill> {
     const next = new Map(this.pluginSkills);
     for (const [selector, skill] of next) {
@@ -895,7 +709,7 @@ export class SkillStore {
     return next;
   }
 
-  /** Exact plugin catalog removal, applied to the live catalog at publish; leased overlays keep their body. */
+  // Exact plugin catalog removal, applied to the live catalog at publish; leased overlays keep their body.
   preparePluginRemoval(pluginId: string, generationId: string): PreparedPluginSkillGeneration {
     let published = false;
     return Object.freeze({
@@ -915,7 +729,7 @@ export class SkillStore {
     });
   }
 
-  /** Remove one retired generation without touching user/global skill files. */
+  // Remove one retired generation without touching user/global skill files.
   removePluginGeneration(pluginId: string, generationId: string): void {
     for (const [selector, skill] of this.pluginSkills) {
       if (skill.pluginOwner?.pluginId === pluginId && skill.pluginOwner.generationId === generationId) {
@@ -939,11 +753,7 @@ export class SkillStore {
       throw err;
     }
 
-    // C2(a): resolve the directory's real path ONCE so each scanned entry
-    // can be confined against it. If the directory itself doesn't exist as
-    // a real path (just-created via mkdir, race conditions), fall back to
-    // the supplied `dir` value — confinement still works because we resolve
-    // every entry the same way.
+    // Resolve the scan root once and confine each realpath against it; if the root cannot resolve, use the supplied directory consistently.
     let canonicalDir: string;
     try {
       canonicalDir = await realpath(dir);
@@ -956,15 +766,12 @@ export class SkillStore {
       const candidate = this.skillCandidate(dir, entry);
       if (!candidate) continue;
       const { baseName, filePath } = candidate;
-      // C2(b): allowlist on filename — reject anything with `/`, `..`, NUL,
-      // or other disallowed characters before opening the file.
+      // C2(b): allowlist on filename — reject anything with `/`, `..`, NUL, or other disallowed characters before opening the file.
       if (!SKILL_NAME_ALLOWLIST.test(baseName)) {
         log.warn(`skill scan: rejected non-allowlist entry: ${entry.name}`);
         continue;
       }
-      // C2(a): resolve the entry's real path and verify it stays inside
-      // the (real) skills directory. Symlinks pointing outside (e.g.
-      // `evil.md → /etc/passwd`) are rejected here.
+      // C2(a): resolve the entry's real path and verify it stays inside the (real) skills directory. Symlinks pointing outside (e.g. `evil.md → /etc/passwd`) are rejected here.
       let canonicalFile: string;
       try {
         canonicalFile = await realpath(filePath);
@@ -999,15 +806,13 @@ export class SkillStore {
     const { fm, body } = parseFrontmatter(raw);
     const name = resolveSkillName(baseName, fm);
     const trimmedBody = body.trim();
-    // C2(e): cap body length so a malicious skill cannot blow up the
-    // system prompt or chew up tokens. 8 KB is generous for a markdown
-    // skill and tight enough that abuse is bounded.
+    // C2(e): cap body length so a malicious skill cannot blow up the system prompt or chew up tokens. 8 KB is generous for a markdown skill and tight enough
+    // that abuse is bounded.
     if (Buffer.byteLength(trimmedBody, "utf-8") > SKILL_MAX_BODY_BYTES) {
       throw new Error(`rejected oversized body (>${SKILL_MAX_BODY_BYTES} bytes)`);
     }
-    // Stage-3: only the directory layout (`<name>/SKILL.md`) owns a bundle
-    // directory. A flat `<name>.md` skill has no directory of its own — its
-    // parent IS the shared skills root — so it never carries resources.
+    // Stage-3: only the directory layout (`<name>/SKILL.md`) owns a bundle directory. A flat `<name>.md` skill has no directory of its own — its parent IS
+    // the shared skills root — so it never carries resources.
     const skillDir = dirname(canonicalFile);
     const resources = (await this.isBundleRoot(skillDir, basename(canonicalFile)))
       ? await this.listSkillResources(skillDir)
@@ -1022,16 +827,8 @@ export class SkillStore {
     };
   }
 
-  /**
-   * List a directory-form skill's bundled files, root-relative and POSIX-normalized.
-   *
-   * Every entry is realpath-contained inside the skill directory (a symlink
-   * pointing outside is skipped, mirroring `load()`), character-validated (a
-   * filename with a newline or fence metacharacter is skipped so it can never
-   * reach the trusted overlay), size-capped, and bounded by depth / count /
-   * scan limits. Failures degrade to "no resources", never to a throw: a
-   * broken bundle must not make the skill itself unloadable.
-   */
+  // Resources must be realpath-contained, path-safe, size-capped, and bounded by depth/count/scan limits.
+  // Broken bundles yield no resources without making the skill unloadable.
   private async listSkillResources(skillDir: string): Promise<SkillResourceRef[]> {
     let canonicalDir: string;
     try {
@@ -1041,9 +838,8 @@ export class SkillStore {
     }
     const found: SkillResourceRef[] = [];
     const queue: Array<{ dir: string; depth: number }> = [{ dir: canonicalDir, depth: 0 }];
-    // Canonical paths already visited. A symlink cycle (`loop -> .`) otherwise
-    // re-emits the same file until the caps fill up, crowding real resources
-    // out of both the manifest and the trusted overlay.
+    // Canonical paths already visited. A symlink cycle (`loop -> .`) otherwise re-emits the same file until the caps fill up, crowding real resources out of
+    // both the manifest and the trusted overlay.
     const seen = new Set<string>([canonicalDir]);
     let scanned = 0;
     while (queue.length > 0) {
@@ -1063,8 +859,7 @@ export class SkillStore {
         let canonicalChild: string;
         let info: Awaited<ReturnType<typeof stat>>;
         try {
-          // realpath + stat resolve symlinks; the containment check below then
-          // rejects anything whose real location escapes the skill directory.
+          // realpath + stat resolve symlinks; the containment check below then rejects anything whose real location escapes the skill directory.
           canonicalChild = await realpath(childPath);
           info = await stat(canonicalChild);
         } catch {
@@ -1084,9 +879,7 @@ export class SkillStore {
           continue;
         }
         if (!info.isFile()) continue;
-        // A hardlink can name an out-of-tree inode from inside the directory,
-        // so containment alone would not hold (the plugin ingest path rejects
-        // `nlink > 1` for the same reason).
+        // A hardlink can name an out-of-tree inode from inside the directory, so containment alone would not hold (the plugin ingest path rejects `nlink > 1` for the same reason).
         if (info.nlink > 1) continue;
         const posixRel = rel.split(sep).join("/");
         if (posixRel === "SKILL.md") continue;
@@ -1213,9 +1006,8 @@ function readFrontmatterSync(filePath: string): SkillFrontmatter {
 
 function resolveSkillName(baseName: string, fm: SkillFrontmatter): string {
   const name = fm.name || baseName;
-  // C2(b): frontmatter may not redefine the canonical skill id. This keeps
-  // catalog metadata and `skill_load({skillName})` pointed at the same file
-  // and avoids duplicate-alias ambiguity.
+  // C2(b): frontmatter may not redefine the canonical skill id. This keeps catalog metadata and `skill_load({skillName})` pointed at the same file and
+  // avoids duplicate-alias ambiguity.
   if (name !== baseName) {
     throw new Error(`frontmatter name "${name}" must match skill id "${baseName}"`);
   }

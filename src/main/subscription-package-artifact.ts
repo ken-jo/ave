@@ -4,7 +4,7 @@ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isRecord } from "../shared/is-record.js";
 import { copyAdmittedExecutableFile, hashExecutableFile, openExecutableFile } from "./codex-executable-artifact.js";
-import { assertCodexLocations, type CodexLocationRequest } from "./codex-executable-location.js";
+import { assertCodexLocations, createPrivateObjects, makePrivateDirectoryTree, type CodexLocationRequest } from "./codex-executable-location.js";
 
 const MAX_PACKAGE_ENTRIES = 20_000;
 const MAX_PACKAGES = 512;
@@ -86,8 +86,7 @@ async function resolvePackageDependency(
   throw new Error("Subscription package dependency is unavailable");
 }
 
-// Only lists the tree; callers admit every listed path in one batch before
-// opening any file in it.
+// Only lists the tree; callers admit every listed path in one batch before opening any file in it.
 async function packageFiles(root: string, declaredPackage = false): Promise<PackageEntry[]> {
   const entries: PackageEntry[] = [];
   let count = 0;
@@ -109,7 +108,7 @@ async function packageFiles(root: string, declaredPackage = false): Promise<Pack
   return entries;
 }
 
-/** Callers may add locations of their own to the graph's single admission batch. */
+// Callers may add locations of their own to the graph's single admission batch.
 async function packageGraph(root: string, extra: readonly CodexLocationRequest[] = []): Promise<PackageGraph> {
   const roots = new Set<string>();
   const entries = new Map<string, PackageEntry>();
@@ -131,8 +130,7 @@ async function packageGraph(root: string, extra: readonly CodexLocationRequest[]
     }
   };
   await collect(root);
-  // Metadata names the dependencies before admission, so the admitted bytes
-  // must be the ones that were read; no other file is opened before admission.
+  // Metadata names the dependencies before admission, so the admitted bytes must be the ones that were read; no other file is opened before admission.
   await assertCodexLocations([...extra, ...dependencyRequests, ...locationRequests(entries.values(), "directory")]);
   const files = new Map<string, string>();
   const directories = new Set<string>();
@@ -187,8 +185,7 @@ Module._resolveFilename = function(specifier, parent, ...rest) {
 `;
 }
 
-// Loaded before the package entry. Every import/require is resolved inside the
-// sealed snapshot and code is read from a no-follow handle with its own digest.
+// Loaded before the package entry. Every import/require is resolved inside the sealed snapshot and code is read from a no-follow handle with its own digest.
 function moduleGuardSource(files: ReadonlyMap<string, string>): string {
   return `import { registerHooks, isBuiltin } from "node:module";
 import { createHash } from "node:crypto";
@@ -237,7 +234,7 @@ registerHooks({
 `;
 }
 
-/** Bind loading to the declared transitive graph, without per-package import isolation. */
+// Bind loading to the declared transitive graph, without per-package import isolation.
 export async function copySubscriptionPackageArtifact(root: string, script: string, directory: string): Promise<SubscriptionPackageArtifact> {
   const canonicalDirectory = await fs.realpath(directory);
   const graph = await packageGraph(root, [{ path: canonicalDirectory, kind: "private-directory", routeKind: "guarded-script" }]);
@@ -249,27 +246,35 @@ export async function copySubscriptionPackageArtifact(root: string, script: stri
   const sources: PackageEntry[] = [];
   for (const packageRoot of graph.roots) sources.push(...await packageFiles(packageRoot, true));
   await assertCodexLocations(locationRequests(sources, "directory"));
-  for (const { path, isDirectory } of sources) {
-    const target = destination(path);
-    if (isDirectory) {
-      await fs.mkdir(target, { recursive: true, mode: 0o700 });
-      directories.add(target);
-    } else if (!files.has(target)) {
-      const file = await copyAdmittedExecutableFile(path, target);
-      if (file.contentHash !== graph.files.get(path)) throw new Error("Subscription executable changed");
-      files.set(file.executable, file.contentHash);
-    }
-  }
   const guard = join(canonicalDirectory, "module-guard.mjs");
-  const guardSource = moduleGuardSource(files);
-  const output = await fs.open(guard, "wx", 0o500);
-  try { await output.writeFile(guardSource); await output.sync(); } finally { await output.close(); }
-  const guardHash = createHash("sha256").update(guardSource).digest("hex");
   const commonJsGuard = join(canonicalDirectory, "module-guard.cjs");
-  const commonJsSource = commonJsGuardSource(snapshot);
-  const commonJsOutput = await fs.open(commonJsGuard, "wx", 0o500);
-  try { await commonJsOutput.writeFile(commonJsSource); await commonJsOutput.sync(); } finally { await commonJsOutput.close(); }
-  const commonJsHash = createHash("sha256").update(commonJsSource).digest("hex");
+  // Everything made here is the product's own: one claim covers it before admission.
+  const { guardHash, commonJsHash } = await createPrivateObjects(async (created) => {
+    for (const { path, isDirectory } of sources) {
+      const target = destination(path);
+      if (isDirectory) {
+        await makePrivateDirectoryTree(target, created);
+        directories.add(target);
+      } else if (!files.has(target)) {
+        const file = await copyAdmittedExecutableFile(path, target);
+        created.push(file.executable);
+        if (file.contentHash !== graph.files.get(path)) throw new Error("Subscription executable changed");
+        files.set(file.executable, file.contentHash);
+      }
+    }
+    const guardSource = moduleGuardSource(files);
+    const output = await fs.open(guard, "wx", 0o500);
+    created.push(guard);
+    try { await output.writeFile(guardSource); await output.sync(); } finally { await output.close(); }
+    const commonJsSource = commonJsGuardSource(snapshot);
+    const commonJsOutput = await fs.open(commonJsGuard, "wx", 0o500);
+    created.push(commonJsGuard);
+    try { await commonJsOutput.writeFile(commonJsSource); await commonJsOutput.sync(); } finally { await commonJsOutput.close(); }
+    return {
+      guardHash: createHash("sha256").update(guardSource).digest("hex"),
+      commonJsHash: createHash("sha256").update(commonJsSource).digest("hex"),
+    };
+  });
   // Called only for paths admitted in the verify batch.
   const verifySealedFile = async (path: string, expectedHash: string): Promise<void> => {
     const input = await openExecutableFile(path);

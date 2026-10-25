@@ -137,12 +137,7 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   it("surfaces a receipt-rejected plugin as a repairable failed card", async () => {
-    // A receipt refusal is decided before the manifest is read, so nothing but
-    // an explicit stub can put the plugin on a card. Without one the install
-    // stays on disk and in the registry — the marketplace keeps calling it
-    // installed — while every UI surface that lists plugins (sidebar, Settings,
-    // Plugin Doctor) projects from the card list and therefore shows nothing at
-    // all. The user gets an install they cannot see, diagnose, or repair.
+    // Pre-manifest refusals need explicit cards so installed plugins remain visible for diagnosis and repair.
     const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
@@ -168,18 +163,12 @@ describe("PluginRuntime boot preflight", () => {
     const card = runtime.listPluginCards().find((entry) => entry.id === "preflight-1");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureMessage).toBe("receipt hash mismatch: dist/index.js");
-    // Reinstalling rewrites payload and receipt together, so the Doctor must be
-    // allowed to offer that repair rather than only a diagnosis.
+    // Reinstall can repair payload and receipt together.
     expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(true);
   });
 
   it("keeps loading the plugins listed after one that throws mid-load", async () => {
-    // Candidate-root materialization sits between the gates that classify
-    // their own refusals, so a throw here is unclassified — and it used to
-    // unwind `load()`'s whole loop. Every plugin AFTER the thrower was then
-    // never attempted: no instance, no failure, and (because a card needs
-    // either a load status or a stub) no row anywhere in the UI, while the
-    // registry kept calling them installed.
+    // Unclassified materialization failures must isolate one plugin and leave a visible failed card.
     const runtime = bindTestPluginRuntimeGeneration(new PluginRuntime({ childEntryPath: pluginChildEntryPath(), encryption: unavailableSecretEncryption,
       hostRoot,
       pluginsRoot,
@@ -209,8 +198,6 @@ describe("PluginRuntime boot preflight", () => {
 
     await expect(runtime.load()).resolves.toBeUndefined();
 
-    // preflight-2 through preflight-5 all come after the thrower in registry
-    // order; every one of them still got its attempt.
     expect(runtime.listPluginIds()).toEqual([
       "preflight-0",
       "preflight-2",
@@ -225,11 +212,7 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   it("keeps the sequence when the thrower is an out-of-process plugin", async () => {
-    // The per-plugin boundary wraps the whole attempt. Every plugin is
-    // isolated since Admission (§9.8 A1), so any manifest id serves: the data
-    // directory is created after routing has already produced the plugin's
-    // child-backed factory — so a throw there is an unclassified crash on the
-    // isolated path.
+    // Exercise an unclassified failure before factory creation on the child path.
     const isolatedId = "isolatedpreflightfixture";
     const isolatedRoot = join(pluginsRoot, isolatedId);
     await mkdir(isolatedRoot, { recursive: true });
@@ -280,8 +263,6 @@ describe("PluginRuntime boot preflight", () => {
     const card = runtime.listPluginCards().find((entry) => entry.id === isolatedId);
     expect(card?.installFailureKind).toBe("load-crash");
     expect(card?.installFailureMessage).toContain("permission denied");
-    // Routing had chosen the child arm before the throw, and no child existed
-    // yet: the Doctor says both (§9.8 A1).
     expect(card).toMatchObject({ arm: "child", confinement: "not-spawned" });
   });
 
@@ -319,8 +300,7 @@ describe("PluginRuntime boot preflight", () => {
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("sandbox-grant-outside-ceiling");
     expect(card?.installFailureMessage).toContain("outside the approved ceiling");
-    // Failed after routing and before any child existed: the Doctor names the
-    // arm the routing function chose and that no child was spawned.
+    // Diagnostics must show the selected arm and that spawn never occurred.
     expect(card?.arm).toBe("child");
     expect(card?.confinement).toBe("not-spawned");
     expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(false);
@@ -332,10 +312,7 @@ describe("PluginRuntime boot preflight", () => {
   });
 
   it("surfaces a registry row whose manifest path escapes the plugin root", async () => {
-    // The plan drops this row before anything reads it, so no preflight
-    // outcome and no manifest ever exist for it — only an explicit stub can
-    // put it on a card, and without one the marketplace was left calling it
-    // installed while the app named it nowhere.
+    // Rows dropped before manifest reads need explicit refusal cards.
     const strayRoot = join(root, "outside-the-plugin-root");
     const strayManifestPath = join(strayRoot, "plugin.json");
     await mkdir(strayRoot, { recursive: true });
@@ -370,8 +347,7 @@ describe("PluginRuntime boot preflight", () => {
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("untrusted-manifest-path");
     expect(card?.installFailureMessage).toContain(strayManifestPath);
-    // Distinct from the receipt refusal above, which is unclassified: both are
-    // repairable by reinstalling, but the Doctor must say which one happened.
+    // Distinguish repairable schema refusal from unclassified receipt refusal.
     expect(isReinstallFixableFailureKind(card?.installFailureKind)).toBe(true);
   });
 

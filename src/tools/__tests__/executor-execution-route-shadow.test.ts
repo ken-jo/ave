@@ -7,7 +7,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { ToolExecutor } from "../executor.js";
 import type { ToolCallMeta } from "../executor-contract.js";
@@ -125,7 +125,7 @@ function makeExecutor(
 describe("execution route shadow metadata", () => {
   it("keeps the existing dynamic-path denial while refusing automatic host selection", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-shadow-"));
     try {
       const registry = new ToolRegistry();
@@ -158,9 +158,7 @@ describe("execution route shadow metadata", () => {
       const [result] = await executor.executeAll(
         [{ id: "tu-route-shadow", name: "bash", input: {
           command: "cat $UNRESOLVED_FILE",
-          // Both are valid under the existing shell contract. The shadow
-          // layer must use resolved cwd and preserve the seconds value rather
-          // than introducing a narrower millisecond safe-integer check.
+          // Preserve resolved cwd and valid timeout seconds without imposing a narrower millisecond bound.
           cwd: "",
           timeoutSeconds: Number.MAX_SAFE_INTEGER,
         } }],
@@ -202,7 +200,7 @@ describe("execution route shadow metadata", () => {
 
   it("executes recursive work in the verified disposable guest and records the consumed route", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-disposable-"));
     try {
@@ -248,7 +246,7 @@ describe("execution route shadow metadata", () => {
 
   it("executes an unresolved path only after the disposable route consumes live authority", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-dynamic-"));
     try {
@@ -280,7 +278,7 @@ describe("execution route shadow metadata", () => {
 
   it("uses guest confinement instead of requesting an unavailable host directory grant", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-workspace-"));
     const outside = mkdtempSync(join(tmpdir(), "ave-execution-route-outside-"));
@@ -319,7 +317,7 @@ describe("execution route shadow metadata", () => {
 
   it("grades an operator-container guest against the host shell plan: same-process is not a disposable substrate", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-operator-review-"));
     try {
@@ -366,8 +364,7 @@ describe("execution route shadow metadata", () => {
 
   it("strips a caller-supplied substrate on a host-routed call: no live guest means host grading", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
-    // No operator container, no broker: the plain host shell route.
+    setShellSandboxRequestedAtBoot(false);
     const workspace = mkdtempSync(join(tmpdir(), "ave-execution-route-host-inherited-"));
     try {
       const { executor } = makeExecutor(workspace);
@@ -415,7 +412,7 @@ describe("execution route shadow metadata", () => {
 
   it("keeps an explicit-host request inside the disposable guest without requiring a desktop", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-explicit-"));
     try {
@@ -446,7 +443,7 @@ describe("execution route shadow metadata", () => {
 
   it("fails closed when the disposable process changes before final route issuance", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     operatorHarness.failAfter = 1;
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-changed-"));
@@ -476,7 +473,7 @@ describe("execution route shadow metadata", () => {
 
   it("revalidates after a delayed PreToolUse hook and blocks a changed process before spawn", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-post-hook-change-"));
     const marker = join(dir, "copied", "input");
@@ -526,7 +523,7 @@ describe("execution route shadow metadata", () => {
 
   it("retains structural syntax rejection inside a disposable guest", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-structural-"));
     try {
@@ -556,7 +553,7 @@ describe("execution route shadow metadata", () => {
     ["legacy secret file", "cat ./ave-secrets.json"],
   ])("keeps %s behind the sensitive-path hard block in a disposable guest", async (_label, command) => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     activateDisposableCapability();
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-sensitive-"));
     try {
@@ -579,7 +576,7 @@ describe("execution route shadow metadata", () => {
 
   it("does not reach a control-plane-like path when the process is not a qualified v1 guest", async () => {
     __resetActiveSandboxCapabilityForTest();
-    setSandboxRequestedAtBoot(false);
+    setShellSandboxRequestedAtBoot(false);
     const marker = "/logs/ave-control-route-test";
     expect(existsSync(marker)).toBe(false);
     const dir = mkdtempSync(join(tmpdir(), "ave-execution-route-unqualified-"));

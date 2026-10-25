@@ -1,10 +1,4 @@
-/**
- * Manifest validation — `auth` cross-field check.
- *
- * Verifies the contract documented in architecture.md §9.4a "Plugin-Owned
- * OAuth — Host UI Surface": when a manifest declares `auth`, the three
- * referenced Tool objects must be app-only so the same gate runs at load time.
- */
+/** Declared auth tools must be app-only; see architecture.md §9.4a. */
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi,
 } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -19,24 +13,9 @@ import { parsePluginJson } from "../runtime/manifest-validation.js";
 import { pureTool } from "./test-helpers.js";
 import { agentPluginsDocument } from "./test-helpers.js";
 
-// `buildManifestValidator(hereFileUrl)` resolves `schemas/plugin.schema.json`
-// using path arithmetic anchored at `dirname(hereFileUrl)`. That math
-// works in production (caller is the runtime module) but proved flaky to
-// reproduce reliably from a `__tests__/` invocation across platforms —
-// the Linux CI runner's nested `_work/ave/ave/ave` cwd +
-// vitest worker `import.meta.url` gave a different `dirname` than the
-// macOS dev run, so the validator silently returned `null` and AJV-
-// specific assertions became no-ops.
-//
-// The fix is path-independent: compile AJV inline against `schemas/
-// plugin.schema.json` resolved from `process.cwd()`, mirror the same
-// AJV options the production builder uses, and pass the compiled
-// validator straight to `parsePluginJson` (which accepts a pre-built
-// validator). Production code is untouched. Tests still exercise the
-// real schema on disk + the real `parsePluginJson` cross-field path.
+// Compile the real schema directly so test-location path resolution cannot silently disable validation.
 let TEST_VALIDATOR: ValidateFunction | null = null;
 beforeAll(() => {
-  // Host-owned manifest schema SOT (ph2).
   const schemaPath = fileURLToPath(
     new URL("../../../schemas/plugin-manifest.schema.json", import.meta.url),
   );
@@ -51,11 +30,7 @@ beforeAll(() => {
     allErrors: true,
     allowUnionTypes: true,
   });
-  // Sanity — if a future bundler interop change makes the ESM default
-  // resolve weirdly, the cast above could land on the namespace itself
-  // and `compile` would not be a function. Fail loudly here instead of
-  // letting AJV-specific tests silently pass against a non-functional
-  // validator.
+  // Assert compile is callable so module interop cannot turn schema assertions into no-ops.
   if (typeof ajv.compile !== "function") {
     throw new Error(
       "[manifest-auth.test] Ajv constructor cast did not yield a working ajv instance",
@@ -195,7 +170,6 @@ describe("manifest validation — auth cross-field", () => {
     await writeManifest({
       auth: {
         loginTool: "test_login",
-        // statusTool missing — schema says required.
       },
     });
     const validator = TEST_VALIDATOR;
@@ -219,11 +193,7 @@ describe("manifest validation — auth cross-field", () => {
   });
 
   it("R3 — does NOT warn when emittedEvents omits ${id}.auth.changed (host auto-derives the bridge)", async () => {
-    // architecture.md §9.4a: the renderer's `usePluginAuthStatuses` subscribes
-    // to `${manifest.id}.auth.changed` literally. R3 — the host now derives +
-    // bridges that exact name from `manifest.auth` (see collectPluginEventTypes
-    // in boot/steps/ipc-bridge.ts), so an omitted declaration is no longer a
-    // problem and the validator must not nag about it.
+    // The host derives the literal <manifest.id>.auth.changed event from auth; no explicit declaration is required.
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await writeManifest({
@@ -232,8 +202,6 @@ describe("manifest validation — auth cross-field", () => {
           loginTool: "test_login",
           logoutTool: "test_signout",
         },
-        // emittedEvents intentionally omitted — the burden-reducing case R3
-        // targets: the host derives `test-plugin.auth.changed` regardless.
       });
       const validator = TEST_VALIDATOR;
       await parsePluginJson(manifestPath, validator);
@@ -264,11 +232,7 @@ describe("manifest validation — auth cross-field", () => {
   });
 
   it("R3 — does NOT warn even when emittedEvents declares the WRONG (underscore) form (#131 class eliminated)", async () => {
-    // The exact #131 bug class: manifest id has a dash but the author mirrors
-    // their underscore tool prefix in the event declaration. Pre-R3 the
-    // validator warned the dash form was missing. R3 — the host derives the
-    // correct `test-plugin.auth.changed` from `manifest.auth` regardless of
-    // what the author declared, so the badge works and the validator is silent.
+    // Auth events use the dashed manifest ID even when tool names use underscores.
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await writeManifest({
@@ -276,7 +240,7 @@ describe("manifest validation — auth cross-field", () => {
           statusTool: "test_status",
           loginTool: "test_login",
         },
-        emittedEvents: ["test_plugin.auth.changed"], // underscore — wrong form
+        emittedEvents: ["test_plugin.auth.changed"],
       });
       const validator = TEST_VALIDATOR;
       await parsePluginJson(manifestPath, validator);
@@ -292,8 +256,6 @@ describe("manifest validation — auth cross-field", () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     try {
       await writeManifest({
-        // no `auth` key at all + no emittedEvents — most plugins look
-        // like this. The new check must be silent for them.
       });
       const validator = TEST_VALIDATOR;
       await parsePluginJson(manifestPath, validator);
@@ -304,8 +266,7 @@ describe("manifest validation — auth cross-field", () => {
     }
   });
 
-  // Tool names do not grant authority. The auth slot is constrained by
-  // app-only visibility and the normal Host permission path.
+  // Tool names grant no authority; app visibility and normal host permissions still apply.
   it("does not currently reject destructive-looking tool names in auth (host posture is plugin-author responsibility per §2.2)", async () => {
     await writeManifest({
       tools: [
@@ -322,8 +283,7 @@ describe("manifest validation — auth cross-field", () => {
     expect(parsed.auth?.loginTool).toBe("test_email_delete");
   });
 
-  // architecture.md §9.4a: auth is a host-managed lifecycle, not an LLM
-  // capability. Auth Tools must be app-only and never model-visible.
+  // Auth tools are app-only lifecycle operations and must never be model-visible.
   it("rejects a model-visible auth Tool", async () => {
     await writeManifest({
       tools: [

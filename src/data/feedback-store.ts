@@ -1,33 +1,21 @@
-/**
- * Feedback Store — thumbs-up/down message feedback persistence.
- *
- * Stores user feedback separately from the audit log to keep PII/free-text
- * out of security-audit infrastructure (GDPR §17 / privacy hardening).
- * Persists to ~/.ave/feedback.jsonl with 90-day retention.
- *
- * Schema mirrors StarredStore pattern (src/data/starred-store.ts).
- */
+/** Keep free-text feedback separate from security audit, with 90-day retention. */
 import { appendFileSync, existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 
 export interface FeedbackEntry {
-  /** uuid */
   id: string;
   sessionId: string;
   messageIndex: number;
   rating: "up" | "down";
-  /** Optional free-text reason — stored here only, never in audit log */
+  /** Free-text reasons stay here and must never enter audit logs. */
   reason?: string;
-  /** ISO timestamp */
   timestamp: string;
 }
 
 export interface FeedbackStoreOptions {
-  /** Override file path for tests */
   filePath?: string;
-  /** Retention in days. Default: 90 */
   retentionDays?: number;
 }
 
@@ -45,7 +33,6 @@ export class FeedbackStore {
     this.retentionDays = options?.retentionDays ?? 90;
   }
 
-  /** Append a feedback entry to the JSONL file. */
   add(entry: Omit<FeedbackEntry, "id" | "timestamp"> & { id?: string; timestamp?: string }): FeedbackEntry {
     const record: FeedbackEntry = {
       id: entry.id ?? crypto.randomUUID(),
@@ -57,7 +44,7 @@ export class FeedbackStore {
     };
     const dir = dirname(this.filePath);
     mkdirSync(dir, { recursive: true });
-    // Guard against symlink attacks on the parent directory
+    // Refuse linked parents before storing feedback.
     const dirStat = lstatSync(dir);
     if (dirStat.isSymbolicLink()) {
       throw new Error(`feedback-store: symlink detected on storage directory ${dir}`);
@@ -66,7 +53,6 @@ export class FeedbackStore {
     return record;
   }
 
-  /** Read all entries, optionally filtered by sessionId. */
   list(sessionId?: string): FeedbackEntry[] {
     if (!existsSync(this.filePath)) return [];
     const entries: FeedbackEntry[] = [];
@@ -75,16 +61,12 @@ export class FeedbackStore {
         const e = JSON.parse(line) as FeedbackEntry;
         if (!sessionId || e.sessionId === sessionId) entries.push(e);
       } catch {
-        // skip malformed lines
       }
     }
     return entries;
   }
 
-  /**
-   * Prune entries older than retentionDays. Rewrites the file in-place.
-   * Call periodically (e.g. on app boot) — non-fatal if it fails.
-   */
+  /** Pruning is non-fatal and should run periodically. */
   prune(): void {
     if (!existsSync(this.filePath)) return;
     try {
@@ -92,7 +74,6 @@ export class FeedbackStore {
       const kept = this.list().filter((e) => new Date(e.timestamp).getTime() >= cutoff);
       writeFileSync(this.filePath, kept.map((e) => JSON.stringify(e)).join("\n") + (kept.length ? "\n" : ""), "utf-8");
     } catch {
-      // Non-fatal
     }
   }
 }

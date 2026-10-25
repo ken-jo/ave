@@ -1,14 +1,5 @@
-/**
- * The service's operation lock (design §18.6): operations share it; a policy
- * change takes it alone, so the swap of the policy into the gate, the
- * registry and the installers happens while no operation runs, and no
- * operation sees a mixed policy.
- *
- * Shared holders do not wait for one another. A waiting exclusive holder
- * stops new shared holders until it has run. Callers inside an operation must
- * not take the lock again (the service tracks that), or a waiting exclusive
- * holder and the outer operation would wait for each other.
- */
+/** Policy changes take exclusive access; operations share the lock.
+ * Waiting writers block new readers, and nested operations must not reacquire it. */
 export class OperationLock {
   private readers = 0;
   private writer: Promise<void> | null = null;

@@ -23,7 +23,7 @@ const inventory = JSON.parse(readFileSync(resolve(root, "scripts/hooks/documenta
   referencedOnly: string[];
   readers: Record<string, string[]>;
 };
-const git = (...args: string[]) => execFileSync("git", ["-C", root, ...args], {
+const git = (...args: string[]) => execFileSync("git", ["-c", `safe.directory=${root.replaceAll("\\", "/")}`, "-C", root, ...args], {
   encoding: "utf8", env: gitFixtureEnv(root),
 });
 const fixtureGit = (repo: string, args: string[], source = process.env) =>

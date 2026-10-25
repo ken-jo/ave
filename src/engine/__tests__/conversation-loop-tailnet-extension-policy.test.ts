@@ -1,7 +1,4 @@
-/**
- * ConversationLoop must establish the remote-controller extension boundary
- * before any asynchronous lifecycle dispatch reaches the hook manager.
- */
+// Establish the remote-controller extension boundary before asynchronous lifecycle dispatch.
 import { describe, expect, it, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";

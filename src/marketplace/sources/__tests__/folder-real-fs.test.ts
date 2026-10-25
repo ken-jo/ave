@@ -1,11 +1,4 @@
-/**
- * The folder rules on this machine's own filesystem (design §18.4.1,
- * §18.4.5): links — junctions on Windows, symbolic links elsewhere — judged by
- * their text, the volume's own case rule deciding the on-disk spelling, and a
- * network path answered with a confirmation before any call. The recording
- * fakes prove the same with every case spelled out; this file proves the real
- * `FolderFs` behaves as the fakes assume.
- */
+/** Verify recording-fixture assumptions against real links, case rules and network-consent fences. */
 import { existsSync, linkSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
@@ -25,13 +18,12 @@ const windows = process.platform === "win32";
 let scratch: string;
 let calls: string[];
 beforeEach(() => {
-  // The long, link-free spelling, so the walk's result is predictable (macOS /var, Windows 8.3 names).
+  // Use canonical long paths to avoid platform aliases changing the expected walk.
   scratch = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-folder-real-")));
   calls = [];
 });
 afterEach(() => {
-  // Links first, and only the link: a junction is removed as an empty directory, a symbolic link
-  // unlinked, so no removal goes through one to its target.
+  // Remove links before their targets without traversing them; Windows junctions need directory removal.
   for (const link of linksMade.splice(0)) {
     if (windows) rmdirSync(link);
     else unlinkSync(link);
@@ -40,13 +32,12 @@ afterEach(() => {
 });
 
 const linksMade: string[] = [];
-/** A directory link: a junction on Windows (no privilege needed), a symbolic link elsewhere. */
+/** Windows junctions avoid symbolic-link privilege requirements. */
 function linkDirectory(path: string, target: string): void {
   symlinkSync(target, path, windows ? "junction" : "dir");
   linksMade.push(path);
 }
 
-/** The real filesystem, with every call's path recorded. */
 function recorded(): { fs: FolderFs; platform: NodeJS.Platform; limits: ReturnType<typeof nodeFolders>["limits"] } {
   const real = nodeFolders();
   const fs: FolderFs = {
@@ -74,7 +65,6 @@ async function previewOf(input: string) {
 
 describe(`folders on this machine (${process.platform})`, () => {
   it("answers a network path with network-folder before any filesystem call", async () => {
-    // A UNC share on Windows; an automount path on macOS and Linux.
     const input = windows ? "\\\\localhost\\share\\market" : "/net/localhost/market";
     const answer = await previewOf(input);
     expect(answer).toMatchObject({ type: "confirm", warnings: [{ warning: "network-folder", address: input }] });
@@ -84,7 +74,6 @@ describe(`folders on this machine (${process.platform})`, () => {
   it("reads a link that stays in the folder, and refuses one that leaves it without touching the target", async () => {
     const market = join(scratch, "market");
     const outside = join(scratch, "outside");
-    // A plugin whose dist/ is a link to its build/ output: build/ itself is not installed, so it is reached once.
     writeFolderFiles(market, { "ave-package.json": PLUGIN_DESCRIPTOR, "plugin.json": PLUGIN_JSON, "build/index.js": "export default {};\n" });
     writeFolderFiles(outside, { "secret.md": "OUTSIDE\n" });
     linkDirectory(join(market, "dist"), join(market, "build"));
@@ -109,7 +98,7 @@ describe(`folders on this machine (${process.platform})`, () => {
     const market = join(scratch, "Market");
     writeFolderFiles(market, { "SKILL.md": SKILL });
     const typed = join(scratch, "MARKET");
-    // The volume's own rule, measured: the other spelling exists only on a case-insensitive volume.
+    // Probe the volume case rule rather than assume it from the platform.
     if (existsSync(typed)) {
       await expect(previewOf(typed)).resolves.toMatchObject({ type: "package", path: market, resolvedFrom: typed });
     } else {

@@ -1,25 +1,13 @@
-/**
- * The relay's side of the Windows stdio relay (`child-loopback-link.ts`),
- * played by the test: announce a loopback listener on the stub child's stdout
- * and accept the host the way the relay does — the real child half of the
- * handshake — then hand back the request line the host sent and the program
- * input that followed it. Lets a unit test drive `spawnConfinedChild`'s relay
- * path to the socket without a sandbox or a second process.
- */
+/** Emulate the relay socket handshake without a sandbox or child process. */
 import type { Socket } from "node:net";
 import type { Writable } from "node:stream";
 import { acceptHostOverLoopback } from "../../plugins/isolation/child-loopback-link.js";
 
 export interface FakeRelayPeer {
-  /** Resolves with the request, parsed, once the host has sent it. */
   readonly request: Promise<Record<string, unknown>>;
-  /** Program input received after the request so far. */
   input(): string;
-  /** Called with the program input so far, then with each piece as it arrives. */
   onInput(listener: (text: string) => void): void;
-  /** Resolves when the host ends the program's input. */
   readonly inputEnded: Promise<void>;
-  /** The accepted connection, once there is one. */
   socket(): Socket | undefined;
   close(): void;
 }

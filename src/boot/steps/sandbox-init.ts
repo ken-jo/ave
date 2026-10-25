@@ -8,45 +8,55 @@ import { join } from "node:path";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
 import type { SandboxGateAction, SandboxGateReason } from "./sandbox-gate.js";
+import {
+  canRetryWindowsAsProxyOnly,
+  mxcShellCapability,
+  planWindowsSandbox,
+  windowsProxyOnlyCapability,
+  windowsSubstrateFor,
+  windowsSubstrateWithoutAsrt,
+  type WindowsSandboxPlanInputs,
+} from "./windows-sandbox-plan.js";
+import type { SandboxStartFailureCause } from "../../shared/sandbox-capability-info.js";
+import { classifySandboxDependencyErrors } from "../../permissions/sandbox-start-failure.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { checkSandboxSweepRoot } from "../../shared/ave-home-test-guard.js";
 import { removeOwnedPluginTree } from "../../plugins/installed-entry-fs.js";
+import { getAveHomePrivacyFailure, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 
 const log = createLogger("ave");
 
 export async function initSandboxGate(ctx: BootContext): Promise<void> {
-  const { settingsService, bootAuditLogger, pluginRuntime, buildSandboxUnionDomains } = ctx;
+  const { settingsService, bootAuditLogger, buildWorkerEgressAllowlists } = ctx;
+  setAveHomePrivacyRefusalReporter((message) => {
+    log.warn(message);
+    bootAuditLogger.log({ timestamp: new Date().toISOString(), sessionId: "extensions", type: "error",
+      output: `[ave_home_privacy_refused] ${message}` });
+  });
 
-  // Platform policy (ALL platforms share the SAME gate — there is no separate
-  // Windows opt-in):
-  //   - macOS / Linux: initialize ASRT when the gate is on and deps are present.
-  //     If the gate is on but `checkDependencies()` reports errors (Linux: bwrap
-  //     / socat / ripgrep missing) the branch depends on the on-signal: the
-  //     EXPLICIT env opt-in FAIL-CLOSES (THROW, no unsandboxed plain spawn —
-  //     no-fallback rule), while the DEFAULT/settings-on path DEGRADES gracefully
-  //     (loud warn + unsandboxed, non-bricking). A throw on the staged default
-  //     path would brick hosts before they can repair missing deps.
-  //   - Windows (srt-win.exe): filesystem + network sandbox (dedicated
-  //     `srt-sandbox` user ACL backend + WFP; no process isolation). srt-win is
-  //     BUNDLED (asarUnpack vendor/**), so there is no download — but it needs a
-  //     one-time UAC install before the sandbox user and WFP filter set are ready.
-  //     Windows does NOT hard-throw on deps-missing: a throw would BRICK the
-  //     first run (the user cannot complete the install before boot even
-  //     reaches the prompt). Instead we keep `isAsrtSandboxActive()` FALSE (host
-  //     shell tools run UNSANDBOXED — isolation=none) and emit a LOUD signal so
-  //     the gap is visible. When win32 IS ready → initialize ASRT normally and
-  //     publish a PARTIAL capability (filesystem + network, process=false).
+  // On macOS/Linux, failed explicit activation aborts; failed settings activation warns and continues without isolation.
+  // Windows failures always warn and continue; its runtime provides filesystem and network confinement without process isolation.
   {
     const {
       initializeAsrtSandbox,
+      subscribeAsrtViolations,
       appOwnedSandboxHomeRoot,
       ensureSandboxPrivateRoot,
       useAppOwnedSandboxTempRoot,
       checkAsrtDependencies,
       isAsrtLinuxRuntimeProbeError,
+      isAsrtMacRuntimeProbeError,
+      closeAllEgressConnections,
     } = await import("../../permissions/asrt-sandbox.js");
-    const { setActiveSandboxCapability, setSandboxRequestedAtBoot, setSandboxBootOutcome } =
-      await import("../../permissions/sandbox-capability.js");
+    const {
+      setActiveSandboxCapability,
+      setShellSandboxRequestedAtBoot,
+      setPluginWorkerConfinementRequestedAtBoot,
+      setSandboxBootOutcome,
+      detectSandboxCapability,
+      setWindowsSandboxSubstrate,
+      getWindowsSandboxSubstrate,
+    } = await import("../../permissions/sandbox-capability.js");
     const { sandboxConfinementForPlatform } = await import(
       "../../shared/sandbox-capability-info.js"
     );
@@ -54,40 +64,44 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
       "./sandbox-gate.js"
     );
 
-    // Two independent on-signals. `explicitEnv` (AVE_SANDBOX_ENABLED=1) is the
-    // deliberate "I really mean it" override; `settingOn` is the Settings toggle
-    // (off by default). The DISTINCTION drives degrade-vs-abort: see
-    // decideSandboxGate.
-    const explicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
-    const settingOn = settingsService.get("features")?.osToolSandbox ?? false;
-    const sandboxOptIn = settingOn || explicitEnv;
-    // Seal request intent once for this process. Execution paths must not
-    // re-read the mutable settings UI: requested-on-but-degraded is security
-    // relevant for the Windows partial-shell Plan-B policy.
-    setSandboxRequestedAtBoot(sandboxOptIn);
+    // Shell and worker signals control independent scopes; either may initialize the shared runtime.
+    // Explicit environment activation and settings activation use different failure policies.
+    const features = settingsService.get("features");
+    const shellExplicitEnv = process.env["AVE_SANDBOX_ENABLED"] === "1";
+    const workerExplicitEnv = process.env["AVE_PLUGIN_WORKER_CONFINEMENT"] === "1";
+    const shellRequested = (features?.osToolSandbox ?? false) || shellExplicitEnv;
+    const workerRequested = (features?.pluginWorkerConfinement ?? false) || workerExplicitEnv;
+    const explicitEnv = shellExplicitEnv || workerExplicitEnv;
+    const settingOn = (features?.osToolSandbox ?? false) || (features?.pluginWorkerConfinement ?? false);
+    const sandboxOptIn = shellRequested || workerRequested;
+    // Freeze activation intent per scope at boot; mutable UI settings must not alter worker confinement or hide requested-but-degraded shell plans.
+    setShellSandboxRequestedAtBoot(shellRequested);
+    setPluginWorkerConfinementRequestedAtBoot(workerRequested);
+    const explicitEnvNames = [
+      ...(shellExplicitEnv ? ["AVE_SANDBOX_ENABLED"] : []),
+      ...(workerExplicitEnv ? ["AVE_PLUGIN_WORKER_CONFINEMENT"] : []),
+    ];
+    const explicitEnvLabel = explicitEnvNames.map((name) => `${name}=1`).join(" and ");
+    // The shell environment override no longer activates worker confinement; warn launchers that assume otherwise.
+    if (shellExplicitEnv && !workerRequested) {
+      log.warn(
+        "boot: AVE_SANDBOX_ENABLED=1 now confines host shells only — plugin workers, plugin children, " +
+          "plugin hooks and MCP stdio servers run WITHOUT OS confinement this session. " +
+          "Set AVE_PLUGIN_WORKER_CONFINEMENT=1 (or turn on Settings → Permissions 'Extension confinement') " +
+          "to confine them as before.",
+      );
+    }
 
-    // Activation telemetry — which on-signal drove the gate. ONE event per boot
-    // is emitted (below) at the terminal outcome so real-world activate/degrade/
-    // abort/skip rates can be read per platform. explicit-env takes precedence
-    // (it is the fail-closed signal); else the settings flag; else off.
+    // Emit one terminal activation event; explicit environment signals take precedence over settings, then off.
     const sandboxGateOnSignal: "explicit-env" | "default-settings" | "off" =
       explicitEnv ? "explicit-env" : settingOn ? "default-settings" : "off";
 
-    /**
-     * The gate's one terminal report, to the audit log and to the renderer at
-     * the same time.
-     *
-     * They are written together because they are the same claim: the audit
-     * event is how the outcome is monitored, and the boot outcome is how the
-     * person using the app is told what happened to a setting they turned on.
-     * Two separate calls at six branches is two lists to keep in step, and a
-     * branch that told the log one thing and the surface another would be worse
-     * than a branch that told the surface nothing.
-     */
+    /** Publish one terminal outcome to audit and renderer together so diagnostics cannot contradict the user-visible state. */
     const recordGate = (
       outcome: SandboxGateAction,
       reason: SandboxGateReason,
       dependencyErrors: readonly string[] = [],
+      causes: readonly SandboxStartFailureCause[] = [],
     ): void => {
       bootAuditLogger.logSandboxGate({
         platform: process.platform,
@@ -100,57 +114,92 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
         reason,
         onSignal: sandboxGateOnSignal,
         dependencyErrors,
+        causes,
       });
     };
 
-    // Tracks whether ASRT genuinely activated this boot. The interlock warning
-    // below keys on THIS (not on `sandboxOptIn`), so the degraded path (gate ON,
-    // sandbox inactive) still fires it. See shouldWarnHostClassifyInterlock.
+    // Interlock warnings use actual activation so requested-but-degraded confinement cannot suppress them.
     let sandboxActive = false;
 
     if (sandboxOptIn) {
       const deps = await checkAsrtDependencies();
-      const decision = decideSandboxGate({
-        settingOn,
-        explicitEnv,
-        platform: process.platform,
-        depsOk: deps.errors.length === 0,
-      });
+      const dependencyCauses = deps.errors.length > 0
+        ? classifySandboxDependencyErrors(process.platform, deps.errors, deps.dependencyFailure)
+        : [];
+      // Record every Windows substrate branch for Settings; available containers carry agent shells independently of the other runtime.
+      const windowsInputs = process.platform === "win32"
+        ? await detectWindowsBootInputs(shellRequested, workerRequested, deps.errors.length === 0)
+        : undefined;
+      const windowsPlan = windowsInputs === undefined ? undefined : planWindowsSandbox(windowsInputs);
+      // Track proxy-only startup separately from the requested runtime plan.
+      let windowsStart = windowsPlan?.start;
+      /** Publish slow shell-probe results only if the startup record has not been replaced meanwhile. */
+      const recordWindows = (started: "srt-win" | "proxy-only" | "none", failed: boolean): void => {
+        if (windowsInputs === undefined) return;
+        const at = (mxc: WindowsSandboxPlanInputs["mxc"]) => {
+          const substrate = windowsSubstrateFor({ ...windowsInputs, mxc }, started);
+          return failed ? windowsSubstrateWithoutAsrt(substrate) : substrate;
+        };
+        const first = at(windowsInputs.mxc);
+        setWindowsSandboxSubstrate(first, first.shells === "mxc" ? mxcShellCapability() : undefined);
+        if (started === "proxy-only" && !failed) {
+          setActiveSandboxCapability(windowsProxyOnlyCapability(first));
+        }
+        if (windowsInputs.mxc.state !== "checking") return;
+        const recorded = getWindowsSandboxSubstrate();
+        void settleWindowsMxcStartProbe().then((mxc) => {
+          if (getWindowsSandboxSubstrate() !== recorded) return;
+          const settled = at(mxc);
+          setWindowsSandboxSubstrate(settled, settled.shells === "mxc" ? mxcShellCapability() : undefined);
+          if (started === "proxy-only" && !failed) {
+            setActiveSandboxCapability(windowsProxyOnlyCapability(settled));
+          }
+          log.info(
+            "boot: Windows sandbox settled — MXC %s, shells: %s, shell egress identity: %s",
+            mxc.state === "unavailable" ? `unavailable (${mxc.reason})` : mxc.state,
+            settled.shells,
+            settled.shellEgressIdentity,
+          );
+        });
+      };
+      // Proxy-only startup can confine container shells while extensions remain unconfined.
+      const decision: { action: SandboxGateAction; reason: SandboxGateReason } =
+        windowsPlan?.start === "proxy-only"
+          ? { action: "activate", reason: "activate-windows-mxc-proxy-only" }
+          : decideSandboxGate({
+              settingOn,
+              explicitEnv,
+              platform: process.platform,
+              depsOk: deps.errors.length === 0,
+            });
 
-      if (decision.action === "abort") {
-        // EXPLICIT opt-in (AVE_SANDBOX_ENABLED=1) on mac/linux + the sandbox
-        // cannot activate (bwrap/socat/ripgrep missing). The operator demanded
-        // the sandbox by name; the no-fallback rule forbids silently dropping to
-        // an unsandboxed plain spawn — that would honor the opt-in name while
-        // delivering isolation=none. Throw so boot aborts loudly. Reachable ONLY
-        // for the explicit env opt-in: the DEFAULT/settings-on path degrades
-        // instead (decideSandboxGate), and Windows never aborts (a throw would
-        // brick first-run before the install can happen).
+      const privacyFailure = getAveHomePrivacyFailure();
+      if (privacyFailure !== undefined && windowsStart !== "proxy-only") {
+        const path = privacyFailure.failedPath ?? privacyFailure.home;
+        log.warn("boot: extension isolation is OFF; AVE_HOME privacy failed (%s, %s). Extensions require session approval in Settings > Permissions.", privacyFailure.category, path);
+        recordWindows("none", true);
+        recordGate("degrade", "degrade-ave-home-privacy-failed", [privacyFailure.reason], ["ave-home-privacy-failed"]);
+      } else if (decision.action === "abort") {
+        // Explicit environment activation on macOS/Linux must abort if confinement is unavailable; never silently spawn unsandboxed.
+        // Settings activation degrades, and Windows never aborts for missing prerequisites.
         const message =
-          "boot: OS tool sandbox is ON via AVE_SANDBOX_ENABLED=1 but its dependencies are missing — refusing to start. " +
-          "Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) or unset AVE_SANDBOX_ENABLED. " +
+          `boot: OS tool sandbox is ON via ${explicitEnvLabel} but its dependencies are missing — refusing to start. ` +
+          `Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) or unset ${explicitEnvNames.join(" and ")}. ` +
           `Missing: ${deps.errors.join("; ")}`;
         log.error(message);
-        recordGate("abort", decision.reason, deps.errors);
+        recordGate("abort", decision.reason, deps.errors, dependencyCauses);
         await bootAuditLogger.flush();
         throw new Error(message);
       } else if (decision.action === "degrade") {
-        // DEFAULT / settings-on (NOT the explicit env) + the sandbox cannot
-        // activate (Linux deps missing, or Windows srt-win not installed).
-        // GRACEFUL, non-bricking: keep the sandbox INACTIVE (isAsrtSandboxActive()
-        // stays false → host shell tools run via the plain spawn path,
-        // isolation=none) and never publish a capability, so the reviewer/UI SOT
-        // honestly reports kind="none". This is the SAME runtime posture as
-        // sandbox-OFF, a known-safe state. We do NOT abort on staged/default
-        // settings paths: a host missing deps must degrade, not brick. LOUD on
-        // purpose so the gap is never silent. (Set AVE_SANDBOX_ENABLED=1 to
-        // make mac/linux fail-closed instead.)
+        // Failed settings activation warns and leaves isolation inactive; never publish a capability that did not initialize.
         const detail = deps.errors.join("; ");
         if (process.platform === "win32") {
           log.warn(
             "boot: OS tool sandbox is ON but the Windows sandbox (srt-win) is NOT ready — " +
               "tools run with NO OS isolation until setup completes. " +
-              "Complete the one-time administrator install, then restart the app. " +
+              (dependencyCauses.includes("windows-sandbox-missing") || dependencyCauses.includes("windows-sandbox-integrity-failed")
+                ? "Repair or reinstall Ave, then restart the app. "
+                : "Complete the one-time administrator install, then restart the app. ") +
               "Windows confines filesystem + network, but not process isolation. " +
               `Detail: ${detail}`,
           );
@@ -159,108 +208,106 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             "boot: OS tool sandbox is ON by default but its dependencies are missing — " +
               "tools run with NO OS isolation (unsandboxed, isolation=none) until the deps are installed. " +
               "Install the sandbox dependencies (Linux: bwrap, socat, ripgrep) to activate it, or turn it off " +
-      "in Settings → Permissions 'OS tool sandbox'. (Set AVE_SANDBOX_ENABLED=1 to make this fail-closed instead.) " +
+      "in Settings → Permissions 'OS tool sandbox'. (Set AVE_SANDBOX_ENABLED=1 for shells or " +
+      "AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes to make this fail-closed instead.) " +
               `Missing: ${detail}`,
           );
         }
-        recordGate("degrade", decision.reason, deps.errors);
+        recordWindows("none", false);
+        recordGate("degrade", decision.reason, deps.errors, dependencyCauses);
       } else {
-        // decision.action === "activate" — deps present, initialize ASRT. Wrapped
-        // so a runtime init FAILURE degrades-or-aborts by the SAME explicit-vs-
-        // default rule (see the catch below), not an unconditional boot abort.
+        // Runtime initialization failures use the same explicit-versus-settings policy as missing prerequisites.
         try {
           if (deps.warnings.length > 0) {
             log.warn("boot: ASRT dependency warnings: %s", deps.warnings.join("; "));
           }
-          // ENFORCED network model (corrects WIRING-A #1356 — see asrt-sandbox.ts
-          // NETWORK ENFORCEMENT MODEL header). ASRT's filterNetworkRequest
-          // reads ONLY the SHARED config; the per-command customConfig.network is
-          // inert for allow/deny. So we set the SHARED config here to:
-          //   strictAllowlist: true  ⇒ GLOBAL hard-deny on any out-of-allow-list
-          //                            host, with NO askCb fallthrough (strict
-          //                            bypasses the callback entirely). The
-          //                            WIRING-A interactive askCb prompt cannot
-          //                            coexist with strict and is removed.
-          //   allowedDomains: UNION  ⇒ every loaded, host-validated plugin's
-          //                            manifest.networkAccess.allowedDomains
-          //                            (∪ an optional trusted host baseline,
-          //                            empty by default). Computed from the
-          //                            trusted plugin-runtime seam.
-          // Because filterNetworkRequest reads this shared config, egress is
-          // genuinely ENFORCED for BOTH workers and host tools.
-          //
-          // TRADE-OFF (honest): this is a UNION allow-list, not per-worker
-          // isolation — a sandboxed process may reach any domain declared by ANY
-          // loaded plugin. Acceptable under Ave's 1st-party plugin trust model;
-          // true per-worker isolation needs a future ASRT with per-process
-          // proxies. See asrt-sandbox.ts header.
-          //
-          // This gate now runs BEFORE startPlugins() (factories spawn
-          // confined children during startAll and need ASRT active), so the
-          // manifest half of the union is EMPTY here — startPluginsOnce
-          // re-derives it via the same builder right after load() and
-          // live-swaps the shared config before startAll().
-          //
-          // Build the enforced allow-list via the SAME builder the live-refresh
-          // closure uses (buildSandboxUnionDomains): manifest UNION ∪ host-
-          // resolved DYNAMIC endpoint hostnames (user-configured vendor baseUrls
-          // a worker reaches — e.g. local-indexer's Azure OpenAI resource, whose
-          // null manifest networkAccess contributes nothing static and would be
-          // hard-denied without this). Trusted host baseline stays empty.
-          // normalizeUnionForAsrt (inside the builder) emits both `d` and `*.d`
-          // so the sandbox enforces the SAME hosts the hostFetch path advertises.
-          // Plugin count for the log — buildSandboxUnionDomains computes the
-          // actual union internally; this one-liner only supplies the count.
-          const manifestAllowLists = pluginRuntime
-            .listPluginIds()
-            .map((id) => pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []);
-          const unionAllowedDomains = await buildSandboxUnionDomains();
-          // Trust boundary: WEAKENING flags are NOT set here (deny-by-default,
-          // no Apple events / weaker isolation / unix-socket opening). Only the
-          // enforced allow-list + strict flag. Per-command filesystem scoping
-          // (write-jail + HOME read-deny) is applied at the call site via the
-          // narrow `filesystem` option, never here as a weakening channel.
-          // Before the first wrap, because ASRT reads the variable this sets
-          // from THIS process's environment at wrap time — a value published
-          // after a wrap would apply to some children and not others, which is
-          // the one shape a temp-root decision must not have.
-          // The principals' temp directories and the sandbox HOMEs are emptied
-          // first, while no confined process exists to use one — the plugins
-          // have not started. That is what removes the temp directory of a
-          // plugin uninstalled, or an MCP server dropped, since the last start,
-          // and every HOME a process that did not exit cleanly left behind.
-          // Anything THIS process created is kept, whatever started first.
+          // Keep the global domain allow-list empty; on macOS/Linux, per-wrap listeners bind identity and proxy usernames are not trusted.
+          // Workers get only their own extension domains and model endpoints; shells require grants or approval, terminals ask in their own banner with a 120-second limit, and unattributed or unanswered requests are denied.
+          const workerAllowlists = await buildWorkerEgressAllowlists();
+          const { setWorkerEgressAllowlists, createEgressAskRuntimeCallback } = await import(
+            "../../permissions/egress-runtime.js"
+          );
+          setWorkerEgressAllowlists(workerAllowlists);
+          const egressAskCallback = createEgressAskRuntimeCallback({
+            approvalGate: ctx.approvalGate,
+            permissionManager: ctx.permissionManager,
+            shellAskEnabled: () => settingsService.get("features")?.shellEgressAsk === true,
+          });
+          // Keep weakening flags unset; apply filesystem scope only at each wrap.
+          // Set the temp-root policy before the first wrap and sweep stale private homes before confined processes start, retaining this process's directories.
           await sweepSandboxPrivateRoots();
-          // Both roots exist before the first wrap: Linux's bwrap skips a read
-          // deny on a path that is not there, so a root created afterwards
-          // would be visible to every process wrapped before it.
+          // Create both roots before any wrap; Linux may omit read denies for paths that do not yet exist.
           ensureSandboxPrivateRoot(appOwnedSandboxHomeRoot());
           const sandboxTempRoot = useAppOwnedSandboxTempRoot();
-          await initializeAsrtSandbox({
-            allowedDomains: unionAllowedDomains,
-            strictAllowlist: true,
-            // Thread the REAL Electron userData path so the deny-list is exact
-            // (handles --user-data-dir, XDG_CONFIG_HOME, future renames).
-            // Safe: boot.ts is main-process only and already imports electron.
-            userDataDir: ctx.host.userDataPath,
-          });
-          // Publish the active capability to the SOT now that ASRT is
-          // genuinely initialized (gate ON, deps present). detectSandboxCapability
-          // + the reviewer/UI consumers read this; the reviewer's per-category
-          // relaxation (sandboxRelaxesCategory) reads the `confines` we publish
-          // here. When the gate is OFF — or on the Windows-not-ready / mac-linux
-          // deps-missing paths above where ASRT is NOT initialized — we never
-          // call this, so the SOT stays kind="none" (isolation=none), matching
-          // reality.
-          //
-          // Per-platform confinement (HONEST, not hardcoded full):
-          //   - macOS (Seatbelt) / Linux (bwrap): full — fs + process + network.
-          //   - Windows (srt-win): partial — filesystem + network, no process.
+          // Subscribe before starting the proxy so no deny precedes monitoring.
+          {
+            const [{ startEgressDenyMonitor }, { emitSandboxAudit }] = await Promise.all([
+              import("../../permissions/egress-deny-monitor.js"),
+              import("../../audit/sandbox-audit-sink.js"),
+            ]);
+            await startEgressDenyMonitor({
+              subscribe: subscribeAsrtViolations,
+              emit: emitSandboxAudit,
+              capability: detectSandboxCapability,
+            });
+          }
+          // Resolve upstreamProxy per destination and clear its cache on writes; system mode follows app environment then OS proxy configuration.
+          // Audit skipped unusable routes.
+          const upstreamRouter = await (async () => {
+            const [{ createUpstreamProxyRouter, upstreamProxyDeps }, { maskSensitiveData }, { emitSandboxAudit }] = await Promise.all([
+              import("../../permissions/upstream-proxy.js"),
+              import("../../audit/dlp-filter.js"),
+              import("../../audit/sandbox-audit-sink.js"),
+            ]);
+            const mask = (text: string): string => maskSensitiveData(text).masked;
+            const upstream = createUpstreamProxyRouter(upstreamProxyDeps(settingsService, ctx.host.resolveProxy, (event) => {
+              emitSandboxAudit({
+                timestamp: new Date().toISOString(),
+                entryKind: "egress-route",
+                destination: { host: mask(event.host), port: event.port },
+                source: event.source,
+                skipped: event.skipped.map(mask),
+              }).catch((error: unknown) => log.warn(`[sandbox] upstream route audit write failed: ${errorMessage(error)}`));
+            }));
+            // Proxy-policy changes invalidate the generation and close connections; pending decisions recheck before dialing.
+            settingsService.onChanged("upstreamProxy", () => {
+              upstream.invalidate();
+              const closed = closeAllEgressConnections();
+              if (closed > 0) log.info(`[sandbox] upstream proxy setting changed; closed ${closed} open sandbox connection(s)`);
+            });
+            return upstream.router;
+          })();
+          const initializeAs = (start: typeof windowsStart) =>
+            initializeAsrtSandbox({
+              allowedDomains: [],
+              strictAllowlist: false,
+              upstreamRouter,
+              // Derive deny paths from actual userData so custom directories remain protected.
+              userDataDir: ctx.host.userDataPath,
+              ...(start === "proxy-only" ? { windows: { externalConfinement: true } } : {}),
+            }, egressAskCallback);
+          try {
+            await initializeAs(windowsStart);
+          } catch (srtWinErr) {
+            // A failed session setup clears runtime config, permitting clean proxy-only initialization for container shells.
+            if (windowsInputs === undefined || windowsStart === undefined || !canRetryWindowsAsProxyOnly(windowsInputs, windowsStart)) {
+              throw srtWinErr;
+            }
+            log.warn(
+              "boot: the Windows sandbox (srt-win) failed to start — extensions run with NO OS isolation this session; " +
+                "retrying ASRT as the proxy only so agent shells can run in Microsoft Execution Containers. " +
+                `Cause: ${errorMessage(srtWinErr)}`,
+            );
+            windowsStart = "proxy-only";
+            await initializeAs(windowsStart);
+          }
+          // Publish only initialized confinement: full on macOS/Linux, filesystem and network only on the Windows runtime.
+          // Inactive or degraded activation must leave capability none; reviewers rely on these dimensions.
           const asrtBackend =
             process.platform === "darwin"
               ? "Seatbelt"
               : process.platform === "win32"
-                ? "srt-win"
+                ? windowsStart === "proxy-only" ? "proxy only, shells in MXC" : "srt-win"
                 : "bwrap";
           const confinementKind = process.platform === "win32" ? "partial" : "full";
           const confines = sandboxConfinementForPlatform(
@@ -271,97 +318,117 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
             process.platform === "win32"
               ? `ASRT (${asrtBackend}) active — filesystem + network contained, process isolation unavailable`
               : `ASRT (${asrtBackend}) active — fs+process+network contained`;
-          setActiveSandboxCapability({
-            kind: "asrt",
-            confidence: "verified",
-            platform: process.platform,
-            reason,
-            // Machine-checkable confinement for the host-shell substrate. Full
-            // on mac/linux; partial on Windows — see sandboxConfinementForPlatform.
-            confines,
-          });
+          if (windowsStart !== "proxy-only") {
+            setActiveSandboxCapability({
+              kind: "asrt",
+              confidence: "verified",
+              platform: process.platform,
+              reason,
+              // Report measured shell confinement dimensions, never a generic active flag.
+              confines,
+            });
+          }
+          if (windowsInputs !== undefined && windowsStart !== undefined) {
+            recordWindows(windowsStart, false);
+            const substrate = windowsSubstrateFor(windowsInputs, windowsStart);
+            if (workerRequested && substrate.extensions === "none" && windowsPlan?.start !== "srt-win") {
+              log.warn(
+                "boot: extension confinement is ON but the Windows sandbox (srt-win) is NOT ready — " +
+                  "plugin workers, plugin children, plugin hooks and MCP stdio servers run with NO OS isolation " +
+                  "until the one-time administrator install completes; agent shells run in Microsoft Execution Containers " +
+                "once the container start check passes.",
+              );
+            }
+            log.info(
+              "boot: Windows sandbox — MXC %s, shells: %s, extensions: %s, shell egress identity: %s",
+              substrate.mxc.state,
+              substrate.shells,
+              substrate.extensions,
+              substrate.shellEgressIdentity,
+            );
+          }
           log.info(
-            "boot: ASRT OS tool sandbox initialized (%s, %s, strict allow-list enforced, %d union domains at init across %d plugins; manifest union refreshed after plugin load; confined temp root %s)",
+            "boot: ASRT OS tool sandbox initialized (%s, %s, egress decided per connection by the ask callback; %d model endpoints at init, extension allowlists refreshed after plugin load; confined temp root %s)",
             process.platform,
             asrtBackend,
-            unionAllowedDomains.length,
-            manifestAllowLists.length,
+            workerAllowlists.modelEndpointHosts.length,
             sandboxTempRoot,
           );
           sandboxActive = true;
-          recordGate("activate", decision.reason);
+          recordGate(
+            "activate",
+            windowsStart === "proxy-only" ? "activate-windows-mxc-proxy-only" : decision.reason,
+            deps.errors,
+            dependencyCauses,
+          );
         } catch (initErr) {
-          // Init FAILURE (initializeAsrtSandbox threw despite deps present) is the
-          // SAME "cannot activate" condition as deps-missing — re-decide with
-          // depsOk:false so the explicit-vs-default branch lives in one place.
-          // initializeAsrtSandbox flips its active flag ONLY on success, so a
-          // throw leaves isAsrtSandboxActive() false and no capability published.
+          // Reapply the same boot decision on initialization failure; no active capability may publish until initialization succeeds.
           const failDecision = decideSandboxGate({
             settingOn,
             explicitEnv,
             platform: process.platform,
             depsOk: false,
           });
+          const macRuntimeProbeFailed = process.platform === "darwin" && isAsrtMacRuntimeProbeError(initErr);
           const runtimeProbeFailed =
             process.platform === "linux" && isAsrtLinuxRuntimeProbeError(initErr);
-          const failureReason: SandboxGateReason = runtimeProbeFailed
+          const failureReason: SandboxGateReason = macRuntimeProbeFailed
+            ? failDecision.action === "abort" ? "abort-macos-runtime-probe-failed" : "degrade-macos-runtime-probe-failed"
+            : runtimeProbeFailed
             ? failDecision.action === "abort"
               ? "abort-linux-runtime-probe-failed"
               : "degrade-linux-runtime-probe-failed"
-            : failDecision.reason;
+            : process.platform === "win32"
+              // Dependency checks passed, so report a start failure rather than missing installation.
+              ? "degrade-windows-init-failed"
+              : failDecision.reason;
           const cause = errorMessage(initErr);
+          const failureCauses: SandboxStartFailureCause[] = [
+            runtimeProbeFailed ? "linux-runtime-probe-failed" : "init-failed",
+          ];
           if (failDecision.action === "abort") {
-            // EXPLICIT opt-in — fail-closed even on init failure.
+            // Explicit activation must fail closed on initialization errors.
             log.error(
-              "boot: OS tool sandbox is ON via AVE_SANDBOX_ENABLED=1 but ASRT initialization failed — refusing to start. " +
+              `boot: OS tool sandbox is ON via ${explicitEnvLabel} but ASRT initialization failed — refusing to start. ` +
                 `Cause: ${cause}`,
             );
-            recordGate("abort", failureReason, [cause]);
+            recordGate("abort", failureReason, [cause], failureCauses);
             await bootAuditLogger.flush();
             throw initErr;
           }
-          // DEFAULT / settings-on (or Windows) — GRACEFUL degrade, non-bricking.
+          // Settings activation and Windows errors warn and continue without isolation.
           log.warn(
             "boot: OS tool sandbox is ON by default but ASRT initialization failed — " +
               "tools run with NO OS isolation (unsandboxed, isolation=none) this session. " +
-              "(Set AVE_SANDBOX_ENABLED=1 to make this fail-closed instead.) " +
+              "(Set AVE_SANDBOX_ENABLED=1 for shells or AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes " +
+                "to make this fail-closed instead.) " +
               `Cause: ${cause}`,
           );
-          recordGate("degrade", failureReason, [cause]);
-          // sandboxActive stays false: a Linux runtime-probe failure never
-          // publishes a verified capability, so UI/reviewer remain kind="none".
+          recordWindows(windowsStart ?? "none", true);
+          recordGate("degrade", failureReason, [cause], failureCauses);
+          // Probe failure must leave capability none for UI and reviewer.
         }
       }
     } else {
-      // Gate OFF (neither on-signal set) → skip. On the staged rollout this is
-      // the Linux/Windows default-off path. Log the enable hint on darwin (where
-      // off is now a deliberate opt-out); emit the skip telemetry on EVERY
-      // platform so the off-rate is monitorable alongside activate/degrade/abort.
       if (process.platform === "darwin") {
         log.info(
-    "boot: OS tool sandbox gated off (enable via Settings → Permissions 'OS tool sandbox' or AVE_SANDBOX_ENABLED=1)",
+    "boot: OS tool sandbox gated off (enable via Settings → Permissions, or AVE_SANDBOX_ENABLED=1 for shells / " +
+      "AVE_PLUGIN_WORKER_CONFINEMENT=1 for extension processes)",
         );
       }
       recordGate("skip", "gate-off");
     }
 
-    // Flag-interlock warning (no hard interlock — the flags stay independent).
-    // Keyed on the ACTUAL sandbox-active state so it fires on EVERY
-    // sandbox-inactive path: gate off, OR the new DEGRADED path (gate ON by
-    // default but the sandbox could not activate). The explicit-abort path never
-    // reaches here (boot already threw). `hostClassifiesRisk` gates plugin tools
-    // at the effect boundary, which does NOT contain off-hostApi mutations
-    // (direct node:fs / bare fetch / detached async frames) — only the OS sandbox
-    // does. Warn LOUDLY once so the operator sees the uncontained residual; we
-    // deliberately do NOT block (the flags remain independently togglable).
+    // Warn whenever host risk classification is enabled without active OS confinement, including degraded activation; settings remain independent.
     if (
       shouldWarnHostClassifyInterlock({
         hostClassifiesRisk: settingsService.get("features")?.hostClassifiesRisk ?? false,
-        sandboxActive,
+        // Only worker confinement contains plugin code; shell-only runtime activation does not.
+        sandboxActive: sandboxActive && workerRequested,
       })
     ) {
       log.warn(
-        "boot: hostClassifiesRisk is ON but the OS tool sandbox (osToolSandbox / AVE_SANDBOX_ENABLED) is NOT active — " +
+        "boot: hostClassifiesRisk is ON but plugin-worker confinement (pluginWorkerConfinement / AVE_PLUGIN_WORKER_CONFINEMENT) is NOT active — " +
           "effect-boundary classification does NOT contain off-hostApi mutations (direct node:fs, bare fetch, " +
           "detached async frames) without the OS sandbox. For that residual, host-classify WITHOUT the sandbox is " +
           "weaker than the pre-exec ask it replaces. Install/enable the OS sandbox to contain it, or keep the " +
@@ -371,12 +438,7 @@ export async function initSandboxGate(ctx: BootContext): Promise<void> {
   }
 }
 
-/**
- * Empty both sandbox private roots, each keeping the directories this process
- * created in it: the principals' temp directories, and the sandbox HOMEs. A
- * root that cannot be emptied is reported and left; the read floor still
- * denies it.
- */
+/** Sweep both private roots while retaining this process's directories; report failed roots and leave the read-deny floor intact. */
 export async function sweepSandboxPrivateRoots(): Promise<void> {
   const { appOwnedSandboxHomeRoot, appOwnedSandboxTempRoot, sandboxTempPrincipalDirsInUse } =
     await import("../../permissions/asrt-sandbox.js");
@@ -385,8 +447,7 @@ export async function sweepSandboxPrivateRoots(): Promise<void> {
     [appOwnedSandboxTempRoot(), sandboxTempPrincipalDirsInUse()],
     [appOwnedSandboxHomeRoot(), sandboxProcessHomesInUse()],
   ] as const;
-  // Ahead of the loop, and not caught by it: a test naming the real home must
-  // fail, with neither root touched.
+  // Reject real-home test targets before touching either root.
   for (const [root] of roots) checkSandboxSweepRoot(root);
   for (const [root, inUse] of roots) {
     await sweepSandboxPrivateRoot(root, inUse).catch((error: unknown) => {
@@ -395,20 +456,8 @@ export async function sweepSandboxPrivateRoots(): Promise<void> {
   }
 }
 
-/**
- * Remove everything under one of the sandbox private roots — the principals'
- * temp directories, or the sandbox HOMEs — except what this process created
- * (`inUse`), and whatever a version that still granted the temp root left in
- * it.
- *
- * Run at boot, before any confined process exists, so nothing is using a
- * directory it removes and nothing can change the tree while it is walked; the
- * `inUse` set keeps that true even for a spawn that ran first. No link is
- * followed: a root that is a link is unlinked, never listed; each entry is
- * removed with {@link removeOwnedPluginTree}, which deletes a link rather than
- * its target and takes back the modes and, on macOS, the user-immutable flags a
- * confined process could have set inside its own directory.
- */
+/** Sweep unused private roots before confined processes start; preserve this process's directories.
+ * Never follow links; remove owned trees while reclaiming restrictive modes and immutable flags. */
 export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<string>): Promise<void> {
   checkSandboxSweepRoot(root);
   let entry;
@@ -423,11 +472,53 @@ export async function sweepSandboxPrivateRoot(root: string, inUse: ReadonlySet<s
     return;
   }
   const canonicalRoot = await realpath(root);
-  // What is there belongs to a running app: the HOMEs and temp directories of
-  // its confined processes, which a sweep deletes.
+  // The root contains live processes' homes and temporary files; sweeping would delete them.
   checkSandboxSweepRoot(canonicalRoot);
   for (const name of await readdir(root)) {
     if (inUse.has(join(root, name)) || inUse.has(join(canonicalRoot, name))) continue;
     await removeOwnedPluginTree(join(root, name));
   }
+}
+
+/** Boot performs static container checks; the slow start probe runs afterward and reports its outcome to Settings. */
+async function detectWindowsBootInputs(
+  shellRequested: boolean,
+  workerRequested: boolean,
+  srtWinReady: boolean,
+): Promise<WindowsSandboxPlanInputs> {
+  const { detectHostMxcPrerequisites } = await import("../../permissions/mxc-windows.js");
+  const mxc = await detectHostMxcPrerequisites();
+  if (mxc.state === "unavailable") logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
+  return {
+    shellRequested,
+    workerRequested,
+    mxc: mxc.state === "available" ? { state: "checking" } : { state: "unavailable", reason: mxc.reason },
+    windowsBuild: mxc.windowsBuild,
+    srtWinReady,
+  };
+}
+
+/** Probe a real shell start after boot. */
+async function settleWindowsMxcStartProbe(): Promise<WindowsSandboxPlanInputs["mxc"]> {
+  const { probeHostMxcPowerShellStart } = await import("../../permissions/mxc-windows.js");
+  const started = Date.now();
+  try {
+    const mxc = await probeHostMxcPowerShellStart();
+    log.info("boot: MXC PowerShell start probe finished in %d ms (%s)", Date.now() - started, mxc.state);
+    if (mxc.state === "available") return { state: "available" };
+    logMxcUnavailable(mxc.reason, mxc.windowsBuild, mxc.detail);
+    return { state: "unavailable", reason: mxc.reason };
+  } catch (error) {
+    logMxcUnavailable("powershell-start-failed", null, errorMessage(error));
+    return { state: "unavailable", reason: "powershell-start-failed" };
+  }
+}
+
+function logMxcUnavailable(reason: string, windowsBuild: string | null, detail: string): void {
+  log.warn(
+    "boot: Microsoft Execution Containers cannot confine agent shells on this host (%s, build %s): %s",
+    reason,
+    windowsBuild ?? "unknown",
+    detail,
+  );
 }

@@ -1,11 +1,5 @@
-/**
- * Ephemeral image staging for a paired Tailnet controller.
- *
- * A remote binary upload is never put in a command receipt, projection, audit
- * record, URL, or filesystem path. It remains in bounded process memory only
- * until exactly one accepted message.send claims it. Restarting the host drops
- * all staged bytes by design.
- */
+// Stage remote images in bounded process memory until one accepted send claims them.
+// Never put uploaded bytes in receipts, projections, audits, URLs, or paths; restart discards them.
 import { randomUUID as nodeRandomUUID } from "node:crypto";
 import type { UserContentPart } from "../engine/llm/types.js";
 import {
@@ -69,7 +63,6 @@ export interface TailnetAttachmentStagingStore {
   clear(): void;
 }
 
-/** Build the in-memory, single-use remote image staging boundary. */
 export function createTailnetAttachmentStagingStore(
   options: CreateTailnetAttachmentStagingStoreOptions = {},
 ): TailnetAttachmentStagingStore {

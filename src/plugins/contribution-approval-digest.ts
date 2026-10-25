@@ -1,34 +1,5 @@
-/**
- * The approval digest of a bundled MCP server or hook (design §18.7.3): what
- * an approval of that component covers, so an update that leaves it
- * unchanged keeps the approval and one that changes anything it could run or
- * read asks again.
- *
- * No runtime boundary keeps an approved server from reading another file of
- * its package and evaluating it, so the digest covers the **whole** package
- * tree, every byte as it is, with exactly one exception: the string value of
- * `plugin.json`'s one top-level `version` member ({@link comparedBytes}). A
- * release must change it, and a component that behaves differently by the
- * version string is reading input data, which is outside what an approval
- * covers (owner decision, design §18.7.3). It is the sha256 of canonical
- * JSON:
- *
- *   { declaration: <static fingerprint of the declaring file>,
- *     anchored:    ["<token index>\0<package path>\0<sha256>", ...] sorted,
- *     closure:     { kind: "package", treeSha256 }
- *                | { kind: "launcher", spec, treeSha256 }
- *                | { kind: "remote" } }
- *
- * A closure that cannot be determined — a launcher spec without an
- * immutable pin, a path token that names no package file, a command type
- * this module does not name — gives `null`, which never equals anything:
- * such a component never carries its approval and always needs review.
- *
- * Everything here reads the payload as a list of files, so the same bytes
- * give the same digest wherever they are read: the staged zip before
- * activation, the receipt-covered generation root, an agent plugin's
- * installed directory.
- */
+// Approval covers the declaration, anchored commands and whole package tree, normalizing only the top-level version value.
+// Unpinned or indeterminate execution closures return null and always require review.
 import { createHash } from "node:crypto";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 import { readdir, readFile } from "node:fs/promises";
@@ -51,7 +22,6 @@ type ApprovalClosure =
   | { kind: "launcher"; spec: string; treeSha256: string }
   | { kind: "remote" };
 
-/** One bundled component as the digest reads it. */
 export interface ApprovalComponent {
   /** The static fingerprint of the declaring file (an extension) or the component digest (an agent plugin). */
   declaration: string;
@@ -70,14 +40,14 @@ function skipWhitespace(text: string, at: number): number {
   return i;
 }
 
-/** The index just past the JSON string that starts at `at` (an opening quote). */
+/** Return the index past the opening-quote-delimited JSON string. */
 function stringEnd(text: string, at: number): number {
   let i = at + 1;
   while (text[i] !== '"') i += text[i] === "\\" ? 2 : 1;
   return i + 1;
 }
 
-/** The index just past the JSON value that starts at `at`, in text already known to parse. */
+/** Input is already valid JSON; return the index after the value. */
 function valueEnd(text: string, at: number): number {
   const first = text[at];
   if (first === '"') return stringEnd(text, at);
@@ -101,12 +71,7 @@ function valueEnd(text: string, at: number): number {
   return i;
 }
 
-/**
- * Where the string value of the one top-level `version` member of a
- * `plugin.json` sits, quotes excluded; null when the file is not a JSON
- * object, has no such member, has it more than once, or its value is not a
- * string.
- */
+/** Find the sole top-level string version, excluding quotes; duplicates, nonstrings and nonobjects return null. */
 function versionValueSpan(text: string): { start: number; end: number } | null {
   let document: unknown;
   try {
@@ -132,13 +97,8 @@ function versionValueSpan(text: string): { start: number; end: number } | null {
   return only && only.isString ? { start: only.start, end: only.end } : null;
 }
 
-/**
- * The bytes a file is compared and hashed as. `plugin.json` has the string
- * value of its one top-level `version` member emptied, every other byte kept
- * as it is: another key, key order, whitespace, a second `version` member or
- * a version that is not a string all still differ. A file whose bytes are
- * not exactly UTF-8, or that does not parse, is hashed as it is.
- */
+// Empty only the sole top-level version string; preserve every other byte.
+// Invalid JSON or non-UTF-8 content is hashed unchanged.
 function comparedBytes(file: PayloadFile): Buffer {
   if (file.path !== "plugin.json") return file.data;
   const text = file.data.toString("utf8");
@@ -147,11 +107,7 @@ function comparedBytes(file: PayloadFile): Buffer {
   return span ? Buffer.from(text.slice(0, span.start) + text.slice(span.end), "utf8") : file.data;
 }
 
-/**
- * The tree digest (§6.4) of the payload with the one normalization above.
- * Lines are `"<mode> <sha256> <path>\n"` sorted by path bytes, as the
- * receipt's tree digest.
- */
+/** Hash byte-sorted "<mode> <sha256> <path>\n" records with the same version normalization. */
 export function payloadTreeSha256(files: readonly PayloadFile[]): string {
   const lines = files
     .map((file) => ({ key: Buffer.from(file.path, "utf8"), line: `${file.executable === true ? "100755" : "100644"} ${sha256Hex(comparedBytes(file))} ${file.path}\n` }))
@@ -163,24 +119,15 @@ export function payloadTreeSha256(files: readonly PayloadFile[]): string {
 
 const NON_CODE_EXTENSIONS = new Set([".md", ".markdown", ".txt", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".ico", ".json"]);
 
-/** The files that declare an agent plugin's MCP servers and hooks. */
 export const AGENT_PLUGIN_DECLARATION_PATHS: readonly string[] = ["mcp.json", "ai.agent-connector.ave/hooks.json"];
 
-/** The files an extension's `plugin.json` names as the declarations of its bundled hooks and MCP servers. */
 export function extensionDeclarationPaths(manifestDocument: unknown): string[] {
   return resolvePluginContributionDeclarations(flattenAgentPluginsManifest(manifestDocument))
     .filter((declaration) => declaration.kind === "hook" || declaration.kind === "mcpServer")
     .map((declaration) => declaration.path);
 }
 
-/**
- * The package paths whose bytes differ between two payloads, under the same
- * normalization as {@link payloadTreeSha256}. `plugin.json` is listed only
- * when something other than its version's value differs, and then always as
- * code; so is every file in `declaring`, the declarations of the package's
- * servers and hooks, whose change changes what runs whatever its extension.
- * The split is for display only: it never decides whether an update applies.
- */
+/** Declarations and non-version manifest changes are code changes; the code/data split is display-only. */
 export function changedPayloadFiles(before: readonly PayloadFile[], after: readonly PayloadFile[], declaring: ReadonlySet<string>): { code: string[]; nonCode: string[] } {
   const digests = (files: readonly PayloadFile[]) => new Map(files.map((file) => [file.path, `${file.executable === true ? "x" : "-"}${sha256Hex(comparedBytes(file))}`]));
   const left = digests(before);
@@ -208,12 +155,7 @@ function firstOperand(args: readonly string[]): string | undefined {
   return args.find((arg) => !arg.startsWith("-"));
 }
 
-/**
- * The launcher spec of a command line, when its command is a launcher of a
- * registry package: `{ spec }` with the spec when it names an immutable
- * artifact, `{ spec: null }` when it does not. `null` when the command is no
- * launcher.
- */
+/** Return an immutable launcher spec, { spec: null } for an unpinned launcher, or null for a non-launcher. */
 export function launcherSpec(argv: readonly string[]): { spec: string | null } | null {
   const [command, ...args] = argv;
   if (command === undefined) return null;
@@ -243,11 +185,7 @@ export function launcherSpec(argv: readonly string[]): { spec: string | null } |
   }
 }
 
-/**
- * The package file a command token names, or null when the token names no
- * path; `undefined` when it names a path that is not a package file (the
- * closure cannot be determined).
- */
+/** Return null for a nonpath token and undefined for a path outside the package closure. */
 function anchoredPath(token: string, baseDir: string, files: ReadonlyMap<string, PayloadFile>): string | null | undefined {
   if (token.startsWith("${PLUGIN_DATA}")) return null;
   let relative: string;
@@ -261,7 +199,6 @@ function anchoredPath(token: string, baseDir: string, files: ReadonlyMap<string,
   return files.has(normalized) ? normalized : undefined;
 }
 
-/** The approval digest of one component over `files` (see the module comment); null when undeterminable. */
 export function approvalDigest(component: ApprovalComponent, files: readonly PayloadFile[]): string | null {
   const byPath = new Map(files.map((file) => [file.path, file]));
   let closure: ApprovalClosure;
@@ -303,18 +240,13 @@ function strings(value: unknown): string[] {
   return Array.isArray(value) && value.every((item) => typeof item === "string") ? value as string[] : [];
 }
 
-/** One bundled hook or MCP server of an extension, by kind and local id, with its approval digest. */
 export interface ExtensionComponentDigest {
   kind: "hook" | "mcpServer";
   localId: string;
   approvalDigest: string | null;
 }
 
-/**
- * The approval digest of every bundled hook and MCP server an extension's
- * `plugin.json` declares, read from its payload files. A declaring file that
- * is missing or does not parse gives `null` for that component.
- */
+/** Missing or malformed declaring files produce null approval digests. */
 export function extensionComponentDigests(manifestDocument: unknown, files: readonly PayloadFile[]): ExtensionComponentDigest[] {
   const manifest = flattenAgentPluginsManifest(manifestDocument);
   const byPath = new Map(files.map((file) => [file.path, file]));
@@ -327,7 +259,6 @@ export function extensionComponentDigests(manifestDocument: unknown, files: read
       result.push({ ...entry, approvalDigest: null });
       continue;
     }
-    // The static fingerprint `materializePluginContributions` computes for a one-file declaration.
     const fingerprint = sha256Hex(`${file.path}\0${sha256Hex(file.data)}`);
     let raw: unknown;
     try {
@@ -361,17 +292,12 @@ export function extensionComponentDigests(manifestDocument: unknown, files: read
   return result;
 }
 
-/** The parts of an agent plugin's verified component inventory the digests read. */
 export interface AgentPluginComponentInputs {
   mcpServers: Readonly<Record<string, { transport: "stdio"; command: string; args?: string[]; digest: string } | { transport: "http"; digest: string }>>;
   hooks: ReadonlyArray<{ command: string[]; env?: Record<string, string>; digest: string }>;
 }
 
-/**
- * The approval digest of every MCP server (by name) and hook (by index) of an
- * agent plugin, read from its installed or staged files. Its paths are read
- * from the package root (`${PLUGIN_ROOT}/…` or `./…`).
- */
+/** Agent component paths resolve from the package root, keyed by server name or hook index. */
 export function agentPluginComponentDigests(components: AgentPluginComponentInputs, files: readonly PayloadFile[]): {
   mcpServers: Record<string, string | null>;
   hooks: Array<string | null>;
@@ -387,12 +313,7 @@ export function agentPluginComponentDigests(components: AgentPluginComponentInpu
   return { mcpServers, hooks };
 }
 
-/**
- * An extension's payload as the digests read it: the files under `root`
- * (`paths`, or every file), each read once. Extension payloads come from a
- * zip and are hashed without execute bits, wherever they are read: the
- * retained generation root is sealed with them set.
- */
+/** Hash payload files once without execute bits; retained generation sealing may add those bits. */
 export async function readPayloadFiles(root: string, paths?: readonly string[]): Promise<PayloadFile[]> {
   const list: string[] = [];
   if (paths) list.push(...paths);

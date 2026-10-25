@@ -58,10 +58,8 @@ function liveOutputTail(text: string, lines = LIVE_OUTPUT_VISIBLE_LINES): string
   return visible.slice(-lines).join("\n");
 }
 
-/**
- * Live output of a running shell tool, shown under its row without expanding
- * it, so a long build visibly progresses. The completed result replaces it.
- */
+/** Live output of a running shell tool, shown under its row without expanding it, so a long build visibly progresses. The
+ * completed result replaces it. */
 function LiveToolOutput({ tool }: { tool: Extract<ChatEntry, { kind: "tool_group" }>["tools"][number] }) {
   const tail = useMemo(() => liveOutputTail(tool.liveOutput ?? ""), [tool.liveOutput]);
   if (tool.status !== "running" || tail.length === 0) return null;
@@ -84,9 +82,8 @@ function LiveToolOutput({ tool }: { tool: Extract<ChatEntry, { kind: "tool_group
  * predates the per-tool timer instrumentation).
  */
 function ToolDurationBadge({ durationMs }: { durationMs?: number }) {
-  // Hiding on a missing or nonsensical duration is this badge's own rule, not
-  // the formatter's — `formatDuration` renders `0s` for those, which would put
-  // a meaningless stopwatch on the row.
+  // Hiding on a missing or nonsensical duration is this badge's own rule, not the formatter's — `formatDuration` renders
+  // `0s` for those, which would put a meaningless stopwatch on the row.
   if (typeof durationMs !== "number" || !Number.isFinite(durationMs) || durationMs < 0) return null;
   const label = formatDuration(durationMs);
   return (
@@ -124,9 +121,8 @@ function RunningDurationBadge({ startedAt }: { startedAt?: number }) {
       className="shrink-0 font-mono text-[10px] tabular-nums opacity-70"
       title={`${elapsed} ms (${t("toolGroupCard.running")})`}
       data-testid="tool-duration-running"
-      // A 200 ms tick is not something to read aloud, and inside the
-      // transcript log every text change would be. The finished duration
-      // badge carries the number for assistive tech.
+      // A 200 ms tick is not something to read aloud, and inside the transcript log every text change would be. The finished
+      // duration badge carries the number for assistive tech.
       aria-hidden="true"
     >
       ⏱ {label}
@@ -165,11 +161,8 @@ function ToolSourceBadge({ tool }: { tool: ToolItem }) {
   );
 }
 
-/**
- * Per-tool status pill — "실패" (error) or "완료" (done). Single source for the
- * success/failure badge shown on every collapsed tool row (single-tool inline
- * + grouped per-tool).
- */
+/** Per-tool status pill — "실패" (error) or "완료" (done). Single source for the success/failure badge shown on every collapsed
+ * tool row (single-tool inline + grouped per-tool). */
 function ToolStatusBadge({
   status,
 }: {
@@ -177,9 +170,8 @@ function ToolStatusBadge({
 }) {
   const { t } = useTranslation();
   const isError = status === "error";
-  // A user stop is neither a failure nor a completion. `status` carries it as
-  // its own value, so every `=== "error"` check elsewhere already excludes it;
-  // only the label has to say which of the three happened.
+  // A user stop is neither a failure nor a completion. `status` carries it as its own value, so every `=== "error"` check
+  // elsewhere already excludes it; only the label has to say which of the three happened.
   const isCancelled = status === "cancelled";
 
   return (
@@ -229,9 +221,8 @@ function SingleToolInline({
     previousToolRef.current = { toolUseId: tool.toolUseId, status: tool.status };
   }, [tool.status, tool.toolUseId]);
 
-  // Stub result — render collapsible CompactedToolResult instead of raw block.
-  // Compaction marks tool_results by role+length, independent of error status,
-  // so error tool_results can also be stubs.
+  // Stub result — render collapsible CompactedToolResult instead of raw block. Compaction marks tool_results by role+length,
+  // independent of error status, so error tool_results can also be stubs.
   const isStubResult = !isRunning && isToolResultStub(tool.result);
 
   if (isStubResult && sessionId) {
@@ -249,7 +240,7 @@ function SingleToolInline({
     );
   }
 
-  // Issue #749: write_file results with truncated+hasSidecar render via sidecar IPC.
+  // Truncated write_file results with sidecars load full content through sidecar IPC.
   const isWriteFileSidecar =
     !isRunning &&
     !isError &&
@@ -530,7 +521,7 @@ export function ToolGroupCard({
                             compactedResultText={tool.result}
                             sessionId={sessionId}
                           />
-                        ) : /* Issue #749: write_file truncated+hasSidecar → WriteFileSidecarDiff */
+                        ) :
                         tool.status !== "error" &&
                           tool.name === "write_file" &&
                           sessionId &&

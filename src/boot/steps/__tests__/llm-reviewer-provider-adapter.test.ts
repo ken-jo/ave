@@ -1,26 +1,4 @@
-/**
- * Unit tests for `LlmReviewerProviderAdapter` (#767).
- *
- * The adapter is the only execution path for `openai` / `anthropic` /
- * `google` / `foundry` / `gcp-playground` reviewer providers — it
- * collapses an LLM provider's `streamTurn` async iterator into the
- * one-shot `complete()` shape that the reviewer pipeline expects.
- *
- * Without unit coverage, any change to the stream-event handling (e.g.
- * adding a new event kind, changing the abort semantics, renaming the
- * usage shape) silently breaks every reviewer call. This file pins:
- *
- *   1. text_delta accumulation across multiple chunks
- *   2. message_complete usage forwarding (inputTokens / outputTokens)
- *   3. message_complete without usage → returns 0 tokens (tolerant)
- *   4. error event → throws with the provider error message
- *   5. mid-stream abort → throws "reviewer LLM call aborted"
- *   6. reasoning_delta / tool_call events ignored (not concatenated)
- *
- * Each contract is verified across all 6 supported vendor strings so that
- * adding a new vendor to LLM_VENDORS without updating the adapter surfaces
- * here rather than in production (#767 vendor-breadth requirement).
- */
+/** Check stream-to-completion behavior across every supported provider, including aborts, errors, ignored events, and usage defaults. */
 import { describe, it, expect } from "vitest";
 import { LlmReviewerProviderAdapter } from "../reviewer-wiring.js";
 import type {
@@ -125,7 +103,6 @@ describe.each(VENDORS)("LlmReviewerProviderAdapter [vendor=%s]", (vendor) => {
         return {
           async *[Symbol.asyncIterator]() {
             yield { type: "text_delta", text: "first" };
-            // Caller aborts between chunks.
             controller.abort();
             yield { type: "text_delta", text: "second" };
           },

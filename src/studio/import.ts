@@ -229,7 +229,6 @@ async function mergedDefinition(root: string, paths: readonly string[], declared
   return merged;
 }
 
-/** Read only canonical files when a portable root is present. */
 export async function importStudioPackage(root: string): Promise<ImportedStudioPackage> {
   const stats = await lstat(root);
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error("Import path must be a directory");
@@ -251,8 +250,7 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
     const ignored = [];
     for (const path of LEGACY_SIDE_PATHS) if (await lstat(join(root, path)).then(() => true, () => false)) ignored.push(path);
     if (ignored.length) diagnostics.push(diagnostic("rewritten", "plugin.json", `Ignored legacy projection: ${ignored.join(", ")}`));
-    // Path order, as the store lists a draft's files, so a reimport compares
-    // equal whatever the namespace directory's name sorts against.
+    // Sort by listed path order so namespace directory names cannot affect reimport equality.
     return { files: [...files].sort(([a], [b]) => a.localeCompare(b)).map(([path, data]) => ({ path, data })), diagnostics, pendingHooks,
       name: String(manifest.name), version: typeof manifest.version === "string" ? manifest.version : undefined,
       description: typeof manifest.description === "string" ? manifest.description : undefined };
@@ -380,7 +378,6 @@ export async function importStudioPackage(root: string): Promise<ImportedStudioP
   return { files: [...files].map(([path, data]) => ({ path, data })), diagnostics, pendingHooks, name, ...(version ? { version } : {}), ...(description ? { description } : {}) };
 }
 
-/** Archive import is extracted under a temporary root after path, link and size checks. */
 export async function importStudioArchive(path: string): Promise<ImportedStudioPackage> {
   const stat = await lstat(path);
   if (stat.isDirectory()) return importStudioPackage(path);

@@ -7,10 +7,7 @@ export function headlessPackagedMarkerPath(projectRoot) {
   return join(projectRoot, HEADLESS_PACKAGED_MARKER_NAME);
 }
 
-/**
- * Missing is the source/development identity. Any present marker must be the
- * exact zero-byte regular file emitted by the native runtime packager.
- */
+// A present packaged marker must be an exact zero-byte regular file; absence means development.
 export function readHeadlessPackagedMarker(projectRoot, inspect = lstatSync) {
   const markerPath = headlessPackagedMarkerPath(projectRoot);
   let marker;

@@ -2,22 +2,12 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
-/**
- * #1446 — the packaged-footprint gate must assert the mermaid lazy chunk is a
- * member of app.asar. mermaid's dynamic-import load failure is SILENT
- * (preview-renderers.tsx catch → raw-source fallback), so a launch smoke can
- * never catch a pruned chunk; the build-time asar-membership assertion is the
- * real guard. This test locks that the guard exists and its contenthash regex
- * accepts the emitted chunk name while rejecting the license sidecar / near-miss.
- */
-// Anchored to the repo root (vitest cwd) — deterministic regardless of how the
-// bundler rewrites import.meta.url.
+// Missing lazy chunks fail silently, so package membership must be checked at build time.
+// Use repository cwd because bundling can rewrite import.meta.url.
 const scriptPath = resolve(process.cwd(), "scripts/check-package-footprint.mjs");
 const scriptSrc = readFileSync(scriptPath, "utf8");
 
-// The script runs its checks at import time, so its pattern is read out of
-// the LAZY_RENDERER_CHUNKS entry rather than imported — the cases below then
-// exercise the regex the gate actually uses, not a copy of it.
+// Read the gate's actual regex without importing its side-effecting script.
 const MERMAID_ENTRY = /\{\s*name:\s*"mermaid",\s*pattern:\s*\/(.+?)\/([a-z]*)\s*\}/.exec(scriptSrc);
 if (!MERMAID_ENTRY) throw new Error("check-package-footprint.mjs has no mermaid LAZY_RENDERER_CHUNKS entry");
 const MERMAID_CHUNK_RE = new RegExp(MERMAID_ENTRY[1], MERMAID_ENTRY[2]);
@@ -25,8 +15,7 @@ const MERMAID_CHUNK_RE = new RegExp(MERMAID_ENTRY[1], MERMAID_ENTRY[2]);
 describe("packaged footprint mermaid chunk guard", () => {
   it("the footprint script still asserts the lazy mermaid chunk", () => {
     expect(scriptSrc).toContain("LAZY_RENDERER_CHUNKS");
-    // The regex escapes its slashes (`renderer\/chunks\/mermaid\.`); assert the
-    // chunk name fragment rather than a bare path.
+    // Match the chunk fragment because the regex escapes path separators.
     expect(scriptSrc).toContain("mermaid\\.[0-9a-f]{8}\\.js");
     expect(scriptSrc).toContain("required lazy renderer chunks missing from app.asar");
   });

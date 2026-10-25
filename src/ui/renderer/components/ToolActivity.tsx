@@ -59,15 +59,10 @@ export interface ToolActivityState {
 }
 
 export interface ToolActivityRouting {
-  /**
-   * Left-click a row → route the item in-app (§6.10.5). `web` distinguishes a
-   * web URL (→ browser tab) from a local file path (→ file-browser preview).
-   */
+  /** Left-click a row → route the item in-app (§6.10.5). `web` distinguishes a web URL (→ browser tab) from a local file path
+   * (→ file-browser preview). */
   onOpenItem?: (target: string, web: boolean) => void;
-  /**
-   * Double-click a row → open (and keep) the item as a pinned tab (VS Code
-   * preview-tab model: single-click = ephemeral, double-click = pinned).
-   */
+  /** Single-click reuses an ephemeral preview; double-click pins it as a durable tab. */
   onOpenItemPinned?: (target: string, web: boolean) => void;
   /** Right-click "open in system app". Only offered for web rows (see §5). */
   onOpenItemInSystemApp?: (target: string, web: boolean) => void;
@@ -255,11 +250,8 @@ function StatsDashboard({ stats }: { stats: ActivityStat[] }) {
   );
 }
 
-/**
- * The compact report the work panel's empty launcher shows: the six counters,
- * then the newest few items by category, and the way to the activity tab that
- * lists everything.
- */
+/** The compact report the work panel's empty launcher shows: the six counters, then the newest few items by category, and
+ * the way to the activity tab that lists everything. */
 export function ToolActivityBody({
   activity,
   onOpenItem,

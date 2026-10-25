@@ -1,8 +1,3 @@
-/**
- * Renderer smoke tests for the 5 workflow tool UI components.
- * Mounts each component with a mocked `AveApi` and verifies the basic
- * render contract + at least one interaction.
- */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent, act, waitFor, within, screen } from "@testing-library/react";
@@ -20,8 +15,7 @@ function fakeApi(overrides: Partial<AveApi> = {}): AveApi {
   const stub = (..._args: unknown[]) => Promise.resolve({ ok: true });
   const noopUnsub = () => () => undefined;
   return {
-    // Only methods used by the components under test need real impls;
-    // the rest are stubbed minimally to satisfy the type.
+    // Only methods used by the components under test need real impls; the rest are stubbed minimally to satisfy the type.
     listRoutines: () => Promise.resolve({ routines: [], invalid: [] }),
     dismissRoutine: stub as never,
     removeRoutine: stub as never,
@@ -94,8 +88,7 @@ describe("AskUserQuestionCard — single question", () => {
     );
     const recommendBadges = getAllByTestId("ask-badge-recommend");
     expect(recommendBadges).toHaveLength(1);
-    // Badge should sit alongside the second choice ("B안") — assert by
-    // walking up to the surrounding button text.
+    // Badge should sit alongside the second choice ("B안") — assert by walking up to the surrounding button text.
     const button = recommendBadges[0]?.closest("button");
     expect(button?.textContent).toContain("B안");
   });
@@ -290,8 +283,7 @@ describe("AskUserQuestionCard — multi-question", () => {
     // Step label shows pagination on multi.
     expect(getByTestId("ask-step-label").textContent).toBe("· 1 / 2");
     expect(container.textContent).toContain("Where?");
-    // Picking a choice on a multi-question card does NOT auto-submit;
-    // user must hit 다음/검토.
+    // Picking a choice on a multi-question card does NOT auto-submit; user must hit 다음/검토.
     await act(async () => {
       fireEvent.click(getByText("서울"));
     });
@@ -308,7 +300,6 @@ describe("AskUserQuestionCard — multi-question", () => {
     await act(async () => {
       fireEvent.click(getByText("검토"));
     });
-    // Now on the confirm page — review surface present.
     expect(queryByTestId("ask-confirm-review")).not.toBeNull();
     expect(getByTestId("ask-step-label").textContent).toBe("· 검토");
     await act(async () => {
@@ -429,8 +420,7 @@ describe("SessionTasksPanel", () => {
     // The chip repeats the focus item's title, so rows are read from the list.
     expect(list.textContent).toContain("step 1");
     expect(list.textContent).toContain("step 2");
-    // Per-row status pills survive the header-badge removal: each row keeps a
-    // 대기/진행/완료 chip.
+    // Per-row status pills survive the header-badge removal: each row keeps a 대기/진행/완료 chip.
     expect(list.textContent).toContain("대기");
     expect(list.textContent).toContain("완료");
     // The removed transient header badges must no longer render.
@@ -478,8 +468,7 @@ describe("SessionTasksPanel", () => {
     await openPanel(container);
     const active = await findByTestId("session-tasks-active-row");
     expect(active.className).toContain("animate-pulse");
-    // Only the in-progress row gets the active testid — pending/completed
-    // must not.
+    // Only the in-progress row gets the active testid — pending/completed must not.
     expect(queryAllByTestId("session-tasks-active-row")).toHaveLength(1);
   });
 
@@ -493,8 +482,7 @@ describe("SessionTasksPanel", () => {
         ]),
     });
     const { findByText, container } = render(<SessionTasksPanel api={api} sessionId="session-tasks" />);
-    // Panel starts collapsed by default — the active item should already show
-    // next to the count without any toggle.
+    // Panel starts collapsed by default — the active item should already show next to the count without any toggle.
     await findByText("2. current thing");
     const collapsed = container.querySelector('[data-testid="session-tasks-collapsed-active"]');
     expect(collapsed).not.toBeNull();
@@ -511,8 +499,7 @@ describe("SessionTasksPanel", () => {
         ]),
     });
     const { findByText, container } = render(<SessionTasksPanel api={api} sessionId="session-tasks" />);
-    // Starts collapsed; with no in_progress item the header surfaces the first
-    // non-completed item instead of going blank.
+    // Starts collapsed; with no in_progress item the header surfaces the first non-completed item instead of going blank.
     await findByText("1. first pending");
     const collapsed = container.querySelector('[data-testid="session-tasks-collapsed-active"]');
     expect(collapsed).not.toBeNull();
@@ -527,8 +514,7 @@ describe("SessionTasksPanel", () => {
       items: Array<{ id: string; content: string; status: string }>;
     }) => void) | null = null;
     const clearSpy = vi.fn(async (_sessionId?: string) => {
-      // The real clear path drives the panel away by emitting an empty list,
-      // not a local hide — simulate that here.
+      // The real clear path drives the panel away by emitting an empty list, not a local hide — simulate that here.
       pushPayload?.({ sessionId: "session-dismiss", items: [] });
       return { ok: true };
     });
@@ -562,8 +548,8 @@ describe("SessionTasksPanel", () => {
     });
     const dismiss = await findByTestId("session-tasks-dismiss");
 
-    // Clicking it calls clearSessionTasks; the resulting empty-list emit
-    // removes the panel entirely (returns null at items.length === 0).
+    // Clicking it calls clearSessionTasks; the resulting empty-list emit removes the panel entirely (returns null at
+    // items.length === 0).
     await act(async () => {
       dismiss.dispatchEvent(new MouseEvent("click", { bubbles: true }));
       await Promise.resolve();
@@ -803,9 +789,8 @@ describe("SessionTasksPanel", () => {
     await screen.findByTestId("session-tasks-panel");
     await openPanel(container);
     await screen.findAllByText("first");
-    // Swap session id — synchronously the panel should clear its visible
-    // items so a stale row never lingers between sessions. The pending
-    // listSessionTasks for the new id will repopulate when it resolves.
+    // Swap session id — synchronously the panel should clear its visible items so a stale row never lingers between sessions.
+    // The pending listSessionTasks for the new id will repopulate when it resolves.
     fetchSpy.mockReturnValueOnce(Promise.resolve([]));
     rerender(<SessionTasksPanel api={api} sessionId="session-B" />);
     await act(async () => {
@@ -831,7 +816,6 @@ describe("SessionTasksPanel", () => {
     expect(pill!.className).toContain("transition-colors");
   });
 });
-
 
 describe("SkillBadge", () => {
   it("renders the skill name", () => {

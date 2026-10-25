@@ -6,6 +6,8 @@ import {
   assertCodexExecutableLocation,
   assertCodexLocations,
   assertCodexPrivateRuntimeDirectory,
+  createPrivateObjects,
+  createPrivateTempDirectory,
   type CodexLocationRequest,
 } from "./codex-executable-location.js";
 import { isNativeExecutableFile } from "./native-executable-format.js";
@@ -31,8 +33,7 @@ export class CodexExecutableArtifactError extends Error {
 }
 
 function noFollow(): number {
-  // Exclusive creation prevents following an existing destination on every
-  // platform. Source handles are pinned and checked again after open; the
+  // Exclusive creation prevents following an existing destination on every platform. Source handles are pinned and checked again after open; the
   // additional no-follow flag is enforced on platforms that provide it.
   if (process.platform === "win32") return 0;
   if (typeof constants.O_NOFOLLOW !== "number") throw new CodexExecutableArtifactError("No-follow open is unavailable");
@@ -83,7 +84,7 @@ export async function copyExecutableFile(
   return copyAdmittedExecutableFile(source, executable);
 }
 
-/** Copy a source whose location the caller already admitted, for example in one batch. */
+// Copy a source whose location the caller already admitted, for example in one batch.
 export async function copyAdmittedExecutableFile(
   source: string,
   executable: string,
@@ -160,7 +161,7 @@ async function companionSource(source: string, platform: NodeJS.Platform): Promi
   return null;
 }
 
-/** Copy the executable and its optional native companion into one private artifact. */
+// Copy the executable and its optional native companion into one private artifact.
 export async function copyCodexExecutableArtifact(
   source: string,
   runtimeDirectory: string,
@@ -171,19 +172,21 @@ export async function copyCodexExecutableArtifact(
     { path: source, kind: "executable", routeKind: "native" },
     { path: runtimeDirectory, kind: "private-directory", routeKind: "native" },
   ]);
-  const directory = await fs.mkdtemp(join(runtimeDirectory, "artifact-"));
+  const directory = await createPrivateTempDirectory(join(runtimeDirectory, "artifact-"));
   try {
     await assertCodexPrivateRuntimeDirectory(directory, "native");
-    const primary = await copyNativeExecutableFile(source, join(directory, platform === "win32" ? "codex.exe" : "codex"), platform, arch);
-    const companion = await companionSource(source, platform);
-    const artifact = Object.freeze({
-      ...primary,
-      companion: companion === null ? null : await copyNativeExecutableFile(
+    const artifact = await createPrivateObjects(async (created) => {
+      const primary = await copyNativeExecutableFile(source, join(directory, platform === "win32" ? "codex.exe" : "codex"), platform, arch);
+      created.push(primary.executable);
+      const companion = await companionSource(source, platform);
+      const companionCopy = companion === null ? null : await copyNativeExecutableFile(
         companion,
         join(directory, platform === "win32" ? "codex-code-mode-host.exe" : "codex-code-mode-host"),
         platform,
         arch,
-      ),
+      );
+      if (companionCopy) created.push(companionCopy.executable);
+      return Object.freeze({ ...primary, companion: companionCopy });
     });
     await verifyCodexExecutableArtifact(artifact);
     return artifact;
@@ -193,7 +196,7 @@ export async function copyCodexExecutableArtifact(
   }
 }
 
-/** Recheck the private copy immediately before each probe or app-server spawn. */
+// Recheck the private copy immediately before each probe or app-server spawn.
 export async function verifyCodexExecutableArtifact(
   artifact: CodexExecutableArtifact,
   routeKind: CodexLocationRequest["routeKind"] = "native",
@@ -221,7 +224,7 @@ export async function verifyCodexExecutableArtifact(
   }
 }
 
-/** Only callers that just created this artifact may discard it. */
+// Only callers that just created this artifact may discard it.
 export async function discardCodexExecutableArtifact(artifact: CodexExecutableArtifact): Promise<void> {
   await retryOnTransientFsLock(() => fs.rm(dirname(artifact.executable), { recursive: true, force: true }));
 }

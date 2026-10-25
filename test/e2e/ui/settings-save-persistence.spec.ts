@@ -3,25 +3,8 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 
-/**
- * Settings save + reload persistence through the always-inline settings panel
- * (settings-inline-overhaul — there is no detached BrowserWindow anymore).
- *
- * Post PR #780 semantics:
- *   - Toggle / Checkbox / Radio / Select / Slider controls are
- *     immediate-apply (200ms debounced). The PII redact checkbox in
- *     ChatTab fires `s.save("chat")` after the user flips it; the user
- *     does NOT need to click an explicit Save button.
- *   - The settings surface does NOT auto-close on save — the multi-tab
- *     pattern keeps it open so users can verify and edit a sibling tab.
- *     Leaving uses the title-bar close button.
- *
- * This spec exercises that flow: flip the toggle → wait for the
- * debounced auto-save → assert the settings file reflects the change
- * → close settings → reopen → assert the toggle reads the
- * persisted state on rehydrate (the inline panel unmounts on Back, so
- * reopening remounts SettingsContent and re-reads the persisted value).
- */
+// Immediate controls save through debounce; text fields commit on explicit editing boundaries.
+// Reopen settings to verify persistence from the real store.
 test('immediate-apply toggle persists privacy redaction without explicit Save', async ({
   app,
   mainWindow,
@@ -40,9 +23,7 @@ test('immediate-apply toggle persists privacy redaction without explicit Save', 
   }
   await expect(redactToggle).toHaveAttribute('aria-checked', 'true');
 
-  // No Save button click — immediate-apply via the 200ms debounced
-  // auto-save path that PR #780 wired up. Poll the settings file until
-  // it reflects the new value; budget covers debounce + IPC round-trip.
+  // Poll the file through debounce and IPC latency rather than clicking a save button.
   await expect
     .poll(
       () => {
@@ -57,10 +38,8 @@ test('immediate-apply toggle persists privacy redaction without explicit Save', 
     )
     .toBe(true);
 
-  // PR #780 design: save does NOT close the surface. Close it explicitly before
-  // reopening so the rehydrate assertion sees a fresh mount.
-  // (settingsPage === mainWindow now, so a raw `.close()` would tear down
-  // the whole app — use the title-bar close button instead.)
+  // Saving keeps settings open; unmount the inline view before testing fresh hydration.
+  // Closing the page would close the app.
   await closeInlineSettings(app, settingsPage);
 
   const reopenedSettingsPage = await openInlineSettings(app, mainWindow, 'chat');
@@ -90,8 +69,7 @@ test('inline close flushes a pending immediate-apply setting', async ({
   await redactToggle.click();
   await expect(redactToggle).toHaveAttribute('aria-checked', nextState);
 
-  // Do not wait for the 200ms debounce: the inline close path must flush it
-  // before unmount cleanup can cancel the pending timer.
+  // Close before debounce expires to prove unmount flushes pending writes.
   await closeInlineSettings(app, settingsPage);
 
   const reopenedSettingsPage = await openInlineSettings(app, mainWindow, 'chat');

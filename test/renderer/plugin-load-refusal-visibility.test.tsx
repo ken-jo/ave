@@ -1,27 +1,4 @@
-/**
- * Every way boot can decline to run an installed plugin must end somewhere the
- * user can look, and the three ways must not look the same.
- *
- * The registry row survives all of them, so `marketplace.list()` keeps
- * reporting the package as installed. When the load path drops the plugin
- * without producing a card, the sidebar, Settings and the Plugin Doctor all
- * show nothing — an install that exists everywhere except in the app.
- *
- * These tests drive the REAL `PluginRuntime.load()` over a real on-disk
- * fixture and render the REAL App and Plugin Settings with the cards it
- * produced, because that is the only way to observe the property that actually
- * broke: not a wrong `loadStatus`, but no row at all. Asserting on the card
- * projection alone would have passed throughout the bug.
- *
- * A separate file rather than a case added to `boot-preflight.test.ts` or
- * `PluginConfigTab.test.tsx`: this is the only suite needing BOTH halves — the
- * runtime (tmp fixtures, install receipts) and the renderer (jsdom, which
- * vitest grants only under `test/renderer/**`). Neither existing home can host
- * the other half. The complementary half — that a plugin listed AFTER a
- * throwing one still loads — lives in `boot-preflight.test.ts`, because
- * loading a plugin for real needs the node environment: jsdom's module runner
- * cannot import a plugin entry from outside the project root.
- */
+// Every boot refusal needs a visible, distinct repair path even though the package remains installed.
 import "./setup.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -94,9 +71,7 @@ describe("installed plugins boot refuses to run", () => {
     registryPath = join(pluginsRoot, "registry.json");
     await mkdir(pluginsRoot, { recursive: true });
 
-    // A real file, deliberately OUTSIDE pluginsRoot. It exists so containment
-    // is what refuses it rather than a missing file, and so a regression that
-    // reads it would succeed — exactly as it would for a planted manifest.
+    // Use an existing outside-root manifest so containment, rather than absence, causes refusal.
     const strayDir = join(testDir, "outside-the-plugin-root");
     await mkdir(strayDir, { recursive: true });
     strayManifestPath = join(strayDir, "plugin.json");
@@ -139,8 +114,7 @@ describe("installed plugins boot refuses to run", () => {
       { rootDir: testDir, registryPath, pluginsRoot },
       { installReceiptCacheRoot: testDir },
     );
-    // Candidate-root materialization has no local failure handler, so a throw
-    // here is the unclassified crash the per-plugin boundary has to absorb.
+    // Materialization throws must reach the per-plugin failure boundary.
     const internals = runtime as unknown as {
       materializeImmutableRuntimeRoot(
         pluginId: string,
@@ -173,8 +147,7 @@ describe("installed plugins boot refuses to run", () => {
     expect(crashed?.installFailureKind).toBe("load-crash");
     expect(crashed?.installFailureMessage).toContain("no space left on device");
 
-    // Switched off by the user, so NOT a failure: no Doctor classification and
-    // no failure detail, only the inactive status.
+    // User-disabled plugins are inactive choices rather than load failures.
     const switchedOff = cards.find((card) => card.id === SWITCHED_OFF_PLUGIN);
     expect(switchedOff?.loadStatus).toBe("disabled");
     expect(switchedOff?.installFailureKind).toBeUndefined();
@@ -184,7 +157,6 @@ describe("installed plugins boot refuses to run", () => {
   it("renders a sidebar row for each of them, telling repair apart from off", async () => {
     const cards = await loadCards();
     await renderApp({ pluginCards: cards });
-    // The rows are the Plugins flyout's.
     await openSidebarGroup("plugins");
 
     await waitFor(() =>
@@ -192,10 +164,7 @@ describe("installed plugins boot refuses to run", () => {
     );
     expect(screen.getByTestId(sidebarViewTestId(toPluginDoctorViewKey(CRASHING_PLUGIN)))).toBeTruthy();
 
-    // The switched-off plugin gets a row too — but it routes to Plugin
-    // Settings, not to the Doctor, and carries a neutral "off" badge rather
-    // than the destructive repair badge. Presenting a deliberate choice as a
-    // fault would be its own defect.
+    // Disabled plugins route to settings with neutral status, not a fault-repair surface.
     const inactiveRow = screen.getByTestId(sidebarViewTestId(toPluginSettingsViewKey(SWITCHED_OFF_PLUGIN)));
     expect(inactiveRow.getAttribute("data-viewkey")).toBe(`plugin-settings:${SWITCHED_OFF_PLUGIN}`);
     expect(screen.queryByTestId(sidebarViewTestId(toPluginDoctorViewKey(SWITCHED_OFF_PLUGIN)))).toBeNull();
@@ -223,8 +192,7 @@ describe("installed plugins boot refuses to run", () => {
     await waitFor(() =>
       expect(screen.getByText("익스텐션 로드 중 오류 발생")).toBeTruthy(),
     );
-    // The two refusals never share a sentence: a single generic "failed to
-    // load" panel would leave the user in the same dead end as no card.
+    // Distinct refusal reasons need distinct guidance rather than one generic failure.
     expect(screen.queryByText("익스텐션 레지스트리 항목 거부됨")).toBeNull();
   });
 });

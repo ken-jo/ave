@@ -22,8 +22,8 @@ describe("dropTargetAt", () => {
   });
 
   it("keeps a middle on a tile too small for a fixed band", () => {
-    // A fixed 40px band on a 100px tile would leave 20px of middle; on
-    // anything narrower it would vanish, making "replace" unhittable.
+    // A fixed 40px band on a 100px tile would leave 20px of middle; on anything narrower it would vanish, making "replace"
+    // unhittable.
     const small = { left: 0, top: 0, width: 100, height: 100 };
     expect(dropTargetAt(small, { x: 50, y: 50 })).toBe("center");
     expect(dropTargetAt(small, { x: 5, y: 50 })).toBe("left");

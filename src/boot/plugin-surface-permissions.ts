@@ -12,16 +12,7 @@ export interface PluginSurfacePermissionScope {
     context: PluginToolInvocationContext,
     base: PluginSurfacePermissionBase,
   ): ToolPermissionContext;
-  /**
-   * Drop every session-scope grant covered by a removed workspace root, across
-   * all plugin subjects. `ipc/domains/workspace.ts` drives this alongside the
-   * conversation loops, the routine engine and the sub-agent runner, using the
-   * SAME predicate they use — otherwise a grant taken on the plugin surface
-   * outlives the root it was granted under for the app's lifetime.
-   *
-   * Turn-scope grants are per-invocation closures that die with the tool call,
-   * so there is nothing durable to strip for them here.
-   */
+  /** Removing a workspace root revokes covered session grants across all plugin subjects. */
   revokeWorkspaceRoot(
     removedRoot: string,
     options?: { readonly preserveRoots?: readonly string[] },
@@ -31,7 +22,6 @@ export interface PluginSurfacePermissionScope {
 export interface PluginSurfacePermissionScopeOptions {
   readPersistedDirectories: () => readonly string[];
   onSessionDirectoryAdded?: (subject: string, directory: string) => void;
-  /** Fired when a workspace-root removal actually stripped plugin grants. */
   onSessionDirectoriesRevoked?: () => void;
 }
 
@@ -69,10 +59,7 @@ export function createPluginSurfacePermissionScope(
         else sessionAdditionalDirectories.set(subject, retained);
       }
       if (sessionDirectoriesRemoved > 0) options.onSessionDirectoriesRevoked?.();
-      // `turnDirectoriesRemoved: 0` is not a stub — the sweep in
-      // ipc/domains/workspace.ts requires both counts, and turn grants here live
-      // in a per-invocation closure array that dies with the tool call, so there
-      // is never a durable turn grant to strip.
+      // Turn grants die with their invocation; only session grants are durable sweep targets.
       return { sessionDirectoriesRemoved, turnDirectoriesRemoved: 0 };
     },
     createPermissionContext(
@@ -102,12 +89,7 @@ export function createPluginSurfacePermissionScope(
   };
 }
 
-/**
- * The live plugin-surface scope, published so the workspace-root removal sweep
- * in `ipc/domains/workspace.ts` can reach it. Boot creates exactly one scope
- * (`boot/steps/plugin-tool-executor.ts`); the sweep runs later, from IPC, so it
- * resolves the owner here rather than receiving it by value.
- */
+/** Expose the live scope so later workspace-removal IPC reaches the single boot-owned instance. */
 let activePluginSurfacePermissionScope: PluginSurfacePermissionScope | undefined;
 
 export function setActivePluginSurfacePermissionScope(

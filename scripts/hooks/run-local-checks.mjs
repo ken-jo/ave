@@ -15,8 +15,10 @@
 // Stages: pre-commit | pre-push | manual. Bypass once with AVE_HOOKS_SKIP=1.
 //
 // Pre-push tiers (the log names the tier and why). Every pull request's CI
-// runs the full suite and the build, so a push runs them only on request; the
-// log line of every scoped tier says "full suite deferred to CI":
+// runs the build and the test scope scripts/run-ci-suite.mjs picks (full, or
+// affected tests only; a test-only diff is never run whole), so a push runs
+// the full suite only on request; the log line of every scoped tier says
+// "remaining tests and build deferred to CI, whose scope scripts/run-ci-suite.mjs picks":
 //   none          a new branch at a commit the remote's default or
 //                 integration/* branches already contain: no new commit
 //   docs-only     unconsumed documentation: document safety and policy checks
@@ -51,9 +53,10 @@
 //                 branch, a tag or other non-branch update, or a deletion:
 //                 typecheck gate, `bun run test`, `bun run build`,
 //                 `check:gate-core`
-// Set AVE_PREPUSH_FULL=1 to run the full tier for any push. Otherwise the full
-// suite and build of a scoped push run in the PR's CI, once at merge time on
-// the merged tree, and in the category PR's CI.
+// Set AVE_PREPUSH_FULL=1 to run the full tier for any push. Otherwise the build
+// of a scoped push runs in the PR's CI on the merged tree, and its test scope
+// there follows scripts/run-ci-suite.mjs (a test-only diff never runs the full
+// suite; a non-test-only category PR does).
 //
 // Host admission (pre-push-host-lock.mjs): a full run holds one exclusive
 // host-wide lock, so two full suites never share a machine; a fast or
@@ -64,14 +67,18 @@
 //
 // Multi-stage PRs: a sub-branch is cut from origin/integration/<category> and
 // merged into it by PR; the category branch reaches main through one PR whose
-// CI runs the full suite and build. A sub-branch push therefore runs only the
+// CI runs the full suite for non-test-only changes, and builds every source
+// change. A sub-branch push therefore runs only the
 // checks scoped to its own commits: a new branch is diffed against the
 // closest merge-base with a live default or integration/* tip on the remote
-// (findNewBranchBase), not only the default branch. A direct push TO an
-// integration/* branch is treated like the default branch (full checks):
-// those branches advance through reviewed PR merges and lead-run merges of
-// main, so a direct push is the exceptional case and has to carry the whole
-// proof itself.
+// (findNewBranchBase), not only the default branch. For every branch push,
+// pushed commits that a live default or integration/* tip already contains
+// are not the branch's own: merging the base in does not move the tier, while
+// own commits and a merge's conflict resolutions still do (scanPushedHistory).
+// A direct push TO an integration/* branch is treated like the default
+// branch (full checks): those branches advance through reviewed PR merges and
+// lead-run merges of main, so a direct push is the exceptional case and has to
+// carry the whole proof itself.
 // A non-fast-forward push of a branch (a rebase, an amend) is diffed like a
 // new branch, against its merge-base with the closest live default or
 // integration/* tip, and also against the remote commit it replaces: a commit
@@ -93,6 +100,7 @@ import {
   parsePrePushUpdates,
   parseRemoteHeads,
   readPrePushInput,
+  resolveHeadUpdates,
   selectBaseCandidates,
 } from "./pre-push-ref-updates.mjs";
 import { checkPushedDocumentation } from "./pre-push-document-safety.mjs";
@@ -220,6 +228,14 @@ function capture(cmd, args, cwd, env = process.env) {
     throw new Error(stderr || `${cmd} ${args.join(" ")} failed`);
   }
   return (result.stdout || "").trim();
+}
+
+/** The branch HEAD names and its tip, or null for a detached HEAD. */
+function headBranch(repoRoot) {
+  const ref = captureOptional("git", ["symbolic-ref", "-q", "HEAD"], repoRoot);
+  if (!ref) return null;
+  const sha = captureOptional("git", ["rev-parse", "--verify", "-q", `${ref}^{commit}`], repoRoot);
+  return sha ? { ref, sha } : null;
 }
 
 function captureOptional(cmd, args, cwd) {
@@ -555,15 +571,32 @@ function gitRunner(repoRoot, timeout) {
 // FETCH_HEAD update) before the base is chosen. A non-fast-forward update is
 // measured from the same base (classifyPrePushChanges).
 function findNewBranchBase(repoRoot, update, remoteLocation) {
-  if (!isUsableRemoteLocation(remoteLocation)) {
-    return { reason: `no conservative base found for ${update.localRef}: the push remote location is unusable` };
+  const live = listLiveBaseTips(repoRoot, remoteLocation);
+  if (!live.candidates) return { reason: `no conservative base found for ${update.localRef}: ${live.reason}` };
+  const chosen = chooseNewBranchBase(update.localSha, live.candidates, gitRunner(repoRoot, 15_000));
+  if (!chosen) {
+    return {
+      reason: `no conservative base found for ${update.localRef}: it shares no history with a default or integration branch tip on the remote`,
+    };
   }
+  const kind = /^[0-9a-f]*[1-9a-f][0-9a-f]*$/i.test(update.remoteSha ?? "") ? "non-fast-forward update" : "new branch";
+  console.log(
+    `[checks] ${kind} ${update.localRef}: base is the merge-base with ${chosen.ref} ` +
+      `(${chosen.sha.slice(0, 12)}, ${chosen.count} pushed commit(s))`
+  );
+  return { sha: chosen.sha, tips: live.candidates.map(({ sha }) => sha) };
+}
+
+// The live default and integration/* tips of the remote that are present
+// locally, after one fetch of any that are missing. They choose a new branch's
+// base and, for every branch push, mark the pushed commits that are not the
+// branch's own (scanPushedHistory).
+function listLiveBaseTips(repoRoot, remoteLocation) {
+  if (!isUsableRemoteLocation(remoteLocation)) return { reason: "the push remote location is unusable" };
   const git = gitRunner(repoRoot, 15_000);
   const listing = git(["ls-remote", "--symref", "--", remoteLocation, "HEAD", "refs/heads/*"]);
   const remoteHeads = listing.status === 0 ? parseRemoteHeads(listing.stdout) : null;
-  if (!remoteHeads) {
-    return { reason: `no conservative base found for ${update.localRef}: the remote's branch heads could not be listed` };
-  }
+  if (!remoteHeads) return { reason: "the remote's branch heads could not be listed" };
   const candidates = selectBaseCandidates(remoteHeads);
   const missing = findMissingCandidateTips(candidates, git);
   if (missing.length > 0) {
@@ -580,18 +613,8 @@ function findNewBranchBase(repoRoot, update, remoteLocation) {
       console.log(`[checks] skipping base candidate ${candidate.ref} (${candidate.sha.slice(0, 12)}): ${fetchReason}`);
     }
   }
-  const chosen = chooseNewBranchBase(update.localSha, candidates, git);
-  if (!chosen) {
-    return {
-      reason: `no conservative base found for ${update.localRef}: it shares no history with a default or integration branch tip on the remote`,
-    };
-  }
-  const kind = /^[0-9a-f]*[1-9a-f][0-9a-f]*$/i.test(update.remoteSha ?? "") ? "non-fast-forward update" : "new branch";
-  console.log(
-    `[checks] ${kind} ${update.localRef}: base is the merge-base with ${chosen.ref} ` +
-      `(${chosen.sha.slice(0, 12)}, ${chosen.count} pushed commit(s))`
-  );
-  return { sha: chosen.sha };
+  const absent = new Set(findMissingCandidateTips(candidates, git).map(({ ref }) => ref));
+  return { candidates: candidates.filter(({ ref }) => !absent.has(ref)) };
 }
 
 function runSharedHistoryGuard(repoRoot, parsedUpdates, remote, remoteLocation) {
@@ -658,23 +681,53 @@ function getGitBlob(repoRoot, objectId, relativePath) {
   return decodeUtf8Strict(result.stdout);
 }
 
-function getPushedHistoryFullReason(repoRoot, baseSha, localSha) {
+// The tier of a push is decided from the branch's own commits: those in
+// base..local that no live default or integration/* tip of the remote already
+// contains (`excludedTips`). A sub-branch that merges its integration base
+// therefore does not inherit the base's global-input changes; those commits
+// were checked when they reached that tip. A merge commit's own change is the
+// set of paths where it differs from every parent (its conflict resolutions):
+// what it takes unchanged from one parent is that parent's history, which is
+// either checked here as own commits or already on a live tip.
+//
+// Returns { reason } when the pushed history needs the full checks, else
+// { ownCommits, excludedCommits, ownPaths }. ownPaths is null when nothing was
+// excluded, so the whole base..local diff is the branch's own.
+function scanPushedHistory(repoRoot, baseSha, localSha, excludedTips = []) {
   const history = captureOptional(commands.git, ["rev-list", "--parents", `${baseSha}..${localSha}`], repoRoot);
-  if (!history) return "pushed history could not be resolved";
-  for (const line of history.split("\n")) {
+  if (!history) return { reason: "pushed history could not be resolved" };
+  let own = history.split("\n");
+  if (excludedTips.length > 0) {
+    const scoped = spawnSync(
+      commands.git,
+      ["rev-list", "--parents", localSha, `^${baseSha}`, ...excludedTips.map((sha) => `^${sha}`), "--"],
+      { cwd: repoRoot, encoding: "utf-8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+    if (scoped.error || scoped.status !== 0) return { reason: "pushed history could not be scoped to own commits" };
+    own = (scoped.stdout || "").split("\n").filter(Boolean);
+  }
+  const excludedCommits = history.split("\n").length - own.length;
+  const ownPaths = excludedCommits > 0 ? new Set() : null;
+  for (const line of own) {
     const [commit, ...parents] = line.split(" ");
     if (parents.length === 0 || ![commit, ...parents].every((sha) => /^[0-9a-f]{40,64}$/.test(sha))) {
-      return "pushed history has no conservative parent";
+      return { reason: "pushed history has no conservative parent" };
     }
+    const perParent = [];
     for (const parent of parents) {
       const entries = getChangedEntries(repoRoot, parent, commit);
-      if (entries === null) return "pushed history diff failed";
-      if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
-      const selection = selectFastSourceChecks(entries);
-      if (!selection.eligible) return `${selection.reason} in pushed history`;
+      if (entries === null) return { reason: "pushed history diff failed" };
+      perParent.push(entries);
     }
+    const entries = perParent.length === 1
+      ? perParent[0]
+      : perParent[0].filter(({ path }) => perParent.every((list) => list.some((entry) => entry.path === path)));
+    for (const { path } of entries) ownPaths?.add(path);
+    if (entries.length === 0 || classifyDocumentationChanges(entries).docsOnly) continue;
+    const selection = selectFastSourceChecks(entries);
+    if (!selection.eligible) return { reason: `${selection.reason} in pushed history` };
   }
-  return null;
+  return { ownCommits: own.length, excludedCommits, ownPaths };
 }
 
 // The checks for the message catalog files of a fast push (see
@@ -757,6 +810,7 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
   let commentOnlyEligible = true;
   let updatesAlreadyOnRemote = 0;
   const protectedBranchNames = getProtectedBranchNames(repoRoot);
+  let liveTips = null;
   for (const update of parsedUpdates.updates) {
     if (isNullObjectId(update.localSha)) {
       return { docsOnly: false, reason: `deleted ref ${update.remoteRef} requires full checks` };
@@ -812,12 +866,36 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
       continue;
     }
 
-    const entries = getChangedEntries(repoRoot, baseSha, update.localSha);
-    if (entries === null) {
+    // A branch's own commits decide its tier; see scanPushedHistory. A listing
+    // failure only loses the scoping: every pushed commit then counts as own.
+    // A new or rewritten branch already holds the tips its base came from.
+    if (base.tips === undefined && liveTips === null) {
+      const live = listLiveBaseTips(repoRoot, remoteLocation);
+      if (!live.candidates) console.log(`[checks] own-commit scoping skipped: ${live.reason}`);
+      liveTips = live.candidates?.map(({ sha }) => sha) ?? [];
+    }
+    const history = scanPushedHistory(repoRoot, baseSha, update.localSha, base.tips ?? liveTips);
+    // An unresolved history keeps the global-input tier and loses the scoping.
+    if (history.reason) unresolvedReasons.push(history.reason);
+    // Commits a rewrite drops still change the remote, so only a push that
+    // replaces nothing can be wholly already on the remote.
+    else if (history.ownCommits === 0 && replacesRemote === false) {
+      updatesAlreadyOnRemote += 1;
+      continue;
+    }
+    const diff = getChangedEntries(repoRoot, baseSha, update.localSha);
+    if (diff === null) {
       const reason = `git diff failed for ${update.localRef}`;
       unresolvedReasons.push(reason);
       console.log(`[checks] ${update.localRef}: ${reason}; no changed-file tests could be selected for this update; CI runs the full suite`);
       continue;
+    }
+    const entries = history.ownPaths ? diff.filter(({ path }) => history.ownPaths.has(path)) : diff;
+    if (history.ownPaths) {
+      console.log(
+        `[checks] ${update.localRef}: ${history.excludedCommits} pushed commit(s) already on a live default or ` +
+          `integration branch are excluded; the tier follows ${history.ownCommits} own commit(s) and ${entries.length} path(s)`
+      );
     }
     const diffs = [{ entries, baseSha }];
     // A commit of the replaced remote branch that the push drops changes the
@@ -827,8 +905,6 @@ function classifyPrePushChanges(repoRoot, parsedUpdates, remoteLocation) {
       if (replaced === null) unresolvedReasons.push(`git diff against the replaced remote commit failed for ${update.localRef}`);
       else diffs.push({ entries: replaced, baseSha: update.remoteSha });
     }
-    const historyReason = getPushedHistoryFullReason(repoRoot, baseSha, update.localSha);
-    if (historyReason) unresolvedReasons.push(historyReason);
     for (const diff of diffs) {
       for (const entry of diff.entries) {
         changedFiles.add(entry.path);
@@ -1344,7 +1420,9 @@ function runAppCommentOnlyChecks(dir) {
 const { stage, repo, remote, remoteLocation } = parseArgs(process.argv.slice(2));
 const repoRoot = resolve(repo);
 const prePushUpdates =
-  stage === "pre-push" ? parsePrePushUpdates(readPrePushInput()) : null;
+  stage === "pre-push"
+    ? resolveHeadUpdates(parsePrePushUpdates(readPrePushInput()), () => headBranch(repoRoot))
+    : null;
 let pushCheckout;
 if (stage === "pre-push") {
   runPushPolicyChecks(repoRoot, prePushUpdates);
@@ -1465,7 +1543,7 @@ if (stage === "pre-commit") {
       console.log(
         `[checks] related tests bounded: ${source} reaches ${related} test file(s); running its ${direct} direct importer(s) ` +
           `and ${keptLockSuites} lock suite(s) ` +
-          `(over ${RELATED_TEST_BOUND} related files in total; the category PR's CI runs the rest)`
+          `(over ${RELATED_TEST_BOUND} related files in total; CI selects the rest)`
       );
     }
     if (classification.documentationEntries.length > 0) {

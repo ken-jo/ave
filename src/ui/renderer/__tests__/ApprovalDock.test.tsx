@@ -1,16 +1,12 @@
-/**
- * ApprovalDock unit tests.
- *
- * The route-independent dock floats at the route canvas bottom and never
- * portals or applies modal semantics. Security and durable-decision assertions
- * stay colocated.
- */
+/** ApprovalDock unit tests. The route-independent dock floats at the route canvas bottom and
+ * never portals or applies modal semantics. Security and durable-decision assertions stay colocated. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, render, fireEvent, waitFor } from "@testing-library/react";
 import { ApprovalDock, ApprovalLaneCard, blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js";
 import { FloatingRightLane } from "../components/FloatingRightLane.js";
 import type { ApprovalRequest, PermissionEvaluationContext } from "../types.js";
+import { t } from "../../../i18n/runtime.js";
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 
 function makeEvaluationContext(overrides: Partial<PermissionEvaluationContext> = {}): PermissionEvaluationContext {
@@ -46,9 +42,8 @@ function makeRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest 
 }
 
 describe("ApprovalDock", () => {
-  // ToolApprovalContent persists an exact allow before resolving the gate.
-  // Without this mock the card correctly stays open with a save error.
-  // vi.stubGlobal is used so the outer afterEach's vi.unstubAllGlobals() handles cleanup.
+  // ToolApprovalContent persists an exact allow before resolving the gate. Without this mock the card correctly
+  // stays open with a save error. vi.stubGlobal is used so the outer afterEach's vi.unstubAllGlobals() handles cleanup.
   beforeEach(() => {
     vi.stubGlobal("ave", {
       userApproval: {
@@ -408,8 +403,7 @@ describe("ApprovalDock", () => {
     rerender(tree([request]));
     await waitFor(() => expect(document.activeElement).toBe(container.querySelector(testIdSelector(TEST_IDS.denyButton))));
 
-    // The card closes; before its focus handoff runs, the agent clicks into a
-    // browser tab (the page's <webview> takes focus in the host document).
+    // The card closes; before its focus handoff runs, the agent clicks into a browser tab (the page's <webview> takes focus in the host document).
     rerender(tree([]));
     guest.focus();
     await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -495,9 +489,8 @@ describe("ApprovalDock", () => {
   });
 
   it("inerts only the composer inside its own scope; a dock whose scope holds no composer inerts none", async () => {
-    // Two tiles under one route canvas, each its own scope, plus a pane routed
-    // off its conversation — a scope with no composer in it: the tile-2 card
-    // covers tile 2's composer only, and the routed pane's card covers neither.
+    // Two tiles under one route canvas, each its own scope, plus a pane routed off its conversation; a scope with
+    // no composer in it: the tile-2 card covers tile 2's composer only, and the routed pane's card covers neither.
     const { container } = render(
       <main data-testid={TEST_IDS.routeCanvas}>
         <section data-approval-scope data-testid="tile-1">
@@ -581,8 +574,7 @@ describe("ApprovalDock", () => {
         <ApprovalDock conversationLabel="conversation" queue={[]} onDecide={vi.fn()} />
       </main>,
     );
-    // Real IPC resolution can cause a second empty-queue render before the
-    // browser's next frame; that rerender must not cancel the focus handoff.
+    // Real IPC resolution can cause a second empty-queue render before the browser's next frame; that rerender must not cancel the focus handoff.
     rerender(
       <main data-testid={TEST_IDS.routeCanvas} data-approval-scope>
         <div data-composer-placement="bottom">
@@ -604,9 +596,8 @@ describe("ApprovalDock", () => {
   });
 
   it("hands focus to the question's first answer, not the focusable card that wraps it", async () => {
-    // The real AskUserQuestionCard is itself a tab stop (tabIndex=0) and sits
-    // before its answers in the document, so a document-order match would
-    // land on the card container instead of the first choice.
+    // The real AskUserQuestionCard is itself a tab stop (tabIndex=0) and sits before its answers in the
+    // document, so a document-order match would land on the card container instead of the first choice.
     const request = makeRequest({ id: "req-question-card-container" });
     const tree = (queue: ApprovalRequest[]) => (
       <main data-testid={TEST_IDS.routeCanvas} data-approval-scope>
@@ -649,8 +640,7 @@ describe("ApprovalDock", () => {
     const deny = document.body.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.denyButton))!;
     await waitFor(() => expect(deny.tabIndex).toBe(0));
     expect(deny).toBeEnabled();
-    // Reject is the sole tab stop because it is the sole DECISION: the allow
-    // options are not rendered at all for an unverifiable seal.
+    // Reject is the sole tab stop because it is the sole DECISION: the allow options are not rendered at all for an unverifiable seal.
     expect(document.body.querySelector(testIdSelector(TEST_IDS.allowAlwaysButton))).toBeNull();
     expect(document.body.querySelector(testIdSelector(TEST_IDS.approveButton))).toBeNull();
     expect(document.activeElement).toBe(deny);
@@ -699,9 +689,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       const row = document.body.querySelector('[data-testid="tool-approval-sandbox"]');
       expect(row).toBeTruthy();
-      // Round-5 UX MAJOR — plain Korean copy; raw English `reason`
-      // field no longer leaks into UI. "OS 격리 없음" is the canonical
-      // weak-sandbox message.
+      // Round-5 UX MAJOR; plain Korean copy; raw English `reason` field no longer leaks into UI. "OS 격리 없음" is the canonical weak-sandbox message.
       expect(row!.textContent).toContain("⚠");
       expect(row!.textContent).toContain("OS 격리 없음");
     });
@@ -726,7 +714,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       const row = document.body.querySelector('[data-testid="tool-approval-sandbox"]');
       expect(row).toBeTruthy();
-      // Round-5 UX MAJOR — strong sandbox renders "OS 격리 활성".
+      // Round-5 UX MAJOR; strong sandbox renders "OS 격리 활성".
       expect(row!.textContent).toContain("OS 격리 활성");
       expect(row!.textContent).toContain("asrt");
       expect(row!.textContent).not.toContain("⚠");
@@ -752,8 +740,7 @@ describe("ApprovalDock", () => {
     await waitFor(() => {
       const row = document.body.querySelector('[data-testid="tool-approval-sandbox"]');
       expect(row).toBeTruthy();
-      // MAJOR-2.1 fix: partial now shows its own distinct Korean label
-      // (partial isolation IS present — "OS 격리 없음" was factually wrong)
+      // MAJOR-2.1 fix: partial now shows its own distinct Korean label (partial isolation IS present; "OS 격리 없음" was factually wrong)
       expect(row!.textContent).toContain("⚠");
       expect(row!.textContent).toContain("OS 격리 부분적");
     });
@@ -824,9 +811,8 @@ describe("ApprovalDock", () => {
   });
 
   it("renders out-of-allowed-dir in the same non-modal frame as every other kind", async () => {
-    // One approval frame: a path grant shares the identity strip, review
-    // expander, and decision row of every other request. Rendering a second
-    // surface here would put two formats on one decision.
+    // One approval frame: a path grant shares the identity strip, review expander, and decision row
+    // of every other request. Rendering a second surface here would put two formats on one decision.
     const onDecide = vi.fn();
     const onOpenPermanentDeny = vi.fn();
     const { container } = render(
@@ -988,11 +974,8 @@ describe("ApprovalDock", () => {
   });
 
   it("Always allow records the exact host-bound tuple with canonical JSON args", async () => {
-    // Verifies that window.ave.userApproval.record is called with a payload
-    // containing all 5 required fields: toolName, args (canonical JSON string),
-    // source, trustOrigin, approvalCacheKey. Catches future regression of any field.
-    // Fixture sets trustOrigin + approvalCacheKey explicitly so a regression
-    // that drops the spread won't pass via TypeScript-only optional shape.
+    // Verifies that window.ave.userApproval.record is called with a payload containing all 5 required fields: toolName, args (canonical JSON string), source, trustOrigin,
+    // approvalCacheKey. Catches future regression of any field. Fixture sets trustOrigin + approvalCacheKey explicitly so a regression that drops the spread won't pass via TypeScript-only optional shape.
     const onDecide = vi.fn();
     render(
       <ApprovalDock conversationLabel="conversation"
@@ -1007,7 +990,7 @@ describe("ApprovalDock", () => {
     expect(allowBtn).toBeTruthy();
     fireEvent.click(allowBtn!);
     await waitFor(() => expect(onDecide).toHaveBeenCalled());
-    // Assert all 5 required fields in record payload — runtime regression guard.
+    // Assert all 5 required fields in record payload; runtime regression guard.
     expect(window.ave.userApproval.record).toHaveBeenCalledWith(
       expect.objectContaining({
         requestId: expect.any(String),
@@ -1195,7 +1178,9 @@ describe("ApprovalDock", () => {
 
     await waitFor(() => {
       expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')?.textContent)
-        .toContain("disk unavailable");
+        .toContain(t("toolApprovalDialog.exactDecisionSaveFailed"));
+      expect(document.body.querySelector('[data-testid="exact-decision-save-error"]')?.textContent)
+        .not.toContain("disk unavailable");
     });
     expect(onDecide).not.toHaveBeenCalled();
     expect(document.body.querySelector(testIdSelector(TEST_IDS.approvalDock))).toBeTruthy();

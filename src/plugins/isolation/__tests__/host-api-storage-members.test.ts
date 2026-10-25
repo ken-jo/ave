@@ -1,29 +1,10 @@
-/**
- * `hostApi.storage.*` across the process boundary, child stub to host handler
- * and back.
- *
- * Driven through the REAL pieces on both ends — `createChildStorageMembers`
- * assembled by `createChildHostApiStub`, a real `HostApiDispatcher` over the
- * real dispatch table, and a real `PluginStorage` on a real temp directory.
- * The only stand-in is the channel, which is a direct call rather than a pipe;
- * that is the transport decision the blueprint leaves open, and everything
- * above it is the code that ships.
- *
- * The group is read/write × raw/text/json/encrypted, so most of what is proven
- * here is that the four asymmetries are the only ones: `read` re-encodes its
- * result, `write` re-encodes its argument, the encrypted pair can fail for a
- * reason that has nothing to do with the file, and `resolve` never leaves the
- * child. Everything else is plain JSON both ways.
- */
+/** Exercise storage marshalling against real dispatch and host-only storage; bytes are encoded and resolve stays child-local. */
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Reversible fake safeStorage seam, the same one `storage.test.ts` uses:
-// `encryptString` wraps the plaintext in a recognisable envelope so the
-// on-disk bytes are demonstrably not plaintext, and `enc.available` toggles
-// the isEncryptionAvailable gate per test.
+// Use a recognizable ciphertext envelope to detect plaintext persistence.
 const mockedElectron = vi.hoisted(() => {
   const enc = { available: true };
   return {
@@ -85,12 +66,7 @@ import { pluginDataDirIn } from "../../__tests__/test-helpers.js";
 const PLUGIN_ID = "com.example.storage";
 const silentSink: ChildNotificationSink = { deliver: () => {} };
 
-/**
- * Bytes a text codec would corrupt: a NUL, lone high bytes, a truncated
- * multi-byte sequence, and an encoded surrogate half. Round-tripped through
- * `utf8` every one of these comes back as U+FFFD — a successful call that
- * returned different bytes, which is the failure the tagged codec exists for.
- */
+/** Round-trip invalid UTF-8 sequences as bytes so successful calls cannot silently change content. */
 const HOSTILE_BYTES = new Uint8Array([
   0x00, 0xff, 0xfe, 0x80, 0xc3, 0x28, 0x41, 0x00, 0xed, 0xa0, 0x80, 0x7f,
 ]);
@@ -99,7 +75,6 @@ interface Harness {
   readonly storage: PluginStorage;
   readonly dataDir: string;
   readonly requests: HostApiRequest[];
-  /** Send a hand-built request, bypassing the child stub's marshalling. */
   readonly raw: (path: string, args: readonly unknown[]) => Promise<unknown>;
 }
 
@@ -110,9 +85,7 @@ let storageDir: string;
 beforeEach(() => {
   mockedElectron.enc.available = true;
   scratch = mkdtempSync(join(tmpdir(), "ave-storage-boundary-"));
-  // The production layout: `<plugins root>/<id>/data` is what the runtime
-  // hands the HostApi, and the storage surface operates in the host-only
-  // `<plugins root>/<id>/storage` beside it.
+  // The runtime passes data/ while storage operates in its host-only sibling storage/.
   dataDir = join(scratch, PLUGIN_ID, "data");
   storageDir = join(scratch, PLUGIN_ID, "storage");
   mkdirSync(dataDir, { recursive: true });
@@ -123,13 +96,7 @@ afterEach(async () => {
   await cleanupTmpDir(scratch);
 });
 
-/**
- * Both ends wired together; `hostApi` overrides the host implementation.
- *
- * The bound entries are composed OVER the shipped table, which is the only way
- * a handler can reach this plugin incarnation's own `PluginStorage`. Passing
- * `bind: false` exercises the table as it ships.
- */
+/** Bind handlers to the actual incarnation storage; unbound-table cases must fail. */
 function harness(
   hostApi: PluginHostApi = createNoopHostApi(PLUGIN_ID, dataDir, mockedElectron.safeStorage),
   options: { readonly bind?: boolean } = {},
@@ -137,14 +104,12 @@ function harness(
   const requests: HostApiRequest[] = [];
   const hostLogs: { message: string; meta?: unknown }[] = [];
   const host = new HostApiDispatcher({
-    // Captured, not dropped: a sink that discards is what shipped, and a
-    // test that discards could not tell the difference.
+    // Capture host diagnostics so silently discarded failures cannot pass.
     log: (message, meta) => hostLogs.push({ message, meta }),
     pluginId: PLUGIN_ID,
     isActive: () => true,
     notifications: silentSink,
     reportUnknownField: () => {},
-    // No child runs here, so a shutdown reaching for one is a test bug.
     shutdownChild: async (subscriptionId) => {
       throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
     },
@@ -155,17 +120,13 @@ function harness(
   });
   const channel = directHostApiChannel(host, { requests });
   const context = { pluginId: PLUGIN_ID };
-  // Merged into the same partial map the child runtime builds, so an unwired
-  // member falls through to the throwing default exactly as it does in
-  // production rather than being a type error only this test would see.
+  // Compose defaults exactly as the child runtime does so unwired paths fail at runtime.
   const members: Partial<Record<HostApiPath, ChildHostApiMember>> = {
     ...createStorageChildMembers(createHostApiCaller(channel, context), {
       pluginId: PLUGIN_ID,
       pluginDataDir: dataDir,
     }),
   };
-  // Assembled the way the child runtime assembles it, so the nesting under
-  // `storage.` is the production one rather than a hand-built object.
   const stub = createChildHostApiStub(
     PLUGIN_ID,
     (path) => members[path] ?? unimplementedChildMember(PLUGIN_ID, path),
@@ -178,7 +139,6 @@ function harness(
   };
 }
 
-/** The code a failed reply carried, or a failure naming what came back instead. */
 async function codeOf(work: Promise<unknown>): Promise<string> {
   try {
     await work;
@@ -189,7 +149,6 @@ async function codeOf(work: Promise<unknown>): Promise<string> {
   return "resolved";
 }
 
-/** Every dispatchable member of the group, called with a traversal path. */
 const TRAVERSAL_CALLS: ReadonlyArray<readonly [string, (s: PluginStorage) => Promise<unknown>]> = [
   ["storage.read", (s) => s.read("../escape.bin")],
   ["storage.readText", (s) => s.readText("../escape.txt")],
@@ -216,8 +175,7 @@ describe("storage.resolve is answered in the child", () => {
     const { storage } = harness();
     expect(() => storage.resolve("..", "evil.txt")).toThrow(PluginStorageError);
     expect(() => storage.resolve("/etc/passwd")).toThrow(/absolute paths are not allowed/);
-    // Not a string: refused with a diagnostic naming the plugin, rather than
-    // the bare TypeError `path.join` would raise.
+    // Refuse nonstrings with plugin diagnostics before path.join can throw a bare TypeError.
     expect(() => (storage.resolve as (...a: unknown[]) => string)(7)).toThrow(
       PluginStorageError,
     );
@@ -235,11 +193,10 @@ describe("bytes survive the boundary unchanged", () => {
     await storage.write("blob.bin", HOSTILE_BYTES);
     const read = await storage.read("blob.bin");
     expect(Array.from(read)).toEqual(Array.from(HOSTILE_BYTES));
-    // The file on disk holds the raw bytes, not a base64 transcript of them.
     expect(Array.from(readFileSync(join(storageDir, "blob.bin")))).toEqual(
       Array.from(HOSTILE_BYTES),
     );
-    // Both directions carried the base64 tag rather than the utf8 one.
+    // Assert the binary tag survives in both directions.
     expect((argsOfRequest(requests[0])[1] as WireBytes).encoding).toBe("base64");
   });
 
@@ -252,8 +209,7 @@ describe("bytes survive the boundary unchanged", () => {
 
   it("still honours the separate StorageEncoding argument", async () => {
     const { storage } = harness();
-    // The wire tag says "this crossed as text"; the encoding argument says
-    // "interpret that text as base64 when writing". Two different questions.
+    // Wire text tagging and write-time base64 interpretation are independent.
     await storage.write("decoded.bin", "aGVsbG8=", "base64");
     expect(readFileSync(join(storageDir, "decoded.bin"), "utf-8")).toBe("hello");
     expect(await storage.readText("decoded.bin", "base64")).toBe("aGVsbG8=");
@@ -272,7 +228,6 @@ describe("bytes survive the boundary unchanged", () => {
     await expect(
       storage.write("huge.bin", new Uint8Array(WIRE_BYTES_MAX + 1)),
     ).rejects.toMatchObject({ code: "payload-too-large" });
-    // Refused at the child's own call site: nothing was sent, nothing landed.
     expect(requests).toHaveLength(0);
     expect(existsSync(join(storageDir, "huge.bin"))).toBe(false);
   });
@@ -295,8 +250,7 @@ describe("the plain-json members carry their declared values", () => {
   it("reads text with and without an explicit encoding", async () => {
     const { storage } = harness();
     await storage.write("note.txt", "안녕하세요");
-    // No encoding supplied: the argument must be ABSENT on the wire, because
-    // `undefined` inside an args array is refused outright.
+    // Omitted encoding stays absent; undefined array elements are invalid JSON payloads.
     expect(await storage.readText("note.txt")).toBe("안녕하세요");
     expect(await storage.readText("note.txt", "utf-8")).toBe("안녕하세요");
     expect(await storage.readText("note.txt", "hex")).toBe(
@@ -356,8 +310,7 @@ describe("the encrypted pair fails for its own reasons", () => {
   it("round-trips a secret and never writes the plaintext", async () => {
     const { storage } = harness();
     await storage.writeEncrypted("auth/token.enc", "s3cret");
-    // The seam's envelope, not the plaintext — what lands on disk is whatever
-    // `encryptString` produced, and it came back through the boundary intact.
+    // Persist the encryption result and round-trip it intact.
     expect(readFileSync(join(storageDir, "auth/token.enc"), "utf-8")).toBe("ENC(s3cret)");
     expect(mockedElectron.safeStorage.encryptString).toHaveBeenCalledWith("s3cret");
     expect(await storage.readEncrypted("auth/token.enc")).toBe("s3cret");
@@ -377,8 +330,7 @@ describe("the encrypted pair fails for its own reasons", () => {
 
   it("distinguishes a missing key from a missing file", async () => {
     const { storage } = harness();
-    // Encryption available, file absent: NOT the encryption code. Conflating
-    // the two would tell a plugin to re-provision a key it already has.
+    // A missing encrypted file differs from unavailable encryption; do not suggest reprovisioning an existing key.
     expect(await codeOf(storage.readEncrypted("absent.enc"))).toBe("host-internal");
     mockedElectron.enc.available = false;
     expect(await codeOf(storage.readEncrypted("absent.enc"))).toBe(
@@ -456,9 +408,7 @@ describe("the group binds to one incarnation and to nothing else", () => {
   });
 
   it("leaves the shipped table unbound, so nothing is implemented by accident", async () => {
-    // The routing SOT is empty and the default table has no plugin instance to
-    // bind to. A storage handler published into the shipped table would be one
-    // reading and writing files on behalf of nobody in particular.
+    // Static storage handlers have no owning plugin and must remain unbound.
     const { raw } = harness(undefined, { bind: false });
     for (const path of dispatched) {
       expect(await codeOf(raw(path, ["a.txt"])), path).toBe("path-not-implemented");
@@ -484,9 +434,7 @@ describe("the group binds to one incarnation and to nothing else", () => {
     const base = createNoopHostApi(PLUGIN_ID, dataDir, mockedElectron.safeStorage);
     const drifting: PluginHostApi = {
       ...base,
-      // A host implementation that started resolving a value where the contract
-      // says `void`. Awaiting and DISCARDING it in the handler would swallow
-      // the drift and make the dispatcher's void check unreachable.
+      // Return host results so the dispatcher can detect void-contract drift.
       storage: { ...base.storage, mkdir: (async () => "created") as unknown as PluginStorage["mkdir"] },
     };
     const { storage } = harness(drifting);
@@ -494,9 +442,7 @@ describe("the group binds to one incarnation and to nothing else", () => {
   });
 
   it("refuses to build a relaying stub for a member whose contract moved", () => {
-    // The guard's input is a compile-time constant, so the only way to prove it
-    // FIRES — rather than merely exists — is to move the constant under it. The
-    // SOT is restored before the assertion's outcome can leak into another test.
+    // Change the contract to prove the guard fires, then restore it before assertions can leak state.
     const contracts = HOSTAPI_PATH_CONTRACTS as unknown as Record<
       string,
       { arguments: string; result: string; lifetime: string }
@@ -518,9 +464,7 @@ describe("the group binds to one incarnation and to nothing else", () => {
   });
 
   it("carries no lifetime, so there is no disposer to own", () => {
-    // Every member of this group declares `lifetime: "none"` — the reply
-    // settles the call and nothing survives it. If one ever grows a disposer,
-    // this fails here rather than leaking a registration nobody releases.
+    // Storage calls have no lifetime beyond their reply.
     for (const path of STORAGE_HOSTAPI_PATHS) {
       expect(HOSTAPI_PATH_CONTRACTS[path].lifetime, path).toBe("none");
     }
@@ -528,9 +472,7 @@ describe("the group binds to one incarnation and to nothing else", () => {
 
   it("refuses a member of the group the binding does not cover", () => {
     const handlers = createStorageHostApiPaths(createNoopHostApi(PLUGIN_ID, dataDir, mockedElectron.safeStorage));
-    // `storage.resolve` is answered in the child; a host binding for it would
-    // be a second implementation of the join, free to disagree with the one the
-    // plugin actually calls.
+    // storage.resolve stays child-local; host binding would duplicate path derivation.
     expect(Object.keys(handlers)).not.toContain("storage.resolve");
   });
 });
@@ -549,7 +491,7 @@ describe("malformed arguments are refused, never coerced", () => {
     expect(await codeOf(raw("storage.readText", ["a.txt", "rot13"]))).toBe(
       "argument-marshalling-rejected",
     );
-    // A prototype member is not an encoding, whatever `in` would say.
+    // Inherited prototype keys are not supported encodings.
     expect(await codeOf(raw("storage.readText", ["a.txt", "toString"]))).toBe(
       "argument-marshalling-rejected",
     );
@@ -603,14 +545,12 @@ describe("the boundary refuses a member the plugin is no longer entitled to", ()
     const hostApi = createNoopHostApi(PLUGIN_ID, dataDir, mockedElectron.safeStorage);
     const hostLogs: { message: string; meta?: unknown }[] = [];
     const host = new HostApiDispatcher({
-      // Captured, not dropped: a sink that discards is what shipped, and a
-      // test that discards could not tell the difference.
+      // Capture host diagnostics so silently discarded failures cannot pass.
       log: (message, meta) => hostLogs.push({ message, meta }),
       pluginId: PLUGIN_ID,
       isActive: () => false,
       notifications: silentSink,
       reportUnknownField: () => {},
-      // No child runs here, so a shutdown reaching for one is a test bug.
       shutdownChild: async (subscriptionId) => {
         throw new Error(`no child to run shutdown handler '${subscriptionId}'`);
       },

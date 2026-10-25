@@ -1,9 +1,3 @@
-/**
- * The marketplace's work outside a request (design §7.3, §10.2, §10.4,
- * §18.7.1): the boot pass enforces the revocations on disk and publishes what
- * it did; the one scheduler runs discovery and the apply check by their due
- * rules, on fake time, and publishes the update list and the status.
- */
 import { AsyncLocalStorage } from "node:async_hooks";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -36,12 +30,11 @@ function offer(name: string, to: string, sourceId = "ave"): PackageUpdateOffer {
   return { key: { sourceId, kind: "plugin", name }, displayName: name, from: "1.0.0", to };
 }
 
-/** The harness turns automatic updates off (`autoUpdate: false`), so every update waits for the user. */
+/** Automatic updates are off unless the test enables them. */
 function manual(name: string, to: string, sourceId = "ave"): PackageUpdateView {
   return { ...offer(name, to, sourceId), state: "manual", reasons: ["switched-off"], autoUpdate: { effective: false, override: null, lockedByPolicy: false, required: false } };
 }
 
-/** An offer as the service's candidate: an upgrade from an official source with nothing to review. */
 function candidateOf(update: PackageUpdateOffer, facts: Partial<UpdateCandidate["facts"]> = {}): UpdateCandidate {
   return {
     ...update,
@@ -79,12 +72,10 @@ function harness(options: {
   service?: Partial<BackgroundService>;
   settings?: ReturnType<MarketplaceBackgroundInput["settings"]>;
   history?: UpdateHistoryStore;
-  /** What each discovery reports, in order; then `ok`. */
   discoveries?: SyncDiscovery[];
 } = {}) {
   const calls: string[] = [];
   const discoveries = [...(options.discoveries ?? [])];
-  /** What the sources publish: a discovery's `updates()` reads it, and `facts` classify each by name. */
   const published = { offers: [] as PackageUpdateOffer[], facts: {} as Record<string, Partial<UpdateCandidate["facts"]>> };
   const service: BackgroundService = {
     enforceRevocations: vi.fn(async () => {
@@ -105,13 +96,11 @@ function harness(options: {
     }),
     updateCandidates: vi.fn(async (reached: ReadonlySet<string>) =>
       published.offers.filter((update) => reached.has(update.key.sourceId)).map((update) => candidateOf(update, published.facts[update.key.name]))),
-    // The policy requires what the published facts call required, as the service computes both from it.
     autoUpdateContext: vi.fn(async () => ({
       policy: "user" as const,
       requiredInstalls: published.offers.filter((update) => published.facts[update.key.name]?.required === true)
         .map((update) => ({ source: update.key.sourceId, kind: update.key.kind, name: update.key.name })),
       unmetRequired: [],
-      // Every source that publishes reads, with the facts its candidates carry.
       sources: [...new Set(published.offers.map((update) => update.key.sourceId))]
         .map((id) => ({ id, label: id, origin: "official" as const, http: false, acknowledgedUnencryptedUpdates: false })),
       installed: [],
@@ -130,7 +119,7 @@ function harness(options: {
     service: async () => service,
     appliedDefaults: async () => ({}) as AppliedDefaults,
     defaults: [{ kind: "plugin", name: "meeting", source: "ave" }],
-    // Automatic updates are off unless a test turns them on: the update list then waits for the user.
+    // Default to manual review so queued updates remain observable.
     settings: () => ({ autoUpdate: false, ...settings.current }),
     activity: {
       isBusy: () => activity.busy,
@@ -152,7 +141,6 @@ function harness(options: {
   };
   const discoverCount = () => calls.filter((call) => call === "discover").length;
   const lastStatus = (): UpdateStatusView => vi.mocked(input.publishUpdateStatus).mock.calls.at(-1)![0];
-  /** End the conversation's busy spell: the idle listeners hear it. */
   const goIdle = () => {
     activity.busy = false;
     for (const listener of [...activity.idle]) listener();
@@ -160,12 +148,11 @@ function harness(options: {
   return { input, service, calls, settings, history, published, resume, discoverCount, lastStatus, discoveries, activity, goIdle };
 }
 
-/** Let every pending promise chain run; the fake clock does not move. */
+/** Flushes pending promise chains without advancing fake time. */
 async function settle(): Promise<void> {
   for (let i = 0; i < 50; i += 1) await Promise.resolve();
 }
 
-/** Move the fake clock to `T0 + hours`, firing the timers due on the way. */
 async function at(hours: number): Promise<void> {
   await vi.advanceTimersByTimeAsync(T0 + hours * HOUR - Date.now());
 }
@@ -211,7 +198,6 @@ describe("the boot pass", () => {
     await startMarketplaceBackground(h.input).started;
 
     expect(h.calls).toEqual(["enforceRevocations", "discover", "updates", "applyBootInstalls", "updates"]);
-    // With the scheduler's shutdown signal, which the service's own stages stop on.
     expect(h.service.applyBootInstalls).toHaveBeenCalledWith(h.input.defaults, expect.anything(), expect.any(AbortSignal));
     expect(h.service.discover).toHaveBeenCalledWith(expect.any(AbortSignal));
     expect(h.service.enforceRevocations).toHaveBeenCalledWith(expect.any(AbortSignal));
@@ -360,7 +346,6 @@ describe("the update list", () => {
           listed = read ? [] : [offer("meeting", "0.5.24")];
           return listed;
         }),
-        // Classified from the same read.
         updateCandidates: vi.fn(async () => listed.map((update) => candidateOf(update))),
       },
     });
@@ -380,14 +365,13 @@ describe("the update list", () => {
   it("publishes only the sources a discovery reached; an unreached one keeps only what an earlier discovery showed, marked stale", async () => {
     const AVE_ONLY: SyncDiscovery = { result: "partial", reached: ["ave"] };
     const h = harness({ discoveries: [AVE_ONLY] });
-    // acme's offer comes from its cached snapshot: the boot discovery did not reach it.
+    // The cached offer belongs to a source this discovery did not reach.
     h.published.offers = [offer("meeting", "2.0.0", "ave"), offer("notes", "3.0.0", "acme")];
     const background = startMarketplaceBackground(h.input);
     await background.started;
     const updatesSent = () => vi.mocked(h.input.publishUpdates).mock.calls.at(-1)![0];
     expect(h.lastStatus().packages).toEqual([manual("meeting", "2.0.0", "ave")]);
     expect(updatesSent()).toEqual([manual("meeting", "2.0.0", "ave")]);
-    // A recheck between discoveries does not classify the unreached source either.
     await background.recheck();
     expect(h.lastStatus().packages).toEqual([manual("meeting", "2.0.0", "ave")]);
 
@@ -401,7 +385,6 @@ describe("the update list", () => {
     expect(h.lastStatus().packages).toEqual([manual("meeting", "2.0.0", "ave"), stale]);
     expect(updatesSent()).toEqual([manual("meeting", "2.0.0", "ave"), stale]);
 
-    // Not the version shown before: nothing is shown for it until a discovery reaches acme.
     h.published.offers = [offer("meeting", "2.0.0", "ave"), offer("notes", "4.0.0", "acme")];
     await background.recheck();
     expect(h.lastStatus().packages).toEqual([manual("meeting", "2.0.0", "ave")]);
@@ -424,7 +407,6 @@ describe("the update list", () => {
     expect(h.lastStatus().packages).toEqual([stale]);
     expect(updatesSent()).toEqual([stale]);
 
-    // A version cached since is not classified with the reach of an earlier discovery.
     h.published.offers = [offer("meeting", "3.0.0")];
     await background.recheck();
     expect((await background.status()).packages).toEqual([]);
@@ -435,7 +417,7 @@ describe("the update list", () => {
 
 describe("the due rules (design §18.7.1)", () => {
   it("retries an offline discovery at the next hourly due check, not an interval later", async () => {
-    // The boot's apply check succeeds, so only discovery's own rule can retry the one at 6 hours.
+    // A successful apply check leaves discovery as the only retry source.
     const h = harness({ discoveries: [OK, OFFLINE] });
     const background = startMarketplaceBackground(h.input);
     await background.started;
@@ -502,7 +484,6 @@ describe("the due rules (design §18.7.1)", () => {
     expect(h.discoverCount()).toBe(1);
     expect(history.saved?.packages).toEqual({});
 
-    // Published a minute after the boot's discovery read the source.
     await at(1 / 60);
     h.published.offers = [offer("meeting", "2.0.0")];
 
@@ -514,11 +495,7 @@ describe("the due rules (design §18.7.1)", () => {
   });
 
   it("phases the apply check apart from discovery: a due apply check starts its own discovery although one succeeded 3 hours earlier", async () => {
-    // The spec's fixture: discoveries at 0, 12, 18 and 24, the last apply
-    // check at 3. Live, the apply check at 3 (Check now) runs a discovery at
-    // 3, and the interval follows it to 9; offline there and at the hourly
-    // retries 10 and 11, it succeeds at 12, which puts the interval back on
-    // 12, 18, 24.
+    // Offline retries shift the discovery schedule to 12, 18 and 24 hours.
     const h = harness({ discoveries: [OK, OK, OFFLINE, OFFLINE, OFFLINE] });
     const history = h.history as ReturnType<typeof memoryHistory>;
     const background = startMarketplaceBackground(h.input);
@@ -549,7 +526,6 @@ describe("the due rules (design §18.7.1)", () => {
     const background = startMarketplaceBackground(h.input);
     await background.started;
 
-    // The discovery due at 23 hours is slow; the apply check falls due at 24 while it runs.
     let release: () => void = () => {};
     vi.mocked(h.service.discover).mockImplementationOnce(async () => {
       h.calls.push("discover");
@@ -573,7 +549,6 @@ describe("the due rules (design §18.7.1)", () => {
     expect(history.saved?.applyCheckAt).toBe(new Date(T0).toISOString());
     expect(history.saved?.discovery?.result).toBe("partial");
 
-    // Still due, it joins the hourly retry of the failed discovery.
     await at(24.99);
     expect(h.discoverCount()).toBe(2);
     await at(25);
@@ -658,8 +633,7 @@ describe("the due rules (design §18.7.1)", () => {
   });
 
   it("runs every service call in the context the scheduler started in, whoever asks and from wherever (§18.6)", async () => {
-    // Stands in for the service's operation context: a check asked for from inside an operation (a
-    // published snapshot, an install), on resume or by the timer must not join that operation.
+    // Rechecks requested inside an operation must not join that operation.
     const caller = new AsyncLocalStorage<string>();
     const seen: Array<string | undefined> = [];
     const h = harness();
@@ -686,7 +660,6 @@ describe("the due rules (design §18.7.1)", () => {
           await settle();
         },
       ],
-      // The apply check falls due 24 hours after the resume's; only the timer starts it.
       ["timer", () => at(55)],
     ];
     for (const [phase, run] of phases) {
@@ -783,7 +756,6 @@ describe("the due rules (design §18.7.1)", () => {
     const history = h.history as ReturnType<typeof memoryHistory>;
     const background = startMarketplaceBackground(h.input);
     await settle();
-    // The computer sleeps through the boot discovery: it ends 25 hours after it began.
     vi.setSystemTime(T0 + 25 * HOUR);
     release();
     await background.started;
@@ -817,7 +789,6 @@ describe("updates.json", () => {
     await background.started;
     expect(h.calls).toEqual([]);
     expect(readFileSync(path, "utf8")).toBe("{ incomplete");
-    // Nor is it reported: the loader only says what it found, and the stopped scheduler says nothing.
     expect(h.input.log.warn).not.toHaveBeenCalled();
   });
 
@@ -831,7 +802,6 @@ describe("updates.json", () => {
     });
     const background = startMarketplaceBackground(h.input);
     await background.started;
-    // Replaced before the boot pass starts, not only by the boot's own discovery.
     expect(replaced).toEqual({ version: 1, discovery: null, applyCheckAt: null, packages: {} });
     expect(h.input.log.warn).toHaveBeenCalledWith(expect.stringMatching(/^marketplace updates\.json is not in the format Ave writes \(.+\); starting a new update history$/u));
 
@@ -883,7 +853,6 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
     release();
     await check;
     expect(h.input.publishNotice).not.toHaveBeenCalled();
-    // The notice is not taken either: nothing in the service moves after the stop.
     expect(vi.mocked(h.service.takeRevocationNotice).mock.calls).toHaveLength(taken);
   });
 
@@ -936,11 +905,7 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
     expect(h.input.publishStatus).not.toHaveBeenCalled();
   });
 
-  /**
-   * Every wait of every flow, stopped at that wait, which then fulfils or
-   * rejects: afterwards nothing is published, written or started. An effect
-   * added without the gate makes a row fail.
-   */
+  /** Stop at every await boundary and verify no later effects occur, on fulfillment or rejection. */
   type Point = "load" | "service" | "enforceRevocations" | "discover" | "updates" | "appliedDefaults" | "applyBootInstalls" | "save";
   type Flow = "boot" | "recheck" | "Check now" | "due apply check";
   const WAITS: Array<[Flow, Point]> = [
@@ -968,7 +933,6 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
   it.each(ROWS)("%s, stopped while it waits on %s, which then %s: nothing more is published, written or started", async (flow, point, ending) => {
     let armed: Point | null = null;
     let held: { resolve: () => void; reject: (error: Error) => void } | null = null;
-    /** Each call into the service, the app's files or history, as it begins. */
     const begun: string[] = [];
     const pass = async (at: Point) => {
       begun.push(at);
@@ -993,9 +957,7 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
     };
     const h = harness({ history });
     h.published.offers = [offer("meeting", "2.0.0")];
-    // Every source of a notice has one to give, so a notice sent after the stop would show.
     vi.mocked(h.service.takeRevocationNotice).mockReturnValue(notice);
-    // A report that is logged, so a continuation that handles it after the stop would show.
     const report: BootInstallReport = {
       ...EMPTY_REPORT,
       installed: [{ kind: "plugin", name: "meeting", source: "ave" }],
@@ -1037,8 +999,6 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
         armed = point;
         flowEnd = background.checkNow().catch(() => undefined);
       } else {
-        // The discoveries at 6, 12 and 18 hours run first; the apply check
-        // falls due at 24, and a due check (here the one `resume` runs) starts it.
         await at(23.99);
         vi.setSystemTime(T0 + 24 * HOUR);
         armed = point;
@@ -1071,7 +1031,6 @@ describe("a stopped scheduler (the lifecycle gate)", () => {
     h.resume.forEach((listener) => listener());
     await settle();
     expect(counts()).toEqual(before);
-    // No wake-up is left armed.
     expect(vi.getTimerCount()).toBe(0);
   });
 });
@@ -1099,12 +1058,11 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     const background = startMarketplaceBackground(h.input);
     await idle(background);
     expect(h.service.applyUpdate).toHaveBeenCalledOnce();
-    // Which update, never whether: the decision is made under the service's locks, with what is in force then.
+    // Queue selection cannot authorize an update; current policy is checked under the service locks.
     expect(vi.mocked(h.service.applyUpdate).mock.calls[0]![0]).toEqual({ key: offer("meeting", "2.0.0").key, from: "1.0.0", to: "2.0.0", switchSource: false });
     expect(h.store.saved?.packages["ave:plugin:meeting"]).toEqual({ to: "2.0.0", from: "1.0.0", displayName: "meeting", state: "applied", attempts: 0, appliedAt: APPLIED_AT, commits: { from: "a".repeat(40), to: "b".repeat(40) } });
     const notices = vi.mocked(h.input.publishNotice).mock.calls.map(([notice]) => notice.autoUpdated);
     expect(notices).toEqual([[{ key: offer("meeting", "2.0.0").key, displayName: "meeting", from: "1.0.0", to: "2.0.0", commitRange: { from: "a".repeat(40), to: "b".repeat(40) }, required: false, state: "applied" }]]);
-    // Its offer is gone once installed; the applied entry stays in the view, and never reaches the pill.
     h.published.offers = [];
     await background.recheck();
     expect(h.lastStatus().packages).toEqual([{ ...offer("meeting", "2.0.0"), state: "applied", appliedAt: APPLIED_AT, commitRange: { from: "a".repeat(40), to: "b".repeat(40) } }]);
@@ -1119,7 +1077,6 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     await idle(background);
     expect(h.service.applyUpdate).not.toHaveBeenCalled();
     expect(h.lastStatus()).toMatchObject({ waitingSince: APPLIED_AT, escalated: false, packages: [{ key: { name: "meeting" }, state: "waiting" }] });
-    // Thirty minutes on, the card offers Apply now; without it the queue keeps waiting.
     await vi.advanceTimersByTimeAsync(30 * 60 * 1000);
     expect(h.lastStatus().escalated).toBe(true);
     expect(h.service.applyUpdate).not.toHaveBeenCalled();
@@ -1154,7 +1111,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     await background.checkNow();
     await settle();
     expect(h.service.applyUpdate).toHaveBeenCalledTimes(3);
-    // Anything but a marketplace refusal is `unavailable`, its message kept behind Copy details.
+    // Unexpected failures become unavailable; details stay behind Copy details.
     expect(h.store.saved?.packages["ave:plugin:meeting"]).toMatchObject({ state: "failed", attempts: 3, lastError: { code: "unavailable" } });
     await background.checkNow();
     await settle();
@@ -1164,8 +1121,6 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
   });
 
   it("stores a host-protocol refusal at activation as PACKAGE_INCOMPATIBLE, not as unavailable", async () => {
-    // The error the install flow throws when the runtime's child factory
-    // refuses the prepared manifest (`src/plugins/marketplace.ts`, §9.8 A1).
     const refusal = new IncompatibleHostProtocolError("meeting", { declared: null });
     const error = new MarketplaceError("PACKAGE_INCOMPATIBLE", refusal.message, {
       cause: refusal,
@@ -1218,7 +1173,6 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     expect(vi.mocked(h.input.publishNotice).mock.calls.at(-1)![0].autoUpdated).toEqual([expect.objectContaining({ state: "applied-not-running" })]);
     h.published.offers = [];
     await background.recheck();
-    // It needs the user: Restart Ave.
     expect(vi.mocked(h.input.publishUpdates).mock.calls.at(-1)![0]).toEqual([expect.objectContaining({ state: "applied-not-running" })]);
     background.stop();
   });
@@ -1250,7 +1204,7 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     h.discoveries.splice(0, h.discoveries.length, ...discoveries, { result: "ok", reached: ["corp"] }, { result: "ok", reached: ["corp"] });
     const background = startMarketplaceBackground(h.input);
     await idle(background);
-    // Applied with the policy's review, though automatic updates are on or off: the decision finds it automatic as long as it is required.
+    // Required policy entries remain automatic regardless of user update switches.
     const decide = vi.mocked(h.service.applyUpdate).mock.calls[0]![1];
     const facts = candidateOf(h.published.offers[0]!, { required: true }).facts;
     h.settings.current = { updateNotices: true, autoUpdate: false };
@@ -1278,7 +1232,6 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     expect(decide(facts, "user")).toBe(true);
     h.settings.current = { updateNotices: true, autoUpdate: false };
     expect(decide(facts, "user")).toBe(false);
-    // The organization's value in force then decides too.
     h.settings.current = ON;
     expect(decide(facts, "off")).toBe(false);
     background.stop();
@@ -1381,7 +1334,6 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
       await settle();
       expect(h.lastStatus().packages[0]?.state).toBe("failed");
       const before = sent().length;
-      // A policy refresh that adds a requiredInstalls entry reaches the scheduler as a recheck.
       h.published.facts = { meeting: { required: true } };
       await background.recheck();
       expect(sent().length).toBe(before + 1);
@@ -1423,12 +1375,10 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
         await background.started;
         await settle();
         expect(h.lastStatus().packages).toEqual([expect.objectContaining({ key, state: "approval-pending", required: true })]);
-        // The source's health does not decide whether its package is required: the switch is required and locked either way.
         expect(h.lastStatus().autoUpdate.packages).toEqual([{ key, switch: { effective: true, override: null, lockedByPolicy: true, required: true } }]);
         requiredInstalls = [];
         await background.recheck();
         expect(h.lastStatus().packages[0]).not.toHaveProperty("required");
-        // Optional again: its switch follows the user's (automatic updates off here), and needs a readable source.
         expect(h.lastStatus().autoUpdate.packages).toEqual(readable ? [{ key, switch: { effective: false, override: null, lockedByPolicy: false, required: false } }] : []);
       } finally {
         background.stop();
@@ -1520,7 +1470,6 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
         expect(h.lastStatus().packages[0]).toMatchObject({ stale: true, state: "failed", autoUpdate: { required: false, lockedByPolicy: false } });
         expect(h.lastStatus().packages[0]).not.toHaveProperty("required");
         expect(vi.mocked(h.input.publishUpdates).mock.calls.at(-1)![0][0]).not.toHaveProperty("required");
-        // Optional now, so skipping its version hides it.
         h.settings.current = { ...h.settings.current, skippedPluginUpdates: { meeting: "2.0.0" } };
         await background.settingsChanged();
         expect(h.lastStatus().packages).toEqual([]);
@@ -1586,7 +1535,6 @@ describe("automatic apply (design §18.7.4, §18.7.5)", () => {
     await background.started;
     expect((await background.status()).unmetRequired).toEqual([unmet]);
     expect(h.lastStatus().unmetRequired).toEqual([unmet]);
-    // corp syncs and lists it: the boot pass can install it, and the row goes.
     reported = [];
     await background.recheck();
     expect(h.lastStatus().unmetRequired).toEqual([]);

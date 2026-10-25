@@ -1,9 +1,3 @@
-/**
- * Usage Stats Aggregator
- *
- * Parses audit-logger JSONL files (~/.ave/audit/YYYY-MM-DD.jsonl) and
- * produces token + cost summaries for the Usage Dashboard.
- */
 import { readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { iterateJsonlLines, withAuditSnapshotLock } from "../audit/jsonl-reader.js";
@@ -62,12 +56,7 @@ export interface UsageConversation extends UsageTotals {
   firstInput?: string;
 }
 
-/**
- * Token-only consumption under an authenticated subscription.
- *
- * This intentionally has no `cost` field. Subscription telemetry is never
- * passed to API-key pricing, cost projections, or API usage breakdowns.
- */
+// Subscription telemetry is token-only and must never enter API pricing or cost projections.
 interface SubscriptionUsageTotals {
   inputTokens: number;
   outputTokens: number;
@@ -92,9 +81,7 @@ interface SubscriptionUsageSummary {
   today: SubscriptionUsageTotals;
   thisWeek: SubscriptionUsageTotals;
   thisMonth: SubscriptionUsageTotals;
-  /** One row per subscription runtime, with `model: "*"`. */
   perRuntime: SubscriptionUsagePerRuntime[];
-  /** One row per subscription runtime/model pair. */
   perModel: SubscriptionUsagePerRuntime[];
   trend: SubscriptionUsageTrendPoint[];
   /** Separate provenance totals; never interpreted as price information. */
@@ -149,9 +136,7 @@ function parseRoute(route: string | undefined): { vendor: UsageVendor; model: st
   if (!route) return { vendor: "unknown", model: "unknown" };
   const [v, ...rest] = route.split("/");
   if (!isLLMVendor(v)) {
-    // Token-bearing legacy rows with bare routes (`llm`, `skill`, etc.) do
-    // not have a defensible provider/model. Keep them visible but explicitly
-    // unpriced instead of polluting the current default vendor bucket.
+    // Legacy bare-route usage stays visible but unpriced; do not assign it to the default vendor.
     return { vendor: "unknown", model: route };
   }
   const vendor: LLMVendor = v;
@@ -181,9 +166,7 @@ function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
   if (entry.usageByModel?.length) {
     return entry.usageByModel.map((segment) => {
       const model = segment.vendorModel || "unknown";
-      // A vendor id this build no longer knows (renamed or retired) still
-      // spent those tokens: keep the segment visible and unpriced, the same
-      // way parseRoute treats an unrecognised route.
+      // Renamed or retired vendor IDs retain their usage as visible, unpriced segments.
       return isLLMVendor(segment.vendorProvider)
         ? {
             vendor: segment.vendorProvider, model, tokenUsage: segment.tokenUsage,
@@ -197,9 +180,7 @@ function parseUsageSegments(entry: AuditTurnEntry): UsageSegment[] {
   const { vendor, model } = parseRoute(entry.route);
   const tokenUsage =
     vendor === "claude"
-      // Legacy audit rows without usageByModel were written before the audit
-      // boundary carried normalized cost semantics, so treat them as AI SDK raw
-      // usage and split Claude cache out before pricing/aggregation.
+      // Legacy rows without normalized segments use raw SDK semantics; split cache input before pricing.
       ? normalizeAiSdkUsageForCost(entry.tokenUsage, vendor)
       : entry.tokenUsage;
   return [{ vendor, model, tokenUsage, pricing: recordedPricing }];
@@ -220,9 +201,7 @@ function addTo(
   target.cacheReadTokens += cacheRead;
   target.cacheWriteTokens += cacheWrite;
 
-
-  // cachedInputTokens). Unknown legacy rows stay input+output only because
-  // cache semantics are not knowable and must not inflate visible totals.
+  // Unknown legacy cache semantics must not inflate totals beyond input plus output.
   target.totalTokens +=
     vendor === "claude"
       ? input + output + cacheRead + cacheWrite
@@ -240,8 +219,7 @@ function addSubscriptionTo(
   target.cacheReadTokens += telemetry.cacheReadTokens ?? 0;
   target.cacheWriteTokens += telemetry.cacheWriteTokens ?? 0;
   target.reasoningOutputTokens += telemetry.reasoningOutputTokens ?? 0;
-  // `totalTokens` is the verified provider total or the local estimator's
-  // canonical total. Do not reconstruct it from cache/reasoning subfields.
+  // Use canonical reported or estimated totalTokens; cache and reasoning are not additive extras.
   target.totalTokens += telemetry.totalTokens;
   target.segments += 1;
 }
@@ -358,8 +336,7 @@ async function readUsageAuditEntriesWithStatus(
   let complete = true;
 
   for (const file of files) {
-    // Only commit a file's rows after its stream completes. A corrupted gzip can
-    // yield valid prefix rows before failing, which must not become partial usage.
+    // Commit streamed rows only after completion; corrupt gzip prefixes must not become partial totals.
     const rows: AuditTurnEntry[] = [];
     try {
       for await (const line of iterateJsonlLines(join(auditDir, file.name))) {
@@ -368,7 +345,6 @@ async function readUsageAuditEntriesWithStatus(
           const entry = JSON.parse(line) as AuditTurnEntry;
           if (entry.type === "turn" && matchesEntry(entry)) rows.push(entry);
         } catch {
-          // Skip malformed rows while retaining valid records in this file.
         }
       }
       entries.push(...rows);
@@ -403,9 +379,6 @@ async function readUsageAuditEntries(
   );
 }
 
-/**
- * Read audit JSONL entries from ~/.ave/audit for the last `days` days.
- */
 export async function readAuditEntries(
   auditDir: string,
   days: number = 60,
@@ -423,14 +396,7 @@ export async function readAuditEntries(
   );
 }
 
-/**
- * Compute aggregated usage summary from audit turn entries.
- *
- * `pricingOverrides` is the resolved list (Settings, or the deployment's
- * `AVE_PRICING_OVERRIDE`) — passed in rather than read here, because the
- * cache above keys on it and a value this function fetched for itself could
- * differ from the one the key was built from.
- */
+/** Accept caller-resolved pricing overrides so aggregation agrees with its cache key. */
 export function computeUsageSummary(
   entries: AuditTurnEntry[],
   now: Date = new Date(),
@@ -499,7 +465,6 @@ export function computeUsageSummary(
     const segments = parseUsageSegments(e);
     if (segments.length === 0) continue;
 
-    // per conversation
     let c = convMap.get(e.sessionId);
     if (!c) {
       c = { sessionId: e.sessionId, turns: 0, firstInput: e.input, ...emptyTotals() };
@@ -588,9 +553,9 @@ type CachedUsageSummary = Omit<UsageSummary, "generatedAt">;
 
 interface UsageSummaryCacheLoad {
   summary: UsageSummary;
-  /** Do not retain a summary if the audit snapshot changed while it was read. */
+  // Do not cache a summary when its audit snapshot changed during the read.
   cacheable: boolean;
-  /** Retry only when the audit revision moved while this request was reading. */
+  // Retry only if the audit revision moved during this read.
   retryable?: boolean;
 }
 
@@ -619,11 +584,7 @@ function cloneCachedUsageSummary(
   };
 }
 
-/**
- * A bounded LRU for immutable usage aggregates. The caller owns the revision
- * key so audit mutations, calendar boundaries, and price changes never reuse
- * a stale summary.
- */
+/** Revision keys include audit, calendar, and pricing changes so cached aggregates cannot go stale. */
 export function createUsageSummaryCache(
   options: { maxEntries?: number } = {},
 ): UsageSummaryCache {
@@ -636,7 +597,6 @@ export function createUsageSummaryCache(
   const get = (key: string, now: Date): UsageSummary | undefined => {
     const cached = entries.get(key);
     if (!cached) return undefined;
-    // Moving the hit to the back preserves least-recently-used eviction.
     entries.delete(key);
     entries.set(key, cached);
     return cloneCachedUsageSummary(cached, now);
@@ -653,7 +613,7 @@ export function createUsageSummaryCache(
       if (leastRecentlyUsed === undefined) break;
       entries.delete(leastRecentlyUsed);
     }
-    // Return a clone so callers cannot mutate the value we retained.
+    // Clone retained summaries so callers cannot mutate the cache.
     return cloneCachedUsageSummary(cachedSummary, now);
   };
 
@@ -693,8 +653,7 @@ function createUsageSummaryCacheKey(params: {
     query: params.query,
     localDate: localDateKey(params.now),
     pricingOverride: pricingOverridesSignature(params.pricingOverrides),
-    // The catalog prices what no correction does, so a different catalog is a
-    // different answer for the same audit rows.
+    // Catalog revisions can change prices even when audit rows and corrections stay unchanged.
     modelCatalog: activeModelCatalog().sha256,
     manifest: params.manifest,
   });
@@ -745,8 +704,7 @@ async function loadUsageSummaryFromSnapshot(
   return {
     summary: computeUsageSummary(read.entries, request.now, request.pricingOverrides),
     cacheable: manifestStable && read.complete,
-    // A stable corrupt or unreadable file must stay uncached, but retrying it
-    // immediately only repeats the same failed stream work.
+    // Leave stable corrupt files uncached without immediately repeating the same failing read.
     retryable: !manifestStable,
   };
 }
@@ -757,8 +715,7 @@ async function getCachedUsageSummary(
   return withAuditSnapshotLock(
     request.auditDir,
     async () => {
-      // Rotation shares this lock. Active appends use per-file locks, so a
-      // cache hit validates the manifest again before it can be returned.
+      // Rotation shares this lock; validate the manifest again for appends protected by per-file locks.
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const before = await snapshotUsageAuditFiles(
           request.auditDir,
@@ -805,8 +762,7 @@ async function getCachedUsageSummary(
         }
       }
 
-      // A continuously-appending file should still return a fresh best-effort
-      // view, but it must not leave an unstable revision in the cache.
+      // Return a best-effort view for continuous writes but never cache an unstable revision.
       const before = await snapshotUsageAuditFiles(
         request.auditDir,
         request.matchesFile,
@@ -825,10 +781,6 @@ export interface UsageRangeOptions {
   dateTo: string;   // YYYY-MM-DD inclusive
 }
 
-/**
- * Compute a usage summary filtered to an explicit date range.
- * Reads only JSONL files whose filename date falls within the range.
- */
 export async function getUsageRange(
   opts: UsageRangeOptions,
   now: Date = new Date(),
@@ -859,10 +811,6 @@ export async function getUsageRange(
   });
 }
 
-/**
- * Compute avg cost per day and project a 30-day monthly estimate.
- * Accepts a trend array directly. Returns 0 when there are no trend points.
- */
 export function computeMonthlyProjection(trend: UsageTrendPoint[]): number {
   if (trend.length === 0) return 0;
   const totalCost = trend.reduce((s, p) => s + p.cost, 0);
@@ -870,7 +818,6 @@ export function computeMonthlyProjection(trend: UsageTrendPoint[]): number {
   return avgPerDay * 30;
 }
 
-/** Default convenience — reads from `~/.ave/audit` and computes a 60-day summary. */
 export async function getUsageSummary(
   days: number = 60,
   now: Date = new Date(),

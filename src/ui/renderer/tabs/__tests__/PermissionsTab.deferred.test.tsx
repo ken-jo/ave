@@ -10,6 +10,8 @@ function installAveApi() {
     getMode: vi.fn(async () => ({ mode: "default" })),
     setMode: vi.fn(),
     listRules: vi.fn(async () => []),
+      listScopedRules: vi.fn(async () => ({ rules: [], errors: [] })),
+      removeScopedRule: vi.fn(async () => ({ ok: true })),
     addRule: vi.fn(),
     removeRule: vi.fn(),
     hookTrustList: vi.fn(async () => ({ ok: true, active: [], disabled: [], totalDisabled: 0 })),
@@ -43,14 +45,11 @@ function installAveApi() {
       verb: "show",
       settings: {
         mode: "disabled",
-        provider: "openai",
-        model: "gpt-4o-mini",
         fallbackOnError: "deny",
         parentAdjudication: MOCK_REVIEWER_PARENT_ADJUDICATION,
         interactive: { autoApprove: "off" },
       },
     })),
-    reviewerProviderHasKey: vi.fn(async (provider: string) => provider === "openai"),
     sandboxCapability: vi.fn(async () => ({
       platform: "linux" as NodeJS.Platform,
       enabled: false,

@@ -1,19 +1,11 @@
-/**
- * Persona prompt selection types.
- *
- * User-editable persona prompt files live under `~/.ave/prompts/*.md`.
- * The renderer keeps a synthetic "default" selection meaning "no persona".
- * Agent profiles and skills are intentionally not represented here.
- */
+/** Persona selection uses prompt files plus a synthetic no-override entry; agent profiles and skills are separate. */
 
 import { t } from "../i18n/index.js";
 
 export interface RolePreset {
   id: string;
   name: string;
-  /** Injected into the per-turn system prompt when this preset is active. */
   systemPromptAdd: string;
-  /** Marks the "no override" entry. */
   isDefault?: boolean;
   origin?: { kind: "agent-plugin" | "plugin"; package: string; version: string };
 }
@@ -32,11 +24,7 @@ export interface ActiveRolePrompt {
   origin?: { kind: "agent-plugin" | "plugin"; package: string; version: string };
 }
 
-/**
- * Build the selected persona prompt identifier for the chat IPC boundary.
- * The renderer must not send prompt bodies into the main process; the main
- * process resolves the id against `PersonaPromptStore` at turn start.
- */
+/** Send only the selected id; main resolves prompt bodies at turn start. */
 export function buildActivePersonaPromptId(preset: RolePreset | null | undefined): string | null {
   const id = preset?.id.trim();
   if (!preset || preset.isDefault || !id || id === DEFAULT_PERSONA_SELECTION.id) return null;

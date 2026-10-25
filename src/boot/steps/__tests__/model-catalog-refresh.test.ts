@@ -1,8 +1,4 @@
-/**
- * The boot step that runs the model catalog refresh: on by default, and the
- * user's switch, the `AVE_MODEL_CATALOG` pin and the managed policy each stop
- * it before any request is made.
- */
+/** User settings, managed policy, and a catalog pin must stop refresh before network access. */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

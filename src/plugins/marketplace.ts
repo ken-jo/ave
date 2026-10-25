@@ -134,23 +134,12 @@ type LocalInstallRollbackSnapshot = {
   registryEntry: PluginRegistryEntry;
 };
 
-/**
- * The directory a sideload replacement moves the plugin's data directory
- * through while the live root is removed and the candidate promoted: the
- * recovery backup boot recovery is told about. It is the only place a crash
- * mid-swap can leave the state where `recoverPendingPluginUpdate` will look
- * for it. A first install has no such backup and no predecessor state to
- * protect; the candidate itself receives whatever the vacated root held.
- */
-/** The immediate delete {@link removePluginTreeNowOrAtBoot} uses before any confined process runs. */
+/** Carry local replacement state through the registered recovery backup so boot can always find it. */
 async function removeTreeNow(path: string): Promise<void> {
   await rm(path, { recursive: true, force: true });
 }
 
-/**
- * Delete a staging, restore or backup copy the host made and no confined
- * process is granted: payload only, so nothing can race the delete.
- */
+/** Immediate staging deletion requires payload only, with no confined process granted access. */
 async function removePayloadOnlyTree(path: string): Promise<void> {
   await assertPayloadOnlyPluginTree(path);
   await rm(path, { recursive: true, force: true });
@@ -169,11 +158,7 @@ type InstallReceiptValidation = {
   receipt?: PluginInstallReceipt;
 };
 
-/**
- * Where a git or folder install came from, as its registry entry records it
- * (design §10.3 reads it). A folder install's commit is its revision and its
- * rung `folder` (§18.4.2, §18.4.3).
- */
+/** Registry origin records the source binding; folder installs use their revision and folder rung. */
 function gitInstallOrigin(staged: StagedPluginArtifact): PluginRegistryEntryOrigin {
   const { plan } = staged;
   if (staged.rung === FOLDER_RUNG && plan.snapshotCommit !== plan.versionCommit) {
@@ -206,16 +191,10 @@ function cleanupJournalAfterCommit(entry: PluginRegistryEntry): PluginRegistryEn
   return journal.length > 0 ? journal : undefined;
 }
 
-/**
- * A process entry's admission trusts the rung and digest its receipt records
- * (§9.7 P4), so the transaction binds them to the plan before writing one: a
- * release or archive rung must carry exactly the sha256 the catalog pinned for
- * it. The ladder already proved the bytes against that pin; this keeps the
- * receipt from recording a digest the plan never pinned, whatever staged it.
- */
+/** Bind receipt rung and digest to the verified plan before commit; process admission trusts those exact fields. */
 function assertStagedArtifactPinned(staged: StagedPluginArtifact): void {
   const { plan, rung } = staged;
-  // A folder install never qualifies (§18.4.9); the folder rung refused it already.
+  // Folder installs never qualify for process entry.
   if (rung === FOLDER_RUNG) throw new ProcessEntryRequiresPinnedArtifactError();
   if (rung !== "release" && rung !== "archive") return;
   const pin = plan.artifact[rung]?.sha256?.toLowerCase();
@@ -232,37 +211,22 @@ export class PluginMarketplaceService {
   private readonly registryPath: string;
   private readonly pluginsRoot: string;
   private readonly deploymentGuard?: PluginDeploymentGuard;
-  /** §9.6: per-plugin version cache for rollback. */
+  /** Per-plugin rollback version cache. */
   private readonly cacheRoot: string;
-  /**
-   * §FU#267 — artifact-management subsystem. Owns atomic extract, the
-   * history journal and the version snapshot cache. The orchestrator (this
-   * class) coordinates registry writes around it.
-   */
+  /** The artifact store owns extraction, history and snapshots; this class coordinates registry commits. */
   private readonly artifactStore: PluginArtifactStore;
   private readonly installReceiptValidationCache = new Map<string, InstallReceiptValidation>();
   private readonly deferredLifecycleCleanups = new Set<Promise<void>>();
-  /**
-   * Per-plugin in-process mutex. Concurrent install/uninstall calls for the
-   * same pluginId are serialized to protect the cache breadcrumb +
-   * history.json from corruption.
-   */
+  /** Serialize each plugin mutation across cache breadcrumbs and history writes. */
   private readonly locks = new Map<string, Promise<void>>();
-  /** Optional diagnostic logger. Injected in tests; no-op in production. */
   readonly log?: (message: string, ...args: unknown[]) => void;
 
-  /**
-   * `paths` is the single source of truth for the registry / installed-dir /
-   * cache layout.
-   */
   constructor(paths: PluginPaths, deploymentGuard?: PluginDeploymentGuard) {
     this.paths = paths;
     this.registryPath = paths.registryPath;
     this.pluginsRoot = paths.pluginsRoot;
     this.cacheRoot = paths.cacheRoot;
     this.deploymentGuard = deploymentGuard;
-    // Artifact store owns the same `pluginsRoot` (extract target) +
-    // `cacheRoot` (history + version snapshots).
     this.artifactStore = new PluginArtifactStore({
       installRoot: paths.pluginsRoot,
       cacheRoot: paths.cacheRoot,
@@ -273,7 +237,6 @@ export class PluginMarketplaceService {
     pluginId: string,
     options?: { removeBundleMembers?: boolean },
   ): Promise<{ pluginId: string; uninstalled: true }> {
-    // A plugin the machine policy requires cannot be uninstalled (design §10.2).
     if (this.deploymentGuard) {
       const guardResult = await this.deploymentGuard.canUninstall(pluginId);
       if (!guardResult.allowed) {
@@ -349,21 +312,14 @@ export class PluginMarketplaceService {
     });
   }
 
-  /**
-   * Per-plugin serialization. Concurrent callers for the same
-   * pluginId queue behind each other; callers for different plugins run
-   * concurrently. We keep the map entry only while the promise is pending.
-   */
+  /** Serialize same-plugin operations while allowing other IDs to proceed; retain queue entries only while pending. */
   private async withPluginLock<T>(pluginId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.locks.get(pluginId) ?? Promise.resolve();
     let release: () => void = () => {};
     const next = new Promise<void>((resolvePromise) => {
       release = resolvePromise;
     });
-    // `prev.then(() => next)` produces a NEW Promise object each call, so a
-    // set + identity-compare against re-evaluated `prev.then(() => next)`
-    // would never match and `this.locks` would leak one stale entry per
-    // install. Hoist to a local so the same reference is stored + compared.
+    // Store and compare the same chained Promise reference so completed operations release their map entries.
     const tail = prev.then(() => next);
     this.locks.set(pluginId, tail);
     try {
@@ -377,7 +333,6 @@ export class PluginMarketplaceService {
     }
   }
 
-  /** Acquire all affected per-plugin operation locks in stable order. */
   private async withPluginLocks<T>(pluginIds: Iterable<string>, fn: () => Promise<T>): Promise<T> {
     const ids = [...new Set(pluginIds)].sort();
     const acquire = (index: number): Promise<T> => {
@@ -387,19 +342,9 @@ export class PluginMarketplaceService {
     return acquire(0);
   }
 
-  /**
-   * Snapshot the currently-installed manifest into the artifact store's
-   * version cache before overwrite. No-op when the plugin is not yet
-   * installed. Wraps {@link PluginArtifactStore.cacheVersionFromManifest}
-   * with the registry-aware path resolution that the store deliberately
-   * does not own.
-   */
+  /** Snapshot the installed manifest before overwrite; registry-aware path resolution stays with the caller. */
   private async snapshotCurrentInstall(pluginId: string): Promise<void> {
-    // Do NOT swallow registry read errors here. `readPluginRegistry`
-    // already returns the empty default on ENOENT (first-boot); any other
-    // error (corrupt JSON, IO failure) must propagate so we don't silently
-    // skip the rollback snapshot and then overwrite the install with an
-    // unrecoverable previous state.
+    // Propagate registry corruption and I/O errors; skipping the snapshot could make replacement unrecoverable.
     const registry = await readPluginRegistry(this.registryPath);
     const entry = registry.plugins.find((p) => p.id === pluginId);
     if (!entry || entry.pendingUpdate) return;
@@ -429,28 +374,19 @@ export class PluginMarketplaceService {
     return shaOfManifest(JSON.parse(raw));
   }
 
-  /** Raw durable row lookup for replacement planning, including stale manifests. */
   private async getRawRegistryEntry(pluginId: string): Promise<PluginRegistryEntry | null> {
     const registry = await readPluginRegistry(this.registryPath);
     const entry = registry.plugins.find((candidate) => candidate.id === pluginId);
     return entry ? this.cloneRegistryEntry(entry) : null;
   }
 
-  /** Returns the version string from the currently-installed manifest, or null. */
   async getInstalledVersion(pluginId: string): Promise<string | null> {
-    // Registry read errors propagate; only the manifest-missing
-    // path returns null (stale registry entry).
+    // Only a missing manifest returns null; registry read errors propagate.
     const registry = await readPluginRegistry(this.registryPath);
     return this.readInstalledVersionFromRegistry(registry, pluginId);
   }
 
-  /**
-   * Installed version for a plugin, resolved from an already-loaded registry.
-   * The single seam the managed-bootstrap loop uses so it does NOT re-read +
-   * parse the whole registry file per plugin (it reuses the registry snapshot
-   * it already holds). Manifest-missing (ENOENT) → null; other IO/parse errors
-   * propagate to the caller, which isolates them per plugin.
-   */
+  /** Reuse an already-read registry; missing manifests return null and other errors propagate. */
   private async readInstalledVersionFromRegistry(
     registry: { plugins: PluginRegistryEntry[] },
     pluginId: string,
@@ -459,12 +395,7 @@ export class PluginMarketplaceService {
     return entry && !entry.pendingUpdate ? this.readInstalledManifestVersion(entry) : null;
   }
 
-  /**
-   * Read the installed version from a registry entry's manifest. Split out of
-   * {@link getInstalledVersion} so callers that already hold the registry (e.g.
-   * the managed-bootstrap loop) don't re-read+parse the whole registry file per
-   * plugin. Manifest-missing (ENOENT) → null; other IO/parse errors propagate.
-   */
+  /** Reuse caller registry entries to avoid rereading the registry once per plugin. */
   private async readInstalledManifestVersion(entry: PluginRegistryEntry): Promise<string | null> {
     const manifestPath = isAbsolute(entry.manifestPath)
       ? entry.manifestPath
@@ -480,11 +411,7 @@ export class PluginMarketplaceService {
     return typeof parsed.version === "string" ? parsed.version : null;
   }
 
-  /**
-   * Every installed plugin with the git origin it is bound to, for the git
-   * marketplace's installed view (design §15.2). Rows mid-replacement are
-   * left out; a missing manifest gives a null version.
-   */
+  /** Skip in-flight replacements; missing manifests retain a null version in the installed-origin view. */
   async listInstalledPackages(): Promise<Array<{ name: string; version: string | null; sourceId: string | null; originCommit: string | null; digest: string | null }>> {
     const registry = await readPluginRegistry(this.registryPath);
     const rows = [];
@@ -495,14 +422,14 @@ export class PluginMarketplaceService {
         version: entry.origin?.version ?? (await this.readInstalledManifestVersion(entry)),
         sourceId: entry.origin?.sourceId ?? null,
         originCommit: entry.origin?.commit ?? null,
-        // A folder package's refresh compares its tree digest with this (§18.7.6).
+        // Folder refresh compares its installed tree digest.
         digest: entry.origin?.artifactSha256 ?? null,
       });
     }
     return rows;
   }
 
-  /** The authority the installed plugin.json declares (design §15.6 update review); null when it is not installed. */
+  /** Return installed authority for update review, or null if absent. */
   async getInstalledAuthority(pluginId: string): Promise<PluginAuthority | null> {
     const entry = await this.getRawRegistryEntry(pluginId);
     if (!entry || entry.pendingUpdate) return null;
@@ -519,15 +446,7 @@ export class PluginMarketplaceService {
     return authority;
   }
 
-  /**
-   * What an automatic update of `pluginId` is compared with (design
-   * §18.7.3): the consent fingerprint its receipt stored, or one computed
-   * from the receipt-covered installed bytes for an install from before
-   * slice F, never from a catalog. Installed files that no longer match
-   * their receipt give a fingerprint that is entirely unknown. Also the
-   * receipt's `reviewedAppVersion`, which an update that needs no review
-   * keeps. Null when it is not installed.
-   */
+  /** Use the receipt consent baseline or derive it from installed bytes; preserve the accepted review version. */
   async getInstalledConsentBaseline(pluginId: string): Promise<{ consent: ConsentFingerprint; reviewedAppVersion: string | null; enabled: boolean; files: PayloadFile[] | null } | null> {
     const entry = await this.getRawRegistryEntry(pluginId);
     if (!entry || entry.pendingUpdate) return null;
@@ -553,12 +472,10 @@ export class PluginMarketplaceService {
     return { consent: pluginConsent(JSON.parse(manifest.data.toString("utf8")) as unknown, files), reviewedAppVersion, enabled, files };
   }
 
-  /** The files a staged artifact installs, by the paths extraction gives them (design §18.7.3 review). */
   stagedPayloadFiles(staged: StagedPluginArtifact): PayloadFile[] {
     return this.artifactStore.readZipPayloadFiles(staged.plan.name, staged.zipBuffer);
   }
 
-  /** Read even a disabled or refused-load install without depending on runtime state. */
   async getInstalledConfigManifest(pluginId: string): Promise<{ manifest: PluginManifest; enabled: boolean; sourceId: string | null } | null> {
     const entry = await this.getRawRegistryEntry(pluginId);
     if (!entry || entry.pendingUpdate) return null;
@@ -629,17 +546,7 @@ export class PluginMarketplaceService {
     return assertCanonicalRegistryOwnership(this.paths, entry);
   }
 
-  /**
-   * Load manifests for all currently-installed plugins so the dependency
-   * resolver can inspect their `capabilities[]`.  Skips entries whose manifest
-   * is missing (ENOENT — stale registry entry, fail-open per §S14: a single
-   * stray manifest must not block unrelated installs). Other manifest IO /
-   * parse errors propagate so corruption is surfaced rather than silently
-   * dropping a real plugin from dependency resolution.
-   *
-   * Registry read errors propagate (ENOENT is already returned
-   * as the empty default inside readPluginRegistry).
-   */
+  /** Skip missing manifests but propagate registry and other I/O failures. */
   private async loadInstalledManifests(): Promise<PluginManifest[]> {
     const registry = await readPluginRegistry(this.registryPath);
     const manifests: PluginManifest[] = [];
@@ -653,8 +560,6 @@ export class PluginMarketplaceService {
       try {
         raw = await readFile(abs, "utf-8");
       } catch (err) {
-        // ENOENT → stale registry entry; skip silently. Other errors
-        // (permission, IO) propagate.
         if (isMissingPathError(err)) continue;
         throw err;
       }
@@ -663,10 +568,7 @@ export class PluginMarketplaceService {
     return manifests;
   }
 
-  /**
-   * The receipt of an `installLocal` install, built against the staged tree
-   * after its contributions resolve. Git installs write their own (schema v4).
-   */
+  /** Build local receipts against the staged tree after resolving contributions. */
   private async prepareInstallReceipt(
     pluginId: string,
     pluginRoot: string,
@@ -674,35 +576,22 @@ export class PluginMarketplaceService {
   ): Promise<string> {
     const manifestRaw = await readFile(resolve(pluginRoot, "plugin.json"), "utf-8");
     const manifest = flattenAgentPluginsManifest(JSON.parse(manifestRaw));
-    // Resolve every declaration and build the exact receipt against the staged
-    // tree. Neither live payload nor durable metadata has changed yet.
+    // Derive the receipt before changing any live payload or durable metadata.
     await materializePluginContributions(pluginRoot, manifest);
     return (await this.artifactStore.prepareInstallReceipt(pluginId, pluginRoot, opts)).raw;
   }
 
-  /**
-   * Install a plugin from a git source (design §6.2, §2.3). Inside the plugin
-   * lock: the deployment guard, then the dependency preflight on the plan's
-   * authority — before anything is downloaded — then the ladder (`stage`),
-   * then the shared zip transaction with a v4 receipt and the registry
-   * `origin`. There is no envelope verification on this path: the ladder
-   * proved the bytes against the pin or computed their tree digest, and the
-   * staged manifest against the descriptor.
-   */
+  /** Install only artifacts already checked against the plan pin and descriptor; preserve the shared transaction pipeline. */
   async installGitPlugin(
     plan: PluginInstallPlan,
     options: {
       stage: (plan: PluginInstallPlan) => Promise<StagedPluginArtifact>;
       activatePreparedArtifact: PreparedMarketplacePluginActivation;
-      /** Replace an install bound to another source (or to none); the plugin's data is kept. */
+      /** Source replacement preserves plugin data. */
       switchSource?: boolean;
       signal?: AbortSignal;
       reviewedAppVersion?: string;
-      /**
-       * Checkpoint two of an automatic update (design §18.7.3): sees the
-       * consent fingerprint of the extracted bytes, beside the manifest check
-       * and before anything activates; a throw installs nothing.
-       */
+      /** Compare extracted consent before activation; refusal must install nothing. */
       assertConsent?: (consent: ConsentFingerprint) => void;
     },
   ): Promise<{ pluginId: string; installed: true; version: string; action: InstallAction; staged: StagedPluginArtifact; consent: ConsentFingerprint }> {
@@ -737,15 +626,14 @@ export class PluginMarketplaceService {
       let pendingEntry: PluginRegistryEntry | null = null;
       let installedConsent: ConsentFingerprint | null = null;
       const installOutcome = await this.installZipTransaction(pluginId, staged.zipBuffer, {
-        // The ladder checked the zip's plugin.json; this checks the file that
-        // was actually extracted, which is the one that will run.
+        // Check the extracted manifest, not only its archive entry.
         assertManifest: async (manifestFile) => {
           const document = JSON.parse(await readFile(manifestFile, "utf-8")) as unknown;
           assertGitInstallManifest(document, expectedPluginOf(plan));
           if (hasProcessEntry(document)) assertStagedArtifactPinned(staged);
         },
         prepareReceipt: async (pluginRoot, files) => {
-          // The baseline the next update is compared with is what installs now, from these exact bytes (§18.7.3).
+          // Future updates compare against the exact bytes installed now.
           const consent = pluginConsent(JSON.parse(await readFile(resolve(pluginRoot, "plugin.json"), "utf-8")) as unknown, await readPayloadFiles(pluginRoot, files));
           options.assertConsent?.(consent);
           installedConsent = consent;
@@ -757,8 +645,7 @@ export class PluginMarketplaceService {
         registryOrigin: origin,
         signal: options.signal,
         beforePromote: async (recoveryBackupDir) => {
-          // The replacement journal is the same as a catalog install's: the
-          // recovery restores a directory and a receipt, whatever wrote them.
+          // Use the same replacement journal regardless of artifact source.
           pendingEntry = await this.markMarketplaceRegistryEntryPending(existingEntry, recoveryBackupDir);
         },
         commit: async (manifestPath, manifestAbsPath) => {
@@ -789,7 +676,6 @@ export class PluginMarketplaceService {
     });
   }
 
-  /** `requires.capabilities` and hard plugin dependencies of the plan's authority, against what is installed. */
   private async preflightGitDependencies(plan: PluginInstallPlan): Promise<void> {
     const required = plan.authority.requires?.capabilities ?? [];
     const dependencies = normalizeDependencies({
@@ -890,13 +776,7 @@ export class PluginMarketplaceService {
     });
   }
 
-  /**
-   * Stage → receipt → registry → generation for one zip that the caller has
-   * already verified (a signed catalog artifact, or a git ladder result). The
-   * caller decides how the staged manifest is checked, which receipt is
-   * written and which access grant the registry records; everything else —
-   * promotion, the prior-receipt restore and activation — is shared.
-   */
+  /** Share promotion, receipt restoration and activation for every already-verified archive source. */
   private async installZipTransaction(
     pluginId: string,
     zipBuffer: Buffer,
@@ -908,7 +788,7 @@ export class PluginMarketplaceService {
       commit?: (manifestPath: string, manifestAbsPath: string) => Promise<void>;
       activatePreparedArtifact: PreparedMarketplacePluginActivation;
       registryInstallSource: PluginRegistryEntryInstallSource;
-      /** The origin the commit records; the candidate's HostApi trusts it from its first start. */
+      /** Record origin before the candidate first uses its HostApi. */
       registryOrigin?: PluginRegistryEntryOrigin;
       signal?: AbortSignal;
     },
@@ -963,10 +843,7 @@ export class PluginMarketplaceService {
             preparedManifest = flattenAgentPluginsManifest(preparedDocument);
             preparedReceiptRaw = await opts.prepareReceipt(pluginRoot, [...files]);
             if (preparedManifest.process !== undefined) {
-              // Admission trusts the rung this transaction commits, read back
-              // from its own receipt the way the runtime gate reads it
-              // (§9.7 P4, decision 35): only a git release or archive rung
-              // with a sha256 pin, never a tree rung or a catalog receipt.
+              // Admit process entries only from verified pinned release/archive receipts, never tree or catalog provenance.
               const committing = await verifyInstallReceiptRaw(preparedReceiptRaw, pluginId, pluginRoot);
               if (!committing.ok) {
                 throw new Error(`plugin "${pluginId}" prepared receipt does not verify against its staged payload: ${committing.reason}`);
@@ -982,22 +859,14 @@ export class PluginMarketplaceService {
                 registryEntry: {
                   installSource: opts.registryInstallSource,
                   ...(opts.registryOrigin ? { origin: opts.registryOrigin } : {}),
-                  // The pin covers the FILE, so it hashes the document —
-                  // `readManifestSha256` re-derives it that way on every later
-                  // read, and a pin taken over the projection would never
-                  // match one taken over the file.
+                  // Pin the authored manifest document; its flat projection has a different digest.
                   manifestSha256: shaOfManifest(preparedDocument),
                 },
                 ...(opts.approvedPluginAccess ? { approvedPluginAccess: opts.approvedPluginAccess } : {}),
                 durableCommit,
               });
             } catch (error) {
-              // The child factory refuses a manifest with no served
-              // `hostProtocol` when the runtime invokes it (§9.8 A1, decision
-              // 52). Reported as the update's own incompatibility — the
-              // existing code and detail the catalog uses for an unserved
-              // version — so the Updates card does not read it as an
-              // unreachable source. The running generation is untouched.
+              // Report unserved protocol as update refusal while preserving the serving generation.
               if (error instanceof IncompatibleHostProtocolError) {
                 throw new MarketplaceError("PACKAGE_INCOMPATIBLE", error.message, {
                   cause: error,
@@ -1091,11 +960,7 @@ export class PluginMarketplaceService {
     }
   }
 
-  /**
-   * Dev-only: copy a locally-built plugin directory into ~/.ave/plugins/<id>/
-   * and register it in the plugin registry. Gated on isDevModeUnlocked() so
-   * packaged builds cannot invoke this path.
-   */
+  /** Local install is gated by dev unlock and unavailable in packaged builds. */
   async resolveLocalInstallPluginId(sourcePath: string): Promise<string> {
     if (!isDevModeUnlocked()) {
       throw new Error(
@@ -1151,7 +1016,6 @@ export class PluginMarketplaceService {
       );
     }
 
-    // Validate the source path exists and is a directory (non-blocking).
     let srcStat: Awaited<ReturnType<typeof statAsync>>;
     try {
       srcStat = await statAsync(sourcePath);
@@ -1162,11 +1026,9 @@ export class PluginMarketplaceService {
       throw new Error(`[installLocal] path is not a directory: ${sourcePath}`);
     }
 
-    // Read and parse plugin.json from the source directory.
     const manifestPath = resolve(sourcePath, "plugin.json");
     let manifest: PluginManifest & { id?: unknown; [key: string]: unknown };
-    // The document is kept alongside the projection: reads go through the
-    // projection, but the registry's manifest pin covers the file.
+    // Keep the authored document beside its projection because the registry pins file bytes.
     let manifestDocument: unknown;
     try {
       const raw = await readFile(manifestPath, "utf-8");
@@ -1176,7 +1038,6 @@ export class PluginMarketplaceService {
     } catch {
       throw new Error(`[installLocal] could not read plugin.json in ${sourcePath}`);
     }
-    // A local install is never pinned by a release or archive artifact.
     if (hasProcessEntry(manifestDocument)) throw new ProcessEntryRequiresPinnedArtifactError();
 
     const pluginId = typeof manifest.id === "string" ? manifest.id.trim() : "";
@@ -1184,7 +1045,6 @@ export class PluginMarketplaceService {
       throw new Error("[installLocal] plugin.json must have a non-empty 'id' field");
     }
 
-    // Validate pluginId is a safe directory name.
     try {
       assertSafeArtifactSlug(pluginId);
     } catch {
@@ -1193,10 +1053,7 @@ export class PluginMarketplaceService {
       );
     }
 
-    // Validate version up front — same throw message as the receipt-write
-    // step, but BEFORE any filesystem mutation (cp / rename / registry
-    // update) so a malformed manifest does not leave a half-installed
-    // plugin dir + registry entry behind requiring manual cleanup.
+    // Validate version before any filesystem or registry mutation.
     if (typeof manifest.version !== "string" || !manifest.version) {
       throw new Error(
         `[installLocal] plugin.json must declare a non-empty 'version' string: ${pluginId}`,
@@ -1250,8 +1107,7 @@ export class PluginMarketplaceService {
         }
       };
       try {
-        // Copy and validate the complete candidate before touching live bytes,
-        // receipt, registry, runtime, or any generation pointer.
+        // Validate the complete staged candidate before changing live state or pointers.
         await removePayloadOnlyTree(stagingDir);
         await cp(sourcePath, stagingDir, {
           recursive: true,
@@ -1260,10 +1116,7 @@ export class PluginMarketplaceService {
         });
         await rejectSideloadSymlinks(stagingDir);
 
-        // Same top-level exclusion the receipt VERIFIER applies on every later
-        // load (`verifyInstallReceipt` → `listFilesRecursive`). A receipt that
-        // listed a runtime directory would stop matching the payload the first
-        // time the plugin wrote to it, and the plugin would refuse to load.
+        // Exclude the same top-level runtime directories the receipt verifier excludes.
         const receiptFiles = await listFilesRecursive(stagingDir, PLUGIN_RUNTIME_DIR_NAMES);
         const localReceiptRaw = await this.prepareInstallReceipt(pluginId, stagingDir, {
           version: manifestVersion,
@@ -1284,24 +1137,14 @@ export class PluginMarketplaceService {
                   : {}),
               });
             }
-            // The live root is removed whole. Its data directory is the plugin's
-            // state, not payload: it travels through the registered recovery
-            // backup into the promoted root, so at every instant it is somewhere
-            // boot recovery knows to reunite it with whichever root survives.
+            // Carry data through the journaled backup before promotion so recovery always knows its owner.
             const dataCarrier = localInstallDataCarrier(rollbackSnapshot);
             await retryOnTransientFsLock(
               () => carryPluginStateDirs(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" }),
             );
-            // The socket directories the activated candidate (and, on an
-            // update, the still-live predecessor) are bound to take the same
-            // route as the state, NOT into the staged root: if the swap below
-            // fails, the catch removes the staged root, and the rollback
-            // restores from the recovery backup — so a socket directory parked
-            // in the staged root would be deleted with it (carryPluginSocketDirs).
+            // Carry live socket directories through the backup, never a stage deleted before predecessor retirement.
             await carryPluginSocketDirs(installDir, dataCarrier ?? stagingDir, { onConflict: "reject" });
-            // Both the predecessor and the activated candidate may run with
-            // this path in their confinement (a path-based grant can recreate
-            // a writable directory here); see removePluginTreeNowOrAtBoot.
+            // Both generations may retain confinement access here; deletion must use the runtime-safe path.
             await removePluginTreeNowOrAtBoot(installDir, this.pluginsRoot, removeTreeNow);
             await rename(stagingDir, installDir);
             if (dataCarrier) {
@@ -1320,7 +1163,6 @@ export class PluginMarketplaceService {
                 existing.enabled = true;
                 existing.installSource = "local-dev";
                 existing.approvedPluginAccess = approvedPluginAccess;
-                // A local build replaces whatever a git install put here.
                 existing.origin = undefined;
                 existing.pendingUpdate = undefined;
                 existing.pendingCleanup = pendingCleanup;
@@ -1360,15 +1202,11 @@ export class PluginMarketplaceService {
         await settleCommittedLocalUpdate(activated);
         return { pluginId, installed: true as const };
       } catch (err) {
-        // Not payload-only once the durable commit started: without a recovery
-        // backup (a fresh install), the activated candidate's runtime
-        // directories are parked here for the swap, and it is still bound to them.
+        // After commit begins, a fresh-install stage may hold candidate-bound runtime directories and is no longer payload-only.
         await removePluginTreeNowOrAtBoot(stagingDir, this.pluginsRoot, removeTreeNow).catch((cleanupErr) => {
           log.error(`installLocal staging cleanup failed for ${pluginId}: ${errorMessage(cleanupErr)}`);
         });
-        // A generation callback must never trigger compensating rollback after
-        // the durable pointer commit. Post-commit health is journaled by the
-        // lifecycle; this branch is only candidate/durable-commit failure.
+        // Never compensate after pointer commit; record postcommit health and preserve the committed generation.
         if (durableCommitted) {
           if (isCommittedPluginGenerationPublicationError(err) && err.committed) {
             await settleCommittedLocalUpdate(
@@ -1484,18 +1322,15 @@ export class PluginMarketplaceService {
     await readPluginRegistry(this.registryPath);
     const backupDir = snapshot.backupDir;
     if (backupDir) {
-      // Whichever step of the swap failed, the plugin's data directory is in
-      // exactly one of the two roots. The promoted root is about to go; the
-      // state moves into the backup that is about to come back first.
+      // Move the only state copy into the surviving backup before discarding a promoted root.
       await retryOnTransientFsLock(
         () => carryPluginStateDirs(snapshot.installDir, backupDir, { onConflict: "reject" }),
       );
-      // The predecessor is still the live generation here, and its sockets
-      // are in the root about to be removed.
+      // Restore the live predecessor sockets before removing their current root.
       if (existsSync(snapshot.installDir)) await carryPluginSocketDirs(backupDir, snapshot.installDir, { onConflict: "reject" });
       await carryPluginSocketDirs(snapshot.installDir, backupDir, { onConflict: "reject" });
     }
-    // The candidate that failed may still run with this path in its confinement.
+    // The failed candidate may still be confined to this root.
     await removePluginTreeNowOrAtBoot(snapshot.installDir, this.pluginsRoot, removeTreeNow);
     if (backupDir) {
       const restoreStageDir = `${snapshot.installDir}.restore-${process.pid}-${Date.now()}`;
@@ -1551,7 +1386,7 @@ export class PluginMarketplaceService {
     await updatePluginRegistry(this.registryPath, (registry) => {
       registry.plugins = registry.plugins.filter((entry) => entry.id !== pluginId);
     });
-    // The fresh install's candidate may still run with this path in its confinement.
+    // The fresh candidate may still be confined to this root.
     await removePluginTreeNowOrAtBoot(installDir, this.pluginsRoot, removeTreeNow);
     await rm(installReceiptPath(this.cacheRoot, pluginId), { force: true });
     this.clearInstallReceiptValidationForPlugin(pluginId);
@@ -1568,7 +1403,6 @@ export class PluginMarketplaceService {
       return;
     }
     if (snapshot?.backupDir) {
-      // The plugin's data travelled through this backup during the swap.
       await removePluginTreeNowOrAtBoot(snapshot.backupDir, this.pluginsRoot, removeTreeNow);
       await clearObsoletePluginBackupOwnership(
         this.paths,

@@ -1,14 +1,3 @@
-/**
- * Runtime manifest validation hardening.
- *
- * Covers strict manifest rules:
- *   1) removed keyword routing is rejected
- *   2) removed schema maps are rejected
- *   3) retired notification declarations are dropped before strict validation
- *   4) ui[] kind-specific required fields (hard fail-load)
- *   5) AJV unknown-property rejection (additionalProperties:false at root,
- *      in the host schema) — guards against silent acceptance of removed/typo'd fields
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -192,7 +181,6 @@ describe("runtime manifest validation hardening", () => {
     await writePlugin("p-ui", {
       tools: ["pui_hello", "pui_bad", "pui_good"],
       ui: [
-        // bad embedded-module (missing exportName) — should fail the manifest
         {
           id: "a",
           slot: "sidebar",
@@ -231,16 +219,11 @@ describe("runtime manifest validation hardening", () => {
     ).toBe(true);
   });
 
-  // #885 v6 (0.5.2): the ui[].kind="action" cases (4c "without tool fails",
-  // 4d "with valid tool loads") were removed with the action kind itself —
-  // app-invokable behavior is now a tool's `_meta.ui.visibility`, so there is
-  // no action-arm cross-field validation left to exercise.
-
   it("4b) ui[] non-plain-object entries fail load instead of being dropped", async () => {
     await writePlugin("p-ui-bad", {
       tools: ["puibad_hello", "puibad_bad", "puibad_good"],
       ui: [
-        [], // array — must fail
+        [],
         123,
         null,
         { id: "z", slot: "sidebar", kind: "info-card", title: "Z" },
@@ -263,10 +246,7 @@ describe("runtime manifest validation hardening", () => {
     );
   });
 
-  // 호스트 스키마가 root 에 `additionalProperties: false` 를 강제하므로
-  // 폐기된 `startupTools` 또는 plugin author 의 typo 가 silent ignore 되지 않고
-  // AJV 단계에서 hard reject 되어야 한다. plugin 자체가 fail-soft drop 되며 host
-  // 는 계속 동작.
+  // Unknown root fields must fail schema validation; the host drops the offending plugin and continues.
   it("5) AJV rejects manifest with unknown root property (startupTools post 5.7.0)", async () => {
     await writePlugin("p-unknown-field", {
       tools: ["puf_hello", "puf_bad", "puf_good"],
@@ -289,13 +269,11 @@ describe("runtime manifest validation hardening", () => {
     ).toBe(true);
   });
 
-  // Supply-chain visibility — manifest schema reject 또는 cross-field 위반으로
-  // plugin 이 fail-soft drop 될 때 audit log 에 `plugin_manifest_rejected` 가
-  // 남아야 security ops / operator 가 어느 plugin 이 왜 드랍됐는지 추적 가능.
+  // Manifest refusals must emit plugin_manifest_rejected so operators can identify the plugin and cause.
   it("6) auditLog emits plugin_manifest_rejected on manifest reject", async () => {
     await writePlugin("p-audit-target", {
       tools: ["pat_hello", "pat_bad", "pat_good"],
-      startupTools: ["p_audit_target_hello"], // AJV reject trigger
+      startupTools: ["p_audit_target_hello"],
     });
     const auditLog = vi.fn();
     const runtime = new PluginRuntime({
@@ -321,12 +299,7 @@ describe("runtime manifest validation hardening", () => {
     expect(data.error).toMatch(/additional|startupTools|schema/i);
   });
 
-  // 7) The portable half of the document is bounded too.
-  //
-  // Agent Plugins 1.0.0 replaced the flat `author` string with an object. The
-  // string it replaced was capped at 256 characters; an object of unbounded
-  // strings would be strictly looser than what it replaced, and this manifest
-  // is rendered in the catalog and in editor intellisense.
+  // Structured author fields must remain bounded because manifests feed catalog and editor surfaces.
   it("7) accepts a bounded portable author and rejects an unbounded one", async () => {
     await writePlugin("p-author-ok", {
       tools: ["pao_hello"],
@@ -367,11 +340,7 @@ describe("runtime manifest validation hardening", () => {
   });
 });
 
-/**
- * The `process` entry against the host's own schema (docs/design/plugin-hostapi-protocol.md
- * §9.7 P3). The command's shape is the schema's; the argument, environment and
- * version rules are the hardening's. Each refusal names the field to edit.
- */
+/** Process-entry refusals must identify the invalid command, argument, environment or version field. */
 describe("runtime manifest validation of a process entry", () => {
   let dir: string;
   beforeEach(() => {

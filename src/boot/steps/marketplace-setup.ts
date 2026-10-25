@@ -1,34 +1,20 @@
-/**
- * Boot step — the plugin store and its live-refresh closures (extracted from
- * boot.ts C18).
- *
- * Constructs the PluginMarketplaceService — the plugin install/uninstall
- * transactions the git marketplace drives (design §16.2) — and wires the
- * live-refresh closures the settings IPC handlers invoke: the active-LLM
- * wildcard config push and the ASRT sandbox network allow-list rebuild.
- */
+/** Wire marketplace transactions and live configuration refreshes for settings changes. */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { PluginMarketplaceService } from "../../plugins/marketplace.js";
 import { activeHostApiVendor, createRefreshActiveLlmWildcard } from "./refresh-active-llm-wildcard.js";
 import { createLogger } from "../../lib/logger.js";
 import type { BootContext } from "../context.js";
+import type { WorkerEgressAllowlists } from "../../permissions/egress-runtime.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { aveHome } from "../../shared/ave-home.js";
 
 const log = createLogger("ave");
 
-/**
- * What the retired server marketplace left on disk (design §16.2): the signed
- * admission, whitelist and revocation documents under `userData`, the catalog
- * cache, and the tarball cache and verified downloads of each package tree it
- * installed into. Nothing reads them any more.
- */
+/** Remove unused signed documents, catalogs, and package/download caches from the retired server marketplace. */
 export function retiredMarketplaceCachePaths(input: {
   userDataPath: string;
-  /** `~/.ave`. */
   home: string;
-  /** `~/.ave/plugins/.cache`. */
   pluginCacheRoot: string;
 }): string[] {
   const packageCacheRoots = [
@@ -44,7 +30,7 @@ export function retiredMarketplaceCachePaths(input: {
   ];
 }
 
-/** Best effort: a path that cannot be removed now is tried again next boot. */
+/** Removal is best effort; retry failures on the next boot. */
 export async function removeRetiredMarketplaceCaches(paths: readonly string[]): Promise<void> {
   await Promise.all(paths.map(async (path) => {
     try {
@@ -70,25 +56,8 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
     pluginCacheRoot: pluginPaths.cacheRoot,
   }));
 
-  // #893 — Push the active LLM vendor id into the plugin runtime's wildcard
-  // configOverrides slot. Plugins read this via
-  // `hostApi.config.get("hostApiVendor")` so a plugin that needs an LLM call
-  // doesn't have to ship its own vendor-detection logic. Called once at
-  // boot (after plugin runtime is available) and again after every
-  // llm-settings IPC change.
-  //
-  // The wildcard slot deliberately carries no `hostApiKey`. The actual
-  // secret must always flow through `hostApi.getSecret("llm.apiKey.<vendor>")`,
-  // which routes through the three-tier allowlist gate (only plugins that
-  // declare the matching `hostSecrets.read[]` entry receive the key).
-  // Injecting the apiKey into a wildcard config slot would bypass that gate:
-  // every plugin would receive the key via `config.get("hostApiKey")`
-  // regardless of its manifest.
-  //
-  // The factory lives in `boot/steps/refresh-active-llm-wildcard.ts` so the
-  // debounce + vendor-change-restart contract is independently unit-testable:
-  // the first call seeds, and subsequent vendor changes trigger a debounced
-  // restart sweep of every loaded plugin.
+  // Wildcard config exposes vendor identity only; secrets must pass the manifest-gated getSecret path.
+  // Seed at boot and debounce loaded-plugin restarts when the vendor changes.
   const {
     refresh: refreshActiveLlmWildcard,
     dispose: disposeRefreshActiveLlmWildcard,
@@ -104,62 +73,39 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   });
   refreshActiveLlmWildcard();
 
-  // ── ASRT shared network-config union builder + live refresh ──────────────
-  // The shared strict-union allow-list ASRT enforces = the UNION of every
-  // loaded plugin's manifest `networkAccess.allowedDomains` PLUS the host-
-  // resolved DYNAMIC endpoint hostnames (user-configured vendor baseUrls a
-  // sandboxed worker actually reaches — e.g. local-indexer's Azure OpenAI
-  // resource). Both the boot init block (below) and the live-refresh closure
-  // (here) build the union the SAME way so they never drift.
-  const buildSandboxUnionDomains = async (): Promise<string[]> => {
-    const { computeUnionAllowedDomains, normalizeUnionForAsrt, computeDynamicEndpointHosts } =
-      await import("../../permissions/asrt-sandbox.js");
-    const manifestAllowLists = pluginRuntime
-      .listPluginIds()
-      .map((id) => pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []);
-    const dynamicEndpointHosts = computeDynamicEndpointHosts(settingsService.getAll());
-    return normalizeUnionForAsrt(
-      computeUnionAllowedDomains([...manifestAllowLists, dynamicEndpointHosts], []),
-    );
+  // Worker egress uses its own extension domains plus resolved model endpoints; never share these with other workers or shells.
+  // Keep the runtime-wide domain allow-list empty.
+  const buildWorkerEgressAllowlists = async (): Promise<WorkerEgressAllowlists> => {
+    const { computeDynamicEndpointHosts } = await import("../../permissions/asrt-sandbox.js");
+    return {
+      byExtension: new Map(
+        pluginRuntime
+          .listPluginIds()
+          .map((id) => [id, pluginRuntime.getPluginManifest(id)?.networkAccess?.allowedDomains ?? []] as const),
+      ),
+      modelEndpointHosts: computeDynamicEndpointHosts(settingsService.getAll()),
+    };
   };
 
-  // Closure invoked by the settings IPC handler when a vendor/embedding
-  // endpoint changes. Recomputes the dynamic-endpoint union and LIVE-SWAPS the
-  // shared ASRT network config so a reconfigured endpoint is enforced/allowed
-  // without an app restart. The network config is a SAFE, GLOBAL live swap
-  // (filterNetworkRequest reads the shared config; updateConfig replaces it).
-  // GATED: no-op when ASRT is not active (gate OFF, or deps-missing/Windows-
-  // not-ready paths where the sandbox was never initialized) — there is no live
-  // config to update, and we must not initialize one outside the boot gate.
+  // Refresh worker domains after load and before workers start, then on endpoint changes; do nothing without an active runtime.
   const refreshSandboxNetworkConfig = (): Promise<void> =>
     (async () => {
-      const {
-        isAsrtSandboxActive,
-        updateAsrtSandboxConfig,
-      } = await import(
-        "../../permissions/asrt-sandbox.js"
-      );
+      const [{ isAsrtSandboxActive }, { setWorkerEgressAllowlists }] = await Promise.all([
+        import("../../permissions/asrt-sandbox.js"),
+        import("../../permissions/egress-runtime.js"),
+      ]);
       if (!isAsrtSandboxActive()) return;
-      const allowedDomains = await buildSandboxUnionDomains();
-      // Same trusted shape boot init uses: enforced allow-list + strict, no
-      // weakening flags. Plugin-worker filesystem grants are not kept in the
-      // shared config; Windows worker spawn remains fail-closed until ASRT can
-      // scope allow grants per worker/plugin.
-      await updateAsrtSandboxConfig({
-        allowedDomains,
-        strictAllowlist: true,
-        userDataDir: ctx.host.userDataPath,
-      });
+      const allowlists = await buildWorkerEgressAllowlists();
+      setWorkerEgressAllowlists(allowlists);
       log.info(
-        "boot: ASRT network config live-refreshed (%d union domains)",
-        allowedDomains.length,
+        "boot: worker egress allowlists refreshed (%d extensions, %d model endpoints)",
+        allowlists.byExtension.size,
+        allowlists.modelEndpointHosts.length,
       );
     })().catch((err) => {
-      // Degrade loudly rather than throw: a failed refresh only keeps the
-      // enforced allow-list NARROWER than declared (deny-by-default stands),
-      // and the boot-path awaiter must not brick startup over it.
+      // On refresh failure, warn and retain prior lists; deny-by-default still blocks new destinations.
       log.warn(
-        "boot: ASRT network config live-refresh failed: %s",
+        "boot: worker egress allowlist refresh failed: %s",
         errorMessage(err),
       );
     });
@@ -167,6 +113,6 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   ctx.pluginMarketplace = pluginMarketplace;
   ctx.refreshActiveLlmWildcard = refreshActiveLlmWildcard;
   ctx.disposeRefreshActiveLlmWildcard = disposeRefreshActiveLlmWildcard;
-  ctx.buildSandboxUnionDomains = buildSandboxUnionDomains;
+  ctx.buildWorkerEgressAllowlists = buildWorkerEgressAllowlists;
   ctx.refreshSandboxNetworkConfig = refreshSandboxNetworkConfig;
 }

@@ -39,23 +39,8 @@ export interface UsePermissionSignalsResult {
   reviewerSuggestion: ReviewerSuggestion | null;
 }
 
-/**
- * Owns the two IPC-driven permission disclosures the window subscribes once:
- *   • user-approval memory-hit — a toast, auto-dismissed after
- *     DEFAULT_TOAST_TTL_MS, because it reports something that already happened.
- *   • reviewer suggestion — held state, drawn as a band inside whichever
- *     approval card is up, with an "enable" action that flips the reviewer
- *     into LLM/interactive/auto mode.
- *
- * The suggestion carries no display timer. Its surface is an approval card, and
- * a card may not be on screen when the host raises it: a timer would expire the
- * suggestion in that gap and spend the tracker's whole cooldown on a band
- * nobody saw. It ends when the user acts on it — enable or dismiss — and the
- * main-side tracker's cooldown is what bounds how often it can come back.
- *
- * Both subscriptions include defense-in-depth payload validation (the IPC type
- * is a compile-time-only guarantee).
- */
+/** Permission-memory hits expire as toasts; reviewer suggestions remain until user action because their approval card may
+ * not be visible yet. Validate both IPC payloads. */
 export function usePermissionSignals(): UsePermissionSignalsResult {
   const [userApprovalHitToast, setUserApprovalHitToast] = useState<
     UserApprovalHitPayload | null
@@ -181,9 +166,8 @@ export function usePermissionSignals(): UsePermissionSignalsResult {
     }
   }, []);
 
-  // Dismiss clears the held suggestion here and tells the main process nothing:
-  // the tracker's own cooldown already decides when the next one may be raised,
-  // so the band cannot come straight back on the following card.
+  // Dismiss clears the held suggestion here and tells the main process nothing: the tracker's own cooldown already decides
+  // when the next one may be raised, so the band cannot come straight back on the following card.
   const dismissReviewSuggestion = useCallback(() => {
     setReviewSuggestion(null);
   }, []);

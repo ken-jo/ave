@@ -1,17 +1,4 @@
-/**
- * #664 P1 / #885 v6 — sandbox-write auto-LOW rule unit tests.
- *
- * v6 (Q4): the manifest `writesToOwnSandbox` self-attestation is REMOVED. The
- * auto-LOW keys SOLELY on the HOST-computed `ownerPluginSandboxRoot` + the
- * host-verified path-containment proof (every resolved path inside the root):
- *   (a) ownerPluginSandboxRoot set + every path inside → LOW.
- *   (b) `..` traversal cannot escape — canonicalize collapses it before the
- *       prefix compare → no auto-LOW.
- *   (c) path outside the root AND outside allowed → HIGH "write outside".
- *   (d) ownerPluginSandboxRoot ABSENT (builtin / MCP tool) → no auto-LOW (the
- *       real "cannot accidentally qualify" guard — a self-claim never existed).
- *   (e) declared-but-empty pathFields (manifest mistake) → HIGH "not declared".
- */
+// Sandbox-write LOW requires a host-owned root and proof every resolved path stays inside it; traversal, missing declarations and self-attestation cannot qualify.
 import { describe, it, expect } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,8 +10,7 @@ import {
 import { detectSandboxCapability } from "../sandbox-capability.js";
 import { resolveOwnerPluginSandboxRoot, resolvePluginWritableRoot } from "../../plugins/plugin-storage-layout.js";
 
-// Use realpath so the canonicalize step inside the classifier produces
-// the same string on darwin (/var → /private/var).
+// Use realpath so the canonicalize step inside the classifier produces the same string on darwin (/var → /private/var).
 const TMP = realpathSync(tmpdir());
 const PLUGIN_ID = "ave-plugin-samplemail";
 const SANDBOX_ROOT = `${TMP}/ave-sandbox-test/.ave/plugins/${PLUGIN_ID}`;
@@ -61,9 +47,7 @@ describe("RuleBasedRiskClassifier — #664 P1 / #885 v6 host-derived sandbox-wri
   });
 
   it("(b) path-traversal `..` cannot escape → no auto-LOW (falls through)", () => {
-    // `../` traversal: nominally inside SANDBOX_ROOT by string prefix but
-    // canonicalizePathForMatch collapses `..` so the prefix compare no longer
-    // matches → the auto-LOW is NOT engaged.
+    // `../` traversal: nominally inside SANDBOX_ROOT by string prefix but canonicalizePathForMatch collapses `..` so the prefix compare no longer matches → the auto-LOW is NOT engaged.
     const v = rb.classify(
       ctx({
         ownerPluginSandboxRoot: SANDBOX_ROOT,
@@ -85,8 +69,7 @@ describe("RuleBasedRiskClassifier — #664 P1 / #885 v6 host-derived sandbox-wri
   });
 
   it("(d) ownerPluginSandboxRoot ABSENT (builtin/MCP tool) → no auto-LOW", () => {
-    // No host-computed sandbox root ⇒ the tool is not plugin-owned ⇒ the normal
-    // write rules apply. A sandbox-shaped path can never "accidentally" auto-LOW.
+    // No host-computed sandbox root ⇒ the tool is not plugin-owned ⇒ the normal write rules apply. A sandbox-shaped path can never "accidentally" auto-LOW.
     const v = rb.classify(
       ctx({
         finalInput: { path: `${SANDBOX_ROOT}/anything.bin` },
@@ -96,10 +79,7 @@ describe("RuleBasedRiskClassifier — #664 P1 / #885 v6 host-derived sandbox-wri
   });
 
   it("(e) manifest mistake — pathFields declared but resolves to nothing → HIGH (not declared)", () => {
-    // Declared-but-unresolved must NOT reach the unknown-MEDIUM below: an empty
-    // resolve is reachable from the CALL's arguments (non-string, empty string,
-    // canonicalization throw), so keying on the resolved value would let a
-    // plugin that declared its paths move off HIGH by choosing an argument.
+    // Declared-but-unresolved must NOT reach the unknown-MEDIUM below: an empty resolve is reachable from the CALL's arguments (non-string, empty string, canonicalization throw), so keying on the resolved value would let a plugin that declared its paths move off HIGH by choosing an argument.
     const v = rb.classify(
       ctx({
         ownerPluginSandboxRoot: SANDBOX_ROOT,
@@ -136,30 +116,24 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
   });
 
   it("same call with substrate none (in-process plugin) drops to MEDIUM, not LOW", () => {
-    // The LOW above is earned by kernel confinement. Without it there is no
-    // containment fact to state, so the verdict must NOT be LOW — but it is not
-    // HIGH either, because nothing here observed a write. MEDIUM is what "we do
-    // not know" looks like, and unlike HIGH it can be answered once.
+    // The LOW above is earned by kernel confinement. Without it there is no containment fact to state, so the verdict must NOT be LOW — but it is not HIGH either, because nothing here observed a write. MEDIUM is what "we do not know" looks like, and unlike HIGH it can be answered once.
     const v = rb.classify(
       ctx({
         toolName: "sampleassistant_list_detectors",
         ownerPluginSandboxRoot: SANDBOX_ROOT,
         pathFields: [],
         finalInput: {},
-        // detectSandboxCapability() default in tests — kind none
+        // detectSandboxCapability default in tests — kind none
       }),
     );
     expect(v.level).toBe("medium");
     expect(v.reason).toMatch(/strict default, not an observation/);
-    // The level alone would ALSO open foreground auto-approve and the
-    // parent-adjudication ceiling. This flag is what keeps those shut.
+    // The level alone would ALSO open foreground auto-approve and the parent-adjudication ceiling. This flag is what keeps those shut.
     expect(v.requiresExplicitApproval).toBe(true);
   });
 
   it("a non-plugin source cannot reach the unknown-MEDIUM even carrying an owner root", () => {
-    // The rule keys on `source`, not merely on the presence of a plugin-shaped
-    // root, so a future builtin that gains a `pluginId` for ownership reasons
-    // cannot silently inherit it.
+    // The rule keys on `source`, not merely on the presence of a plugin-shaped root, so a future builtin that gains a `pluginId` for ownership reasons cannot silently inherit it.
     const v = rb.classify(
       ctx({
         toolName: "some_builtin",
@@ -174,9 +148,7 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
   });
 
   it("a builtin tool with no declared path is untouched — still HIGH", () => {
-    // `ownerPluginSandboxRoot` is host-set for plugin-owned tools only, so the
-    // new MEDIUM cannot reach a builtin or MCP tool. This is the guard that
-    // keeps the change from widening past the plugin lane.
+    // `ownerPluginSandboxRoot` is host-set for plugin-owned tools only, so the new MEDIUM cannot reach a builtin or MCP tool. This is the guard that keeps the change from widening past the plugin lane.
     const v = rb.classify(
       ctx({ toolName: "file_write", source: "builtin", pathFields: [], finalInput: {} }),
     );
@@ -185,9 +157,7 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
   });
 
   it("a plugin call that NAMES a target keeps its lexical write verdict", () => {
-    // The multiplexed-tool case: `index_folders` with action=list declares no
-    // folder and lands on MEDIUM above, but the same tool with action=add names
-    // one — and then the path rules decide, exactly as before.
+    // The multiplexed-tool case: `index_folders` with action=list declares no folder and lands on MEDIUM above, but the same tool with action=add names one — and then the path rules decide, exactly as before.
     const v = rb.classify(
       ctx({
         toolName: "index_folders",
@@ -208,8 +178,7 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
         sandboxCapability: { ...ASRT_FULL },
       }),
     );
-    // The confined-LOW rule must NOT swallow a resolvable declared path —
-    // the path either proves containment lexically or escalates.
+    // The confined-LOW rule must NOT swallow a resolvable declared path — the path either proves containment lexically or escalates.
     expect(v.reason).not.toContain("OS-confined to owner plugin sandbox");
   });
 
@@ -228,12 +197,7 @@ describe("RuleBasedRiskClassifier — OS-confined no-declared-write-path LOW", (
   });
 });
 
-/**
- * The owner sandbox root is host-derived, and the derivation is what must not
- * be steerable: a confined plugin that replaced its data root with a link would
- * otherwise make the link's target its "own" sandbox, since the classifier
- * canonicalises the root.
- */
+// The owner sandbox root is host-derived, and the derivation is what must not be steerable: a confined plugin that replaced its data root with a link would otherwise make the link's target its "own" sandbox, since the classifier canonicalises the root.
 describe("the owner plugin sandbox root of a replaced data root", () => {
   const rb = new RuleBasedRiskClassifier();
 

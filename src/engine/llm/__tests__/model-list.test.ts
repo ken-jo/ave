@@ -89,10 +89,7 @@ describe("LLM model list sync", () => {
   });
 
   it("reads the prompt ceiling a gateway or a self-hosted server reports", () => {
-    // A LiteLLM gateway answers with max_input_tokens/max_output_tokens; vLLM
-    // answers with max_model_len. Both name the same limit the host budgets
-    // compaction against, and reading neither leaves a served model on the
-    // conservative fallback window.
+    // Endpoint limit field aliases must resolve the same compaction budget.
     expect(
       parseStandardModelListEntries({
         object: "list",
@@ -246,7 +243,7 @@ describe("LLM model list sync", () => {
   });
 
   it("marks a listing complete only when the answer is the whole list", async () => {
-    // Only a complete listing can prove a model retired (design §6.1).
+    // Only complete listings can prove model retirement.
     const answer = (payload: unknown) => vi.fn(async () =>
       new Response(JSON.stringify(payload), { status: 200 })) as unknown as typeof fetch;
     const settingsService = makeSettingsService();
@@ -272,7 +269,6 @@ describe("LLM model list sync", () => {
   });
 
   it("refuses a retired vendor without contacting its endpoint", async () => {
-    // A stale request naming a removed vendor is an unknown provider.
     const fetchImpl = vi.fn() as unknown as typeof fetch;
     const result = await listLlmModelsFromSettings(
       makeSettingsService({ provider: "openai", baseUrl: "", secret: "token" }) as never,
@@ -363,10 +359,7 @@ describe("LLM model list sync", () => {
   });
 
   it("syncs a saved self-hosted non-openai-compatible endpoint (ollama) over private HTTP", async () => {
-    // Covers isSavedSelfHostedModelListEndpoint's `vendor !== "openai-compatible"
-    // → return true` branch: a saved self-hosted trusted-network vendor other
-    // than openai-compatible is treated as a saved self-hosted endpoint, so it
-    // gets same-origin private + loopback access and credentialed HTTP.
+    // Saved self-hosted routes receive only same-origin private access and credentialed HTTP.
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ data: [{ id: "llama3.3" }] }), {
         status: 200,
@@ -420,10 +413,7 @@ describe("LLM model list sync", () => {
   });
 
   it("denies private access for a keyless openai-compatible draft endpoint with no preset", async () => {
-    // Covers keylessMarketplaceModelListNetworkAccess's `!presetId` branch: a
-    // keyless openai-compatible DRAFT endpoint (differs from the saved baseUrl,
-    // so not a saved self-hosted endpoint) with no active marketplace preset id
-    // resolves to no private/loopback access.
+    // Keyless unsaved draft routes without a preset receive no private or loopback access.
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ data: [{ id: "draft/model" }] }), {
         status: 200,
@@ -467,7 +457,6 @@ describe("LLM model list sync", () => {
       endpoint: "http://draft.example/v1/models",
       models: ["draft/model"],
     });
-    // Keyless draft → no Authorization header forwarded.
     expect(fetchImpl).toHaveBeenCalledWith(
       "http://draft.example/v1/models",
       expect.objectContaining({ headers: { Accept: "application/json" } }),
@@ -475,10 +464,7 @@ describe("LLM model list sync", () => {
   });
 
   it("denies private access for a keyless openai-compatible endpoint whose active preset is not installed", async () => {
-    // Covers keylessMarketplaceModelListNetworkAccess's non-matching-preset
-    // branch (`!preset`): the active provider is openai-compatible with a
-    // marketplaceProviderPresetId that is not installed, keyless, so the preset
-    // lookup misses and no private/loopback access is granted.
+    // A missing marketplace preset cannot grant private or loopback access.
     const settingsService = {
       get: vi.fn((key: string) => {
         if (key === "llm") {
@@ -880,8 +866,7 @@ describe("LLM model list sync", () => {
       getSecret: vi.fn(() => "should-not-be-used"),
     };
 
-    // An explicit endpoint that is not the preset's: the preset's stored
-    // secret must never be offered to it.
+    // Never offer preset secrets to an explicit endpoint outside that preset.
     const result = await listLlmModelsFromSettings(
       settingsService as never,
       {
@@ -901,10 +886,7 @@ describe("LLM model list sync", () => {
   });
 
   it("resolves a scoped request to the preset's endpoint, not the vendor block's", async () => {
-    // The vendor block belongs to the GENERIC custom-provider row and is no
-    // longer a copy of the preset's address, so a scoped request has to read
-    // the preset registry. Reading the block would send the preset's secret
-    // to whatever another row happens to be pointed at.
+    // Resolve scoped preset credentials against its registry endpoint, never another custom-provider row.
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ data: [{ id: "future/free" }] }), { status: 200 }),
     ) as unknown as typeof fetch;
@@ -1026,10 +1008,7 @@ describe("LLM model list sync", () => {
     });
   });
 
-  // A request that never reached a server is the case the renderer can say the
-  // least about: `fetch` throws the same three words whatever went wrong. The
-  // code the runtime parked on `cause` is the whole diagnostic, so it has to
-  // survive into the result the renderer carries.
+  // Preserve network cause codes because generic fetch text cannot distinguish failures.
   it("carries the transport cause code into the diagnostic message", async () => {
     const fetchImpl = vi.fn(async () => {
       throw new TypeError("fetch failed", {
@@ -1087,9 +1066,7 @@ describe("isDefaultModelListEndpoint — the endpoint a vendor's route resolves 
   });
 
   it("a whitespace-only baseUrl resolves as the fetch resolves it: no endpoint unless a standard one exists", () => {
-    // The blank block value overrides the preset default, so a preset vendor reaches nothing...
     expect(isDefaultModelListEndpoint({ openrouter: { baseUrl: "   " } }, "openrouter", "https://openrouter.ai/api/v1/models")).toBe(false);
-    // ...while a vendor with a standard catalogue address still reaches it.
     expect(isDefaultModelListEndpoint({ openai: { baseUrl: "   " } }, "openai", "https://api.openai.com/v1/models")).toBe(true);
   });
 });
@@ -1139,8 +1116,7 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
     return {
       patch,
       service: {
-        // A snapshot per read, the way the real service hands out settings —
-        // a caller that holds one across an await is holding stale data.
+        // Settings snapshots become stale across awaits.
         get: vi.fn((key: string) =>
           key === "llm" ? { ...llm, modelListCache: { ...cache } } : {},
         ),
@@ -1188,9 +1164,7 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
   });
 
   it("asks the endpoint and stores the answer where the reader looks for it", async () => {
-    // The cache used to be written only by the settings page, so a run with no
-    // window open — a routine, a sub-agent, an evaluation — could never reach
-    // the provider-reported window at all.
+    // Background discovery must populate reported windows without a settings page open.
     const { service, patch } = makeRefreshSettings();
     const fetchImpl = servedCatalogue();
 
@@ -1205,7 +1179,6 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
     const written = patch.mock.calls[0][0];
     const key = llmModelListCacheKey("openai-compatible", "https://models.invalid/v1", "");
     expect(written.llm.modelListCache[key]?.modelEntries?.[0]?.contextLength).toBe(229_376);
-    // The window the engine and the ring then read off that row.
     expect(
       resolveContextWindowForRoute({
         provider: "openai-compatible",
@@ -1271,10 +1244,7 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
   });
 
   it("does not ask a preset that declares it has nothing to answer with", async () => {
-    // A static or manually configured preset is saying its endpoint does not
-    // serve /models. The settings page refuses that sync; a background probe
-    // that skipped the check would send the preset's credential scope to an
-    // endpoint the user declared off limits.
+    // Static or manual presets forbid model discovery, including background credentialed probes.
     const { service, patch } = makeRefreshSettings();
     const fetchImpl = servedCatalogue();
 
@@ -1291,8 +1261,7 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(patch).not.toHaveBeenCalled();
 
-    // And the refusal did not burn the route's one probe: a preset later
-    // switched to discovery is asked normally.
+    // Refusing discovery must not consume the route probe before discovery is enabled.
     expect(
       await refreshRouteModelList({
         settingsService: service as never,
@@ -1304,14 +1273,11 @@ describe("refreshRouteModelList — the catalogue a headless run can reach", () 
   });
 
   it("merges its answer into the cache as it stands after the round trip", async () => {
-    // `patch` shallow-merges one settings block, and the request above takes
-    // seconds. Writing back the cache this call started with would erase a row
-    // the settings page synced while it was waiting.
+    // Re-read cache before shallow patching so concurrent sync rows are not erased.
     const otherKey = llmModelListCacheKey("openai", "", "");
     const cache: Record<string, unknown> = {};
     const { service, patch } = makeRefreshSettings(cache);
     const fetchImpl = vi.fn(async () => {
-      // A concurrent sync lands mid-flight.
       cache[otherKey] = {
         vendor: "openai",
         endpoint: "https://api.openai.com/v1/models",

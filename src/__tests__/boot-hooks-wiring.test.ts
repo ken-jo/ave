@@ -1,13 +1,4 @@
-/**
- * Permission policy boot hook wiring regression (#811 command-hooks milestone).
- *
- * NEW invariant (replaces the pre-#811 "hooks.json is never loaded" rule):
- * `hooks.json` IS loaded by `wireHookSystem`, but ONLY through the SAME TOFU
- * quarantine gate as `.sh` files. An untrusted or changed `hooks.json` stays
- * quarantined (its commands NEVER run); a trusted, unchanged one loads its
- * command entries into the runtime registry. There is no path by which an
- * un-trusted config spawns a command.
- */
+/** Untrusted or changed hooks.json must stay quarantined; only trusted, unchanged commands may load. */
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,9 +45,7 @@ describe("boot wireHookSystem — hooks.json rides the TOFU quarantine gate (#81
     ({ hooksDir, disabledDir } = layout);
     configPath = join(hooksDir, HOOKS_CONFIG_FILENAME);
     mkdirSync(hooksDir, { recursive: true });
-    // Referenced local-script the config points at. Named WITHOUT a
-    // pre-/post-/perm- prefix so `discoverHooks` ignores it — it is only a
-    // command target, not a standalone `.sh` hook.
+    // Omit discovery prefixes so this script is only a config command target.
     const p = join(hooksDir, "policy.sh");
     writeFileSync(p, "#!/bin/sh\necho '{\"action\":\"allow\",\"reason\":\"ok\"}'");
     chmodSync(p, 0o755);
@@ -80,18 +69,15 @@ describe("boot wireHookSystem — hooks.json rides the TOFU quarantine gate (#81
   it("an UNTRUSTED hooks.json is loaded ONLY into quarantine — never into the registry", async () => {
     writeJsonConfig(configPath, CONFIG);
     const boot = await wireHookSystem(layout);
-    // Production strict-deny: the config IS discovered but quarantined.
     expect(boot.manager.size()).toBe(0);
     expect(boot.trust.trustedConfigEntries).toEqual([]);
     expect(boot.trust.disabledHooks.map((h) => h.fileName)).toContain(HOOKS_CONFIG_FILENAME);
-    // Moved to .disabled/ — its commands cannot run.
     expect(existsSync(join(disabledDir, HOOKS_CONFIG_FILENAME))).toBe(true);
     expect(existsSync(configPath)).toBe(false);
   });
 
   it("a TRUSTED hooks.json loads its command entries into the registry", async () => {
     writeJsonConfig(configPath, CONFIG);
-    // First boot quarantines; user accepts; second boot loads.
     const firstBoot = await wireHookSystem(layout);
     expect(firstBoot.manager.size()).toBe(0);
 
@@ -101,7 +87,6 @@ describe("boot wireHookSystem — hooks.json rides the TOFU quarantine gate (#81
     });
     expect(accepted).toMatchObject({ ok: true });
 
-    // A fresh boot now finds the config trusted+unchanged and loads it.
     const secondBoot = await wireHookSystem(layout);
     expect(secondBoot.trust.trustedConfigEntries).toHaveLength(1);
     expect(secondBoot.manager.size()).toBe(1);
@@ -114,10 +99,8 @@ describe("boot wireHookSystem — hooks.json rides the TOFU quarantine gate (#81
     const boot2 = await wireHookSystem(layout);
     expect(boot2.manager.size()).toBe(1);
 
-    // Tamper with the trusted config.
     writeJsonConfig(configPath, { ...CONFIG, version: 999 });
     const boot3 = await wireHookSystem(layout);
-    // Re-quarantined: registry empty again, NO commands load from the changed config.
     expect(boot3.manager.size()).toBe(0);
     expect(boot3.trust.trustedConfigEntries).toEqual([]);
     expect(existsSync(join(disabledDir, HOOKS_CONFIG_FILENAME))).toBe(true);

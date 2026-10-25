@@ -1,9 +1,4 @@
-/**
- * PR-A4 tests for risk-classifier: grapheme + entropy intent classifier (R-1),
- * HIGH-1 / HIGH-2 / MEDIUM-2 dedicated test cases (PR-A2 #779 gap fill).
- *
- * Issue: #691 PR-A4
- */
+// Cover intent grapheme/entropy classification and dedicated high/medium risk rules.
 import { describe, it, expect } from "vitest";
 import {
   isContextMissingIntent,
@@ -43,7 +38,7 @@ function makeCtx(overrides: Partial<ToolInvocationContext> = {}): ToolInvocation
   };
 }
 
-// ─── isContextMissingIntent tests ────────────────────────────────────────────
+// isContextMissingIntent tests
 
 describe("isContextMissingIntent — PR-A4 grapheme + entropy classifier", () => {
   it("returns true for absent message", () => {
@@ -59,10 +54,7 @@ describe("isContextMissingIntent — PR-A4 grapheme + entropy classifier", () =>
   });
 
   it("returns true for 3-char Korean utterance (PR-A1 false-positive fixed)", () => {
-    // Old v1 heuristic would return true for < 5 chars; new grapheme check
-    // also returns true but for a different reason (< 15 graphemes). What matters
-    // is that SHORT Korean is still treated as weak — the F1 finding was about
-    // LONGER Korean messages being incorrectly flagged.
+    // Old v1 heuristic would return true for < 5 chars; new grapheme check also returns true but for a different reason (< 15 graphemes). What matters is that SHORT Korean is still treated as weak — the F1 finding was about LONGER Korean messages being incorrectly flagged.
     expect(isContextMissingIntent(makeCtx({ conversationContext: { recentUserMessage: "확인해" } }))).toBe(true);
   });
 
@@ -95,7 +87,7 @@ describe("isContextMissingIntent — PR-A4 grapheme + entropy classifier", () =>
   });
 });
 
-// ─── RuleBasedRiskClassifier HIGH/MEDIUM dedicated tests ──────────────────────
+// RuleBasedRiskClassifier HIGH/MEDIUM dedicated tests
 
 describe("RuleBasedRiskClassifier — HIGH-1 / HIGH-2 / MEDIUM-2 (PR-A2 gap fill)", () => {
   const classifier = new RuleBasedRiskClassifier();
@@ -159,7 +151,7 @@ describe("RuleBasedRiskClassifier — HIGH-1 / HIGH-2 / MEDIUM-2 (PR-A2 gap fill
   });
 });
 
-// ─── LlmRiskClassifier R-1 no-downgrade rule ─────────────────────────────────
+// LlmRiskClassifier R-1 no-downgrade rule
 
 describe("LlmRiskClassifier — R-1 no-downgrade with weak context", () => {
   function makeLlmProvider(responseLevel: "low" | "medium" | "high") {

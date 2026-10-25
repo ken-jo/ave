@@ -101,9 +101,8 @@ export function ChatTab({
 }: ChatTabProps) {
   const { t } = useTranslation();
   const processingDisplayIndex = PROCESSING_DISPLAY_LEVELS.indexOf(processingDisplayLevel);
-  // Memoize the wrapped onToggle so PrivacyTab receives a stable identity
-  // across re-renders — if PrivacyTab ever memoizes via React.memo / props
-  // comparison, an inline arrow would defeat it.
+  // Memoize the wrapped onToggle so PrivacyTab receives a stable identity across re-renders — if PrivacyTab ever memoizes
+  // via React.memo / props comparison, an inline arrow would defeat it.
   const handlePiiRedactToggle = useCallback(() => {
     onPiiRedactToggle();
     onImmediateChange?.();

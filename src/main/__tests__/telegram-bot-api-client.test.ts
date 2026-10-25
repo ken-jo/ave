@@ -67,8 +67,7 @@ describe("TelegramBotApiClient", () => {
 
     const body = requestBody(fetchStub.mock.calls[0] as unknown as unknown[]);
     expect(body).toMatchObject({ offset: 42, allowed_updates: ["message", "callback_query"] });
-    // An omitted limit would inherit Telegram's default of 100, and an omitted
-    // allowed_updates would inherit whatever a prior setWebhook configured.
+    // An omitted limit would inherit Telegram's default of 100, and an omitted allowed_updates would inherit whatever a prior setWebhook configured.
     expect(body.limit).toBe(25);
     expect(typeof body.timeout).toBe("number");
   });
@@ -314,8 +313,7 @@ describe("TelegramBotApiClient", () => {
     );
     expect(fetchStub).not.toHaveBeenCalled();
 
-    // -1 is the documented "most recent update" idiom used once to seed past a
-    // backlog, so it must survive the same validation.
+    // -1 is the documented "most recent update" idiom used once to seed past a backlog, so it must survive the same validation.
     await expect(api.getUpdates({ offset: -1 })).resolves.toEqual({ ok: true, value: [] });
     expect(requestBody(fetchStub.mock.calls[0] as unknown as unknown[]).offset).toBe(-1);
   });

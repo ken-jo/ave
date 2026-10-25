@@ -1,8 +1,4 @@
-/**
- * The manifest digest an install receipt / rollback record carries:
- * sha256 over the canonical-JSON form, hex. Shared so the suites that compute
- * it do not drift from the canonical form.
- */
+/** Receipts use a hex SHA-256 of canonical manifest JSON. */
 import { createHash } from "node:crypto";
 import { canonicalJSON } from "../../plugins/secret-access/canonical-json.js";
 

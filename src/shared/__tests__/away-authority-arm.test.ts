@@ -8,11 +8,7 @@ import {
 
 const intent = { inputOrigin: "user-keyboard" as const, userActivation: true as const };
 
-/**
- * The one payload every case starts from. A frozen constant rather than a
- * builder: a case that wants a different value spreads it inline, which keeps
- * the spoiled field visible in the case itself.
- */
+/** Spread changes inline so each rejected payload’s altered field remains visible. */
 const VALID: Readonly<Record<string, unknown>> = Object.freeze({
   intent,
   chatGroupId: "main",
@@ -41,17 +37,14 @@ function liveStatus(overrides: Record<string, unknown> = {}): Record<string, unk
 describe("away authority arm wire contract", () => {
   it("accepts a payload the desk can actually produce", () => {
     expect(isAwayAuthorityArmInput({ ...VALID })).toBe(true);
-    // A tile other than the primary is an ordinary payload: the window can hold
-    // several conversations, and any of them may be the one on screen.
+    // Any tile may own the on-screen conversation; the primary is not special.
     expect(isAwayAuthorityArmInput({ ...VALID, chatGroupId: "group-3" })).toBe(true);
     expect(isAwayAuthorityArmInput({ ...VALID, mode: "read-write", duration: "4h", budget: 50 }))
       .toBe(true);
   });
 
   it("accepts an empty directory list, leaving the refusal to the grant parser", () => {
-    // A read-only grant with no directory is refused by
-    // `parseAwayAuthorityGrant`, not here: this guard checks shape, and putting
-    // the scope rule in two places is how the two stop agreeing.
+    // Validate grant scope in parseAwayAuthorityGrant; this guard owns shape only.
     expect(isAwayAuthorityArmInput({ ...VALID, directories: [] })).toBe(true);
   });
 

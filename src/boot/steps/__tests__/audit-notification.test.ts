@@ -118,10 +118,7 @@ describe("setupAuditAndNotification audit lifecycle", () => {
 });
 
 describe("setupAuditAndNotification OS notification presenter", () => {
-  // Electron registers the Windows per-user Start Menu shortcut and toast
-  // activator CLSID when its presenter is created. The packaged NSIS smoke
-  // requires both after the first launch, so boot must create the presenter
-  // instead of waiting for the first notification.
+  // Initialize the presenter at boot so Windows registers persisted-toast activation before the first cue.
   it("initialises the desktop notification presenter once during boot", async () => {
     const initializeNotificationPresenter = vi.fn(() => true);
     const desktop = createDesktopHostFixture({ initializeNotificationPresenter });

@@ -1,44 +1,17 @@
-/**
- * window-titlebar-shell — shared HTML+CSS template builder for the Ave
- * BrowserWindow header chrome.
- *
- * Used by:
- *   - `src/main/auth-window-service.ts`  — login flow shells
- *   - `src/main/link-window-service.ts`  — external link viewer shells
- *
- * The main app window uses the React `CustomTitleBar` component; auth and
- * link windows can't easily mount a React tree (they load a `data:` URL
- * or an external URL inside a `<webview>`), so this module emits the
- * equivalent visual contract as a CSS+HTML string that both data-URL
- * shells can splice into their templates.
- *
- * Theme: light by default, with `@media (prefers-color-scheme: dark)`
- * overrides so dark-OS users don't see a bright flash when an auth flow
- * opens. Bundle-accent matching (e.g. forcing Cherry Blossom's pink
- * accent into the titlebar) is intentionally out of scope here — it
- * would require an IPC roundtrip into the renderer's ThemeProvider, and
- * the practical legibility win sits in the light/dark gate.
- *
- * Surfaces emitted:
- *   - `:root` token variables (--ts-bg, --ts-fg, --ts-border, --ts-btn,
- *     --ts-btn-hover, --ts-btn-close-hover)
- *   - `.titlebar`, `.titlebar-mac` (height + drag region)
- *   - `.title`                     (window title text)
- *   - `.controls`, `.titlebar-btn`, `.titlebar-btn-close`
- */
+// Auth and link shells share this HTML/CSS titlebar contract because they do not mount the app’s component tree. Use OS light/dark preference to avoid a
+// bright flash while keeping shell rendering independent of theme IPC.
 
 import { t } from "../i18n/index.js";
 
 export interface TitlebarShellOptions {
-  /** Process platform — drives macOS hidden-inset vs Win/Linux full titlebar. */
+  // Process platform — drives macOS hidden-inset vs Win/Linux full titlebar.
   platform: NodeJS.Platform;
-  /** Window title — shown next to controls on Win/Linux, hidden on macOS. */
+  // Window title — shown next to controls on Win/Linux, hidden on macOS.
   title: string;
 }
 
-/** Render the titlebar root <div>. macOS gets a 36px drag-only strip (matches
- *  Win/Linux height so chrome looks consistent and OS traffic lights center
- *  cleanly); Win/Linux gets a full bar with title + min/max/close buttons. */
+// Render the titlebar root <div>. macOS gets a 36px drag-only strip (matches Win/Linux height so chrome looks consistent and OS traffic lights center
+// cleanly); Win/Linux gets a full bar with title + min/max/close buttons.
 export function buildTitlebarHtml({ platform }: TitlebarShellOptions): string {
   const isMac = platform === "darwin";
   if (isMac) {
@@ -60,10 +33,8 @@ export function buildTitlebarHtml({ platform }: TitlebarShellOptions): string {
   </div>`;
 }
 
-/** Emit the CSS for the titlebar + supporting layout primitives.
- *  Light tokens are warm-cream (matches Violet Light feel); dark tokens are
- *  warm-grey-1 (matches Violet Dark feel). Both use HSL so theme bundle
- *  changes in a future revision can reuse the same variable names. */
+// Emit the CSS for the titlebar + supporting layout primitives. Light tokens are warm-cream (matches Violet Light feel); dark tokens are warm-grey-1
+// (matches Violet Dark feel). Both use HSL so theme bundle changes in a future revision can reuse the same variable names.
 export function buildTitlebarCss(): string {
   return `
     :root {
@@ -154,10 +125,8 @@ export function buildTitlebarCss(): string {
   `;
 }
 
-/** JS string that wires the titlebar buttons (minimize/maximize/close) to
- *  `window.aveWindow.*` preload bridge. Caller is responsible for
- *  loading this inside its own `<script>` tag along with any window-
- *  specific JS. macOS skips this (no buttons rendered). */
+// JS string that wires the titlebar buttons (minimize/maximize/close) to `window.aveWindow.*` preload bridge. Caller is responsible for loading this
+// inside its own `<script>` tag along with any window- specific JS. macOS skips this (no buttons rendered).
 export function buildTitlebarButtonScript({ platform }: TitlebarShellOptions): string {
   const isMac = platform === "darwin";
   if (isMac) {

@@ -1,55 +1,25 @@
-/**
- * The test runner's stand-in for `src/shared/ave-home-test-guard.ts`: the
- * checks that keep a test out of the developer's real `~/.ave`.
- *
- * `vitest.analysis.config.ts` resolves every import of the app's module to
- * this one, so the checks run in every test process and in no build. Each test
- * file starts in its own home under `~/.ave/test-tmp`
- * (`src/__tests__/vitest-ave-home.ts`); these refuse one that resolves past
- * it anyway — a test that cleared AVE_HOME, or pointed it into the real home.
- */
+/** Resolve the test home seam here so every test process refuses paths outside its isolated home. */
 import { createRequire } from "node:module";
 import { homedir, userInfo } from "node:os";
 
-// The file system and path arithmetic come from Node itself, past any
-// `vi.mock("node:fs")` a suite has: the guard runs inside every suite,
-// including those that replace the file system with a handful of stubs.
-// `node:os` is imported as usual, so a suite can stand a scratch account in
-// for the person's by mocking `userInfo()` or `homedir()`.
+// Use real filesystem functions despite suite mocks; allow account-home mocks for guard tests.
 const nodeRequire = createRequire(import.meta.url);
 const { lstatSync, readlinkSync, realpathSync } = nodeRequire("node:fs") as typeof import("node:fs");
 const { basename, dirname, join, resolve, sep } = nodeRequire("node:path") as typeof import("node:path");
 
 export const AVE_HOME_ISOLATION_GUARD_ACTIVE: boolean = true;
 
-/**
- * Refuse an Ave home inside the account's own `~/.ave` other than its
- * `test-tmp`. Only the account's home counts here: a test that points HOME or
- * a mocked `homedir()` at a scratch directory and keeps its Ave home there is
- * isolated.
- */
+/** Only test-tmp may reside under the account's real Ave home. */
 export function checkResolvedAveHome(home: string): void {
   refuseUnder(home, "resolve AVE_HOME to", [accountAveHome()]);
 }
 
-/**
- * Refuse a sandbox root inside the real `~/.ave` other than `test-tmp`: what
- * is there belongs to a running app, the HOMEs and temp directories of its
- * confined processes, which a sweep deletes. Stricter than
- * {@link checkResolvedAveHome} for an action this destructive: HOME's
- * `~/.ave` counts as real too, so the guard's own tests can stand a scratch
- * directory in for it.
- */
+/** Sandbox cleanup must reject real-home paths, including those derived from HOME. */
 export function checkSandboxSweepRoot(root: string): void {
   refuseUnder(root, "sweep", [resolve(join(homedir(), ".ave")), accountAveHome()]);
 }
 
-/**
- * For a test that clears AVE_HOME, the per-run directory
- * `vitest.globalSetup.ts` makes (`AVE_TEST_SANDBOX_BASE`) holds the sandbox
- * private roots: never `~/.ave/sandbox`, which a running app's boot empties.
- * A test process without it is refused rather than defaulted to the real one.
- */
+/** Use the per-run sandbox base, never the running app's sandbox; refuse tests without an isolated base. */
 export function testSandboxPrivateBase(): string | undefined {
   if (process.env.AVE_HOME !== undefined) return undefined;
   const base = process.env.AVE_TEST_SANDBOX_BASE;
@@ -62,14 +32,12 @@ export function testSandboxPrivateBase(): string | undefined {
   return base;
 }
 
-/** The account's own `~/.ave`, from the account database rather than HOME. */
 function accountAveHome(): string {
   let accountHome: string;
   try {
     accountHome = userInfo().homedir;
   } catch (error) {
-    // A container user with no passwd entry has no account record; HOME is
-    // then the only home there is.
+    // Without an account-database entry, HOME is the only available home.
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     accountHome = homedir();
   }
@@ -77,12 +45,10 @@ function accountAveHome(): string {
 }
 
 function refuseUnder(path: string, action: string, realHomes: readonly string[]): void {
-  // Each side as named and as the file system resolves it: HOME may be reached
-  // through a link (`/tmp` is `/private/tmp` on macOS), and so may the path.
+  // Check both named and resolved paths so links cannot hide real-home access.
   const homes = [...new Set(realHomes.flatMap((home) => [home, canonicalPath(home)]))];
   const paths = [resolve(path), canonicalPath(path)];
-  // macOS and Windows file systems ignore case by default: `/Users/Me/.AVE`
-  // is the same directory.
+  // Treat Windows and macOS paths case-insensitively by default.
   const fold = (p: string) => (process.platform === "linux" ? p : p.toLowerCase());
   const inside = (candidate: string, dir: string) =>
     fold(candidate) === fold(dir) || fold(candidate).startsWith(fold(dir).replace(/[\\/]+$/, "") + sep);
@@ -96,13 +62,7 @@ function refuseUnder(path: string, action: string, realHomes: readonly string[])
   }
 }
 
-/**
- * Where `path` lands once created: the nearest ancestor that exists, as the
- * file system resolves it, with the missing components after it. A path that
- * does not exist yet is exactly what a store is about to create, so naming it
- * through a link to the real home (or `/tmp` for `/private/tmp`) must not hide
- * where it goes. A dangling link on the way is followed to its target.
- */
+/** Resolve existing ancestors and dangling links so missing paths cannot hide a real-home target. */
 export function canonicalPath(path: string): string {
   const missing: string[] = [];
   let current = resolve(path);
@@ -134,8 +94,6 @@ export function canonicalPath(path: string): string {
   }
 }
 
-// The guard stands in for the app's seam, so it must offer what the seam does.
-// Type-only: nothing of the seam loads.
 type Seam = typeof import("../../shared/ave-home-test-guard.js");
 const conforms: Seam = { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkResolvedAveHome, checkSandboxSweepRoot, testSandboxPrivateBase };
 void conforms;

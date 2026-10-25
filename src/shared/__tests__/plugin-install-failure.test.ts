@@ -1,12 +1,4 @@
-/**
- * Unit tests for the Plugin Doctor failure taxonomy + cause classifier.
- *
- * The classifier is the SOT that lets the Doctor tell REINSTALL-FIXABLE
- * failures (stale/pre-v6/schema-invalid on-disk manifest, missing/corrupt
- * files, generic load errors) apart from NOT-locally-fixable ones (catalog↔
- * grant mismatch, app-version incompatibility) so it auto-repairs the former
- * and falls back to a diagnosis for the latter.
- */
+/** Reinstall repairs damaged artifacts, not policy, provenance, version, or revocation failures. */
 import { describe, it, expect } from "vitest";
 import {
   PLUGIN_INSTALL_FAILURE_KINDS,
@@ -31,10 +23,6 @@ describe("isPluginInstallFailureKind", () => {
 
 describe("isReinstallFixableFailureKind", () => {
   it("classifies a pre-v6/schema manifest failure as reinstall-fixable", () => {
-    // The motivating #885 Phase R case: an installed plugin whose on-disk
-    // manifest is a stale/pre-v6 shape now fails schema validation at load.
-    // The runtime maps that to `manifest-validation-error`; reinstalling the
-    // latest marketplace version ships a valid manifest.
     expect(isReinstallFixableFailureKind("manifest-validation-error")).toBe(true);
   });
 
@@ -47,29 +35,23 @@ describe("isReinstallFixableFailureKind", () => {
   });
 
   it("classifies host-protocol incompatibility as NOT reinstall-fixable", () => {
-    // Reinstalling fetches the same manifest naming the same protocol version;
-    // only a newer app, or a plugin release that speaks this one, changes it.
+    // Reinstall preserves protocol version; compatibility needs a different app or plugin release.
     expect(isReinstallFixableFailureKind("incompatible-host-protocol")).toBe(false);
   });
 
   it("classifies both process-entry refusals as NOT reinstall-fixable", () => {
-    // Neither the sandbox setting and platform nor the install's provenance
-    // changes when the same version is reinstalled from the same source.
+    // Reinstall does not change sandbox support or source provenance.
     expect(isReinstallFixableFailureKind("process-entry-unconfined")).toBe(false);
     expect(isReinstallFixableFailureKind("process-entry-requires-pinned-artifact")).toBe(false);
   });
 
   it("classifies a sandbox grant outside the ceiling as NOT reinstall-fixable", () => {
-    // Doctor reinstalls the version on disk, which preserves its declared
-    // grants. A narrower plugin update or a changed approval is a separate action.
+    // Reinstall preserves grants; narrower updates and approval changes are separate actions.
     expect(isReinstallFixableFailureKind("sandbox-grant-outside-ceiling")).toBe(false);
   });
 
   it("classifies a marketplace revocation block as NOT reinstall-fixable", () => {
-    // A reinstall either re-fetches the same blocked version (the install
-    // path enforces the same revocation registry) or is a genuine upgrade,
-    // not a "repair" — the Doctor must show the block reason instead of
-    // looping a reinstall.
+    // Show revocation reasons rather than looping on a reinstall of the same blocked version.
     expect(isReinstallFixableFailureKind("plugin-revoked")).toBe(false);
   });
 

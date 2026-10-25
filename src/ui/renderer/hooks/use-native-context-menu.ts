@@ -31,11 +31,8 @@ type PendingNativeContextMenu = {
   handlers: NativeContextMenuHandlers;
 };
 
-/**
- * Renderer half of the native context-menu bridge. Main owns labels, ordering,
- * and the allow-list; this hook retains target data and callbacks locally and
- * correlates the returned fixed command id with an unguessable request id.
- */
+/** Renderer half of the native context-menu bridge. Main owns labels, ordering, and the allow-list; this hook retains
+ * target data and callbacks locally and correlates the returned fixed command id with an unguessable request id. */
 export function useNativeContextMenu() {
   const pendingRef = useRef<PendingNativeContextMenu | null>(null);
 
@@ -55,16 +52,14 @@ export function useNativeContextMenu() {
     kind: NativeContextMenuKind,
     handlers: NativeContextMenuHandlers,
   ) => {
-    // Yield to the global WebContents copy/select-all menu only when the
-    // selection actually intersects this target. A stale selection elsewhere
-    // must not suppress the target's application actions.
+    // Yield to the global WebContents copy/select-all menu only when the selection actually intersects this target. A stale
+    // selection elsewhere must not suppress the target's application actions.
     const selection = window.getSelection?.();
     if (selection && !selection.isCollapsed && selection.toString().trim()) {
       for (let index = 0; index < selection.rangeCount; index += 1) {
         try {
           if (selection.getRangeAt(index).intersectsNode(event.currentTarget)) {
-            // Handled: the WebContents menu wins here, and an ancestor target
-            // must not override that decision with its own menu.
+            // Handled: the WebContents menu wins here, and an ancestor target must not override that decision with its own menu.
             event.stopPropagation();
             return false;
           }
@@ -76,14 +71,12 @@ export function useNativeContextMenu() {
 
     const show = window.ave?.ui?.showNativeContextMenu;
     const commands = Object.keys(handlers) as NativeContextMenuCommand[];
-    // Not handled — no bridge, or this target has nothing to offer right now.
-    // Let the event keep bubbling so an ancestor target (e.g. the sidebar's
-    // Projects tab behind a row) can still answer the right-click.
+    // Not handled — no bridge, or this target has nothing to offer right now. Let the event keep bubbling so an ancestor
+    // target (e.g. the sidebar's Projects tab behind a row) can still answer the right-click.
     if (!show || commands.length === 0) return false;
 
-    // The innermost target that CAN answer owns the menu: without this, a
-    // nested target's menu request is immediately replaced by its ancestor's
-    // (both write the same `pendingRef`, and two popups race).
+    // The innermost target that CAN answer owns the menu: without this, a nested target's menu request is immediately replaced
+    // by its ancestor's (both write the same `pendingRef`, and two popups race).
     event.stopPropagation();
     event.preventDefault();
     const rect = event.currentTarget.getBoundingClientRect();
@@ -142,8 +135,8 @@ export function useNativeMenu() {
     if (typeof show !== "function") return false;
     const requestId = crypto.randomUUID();
     const run = new Map<string, () => void | Promise<void>>();
-    // The tree is flattened into (id → callback) as it is serialised, so the id
-    // main echoes back needs no lookup through the tree it came from.
+    // The tree is flattened into (id → callback) as it is serialised, so the id main echoes back needs no lookup through the
+    // tree it came from.
     const strip = (rows: NativeMenuRow[]): NativeMenuItem[] =>
       rows.map((row) => {
         if (row.onSelect) run.set(row.id, row.onSelect);
@@ -166,9 +159,8 @@ export function useNativeMenu() {
     pendingRef.current = { requestId, run };
     const result = await show(payload);
     if (result?.ok !== true) {
-      // Only clear our own entry: two overlapping opens both write this ref, and
-      // the loser resolving late must not strip the callbacks off the menu that
-      // is currently on screen.
+      // Only clear our own entry: two overlapping opens both write this ref, and the loser resolving late must not strip the
+      // callbacks off the menu that is currently on screen.
       if (pendingRef.current?.requestId === requestId) pendingRef.current = null;
       return false;
     }

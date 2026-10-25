@@ -1,11 +1,4 @@
-/**
- * #1176 — PluginRuntime.setPluginEnabled / isPluginEnabled.
- *
- * Verifies enabled state is identical to immutable-generation admission:
- *   - disable publishes the inactive pointer and drains teardown;
- *   - re-enable reverifies receipt-covered bytes and publishes a new generation.
- *   - an unknown plugin id throws.
- */
+/** Enabled state follows immutable-generation admission; re-enable verifies receipt-covered bytes before publishing. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { chmod, lstat, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { mkdtempSync } from "node:fs";
@@ -164,16 +157,14 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
 
     await runtime.setPluginEnabled("se-plugin", false);
 
-    // No runtime instance or generation admission remains after terminal success.
     expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
     expect(runtime.listPluginIds()).not.toContain("se-plugin");
     expect(changes).toEqual([{ id: "se-plugin", enabled: false }]);
 
-    // Registry persisted enabled=false atomically.
     const registry = JSON.parse(await readFile(registryPath, "utf-8"));
     expect(registry.plugins.find((p: { id: string }) => p.id === "se-plugin").enabled).toBe(false);
 
-    // Metadata remains discoverable for an explicit verified re-enable.
+    // Retain disabled metadata for verified explicit re-enable.
     const card = runtime.listPluginCards().find((c) => c.id === "se-plugin");
     expect(card?.loadStatus).toBe("disabled");
     expect(card?.runtimeLoaded).toBe(false);
@@ -489,26 +480,13 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     expect(registry.plugins.find((p: { id: string }) => p.id === "se-plugin").enabled).toBe(false);
   });
 
-  /**
-   * M1 cross-restart regression — #1176.
-   *
-   * Scenario: user disables a plugin, app restarts. Before the fix, the boot
-   * LOAD gate (registry filter + snapshots.ts) would skip loading the plugin
-   * entirely, leaving inactivePluginIds empty. As a result:
-   *   - isPluginEnabled("se-plugin") returned true (false negative)
-   *   - setPluginEnabled("se-plugin", true) threw "Plugin not found"
-   *
-   * After the fix, installed metadata remains discoverable while no runtime or
-   * active generation is admitted until the receipt is reverified.
-   */
+  /** After restart a disabled install remains discoverable but has no admitted runtime until receipt verification. */
   describe("cross-restart: boot from persisted enabled=false", () => {
     let disabledCalls: string[];
     let enabledCalls: string[];
     let runtime: ReturnType<typeof makeRuntime>;
 
     beforeEach(async () => {
-      // Persist enabled=false in the registry BEFORE boot (simulates a restart
-      // after the user previously disabled the plugin).
       await writeFile(
         registryPath,
         JSON.stringify({ version: 1, plugins: [{ id: "se-plugin", manifestPath, enabled: false }] }),
@@ -537,13 +515,12 @@ describe("PluginRuntime — active/inactive toggle (#1176)", () => {
     });
 
     it("(c) inactivePluginIds seeded at boot without lifecycle teardown callbacks", () => {
-      // Boot publishes no runtime projection and fires no teardown callback.
+      // Disabled boot publishes no runtime and needs no teardown callback.
       expect(runtime.isPluginEnabled("se-plugin")).toBe(false);
       expect(disabledCalls).not.toContain("se-plugin");
     });
 
     it("(d) setPluginEnabled(true) succeeds after restart", async () => {
-      // Before the M1 fix this threw "Plugin not found: se-plugin".
       await expect(runtime.setPluginEnabled("se-plugin", true)).resolves.toBeUndefined();
       expect(runtime.isPluginEnabled("se-plugin")).toBe(true);
       expect(enabledCalls).toContain("se-plugin");

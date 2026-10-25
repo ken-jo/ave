@@ -63,8 +63,7 @@ describe("agent-plugin manifest branches", () => {
   });
 
   it("reads an unknown extension namespace as another vendor's data, never as Ave fields", () => {
-    // Only the Ave namespace is interpreted: the same extension entry that the
-    // Ave key refuses on this branch passes through unread under an unknown one.
+    // Only the Ave namespace is interpreted; unknown extension namespaces pass through unread.
     const entry = { entry: "dist/index.js", tools: [] };
     expect(() => parseAgentPluginManifest(JSON.stringify(namespace(entry)))).toThrow("extension process");
     const unknownOnly = JSON.stringify({ ...MARKET, extensions: { [UNKNOWN_NAMESPACE]: entry } });

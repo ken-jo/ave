@@ -1,11 +1,4 @@
-/**
- * `~/.ave/packages/default-installs.json` (design §10.2): the default-install
- * keys already applied on this machine. A recorded key is never installed
- * again, so uninstalling a default package is final.
- *
- * A file that cannot be read stops the default installs instead of reading
- * as empty: an empty list would reinstall everything the user removed.
- */
+/** Recorded defaults never reinstall; unreadable records stop boot installs rather than resurrect removals. */
 import { readFile } from "node:fs/promises";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import { writeFileAtomicAtPath } from "../../main/storage/feature-namespace.js";
@@ -18,7 +11,6 @@ export type AppliedResult = "installed" | "skipped" | "migrated";
 
 export interface AppliedDefault extends PackageKey {
   result: AppliedResult;
-  /** Why a skipped key was skipped; shown in the boot notice. */
   reason?: string;
   at: string;
 }
@@ -85,7 +77,6 @@ export class AppliedDefaults {
     return [...this.entries.values()];
   }
 
-  /** Record `key` and write the file before returning. */
   async record(key: PackageKey, result: AppliedResult, at: Date, reason?: string): Promise<void> {
     const entry: AppliedDefault = { kind: key.kind, name: key.name, source: key.source, result, ...(reason ? { reason } : {}), at: at.toISOString() };
     this.entries.set(packageKeyId(key), entry);

@@ -38,7 +38,6 @@ type CapturedGuidance = {
   };
 };
 
-
 function routeFor(
   taskState: A2AProjectedTaskState,
   activeLoop?: ConversationLoop,
@@ -339,8 +338,7 @@ describe("A2A agent message bus", () => {
       },
     }))).resolves.toMatchObject({ ok: false, reason: "cross-origin" });
 
-    // A hop that names the right recipient but another conversation's origin
-    // must not let one parent's tree speak into another's.
+    // A sender cannot cross parent trees by claiming another conversation's origin.
     const foreignOrigin = createHarness();
     await expect(foreignOrigin.bus.send(makeSend("message-foreign-origin", {
       causalContext: {

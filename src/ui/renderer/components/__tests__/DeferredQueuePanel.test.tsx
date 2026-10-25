@@ -8,7 +8,6 @@ import { makeDeferredQueueEntry } from "../../../../../test/renderer/helpers.js"
 
 type DeferredEntry = DeferredQueueEntry;
 
-
 function installApi(opts: {
   entries: DeferredEntry[];
   listResult?: { ok: true; pending: DeferredEntry[]; total: number } | { ok: false; error: string };
@@ -177,7 +176,6 @@ describe("DeferredQueuePanel", () => {
       fireEvent.click(button);
     });
     expect(api.deferredResolve).toHaveBeenCalledWith("abc-123", "approved", undefined, "button");
-    // After click: deferredList re-fetched (initial + post-action)
     expect(api.deferredList.mock.calls.length).toBeGreaterThanOrEqual(2);
   });
 

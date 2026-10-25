@@ -338,6 +338,7 @@ export class ToolExecutor {
     pluginId?: string,
     hostShellExecutionPlan?: HostShellExecutionPlan,
     auditInput?: Record<string, unknown>,
+    sessionId?: string,
   ): Promise<PermissionCheckResult | null> {
     return tryUserApprovalMemorySkipImpl(
       toolName,
@@ -356,6 +357,7 @@ export class ToolExecutor {
       pluginId,
       hostShellExecutionPlan,
       auditInput,
+      sessionId,
       // Route the foreground lane's disclosure through the SAME producer the
       // reviewer lane uses, so a memory auto-approve raises the renderer toast
       // from either lane. Bound here because this class already holds the

@@ -1,14 +1,4 @@
-/**
- * Legacy audit archival must publish the bytes it verified.
- *
- * Issue #1746: archival used to verify the active pathname, close it, then
- * rename that *name* into the `legacy-unverified-` archive. A local process
- * replacing the file in the gap made the archived bytes differ from the
- * verified bytes. The swap below is injected at exactly that point — after the
- * verification reader drains, before publication — by wrapping the reader the
- * production code drives, so it lands in the real window rather than a
- * simulated one.
- */
+/** Inject a pathname swap after verification drains to prove archival publishes the verified bytes. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import {
   existsSync,
@@ -24,9 +14,7 @@ import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { join } from "node:path";
 
-// Both readers are wrapped: the pathname reader is what the pre-fix code used
-// and the descriptor reader is what the fixed code uses, so the injection point
-// survives the fix instead of quietly going dormant.
+// Wrap both reader forms so the swap injection remains active across implementation changes.
 let afterVerification: (() => void) | null = null;
 vi.mock("../jsonl-reader.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../jsonl-reader.js")>();
@@ -78,7 +66,6 @@ beforeEach(() => {
   auditDir = join(testHome, ".ave", "audit");
   mkdirSync(auditDir, { recursive: true });
   loggers = [];
-  // The logger's default directory, `<AVE_HOME>/audit`.
   vi.stubEnv("AVE_HOME", join(testHome, ".ave"));
 });
 
@@ -86,9 +73,6 @@ afterEach(async () => {
   afterVerification = null;
   await Promise.all(loggers.map((logger) => logger.close()));
   if (existsSync(testHome)) {
-    // Not a bare `rmSync`: a foreign handle inside the tree refuses removal,
-    // and `rmSync`'s own maxRetries does not cover that error. See
-    // `src/__tests__/support/tmp-dir-teardown.ts`.
     await cleanupTmpDir(testHome);
   }
   vi.restoreAllMocks();
@@ -115,9 +99,7 @@ describe("legacy audit archival under pathname replacement", () => {
 
     let replaced = false;
     afterVerification = () => {
-      // A local process swaps a different file into the verified pathname.
-      // Windows refuses this while the descriptor is held open; that refusal is
-      // itself the guarantee, so tolerate it and assert on the outcome.
+      // Attempt the swap while the verified descriptor is open; Windows refusal itself preserves the guarantee.
       const substitute = join(auditDir, "substitute.jsonl");
       writeFileSync(substitute, `${ATTACKER_LINE}\n`, "utf-8");
       try {
@@ -133,20 +115,16 @@ describe("legacy audit archival under pathname replacement", () => {
       .then(() => "resolved" as const, () => "rejected" as const);
     expect(afterVerification).toBeNull(); // the swap really ran in the window
 
-    // The archive is forensic evidence of the tail that was authenticated. It
-    // must never contain bytes the verification loop did not read.
+    // Forensic archives must contain only bytes read by verification.
     const archives = legacyArchives();
     expect(archives).toHaveLength(1);
     expect(readFileSync(join(auditDir, archives[0]), "utf-8")).toBe(`${LEGACY_LINE}\n`);
 
     if (outcome === "resolved") {
-      // A started epoch means the pathname still held the emptied descriptor.
       expect(replaced).toBe(false);
       expect(readFileSync(activeFile, "utf-8")).toBe("");
       expect(logger.isPermissionAuditChainReady()).toBe(true);
     } else {
-      // Otherwise archival fails closed: no chain is started over the
-      // substituted bytes.
       expect(replaced).toBe(true);
       expect(logger.isPermissionAuditChainReady()).toBe(false);
     }

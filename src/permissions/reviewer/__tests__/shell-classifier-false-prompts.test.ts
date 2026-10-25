@@ -1,23 +1,4 @@
-/**
- * Two shapes classified `shell` — and so prompted — while the same operation
- * spelled slightly differently classified `read`. Neither was a containment
- * gap; both were the classifier failing to model a spelling, and an
- * inconsistent prompt teaches people that the prompt is noise.
- *
- * 1. `git log -Sneedle` prompted while `git log -S needle` did not. The short-
- *    flag cluster scan stopped at the first NON-LETTER, which ends `-U5` and
- *    `-M50%` but not an alphabetic value: the cluster read as `Sneedle`, and
- *    `d` is not an allow-listed letter.
- *
- * 2. `rg 'foo$'` prompted while `grep 'foo$' f` did not, purely because `rg`
- *    has a MUTATING_FLAGS entry and `grep` does not. The dollar guard fired on
- *    the CHARACTER `$`. It exists because expansion happens after tokenizing,
- *    so `sed $IFS-i f` can split into a `-i` the flag scan never saw — but
- *    inside `'...'` there is no expansion, so a regex anchor is not that.
- *
- * The security cases those rules exist for are asserted alongside, because a
- * widening that quietly takes them with it is the failure that matters here.
- */
+// Attached option values must not be parsed as extra flags; single-quoted dollar signs cannot expand. Keep the unquoted-expansion and mutating-command negative controls.
 import { describe, expect, it } from "vitest";
 
 import { inspectBuiltinCommandRisk } from "../../__tests__/test-helpers.js";
@@ -35,8 +16,7 @@ describe("git short flags with a glued value", () => {
   });
 
   it("still escalates an unknown flag letter", () => {
-    // The value-taking rule decides where a flag ENDS. It must not decide that
-    // the flag is allowed: `-X` is not in the read-only letter set.
+    // The value-taking rule decides where a flag ENDS. It must not decide that the flag is allowed: `-X` is not in the read-only letter set.
     expect(inspectBuiltinCommandRisk("git log -Xbogus")).toBe("shell");
   });
 
@@ -66,9 +46,7 @@ describe("dollar in an argument", () => {
   });
 
   it("keeps a double-quoted expansion out of read", () => {
-    // Double quotes suppress word splitting but NOT expansion, and the expanded
-    // value can be a flag in its entirety. Only single quotes prove the `$` is
-    // literal, so only they earn the exemption.
+    // Double quotes suppress word splitting but NOT expansion, and the expanded value can be a flag in its entirety. Only single quotes prove the `$` is literal, so only they earn the exemption.
     expect(inspectBuiltinCommandRisk('rg "$FLAG" p')).toBe("shell");
   });
 

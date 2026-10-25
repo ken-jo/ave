@@ -225,6 +225,8 @@ export function buildAveNamespaceExtras() {
   preview: {
     readFile: (filePath: string) =>
       ipcRenderer.invoke(CHANNELS.preview.readFile, filePath),
+    readDocument: (filePath: string, sheetIndex: number) =>
+      ipcRenderer.invoke(CHANNELS.preview.readDocument, filePath, sheetIndex),
   },
   workspace: {
     listRoots: () => ipcRenderer.invoke(CHANNELS.workspace.listRoots),

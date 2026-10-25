@@ -3,10 +3,6 @@ import path from 'node:path';
 import fs from 'node:fs';
 import { closeInlineSettings, openInlineSettings } from './inline-settings.js';
 
-/**
- * Settings → Web / Browsing 탭의 외부 URL 표시 정책 토글 e2e. (The control was
- * relocated from the Appearance tab to the Web tab in the settings IA restructure.)
- */
 test('webView.preferredFlow toggle persists to settings.json', async ({
   app,
   mainWindow,
@@ -21,7 +17,6 @@ test('webView.preferredFlow toggle persists to settings.json', async ({
   const systemBrowserBtn = radiogroup.locator('[data-value="system-browser"]').first();
   await systemBrowserBtn.click();
 
-  // Wait for the IPC roundtrip to flush settings.json.
   await expect
     .poll(
       () => {
@@ -38,7 +33,6 @@ test('webView.preferredFlow toggle persists to settings.json', async ({
 
   await expect(systemBrowserBtn).toHaveAttribute('aria-checked', 'true');
 
-  // Toggle back to in-app — verify the IPC also persists the reverse path.
   const inAppBtn = radiogroup.locator('[data-value="in-app"]').first();
   await inAppBtn.click();
   await expect

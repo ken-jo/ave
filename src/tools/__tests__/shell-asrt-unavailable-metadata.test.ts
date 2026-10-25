@@ -11,8 +11,7 @@ function propertyName(property: string): string | undefined {
 
 function isUnavailableMetadata(metadata: string): boolean {
   const properties = metadata.split(",").map((property) => property.trim()).filter(Boolean);
-  // Spreads, computed keys and other nonliteral properties can overwrite any
-  // field. Each required verdict must occur after the last such write.
+  // Spreads, computed keys and other nonliteral properties can overwrite any field. Each required verdict must occur after the last such write.
   const lastUnknownWrite = properties.findLastIndex((property) => propertyName(property) === undefined);
   const expected = {
     sandboxed: /^sandboxed\s*:\s*false$/,
@@ -52,15 +51,27 @@ describe("ASRT unavailable metadata", () => {
   it("does not claim isolation before Bash or PowerShell wrapper workloads start", () => {
     const source = readRepoFile("src/tools/shell-tools.ts");
     expectPreSpawnFailuresToBeUnavailable(source, "export async function spawnWithSandbox(", "async function spawnWithTimeout(", 4);
-    expectPreSpawnFailuresToBeUnavailable(source, "async function spawnPowerShellWithSandbox(", "async function spawnPowerShell(", 5);
+    expectPreSpawnFailuresToBeUnavailable(source, "async function spawnPowerShellWithSandbox(", "async function spawnPowerShellInMxc(", 5);
+  });
+
+  it("does not claim isolation before a PowerShell command starts in its MXC container", () => {
+    const source = readRepoFile("src/tools/shell-tools.ts");
+    const start = source.indexOf("async function spawnPowerShellInMxc(");
+    const end = source.indexOf("async function spawnPowerShell(", start);
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(end).toBeGreaterThan(start);
+    const failures = metadataObjects(source.slice(start, end)).filter((metadata) => /\bsandboxAttempted\s*:/.test(metadata));
+    // Sandbox HOME, launch preparation, spawn throw and child error.
+    expect(failures).toHaveLength(4);
+    for (const metadata of failures) expect(isUnavailableMetadata(metadata)).toBe(true);
   });
 
   it("lets failure verdicts override preceding artifact metadata, but rejects later overrides", () => {
     const verdict = 'sandboxed: false, sandboxAttempted: true, isolation: "unavailable"';
-    for (const prefix of ["", "...artifactMetadata, "]) {
+    for (const prefix of ["", "...artifactMetadata, ", "...cleanupMetadata, "]) {
       expect(isUnavailableMetadata(prefix + verdict)).toBe(true);
     }
-    for (const suffix of ["...artifactMetadata", "sandboxed: true", "sandboxAttempted: false", 'isolation: "asrt"', "[unknownKey]: true"]) {
+    for (const suffix of ["...artifactMetadata", "...cleanupMetadata", "sandboxed: true", "sandboxAttempted: false", 'isolation: "asrt"', "[unknownKey]: true"]) {
       expect(isUnavailableMetadata(verdict + ", " + suffix)).toBe(false);
     }
   });

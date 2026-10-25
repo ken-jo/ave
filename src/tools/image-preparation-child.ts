@@ -9,8 +9,7 @@ import { readImageInput } from "./image-preparation-input.js";
 import { ensureFileAccess } from "./file-access-policy.js";
 
 async function readBoundedStdin(expectedBytes: number): Promise<Buffer> {
-  // Allocate the declared bounded size once. Collecting chunks and then using
-  // Buffer.concat would briefly double the largest allowed source allocation.
+  // Allocate bounded input once; chunk collection plus concatenation would double peak source memory.
   const input = Buffer.allocUnsafe(expectedBytes);
   let total = 0;
   for await (const chunk of process.stdin) {
@@ -39,8 +38,7 @@ try {
   } else {
     const request = ImagePreparationRequestSchema.parse(raw);
     if (!isAbsolute(request.path) || !isAbsolute(request.scope.cwd)) throw new Error("invalid-image-path: Image source and read scope must be absolute.");
-    // Repeat the existing file policy after admission, immediately before opening.
-    // The parent owns approval; this cannot broaden the invocation's read scope.
+    // Recheck file policy just before open; parent approval must never broaden the admitted read scope.
     const denied = ensureFileAccess(request.path, { ...request.scope, metadata: {} }, "read");
     if (denied) throw new Error(denied.output);
     const bytes = await readImageInput(request.path, new AbortController().signal);

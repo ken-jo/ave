@@ -1,9 +1,3 @@
-/**
- * Shared fixture for `runStreamedTurn` boundary suites: a minimal
- * ConversationLoop stub whose `runTurn` records its arguments, plus accessors
- * for the turn options it received. Kept in one helper module so the staged
- * provenance and turn-input emission suites do not carry divergent copies.
- */
 import { vi } from "vitest";
 import type { ConversationLoop } from "../../../engine/conversation-loop.js";
 

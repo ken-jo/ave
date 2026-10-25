@@ -15,10 +15,7 @@ function fixture(files) {
   return root;
 }
 
-// The race this guards: a repo-wide walk runs while another suite clears its
-// own scratch directory. The parent listing named that directory a moment
-// before it disappeared. Reproduced for real rather than by mocking the
-// filesystem — `accept` deletes the sibling while the walk is in flight.
+// Delete a listed sibling during traversal to reproduce concurrent scratch cleanup.
 test("a directory removed mid-walk is skipped, not fatal", () => {
   const root = fixture(["a/one.ts", "doomed/two.ts", "z/three.ts"]);
   const doomed = join(root, "doomed");
@@ -36,9 +33,7 @@ test("a directory removed mid-walk is skipped, not fatal", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-// The root is the caller's own argument, so a missing one is their mistake and
-// stays an error — otherwise a gate pointed at a renamed directory would report
-// a clean scan of nothing.
+// Missing caller-supplied roots must fail rather than report an empty clean scan.
 test("a root that does not exist still throws", () => {
   assert.throws(
     () => walkSourceFiles(join(tmpdir(), "source-walk-absent-root")),

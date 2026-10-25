@@ -1,11 +1,4 @@
-/**
- * The three operator-facing options of tier 2, exercised through the gate.
- *
- * Each asks the same two questions. Does the option do nothing at all in its
- * default setting — so a machine that never touches the settings file behaves
- * exactly as it did before these existed? And when it is turned on, can it
- * produce an allow, or send something it should not have sent?
- */
+// The three operator-facing options of tier 2, exercised through the gate. Each asks the same two questions. Does the option do nothing at all in its default setting — so a machine that never touches the settings file behaves exactly as it did before these existed? And when it is turned on, can it produce an allow, or send something it should not have sent?
 import { describe, it, expect, vi } from "vitest";
 import {
   ApprovalGate,
@@ -75,7 +68,7 @@ function makeGate(options: {
   ) => readonly ParentContextTurn[];
   deferredQueue?: DeferredQueue | null;
   bySource?: Partial<Record<ParentAdjudicationModelSource, ParentAdjudicator>>;
-  /** Whether a dock would be seen. Default: nobody is at the desk. */
+  // Whether a dock would be seen. Default: nobody is at the desk.
   deskAttended?: boolean | (() => boolean);
 } = {}) {
   const wc = makeMockWebContents();
@@ -148,7 +141,7 @@ function makeChildRequest(
   };
 }
 
-/** A child run somebody is watching. */
+// A child run somebody is watching.
 function foregroundRequest(): ApprovalRequestInput {
   return makeChildRequest({
     childProvenance: {
@@ -282,9 +275,7 @@ describe("tier 3 — where a background escalation goes", () => {
     expect(append).toHaveBeenCalledTimes(1);
 
     const entry = append.mock.calls[0]?.[0] as Record<string, unknown>;
-    // No grant: the resolve path refuses "approved" for an entry with none, so
-    // reviewing this later can record an opinion and can never become
-    // permission for a call whose turn is over.
+    // No grant: the resolve path refuses "approved" for an entry with none, so reviewing this later can record an opinion and can never become permission for a call whose turn is over.
     expect(entry).not.toHaveProperty("grant");
     expect(entry.toolName).toBe("fs_write");
     expect(entry.category).toBe("write");
@@ -331,8 +322,7 @@ describe("tier 3 — where a background escalation goes", () => {
   });
 
   it("keeps the dock for a background run while the window is in front", async () => {
-    // Every locally spawned child is a background run on this host, so the
-    // flag alone must not divert an ask away from a user who is right there.
+    // Every locally spawned child is a background run on this host, so the flag alone must not divert an ask away from a user who is right there.
     const { queue, append } = fakeQueue();
     const { gate, wc } = makeGate({ deferredQueue: queue, deskAttended: true });
 
@@ -358,8 +348,7 @@ describe("tier 3 — where a background escalation goes", () => {
   });
 
   it("queues one entry per child and tool, and denies the repeats all the same", async () => {
-    // A child past its adjudication budget escalates on every call. One row
-    // and one toast per (run, tool) keeps that from burying the queue.
+    // A child past its adjudication budget escalates on every call. One row and one toast per (run, tool) keeps that from burying the queue.
     let next = 0;
     const { queue, append } = fakeQueue(async () => `deferred-${++next}`);
     const { gate, notificationService } = makeGate({ deferredQueue: queue });

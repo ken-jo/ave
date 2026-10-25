@@ -1,16 +1,4 @@
-/**
- * Host-renderer-only IPC for the owner-driven Telegram private-DM connection.
- *
- * Every mutation is an egress decision: saving a bot token, starting the
- * outbound connection, minting a pairing code, and sharing the open
- * conversation each require a live local keyboard intent. The renderer never
- * nominates a conversation, a Telegram id, or a pairing binding — main resolves
- * the active conversation itself when the mutation runs.
- *
- * Handlers register unconditionally so the channel inventory is stable; a build
- * without the owner service answers `telegram-connection-disabled` from inside
- * the handler rather than leaving the channel missing.
- */
+// Connection mutations require live local keyboard intent; derive the conversation in main.
 import { ipcMain } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { hasUserKeyboardIntentPayload, USER_KEYBOARD_REQUIRED } from "../../shared/chat-origin.js";
@@ -44,10 +32,7 @@ const UNAVAILABLE = Object.freeze({
   error: "telegram-connection-unavailable" as const,
 });
 
-/**
- * Broadcast only a change hint. Each renderer must refetch its safe snapshot;
- * no pairing code, bot handle, or conversation value travels in this event.
- */
+// Broadcast only a refetch hint, never pairing codes, bot handles, or conversation values.
 function broadcastTelegramConnectionChanged(deps: IpcDeps): void {
   const mainWindow = deps.getMainWindow?.();
   const windows = deps.getAppWindows?.() ?? [mainWindow];

@@ -1,25 +1,5 @@
-/**
- * WorkBoardStore — persistent backing for the `work-board` LLM tools and the
- * renderer board panel.
- *
- * Persists work items to `~/.ave/work-board/board.json`. Mutations are
- * serialized by `withInProcessFileQueue`, which orders read-modify-write
- * against other writers IN THIS PROCESS and gives nothing against a second one
- * -- see its docstring for the precondition that makes that sufficient here.
- * Each
- * mutation also appends one line to `activity.jsonl` in the same feature
- * directory so report generation can reconstruct the work flow.
- *
- * The store is intentionally pure persistence — it does not own a timer or emit
- * plugin-bus events. The IPC handlers (Layer 3) call these async methods,
- * translate the returned discriminated envelopes into channel responses, and
- * broadcast the `itemChanged` event to renderer windows after each successful
- * mutation so the board view stays live without polling.
- *
- * `status_resolved` (the `overdue` projection) is computed locally on every
- * read — an item is `overdue` when its stored status is `planned`/`in_progress`
- * AND its `due_at` is strictly in the past — so consumers never re-derive it.
- */
+// Serialize mutations within this process only and append activity for report reconstruction. IPC owns change broadcasts; compute overdue on read rather
+// than persisting or duplicating that projection in consumers.
 import { join, dirname } from "node:path";
 import { createLogger } from "../lib/logger.js";
 import {
@@ -48,9 +28,7 @@ import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 
 const log = createLogger("ave");
 
-// Re-export the shared type boundary so callers that import from work-board-store
-// continue to work unchanged, while the renderer imports from shared/ (no Node
-// built-ins).
+// Re-export the shared type boundary so callers that import from work-board-store continue to work unchanged, while the renderer imports from shared/ (no Node built-ins).
 export {
   MAX_ITEMS,
   type WorkItemStatusStored,
@@ -100,15 +78,14 @@ import {
   MAX_PROPOSALS,
 } from "../shared/work-board-types.js";
 
-/** Max title length (defensive bound against runaway records). */
+// Max title length (defensive bound against runaway records).
 const MAX_TITLE_LENGTH = 512;
-/** Max detail length. */
+// Max detail length.
 const MAX_DETAIL_LENGTH = 8192;
 const MAX_PROJECT_ROOT_LENGTH = 2048;
 const MAX_PROJECT_NAME_LENGTH = 120;
 
-// Resolved through the feature-namespace helper so `~/.ave/work-board/` stays
-// the single source of truth for the board file location.
+// Resolved through the feature-namespace helper so `~/.ave/work-board/` stays the single source of truth for the board file location.
 const defaultPath = (): string => join(openFeatureNamespace("work-board").dir, "board.json");
 
 const VALID_STATUSES: readonly WorkItemStatusStored[] = [
@@ -118,16 +95,15 @@ const VALID_STATUSES: readonly WorkItemStatusStored[] = [
 ];
 const VALID_PRIORITIES: readonly WorkItemPriority[] = ["high", "medium", "low"];
 
-/** Max run-history entries kept per item (oldest evicted from the index — the
- * on-disk transcripts themselves are never deleted here). */
+// Max run-history entries kept per item (oldest evicted from the index — the on-disk transcripts themselves are never deleted here).
 const RUN_HISTORY_CAP = 20;
-/** Run statuses that CLOSE a run, stamping `endedAt` on its history entry. */
+// Run statuses that CLOSE a run, stamping `endedAt` on its history entry.
 const TERMINAL_RUN_STATUSES: ReadonlySet<WorkItemRunStatus> = new Set([
   "completed",
   "denied",
   "error",
 ]);
-/** Cap on the inline output preview stored in a run-history entry. */
+// Cap on the inline output preview stored in a run-history entry.
 const RUN_OUTPUT_PREVIEW_CHARS = 280;
 const VALID_RUN_STATUSES: readonly WorkItemRunStatus[] = [
   "idle",
@@ -155,10 +131,7 @@ function normalizeOptionalString(value: unknown, max: number): string | undefine
   return trimmed.length > 0 ? trimmed.slice(0, max) : undefined;
 }
 
-/**
- * Validate a record loaded from disk. Rejects tampered / corrupted entries so a
- * single bad record cannot poison a list / report read.
- */
+// Reject corrupted disk records before they can poison list or report reads.
 function isValidRecord(r: unknown): r is WorkItem {
   if (!r || typeof r !== "object") return false;
   const x = r as Record<string, unknown>;
@@ -182,13 +155,7 @@ function isValidRecord(r: unknown): r is WorkItem {
   return true;
 }
 
-/**
- * Validate a proposal loaded from disk. Same contract as {@link isValidRecord}:
- * one tampered row is dropped rather than poisoning the whole read. The
- * untrusted text fields are checked for TYPE only — their content was already
- * bounded when the proposal was accepted, and re-deriving the caps here would
- * put a second definition of "well-formed" next to the first.
- */
+// Drop malformed disk rows without poisoning the whole read; content caps belong to intake rather than a second drifting definition.
 function isValidProposal(r: unknown): r is WorkProposal {
   if (!r || typeof r !== "object") return false;
   const x = r as Record<string, unknown>;
@@ -207,13 +174,7 @@ function emptyBoard(): BoardFile {
   return { version: BOARD_VERSION, nextId: 1, items: [] };
 }
 
-/**
- * Read + parse `board.json`. Missing file → seed empty board. Corrupt JSON →
- * back up the bad file and seed empty (so one bad write can't permanently brick
- * the board). Tampered individual records are filtered so the rest survive.
- * `nextId` is repaired to exceed every surviving id so a corrupted counter
- * cannot collide ids.
- */
+// Back up corrupt JSON and seed empty; filter invalid rows and repair nextId above every surviving ID.
 function readFileOrEmpty(filePath: string): Promise<BoardFile> {
   return readJsonFileOrEmpty(filePath, emptyBoard, (parsed) => {
     const file = parsed as BoardFile;
@@ -221,9 +182,8 @@ function readFileOrEmpty(filePath: string): Promise<BoardFile> {
       return emptyBoard();
     }
     const valid = file.items.filter(isValidRecord);
-    // One-time re-anchoring of due dates stamped as midnight in a fixed zone,
-    // back when the board was KST-anchored. Idempotent by its own rule, so it
-    // runs on every load and converges; nothing marks it done.
+    // One-time re-anchoring of due dates stamped as midnight in a fixed zone, back when the board was KST-anchored. Idempotent by its own rule, so it runs
+    // on every load and converges; nothing marks it done.
     const { items, changed } = normalizeBoardDueDates(valid);
     if (changed > 0) {
       log.info(
@@ -245,14 +205,12 @@ function readFileOrEmpty(filePath: string): Promise<BoardFile> {
 }
 
 async function writeFileAtomic(filePath: string, data: BoardFile): Promise<void> {
-  // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the
-  // feature-namespace SOT helper. The injectable `filePath` (tests pass a temp
-  // path) is preserved — the helper enforces the permission boundary on
-  // whatever parent directory the path resolves to.
+  // Delegates the 0o700-dir / 0o600-file / tmpfile+rename contract to the feature-namespace SOT helper. The injectable `filePath` (tests pass a temp path)
+  // is preserved — the helper enforces the permission boundary on whatever parent directory the path resolves to.
   await writeFileAtomicAtPath(filePath, `${JSON.stringify(data, null, 2)}\n`);
 }
 
-/** Deep clone a WorkItem so callers cannot mutate shared cache refs. */
+// Deep clone a WorkItem so callers cannot mutate shared cache refs.
 function cloneItem(it: WorkItem): WorkItem {
   return { ...it };
 }
@@ -261,12 +219,7 @@ function decorate(item: WorkItem, nowMs: number): WorkItemResolved {
   return { ...item, status_resolved: resolveWorkItemStatus(item, nowMs) };
 }
 
-/**
- * Map a run lifecycle phase to its single activity-log verb. Transient
- * pre-terminal phases (planning / awaiting_approval / executing / idle) all log
- * as `run-planned` — the flow log captures that a run is underway; the terminal
- * phase rows (`run-executed` / `run-denied` / `run-failed`) carry the outcome.
- */
+// Transient run phases share run-planned; terminal activity verbs record outcomes.
 function runStatusActivityKind(
   runStatus: WorkItemRunStatus,
 ): "run-planned" | "run-executed" | "run-denied" | "run-failed" {
@@ -286,7 +239,7 @@ export class WorkBoardStore {
   private cache: BoardFile = emptyBoard();
   private loaded = false;
   private readonly filePath: string;
-  /** Activity-log storage rooted in the same directory as `board.json`. */
+  // Activity-log storage rooted in the same directory as `board.json`.
   private readonly activity: WorkBoardStorage;
   private readonly now: () => number;
 
@@ -310,7 +263,7 @@ export class WorkBoardStore {
     if (!this.loaded) await this.load();
   }
 
-  /** List items, newest-id first, with `status_resolved` computed + filter applied. */
+  // List items, newest-id first, with `status_resolved` computed + filter applied.
   async list(filter: WorkItemListFilter = {}): Promise<WorkItemListResult> {
     await this.ensureLoaded();
     if (filter.limit !== undefined && (!Number.isFinite(filter.limit) || filter.limit < 0)) {
@@ -345,7 +298,7 @@ export class WorkBoardStore {
     return { status: "ok", items: rows };
   }
 
-  /** Fetch one item by id. */
+  // Fetch one item by id.
   async get(id: number): Promise<WorkItemGetResult> {
     await this.ensureLoaded();
     const item = this.cache.items.find((i) => i.id === id);
@@ -353,7 +306,6 @@ export class WorkBoardStore {
     return { status: "found", itemId: id, item: decorate(cloneItem(item), this.now()) };
   }
 
-  /** Create a new item, allocating the next id. */
   async create(input: WorkItemCreateInput): Promise<WorkItemCreateResult> {
     await this.ensureLoaded();
     const title = (input.title ?? "").trim();
@@ -420,7 +372,7 @@ export class WorkBoardStore {
     });
   }
 
-  /** Apply a partial update to a single item. */
+  // Apply a partial update to a single item.
   async update(id: number, patch: WorkItemUpdateInput): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     const keys = Object.keys(patch ?? {}) as (keyof WorkItemUpdateInput)[];
@@ -484,15 +436,7 @@ export class WorkBoardStore {
     });
   }
 
-  /**
-   * Move an item to `to`. Any-to-any across the three stored states.
-   *
-   * Exactly one activity row is written per call, INSIDE the file lock. The
-   * `activityKind` parameter lets the `complete()` / `reopen()` wrappers stamp
-   * their domain verb (`completed` / `reopened`) on that single row instead of
-   * appending a second event out-of-lock — a logical action is one activity
-   * line, and every append happens while the board lock is held.
-   */
+  // Write exactly one activity row inside the lock; complete/reopen wrappers supply their domain verb without a second append.
   async transition(
     id: number,
     to: WorkItemStatusStored,
@@ -522,8 +466,7 @@ export class WorkBoardStore {
         kind: activityKind,
         itemId: updated.id,
         title: updated.title,
-        // `from`/`to` carry the status pair for the lifecycle reconstruction
-        // regardless of which verb labelled the row.
+        // `from`/`to` carry the status pair for the lifecycle reconstruction regardless of which verb labelled the row.
         from,
         to,
         ts: iso,
@@ -537,7 +480,7 @@ export class WorkBoardStore {
     });
   }
 
-  /** Transition to `completed`, mapping the envelope to a complete result. */
+  // Transition to `completed`, mapping the envelope to a complete result.
   async complete(id: number): Promise<WorkItemCompleteResult> {
     const result = await this.transition(id, "completed", "completed");
     if (result.status === "transitioned") {
@@ -546,7 +489,7 @@ export class WorkBoardStore {
     return result;
   }
 
-  /** Transition back to `in_progress`, mapping the envelope to a reopen result. */
+  // Transition back to `in_progress`, mapping the envelope to a reopen result.
   async reopen(id: number): Promise<WorkItemReopenResult> {
     const result = await this.transition(id, "in_progress", "reopened");
     if (result.status === "transitioned") {
@@ -555,14 +498,7 @@ export class WorkBoardStore {
     return result;
   }
 
-  /**
-   * Set the transient run lifecycle phase for an item (planning /
-   * awaiting_approval / executing / …). Engine-written only — not exposed via
-   * `WorkItemUpdateInput` so a user/LLM patch cannot forge a run phase. Returns
-   * `not_found` when the id is unknown (no fallback creation). Writes one
-   * activity row whose verb matches the phase so the flow log reconstructs the
-   * run without re-deriving it.
-   */
+  // Only the engine writes run phases; user or model patches cannot forge them and unknown IDs never create records.
   async setRunStatus(
     id: number,
     runStatus: WorkItemRunStatus,
@@ -600,15 +536,7 @@ export class WorkBoardStore {
     });
   }
 
-  /**
-   * Open a NEW run for an item (the engine calls this at run start instead of
-   * clearing the prior result). Appends a fresh entry to `runHistory` (newest
-   * last, capped) keyed by `runId`, points the item at that `runId`, sets
-   * `runStatus="planning"`, and resets the latest plan/output/runSessionId for a
-   * clean slate. The prior run's history entry AND its on-disk transcript are
-   * left intact — re-running NEVER overwrites prior work (the user's continuity
-   * requirement). Returns `not_found` for an unknown id.
-   */
+  // Start a fresh capped history entry and reset latest fields without overwriting prior history or transcripts.
   async beginRun(id: number, runId: string, startedAt: string): Promise<WorkItemUpdateResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -653,15 +581,7 @@ export class WorkBoardStore {
     });
   }
 
-  /**
-   * Reconcile runs interrupted by a process exit. A run lives only in memory, so
-   * ANY item persisted in an active run phase (planning / awaiting_approval /
-   * executing) at boot belongs to a run that can no longer be in flight — its
-   * process is gone. Mark each `error` (and close its open history entry) so the
-   * item is re-runnable again (P2's runItem guard rejects active runStatus as
-   * `already_running`) and the card stops showing a permanent "running" badge.
-   * Called once at boot after load(). Returns the number of items reset.
-   */
+  // At boot, active persisted phases belong to dead processes; mark them error and close history so items become runnable again.
   async reconcileInterruptedRuns(): Promise<number> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -696,21 +616,8 @@ export class WorkBoardStore {
     });
   }
 
-  /**
-   * Persist the terminal result of a run — the captured plan, the captured
-   * execution output, the linking run session id, and the final run status.
-   * Engine-written only. One activity row (`run-executed` for the completed
-   * path) records the outcome. Returns `not_found` for an unknown id.
-   *
-   * Field semantics mirror {@link update}'s null-clears-field convention:
-   *   - `undefined` (or omitted) → leave the existing value untouched
-   *   - `null`                   → delete the key (clear it)
-   *   - a value                  → set it
-   * The clear path is what lets the engine RESET stale plan/output/runSessionId
-   * at run START (transition to `planning`): without it the conditional-spread
-   * `set`-only path would leave a prior run's success output on a record that
-   * is now being denied or erroring, showing a green output on a failed run.
-   */
+  // Only the engine writes terminal results; undefined preserves fields, null clears them, and values replace them.
+  // Clear stale plan/output/session fields so a failed new run cannot display an old success.
   async setRunResult(
     id: number,
     result: {
@@ -742,9 +649,8 @@ export class WorkBoardStore {
       else if (result.output !== undefined) updated.output = result.output;
       if (result.runSessionId === null) delete updated.runSessionId;
       else if (result.runSessionId !== undefined) updated.runSessionId = result.runSessionId;
-      // Keep the CURRENT run's history entry (matched by runId) in sync, so the
-      // re-run history index reflects each run's final status/plan/output —
-      // without a separate write path. `endedAt` is stamped on terminal status.
+      // Keep the CURRENT run's history entry (matched by runId) in sync, so the re-run history index reflects each run's final status/plan/output — without a
+      // separate write path. `endedAt` is stamped on terminal status.
       if (updated.runId && Array.isArray(updated.runHistory)) {
         updated.runHistory = updated.runHistory.map((h) =>
           h.runId === updated.runId
@@ -778,7 +684,6 @@ export class WorkBoardStore {
     });
   }
 
-  /** Remove an item. */
   async remove(id: number): Promise<WorkItemDeleteResult> {
     await this.ensureLoaded();
     return withInProcessFileQueue(this.filePath, async () => {
@@ -801,28 +706,16 @@ export class WorkBoardStore {
     });
   }
 
-  // ── Recommended-work proposals ────────────────────────────────────────────
-  //
-  // A separate file in the SAME feature directory (`proposals.json` beside
-  // `board.json`), so the domain still backs up and clears as one unit while
-  // the plugin write path never reaches a row the user owns.
-  //
-  // The two refusals a plugin can hit — an ungranted kind, and a second open
-  // proposal in a kind that already has one — are BOTH decided here rather
-  // than at the UI or the HostApi surface. The ceiling is a property of the
-  // stored set, and a ceiling enforced where the set is not visible is a
-  // ceiling that stops holding the moment a second caller appears.
+  // Keep proposals separate from user-owned board rows within the same feature namespace.
+  // Enforce granted kinds and per-kind capacity where the stored set is visible, never only in UI or API checks.
 
-  /** `proposals.json`, beside whichever `board.json` this store was built on. */
+  // `proposals.json`, beside whichever `board.json` this store was built on.
   private proposalsPath(): string {
     return join(dirname(this.filePath), PROPOSALS_FILE);
   }
 
-  /**
-   * Read `proposals.json`, dropping rows that are past their expiry and rows
-   * that do not parse. Expiry is a read-time sweep rather than a timer: a
-   * proposal whose plugin died still stops being shown.
-   */
+  // Read `proposals.json`, dropping rows that are past their expiry and rows that do not parse. Expiry is a read-time sweep rather than a timer: a
+  // proposal whose plugin died still stops being shown.
   private async readProposals(nowMs: number): Promise<ProposalsFile> {
     const raw = await readJsonFileOrEmpty<ProposalsFile>(
       this.proposalsPath(),
@@ -848,7 +741,7 @@ export class WorkBoardStore {
     );
   }
 
-  /** Every proposal still showable right now, newest update first. */
+  // Every proposal still showable right now, newest update first.
   async listProposals(): Promise<WorkProposalListResult> {
     const nowMs = this.now();
     const file = await this.readProposals(nowMs);
@@ -858,17 +751,7 @@ export class WorkBoardStore {
     return { status: "ok", proposals: live.map((p) => ({ ...p })) };
   }
 
-  /**
-   * Post or refresh one plugin's proposal for one of its granted kinds.
-   *
-   * `origin` is the HOST's answer to "who is calling and what may they
-   * propose" — the plugin supplies neither. Re-posting the same `key`
-   * refreshes the card in place (and re-arms its TTL); a different key while
-   * that kind already holds a live proposal is refused as `slot_busy`.
-   *
-   * A card the user already dismissed or accepted keeps that mark through a
-   * refresh: re-posting must not be a way to put a closed card back.
-   */
+  // Derive origin and grants from the host binding; same-key refresh preserves acceptance/dismissal and different-key live slots refuse.
   async upsertProposal(
     origin: { pluginId: string; pluginLabel: string; grantedKinds: readonly string[] },
     input: WorkProposalInput,
@@ -915,14 +798,7 @@ export class WorkBoardStore {
     });
   }
 
-  /**
-   * Retract a proposal the CALLER posted. `pluginId` comes from the HostApi
-   * identity binding, so a plugin naming another plugin's kind and key simply
-   * finds nothing — there is no cross-plugin reach to refuse, because the id
-   * it would have to match is derived from its own id.
-   *
-   * Resolves `false` when no matching live proposal existed. Idempotent.
-   */
+  // Derive plugin identity from the caller binding; foreign or missing proposals are indistinguishable and retract is idempotent.
   async withdrawProposal(pluginId: string, kind: string, key: string): Promise<boolean> {
     if (typeof kind !== "string" || typeof key !== "string") return false;
     const path = this.proposalsPath();
@@ -940,7 +816,7 @@ export class WorkBoardStore {
     });
   }
 
-  /** Close a card the user does not want. Sticky: a re-post keeps the mark. */
+  // Close a card the user does not want. Sticky: a re-post keeps the mark.
   async dismissProposal(id: string): Promise<WorkProposalDismissResult> {
     const path = this.proposalsPath();
     return withInProcessFileQueue(path, async () => {
@@ -957,27 +833,8 @@ export class WorkBoardStore {
     });
   }
 
-  /**
-   * File the action items one briefing run surveyed, as proposals under the
-   * host's own reserved source id.
-   *
-   * The per-kind slot ceiling `upsertProposal` enforces deliberately does NOT
-   * apply here. That ceiling is a nag budget: it stops an unattended plugin
-   * from stacking cards nobody asked for. A briefing runs because the user
-   * pressed the button, and a list of things to do is its entire output — so
-   * what bounds this path is the caller's per-run cap plus the host-wide
-   * {@link MAX_PROPOSALS}.
-   *
-   * Duplicate suppression falls out of the proposal id, which is derived from
-   * the caller-supplied `key`: an action item whose key is already stored
-   * REFRESHES that row in place — same id, same sticky dismissed/accepted
-   * marks — so running the briefing twice cannot produce two cards for one
-   * piece of work, and cannot re-open one the user already closed.
-   *
-   * Returns the ids it wrote, split by whether the row was new (`filed`) or
-   * already there (`refreshed`), so the caller can both report a count and
-   * name each changed card to the renderer.
-   */
+  // User-requested briefing output uses per-run and global caps instead of the unattended plugin per-kind slot budget.
+  // Stable proposal IDs refresh duplicates without reopening dismissed or accepted cards.
   async fileBriefingProposals(
     inputs: readonly WorkProposalInput[],
   ): Promise<{ filed: string[]; refreshed: string[] }> {
@@ -1029,12 +886,8 @@ export class WorkBoardStore {
     });
   }
 
-  /**
-   * Turn an accepted proposal into a work item through the ORDINARY create
-   * path — same validation, same activity row, same MAX_ITEMS budget as a
-   * card the user typed. The proposal keeps `acceptedItemId` so the card stops
-   * showing and the item it became stays traceable to its source.
-   */
+  // Turn an accepted proposal into a work item through the ORDINARY create path — same validation, same activity row, same MAX_ITEMS budget as a card the
+  // user typed. The proposal keeps `acceptedItemId` so the card stops showing and the item it became stays traceable to its source.
   async acceptProposal(
     id: string,
     project?: { projectRoot?: string; projectName?: string },

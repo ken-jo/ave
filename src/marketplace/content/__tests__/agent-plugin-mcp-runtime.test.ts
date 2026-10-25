@@ -103,7 +103,6 @@ describe("installed agent plugin MCP publication", () => {
     expect(prepare).not.toHaveBeenCalled();
     await runtime.activate(item, [{ name: "notes", digest: "b".repeat(64) }]);
     expect(firstProjection && new PluginMcpTrustStore(trustPath).isApproved(firstProjection)).toBe(true);
-    // A new version whose server bytes changed: the approval does not carry (§18.7.3).
     await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64),
       content: { ...item.content, files: [{ path: "server/run", data: Buffer.from("other server payload") }] } } as InstalledAgentPluginRuntime);
     expect(admissions).toEqual([true, false]);
@@ -186,7 +185,6 @@ describe("installed agent plugin MCP publication", () => {
     expect(readBoundBundledCredential(saved)?.secret).toBe("replacement-value");
   });
 
-  /** A runtime over a recording manager: its registered lease source, and the activations it prepared and disconnected. */
   function leased(options: { trust?: PluginMcpTrustStore; dataDir: string; prepare?: (projections: unknown[], trust: PluginMcpTrustStore) => Promise<void>; publish?: () => void }) {
     let acquire!: (pluginId: string, activationId: string) => Promise<{ release(): void }>;
     const prepared: Array<{ activationId: string; projections: Array<Parameters<PluginMcpTrustStore["isApproved"]>[0]>; admitted: boolean[] }> = [];
@@ -220,14 +218,12 @@ describe("installed agent plugin MCP publication", () => {
     first = prepared[0]!.activationId;
     const inFlight = await acquire("agent-plugin/meeting-kit", first);
     expect(runtime.hasCallsInFlight("meeting-kit")).toBe(true);
-    // A lease names the owner it was published for.
     await expect(acquire("agent-plugin/other-kit", first)).rejects.toThrow(/is retired/u);
 
     const { retired } = await runtime.activate({ ...item, version: "1.1.0", generationId: "c".repeat(64) });
     const second = prepared[1]!.activationId;
     expect(second).not.toBe(first);
     expect(await atPublication).toBe("refused");
-    // A call after publication lands on the new activation; the old one admits none.
     await expect(acquire("agent-plugin/meeting-kit", first)).rejects.toThrow(/is retired/u);
     const next = await acquire("agent-plugin/meeting-kit", second);
     next.release();

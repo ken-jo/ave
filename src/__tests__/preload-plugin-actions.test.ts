@@ -5,7 +5,6 @@ const mockInvoke = vi.fn();
 const mockOn = vi.fn();
 const mockRemoveListener = vi.fn();
 
-// Named exports only — mirrors the named-import shape in preload.ts.
 vi.mock("electron", () => ({
   contextBridge: {
     exposeInMainWorld: vi.fn((key: string, value: unknown) => {
@@ -56,9 +55,7 @@ describe("preload plugin action normalization", () => {
     await expect(hostApi.uninstallMarketplacePlugin("meeting")).resolves.toEqual({
       ok: false,
       error: "invalid-result",
-      // preload resolves i18n at the English default — it has no settings
-      // context to switch language, and this suite re-imports it via
-      // resetModules so the runtime locale is the default.
+      // The preload has no settings context, so each re-import uses the default locale.
       message: "Extension action result is invalid.",
     });
   });

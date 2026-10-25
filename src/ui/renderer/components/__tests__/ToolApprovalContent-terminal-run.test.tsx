@@ -8,11 +8,8 @@ import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { clearActiveSurface, showActiveSurface } from "../../preview/active-surface.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../../../../shared/permission-reviewer-framework.js";
 
-/**
- * A `terminal_run` card shows the exact command and the terminal it will be
- * typed into — the target the host sealed before the card was shown — and
- * remembers the command in that directory for this app session only.
- */
+/** A `terminal_run` card shows the exact command and the terminal it will be typed into; the target the host
+ * sealed before the card was shown; and remembers the command in that directory for this app session only. */
 function terminalRunRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
     id: "terminal-run-1",
@@ -26,6 +23,7 @@ function terminalRunRequest(overrides: Partial<ApprovalRequest> = {}): ApprovalR
     createdAt: Date.now(),
     requireExplicit: false,
     trustOrigin: "llm-tool-arg",
+    sessionId: "11111111-1111-4111-8111-111111111111",
     reviewerVerdict: { level: "medium", reason: "runs the test suite" },
     persistentAllowAllowed: true,
     persistentApprovalCwd: "/workspace/project",

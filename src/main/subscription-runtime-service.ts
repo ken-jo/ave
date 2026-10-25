@@ -1,12 +1,6 @@
-/**
- * Common lifecycle owner for subscription-backed runtimes.
- *
- * Subscription credentials and process transports are intentionally kept out
- * of the API-key provider path.  This service owns their safe status
- * projection, isolated text sessions, and shutdown as one main-process-only
- * boundary.
- */
+// Keep subscription credentials, process transports, safe status projection, and shutdown within this main-process boundary.
 import { join } from "node:path";
+import { claimPrivateOwnership } from "./codex-executable-location.js";
 import type { StreamEvent, ToolSchema } from "../engine/llm/types.js";
 import {
   ACP_SUBSCRIPTION_PROVIDER_IDS,
@@ -93,11 +87,7 @@ import {
   type SubscriptionPromptAttachment,
 } from "./subscription-attachment-input.js";
 
-// ─── ACP subscription runtime registry ────────────────────────────────────────
-//
-// Main-owned registry for the small, static set of supported ACP subscription
-// runtimes. Renderer input selects only an allowlisted id; it never controls a
-// command, arguments, environment, runtime home, or working directory.
+// Renderer input selects an allowlisted runtime ID only, never command, arguments, environment, home, or cwd.
 
 type ClientMap = Record<AcpSubscriptionProviderId, AcpSubscriptionRuntimeClient>;
 
@@ -116,10 +106,7 @@ export interface AcpSubscriptionTextSessionOptions {
   readonly onHostRequest?: (
     request: AcpSubscriptionHostRequestObservation,
   ) => void | Promise<void>;
-  /**
-   * The one main-process-created Ave MCP bridge for this session. It is
-   * runtime-validated and copied before the session factory receives it.
-   */
+  // The one main-process-created Ave MCP bridge for this session. It is runtime-validated and copied before the session factory receives it.
   readonly mcpServers?: readonly AcpSubscriptionMcpServerConfig[];
 }
 
@@ -239,12 +226,7 @@ export class AcpSubscriptionRuntimeRegistry {
     return status;
   }
 
-  /**
-   * Start one authenticated ACP conversation with at most the one supplied
-   * Ave-owned MCP server. The returned object
-   * remains main-process-only: opaque session identifiers, raw protocol data,
-   * and runtime capabilities never cross this registry boundary.
-   */
+  // Keep ACP sessions and capabilities in the main process; permit at most the supplied host-owned MCP server.
   async openTextSession(
     provider: AcpSubscriptionProviderId,
     options: AcpSubscriptionTextSessionOptions = {},
@@ -349,14 +331,12 @@ export class AcpSubscriptionRuntimeRegistry {
   }
 }
 
-// ─── Subscription runtime service ─────────────────────────────────────────────
-
 const MAX_QUEUED_EVENTS = 256;
 const HOST_TOOL_ACCEPTED = "Ave accepted the host tool request and will provide its result in the next model round.";
 
 export type SubscriptionOpenExternal = (url: string) => Promise<void> | void;
 
-/** A redacted audit observation: never include prompt, path, command, or RPC params. */
+// A redacted audit observation: never include prompt, path, command, or RPC params.
 export interface SubscriptionRuntimeAuditEvent {
   readonly provider: SubscriptionRuntimeId;
   readonly outcome: "host-request-rejected" | "model-fallback" | "session-failed";
@@ -388,14 +368,11 @@ export interface SubscriptionTextSession {
   stop(): Promise<void>;
 }
 
-/** Main-only schemas for one model round; never sourced from renderer IPC. */
+// Main-only schemas for one model round; never sourced from renderer IPC.
 export interface SubscriptionTextSessionOptions {
   readonly tools?: readonly ToolSchema[];
-  /**
-   * Settings-normalized parent selection for a transient sub-agent Codex
-   * candidate. It is considered only after the current live catalog rejects
-   * that candidate; catalog lookup failures remain fail-closed.
-   */
+  // Settings-normalized parent selection for a transient sub-agent Codex candidate. It is considered only after the current live catalog rejects that
+  // candidate; catalog lookup failures remain fail-closed.
   readonly fallbackSelection?: SubscriptionChatRuntimeSelection;
 }
 
@@ -407,17 +384,17 @@ interface CodexTextRuntimePaths {
   readonly resolveRuntime: CodexConversationRuntimeOptions["resolveRuntime"];
 }
 
-/** The part of the user-CLI locator the service drives; a seam for tests. */
+// The part of the user-CLI locator the service drives; a seam for tests.
 type CodexRuntimeLocator = Pick<CodexUserRuntimeLocator, "resolve" | "lastKnownVersion" | "dispose">;
 
 export interface SubscriptionRuntimeServiceCreateOptions {
   readonly namespace?: FeatureNamespaceHandle;
-  /** Test seam; production always constructs the packaged account client. */
+  // Test seam; production always constructs the packaged account client.
   readonly createCodexAppServerClient?: (
     options: ConstructorParameters<typeof CodexAppServerClient>[0],
   ) => CodexAppServerClient;
   readonly codexClient?: CodexAppServerClient;
-  /** Test seam; production locates the user's own `codex` CLI. */
+  // Test seam; production locates the user's own `codex` CLI.
   readonly codexRuntimeLocator?: CodexRuntimeLocator;
   readonly acpRegistry?: AcpSubscriptionRuntimeRegistry;
   readonly claudeCodeClient?: ClaudeCodeSubscriptionClient;
@@ -428,6 +405,8 @@ export interface SubscriptionRuntimeServiceCreateOptions {
     options: ConstructorParameters<typeof ClaudeCodeConversationRuntime>[0],
   ) => ClaudeCodeConversationRuntime;
   readonly audit?: SubscriptionRuntimeAuditSink;
+  // Test seam for a namespace whose directories do not exist. Production claims every runtime directory for the current account (see {@link claimPrivateOwnership}).
+  readonly claimRuntimeDirectories?: (paths: readonly string[]) => Promise<void>;
 }
 
 export interface GetSubscriptionRuntimeServiceOptions {
@@ -441,14 +420,14 @@ function isConnectedAndReady(status: {
   return status.runtime === "ready" && status.connection === "connected";
 }
 
-/** The same native prompt budget governs capabilities and request construction. */
+// The same native prompt budget governs capabilities and request construction.
 export function getSubscriptionImageAttachmentLimits(runtimeId: SubscriptionRuntimeId) {
   return runtimeId === "codex"
     ? DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS
     : ACP_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS;
 }
 
-/** Every non-credential capability is exposed only after the host transport proof. */
+// Every non-credential capability is exposed only after the host transport proof.
 function verifiedRuntimeCapabilities(
   runtimeId: SubscriptionRuntimeId,
   verified: boolean,
@@ -462,12 +441,10 @@ function verifiedRuntimeCapabilities(
     : null;
   return Object.freeze({
     chat: true,
-    // Codex has a documented localImage turn input. ACP runtimes must instead
-    // prove the standard image content block in their initialize response.
+    // Codex has a documented localImage turn input. ACP runtimes must instead prove the standard image content block in their initialize response.
     images: imageAttachmentLimits !== null,
     imageAttachmentLimits,
-    // This is deliberately not raw file-upload parity. The renderer's normal
-    // FileAttachment marker remains paired with the governed Ave read tool.
+    // This is deliberately not raw file-upload parity. The renderer's normal FileAttachment marker remains paired with the governed Ave read tool.
     files: true,
     tools: true,
     projectAccess: true,
@@ -491,8 +468,7 @@ function codexStatus(
     planType: status.planType,
     pendingLogin: status.pendingLogin,
     pendingDeviceCode: status.pendingDeviceCode,
-    // Codex opens only allowlisted URLs as part of the managed login request;
-    // the URL is intentionally never retained for a renderer re-open action.
+    // Codex opens only allowlisted URLs as part of the managed login request; the URL is intentionally never retained for a renderer re-open action.
     canOpenVerificationUrl: false,
     version: status.version,
     capabilities: verifiedRuntimeCapabilities("codex", safelyVerified && isConnectedAndReady(status)),
@@ -561,7 +537,7 @@ function isAbortError(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
 }
 
-/** The renderer-safe meaning of a user-CLI resolution failure. */
+// The renderer-safe meaning of a user-CLI resolution failure.
 function codexRuntimeErrorCode(
   code: CodexUserRuntimeErrorCode | "codex-runtime-not-configured",
 ): SubscriptionRuntimeErrorCode {
@@ -581,7 +557,7 @@ function codexRuntimeErrorCode(
   }
 }
 
-/** Maps every provider-specific failure to the stable renderer-safe union. */
+// Maps every provider-specific failure to the stable renderer-safe union.
 export function subscriptionRuntimeErrorCode(error: unknown): SubscriptionRuntimeErrorCode {
   if (error instanceof SubscriptionRuntimeServiceError) return error.code;
   if (error instanceof CodexUserRuntimeError) return codexRuntimeErrorCode(error.code);
@@ -660,8 +636,7 @@ export function subscriptionRuntimeErrorCode(error: unknown): SubscriptionRuntim
 }
 
 function stableError(error: unknown): Error {
-  // Attachment transport failures are already fixed, local boundary codes.
-  // Preserve them to SubscriptionLlmProvider so size/capability feedback stays
+  // Attachment transport failures are already fixed, local boundary codes. Preserve them to SubscriptionLlmProvider so size/capability feedback stays
   // actionable without exposing runtime output or protocol detail.
   if (
     error instanceof SubscriptionRuntimeServiceError
@@ -675,12 +650,7 @@ function stableError(error: unknown): Error {
   );
 }
 
-/**
- * Preserve only the transport's already-sanitized recovery facts. The string
- * is intentionally generic because SubscriptionLlmProvider owns the final
- * renderer-safe error projection. Other diagnostic failures still throw so
- * the tracked session invalidates its safety proof and records the failure.
- */
+// Preserve sanitized transport recovery facts; other diagnostic failures must invalidate the session safety proof and throw.
 function transportDiagnosticFailure(error: unknown): Extract<StreamEvent, { type: "error" }> | undefined {
   const providerError = projectedSubscriptionTransportDiagnosticsFromError(error);
   return providerError && !providerError.transport
@@ -692,7 +662,7 @@ function transportDiagnosticFailure(error: unknown): Extract<StreamEvent, { type
     : undefined;
 }
 
-/** Convert the already-sanitized Codex `last` snapshot into non-billable SOT. */
+// Convert the already-sanitized Codex `last` snapshot into non-billable SOT.
 function codexReportedSubscriptionUsage(
   selection: SubscriptionChatRuntimeSelection,
   usage: CodexConversationTokenUsage,
@@ -714,7 +684,7 @@ function codexReportedSubscriptionUsage(
   });
 }
 
-/** Bounded single-consumer bridge from callback-style Codex events. */
+// Bounded single-consumer bridge from callback-style Codex events.
 class SubscriptionEventQueue<T> implements AsyncIterable<T> {
   private readonly values: T[] = [];
   private waiter: {
@@ -750,8 +720,7 @@ class SubscriptionEventQueue<T> implements AsyncIterable<T> {
 
   fail(error: Error): void {
     if (this.failure) return;
-    // A late native-host rejection or transport failure must invalidate a
-    // scheduled tool boundary rather than letting already-buffered events run.
+    // A late native-host rejection or transport failure must invalidate a scheduled tool boundary rather than letting already-buffered events run.
     this.completed = false;
     this.values.length = 0;
     this.failure = error;
@@ -828,8 +797,7 @@ class CodexSubscriptionTextSession implements SubscriptionTextSession {
     const onAbort = () => {
       if (aborted) return;
       aborted = true;
-      // Cancellation is terminal at the host boundary. Do not wait for a
-      // provider to acknowledge it before rejecting buffered or late output.
+      // Cancellation is terminal at the host boundary. Do not wait for a provider to acknowledge it before rejecting buffered or late output.
       queue.fail(abortError());
       void this.cancelActiveTurn().catch(() => undefined);
     };
@@ -839,9 +807,8 @@ class CodexSubscriptionTextSession implements SubscriptionTextSession {
         throw new SubscriptionRuntimeServiceError("subscription-operation-failed");
       }
       toolBoundary = true;
-      // Return the protocol response first, then end this remote turn. The
-      // engine executes the emitted call through its normal ToolExecutor and
-      // starts a fresh remote turn containing the Ave tool_result.
+      // Return the protocol response first, then end this remote turn. The engine executes the emitted call through its normal ToolExecutor and starts a fresh
+      // remote turn containing the Ave tool_result.
       setImmediate(() => {
         if (unsafeRequest) {
           queue.fail(new SubscriptionRuntimeServiceError("subscription-operation-failed",
@@ -873,8 +840,7 @@ class CodexSubscriptionTextSession implements SubscriptionTextSession {
           if (!toolBoundary && !aborted) queue.push({ type: "reasoning_delta", text: event.delta });
         },
         onServerRequest: (request) => {
-          // App Server invokes onServerRequest before its dedicated dynamic
-          // callback. Native and future reverse RPC remain deny-only.
+          // App Server invokes onServerRequest before its dedicated dynamic callback. Native and future reverse RPC remain deny-only.
           if (request.kind === "dynamic-tool") return;
           unsafeRequest = true;
           queue.fail(new SubscriptionRuntimeServiceError("subscription-operation-failed",
@@ -952,7 +918,7 @@ class CodexSubscriptionTextSession implements SubscriptionTextSession {
   }
 }
 
-/** Wrap an ACP session so only the Ave-owned MCP bridge can emit tool calls. */
+// Wrap an ACP session so only the Ave-owned MCP bridge can emit tool calls.
 class BridgedAcpSubscriptionTextSession implements SubscriptionTextSession {
   readonly provider: AcpSubscriptionTextSession["provider"];
   private stopped = false;
@@ -1004,8 +970,7 @@ class BridgedAcpSubscriptionTextSession implements SubscriptionTextSession {
     const onAbort = () => {
       if (aborted) return;
       aborted = true;
-      // Cancellation is terminal at the host boundary. Do not wait for a
-      // provider to acknowledge it before rejecting buffered or late output.
+      // Cancellation is terminal at the host boundary. Do not wait for a provider to acknowledge it before rejecting buffered or late output.
       queue.fail(abortError());
       void this.cancelActiveTurn().catch(() => undefined);
     };
@@ -1067,16 +1032,13 @@ class BridgedAcpSubscriptionTextSession implements SubscriptionTextSession {
   }
 }
 
-/**
- * Main-process-only facade. It is the only owner of authenticated runtime
- * state and live governed model sessions. Chat availability is intentionally
- * stricter than authentication: it becomes true only after safety verification.
- */
+// Main-process-only facade. It is the only owner of authenticated runtime state and live governed model sessions. Chat availability is intentionally
+// stricter than authentication: it becomes true only after safety verification.
 export class SubscriptionRuntimeService {
   private readonly safelyVerified = new Set<SubscriptionRuntimeId>();
   private readonly safetyEpochByProvider = new Map<SubscriptionRuntimeId, number>();
   private readonly activeSessions = new Set<SubscriptionTextSession>();
-  /** Terminal per-instance guard for callers that retained a service reference during shutdown. */
+  // Terminal per-instance guard for callers that retained a service reference during shutdown.
   private stopped = false;
   private stopPromise: Promise<void> | null = null;
 
@@ -1124,9 +1086,15 @@ export class SubscriptionRuntimeService {
       namespace.childDir(claudeDirs.workspaceDir),
       namespace.childDir(claudeDirs.runtimeTempDir),
     ]);
+    const codexRuntimeDirectory = await namespace.childDir("codex-v3-home/runtime");
+    // Reclaim persistent directories left administrator-owned by prior elevated runs; refuse foreign-owned directories unchanged.
+    await (options.claimRuntimeDirectories ?? claimPrivateOwnership)([
+      codexHome, codexRuntimeDirectory, codexSqlite, loginWorkspace, loginTemp, textWorkspace, textTemp,
+      claudeHome, claudeWorkspace, claudeTemp,
+    ]);
     const codexRuntimeLocator: CodexRuntimeLocator = options.codexRuntimeLocator ?? new CodexUserRuntimeLocator({
       runtimeHome: codexHome,
-      runtimeDirectory: await namespace.childDir("codex-v3-home/runtime"),
+      runtimeDirectory: codexRuntimeDirectory,
       sqliteHome: codexSqlite,
       workspaceDir: loginWorkspace,
       runtimeTempDir: loginTemp,
@@ -1167,7 +1135,7 @@ export class SubscriptionRuntimeService {
     );
   }
 
-  /** Read-only status. A connected account remains unavailable until verify() proves isolation. */
+  // Read-only status. A connected account remains unavailable until verify() proves isolation.
   async getStatus(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     return this.withStableErrors(async () => {
@@ -1179,7 +1147,7 @@ export class SubscriptionRuntimeService {
     });
   }
 
-  /** Error projection without forcing a new runtime start or credential refresh. */
+  // Error projection without forcing a new runtime start or credential refresh.
   getCachedStatus(runtimeId: SubscriptionRuntimeId): SubscriptionRuntimeStatus | undefined {
     if (this.stopped) return undefined;
     if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
@@ -1190,11 +1158,8 @@ export class SubscriptionRuntimeService {
     return this.projectCodexStatus(this.codexClient.getCachedStatus());
   }
 
-  /**
-   * Point a runtime at an executable the user picked. Only the ACP runtimes
-   * take one: Ave finds the `codex` and `claude` CLIs itself, and those
-   * runtimes have no user-chosen path to set or forget.
-   */
+  // Point a runtime at an executable the user picked. Only the ACP runtimes take one: Ave finds the `codex` and `claude` CLIs itself, and those runtimes
+  // have no user-chosen path to set or forget.
   async chooseExecutable(
     runtimeId: SubscriptionRuntimeId,
     pickerPath: string,
@@ -1218,7 +1183,7 @@ export class SubscriptionRuntimeService {
     ));
   }
 
-  /** Authenticate, then prove the provider's isolated governed transport is safe to use. */
+  // Authenticate, then prove the provider's isolated governed transport is safe to use.
   async verify(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     const verificationEpoch = this.invalidateSafety(runtimeId);
@@ -1344,8 +1309,7 @@ export class SubscriptionRuntimeService {
     this.assertRunning();
     return this.withStableErrors(async () => {
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
-        // Model choices come from the catalog. No choice keeps the CLI's
-        // own default; account availability is enforced by the runtime.
+        // Model choices come from the catalog. No choice keeps the CLI's own default; account availability is enforced by the runtime.
         return {
           status: await this.getStatus(runtimeId),
           models: catalogChatModelIds("claude").map((id) => ({ id, displayName: id, isDefault: false })),
@@ -1364,7 +1328,7 @@ export class SubscriptionRuntimeService {
     });
   }
 
-  /** Opens one main-owned, Ave-governed session after rechecking availability. */
+  // Opens one main-owned, Ave-governed session after rechecking availability.
   async openTextSession(
     selection: SubscriptionChatRuntimeSelection,
     options: SubscriptionTextSessionOptions = {},
@@ -1388,8 +1352,7 @@ export class SubscriptionRuntimeService {
     let safetyEpoch = this.safetyEpoch(safeSelection.provider);
     let status = await this.getStatus(safeSelection.provider);
     this.assertSafetyEpochCurrent(safeSelection.provider, safetyEpoch);
-    // A persisted selection survives app restart, while the in-memory safety
-    // proof intentionally does not. Re-prove only for an explicit model turn.
+    // A persisted selection survives app restart, while the in-memory safety proof intentionally does not. Re-prove only for an explicit model turn.
     if (!status.capabilities.chat && isConnectedAndReady(status)) {
       status = await this.verify(safeSelection.provider);
       this.assertRunning();
@@ -1402,9 +1365,8 @@ export class SubscriptionRuntimeService {
       (safeSelection.provider === "codex" || isClaudeCodeSubscriptionProviderId(safeSelection.provider))
       && (safeSelection.model !== undefined || safeFallbackSelection !== undefined)
     ) {
-      // Persisted selections and transient sub-agent overrides bypass the
-      // renderer IPC. Re-enumerate against the current subscription-scoped
-      // catalog before forwarding either model ID.
+      // Persisted selections and transient sub-agent overrides bypass the renderer IPC. Re-enumerate against the current subscription-scoped catalog before
+      // forwarding either model ID.
       const catalog = await this.listModels(safeSelection.provider);
       this.assertSafetyEpoch(effectiveSelection.provider, safetyEpoch);
       if (!catalog.status.capabilities.chat) {
@@ -1476,11 +1438,10 @@ export class SubscriptionRuntimeService {
     });
   }
 
-  /** Stops all login and conversation children. Terminal and idempotent per service instance. */
+  // Stops all login and conversation children. Terminal and idempotent per service instance.
   stop(): Promise<void> {
     if (this.stopPromise) return this.stopPromise;
-    // Set synchronously before snapshotting so an already-held reference cannot
-    // add a late session while the active set is being drained.
+    // Set synchronously before snapshotting so an already-held reference cannot add a late session while the active set is being drained.
     this.stopped = true;
     this.stopPromise = (async () => {
       const sessions = [...this.activeSessions];
@@ -1544,16 +1505,12 @@ export class SubscriptionRuntimeService {
 
   private async stopSessionsFor(provider: SubscriptionRuntimeId): Promise<void> {
     const sessions = [...this.activeSessions].filter((session) => session.provider === provider);
-    // Session cleanup is best effort here: an auth/logout mutation must not be
-    // blocked by a third-party runtime that is already being force-stopped.
+    // Session cleanup is best effort here: an auth/logout mutation must not be blocked by a third-party runtime that is already being force-stopped.
     await Promise.allSettled(sessions.map((session) => session.stop()));
   }
 
-  /**
-   * Synchronously revoke every proof tied to this provider and advance its
-   * epoch. Any in-flight verify/open operation that captured an earlier epoch
-   * must fail closed rather than re-authorizing a newly selected runtime.
-   */
+  // Synchronously revoke every proof tied to this provider and advance its epoch. Any in-flight verify/open operation that captured an earlier epoch must
+  // fail closed rather than re-authorizing a newly selected runtime.
   private invalidateSafety(provider: SubscriptionRuntimeId): number {
     this.safelyVerified.delete(provider);
     const nextEpoch = this.safetyEpoch(provider) + 1;
@@ -1582,7 +1539,6 @@ export class SubscriptionRuntimeService {
       throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
     }
   }
-
 
   private rejectUnsafeRequest(provider: SubscriptionRuntimeId, requestKind: string): void {
     this.invalidateSafety(provider);
@@ -1674,7 +1630,6 @@ export class SubscriptionRuntimeService {
     }
   }
 
-
   private async *streamTrackedSession(
     session: AcpSubscriptionTextSession | SubscriptionTextSession,
     text: string,
@@ -1689,8 +1644,7 @@ export class SubscriptionRuntimeService {
         yield event;
       }
     } catch (error) {
-      // User cancellation is an expected lifecycle event, not evidence that a
-      // previously verified subscription runtime became unsafe or unavailable.
+      // User cancellation is an expected lifecycle event, not evidence that a previously verified subscription runtime became unsafe or unavailable.
       if (!isAbortError(error) && this.safetyEpochIsCurrent(session.provider, safetyEpoch)) {
         this.sessionFailed(session.provider);
       }
@@ -1715,7 +1669,7 @@ let createPromise: Promise<SubscriptionRuntimeService> | null = null;
 let stopPromise: Promise<void> | null = null;
 let stopped = false;
 
-/** Lazily create the one main-owned service. The opener must be main-validated. */
+// Lazily create the one main-owned service. The opener must be main-validated.
 export async function getSubscriptionRuntimeService(
   openExternal: SubscriptionOpenExternal,
   options: GetSubscriptionRuntimeServiceOptions = {},
@@ -1739,7 +1693,7 @@ export async function getSubscriptionRuntimeService(
   return createPromise;
 }
 
-/** Idempotently stop login and execution-capable subscription runtimes. */
+// Idempotently stop login and execution-capable subscription runtimes.
 export function stopSubscriptionRuntimes(): Promise<void> {
   if (stopPromise) return stopPromise;
   stopped = true;

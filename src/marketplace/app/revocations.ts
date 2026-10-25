@@ -1,14 +1,8 @@
-/**
- * The revocation feed (design §10.4): each installed package bound to a
- * source gets that source's revocations of it, and nothing from any other
- * source. The registry (`plugins/revocation/revocation-registry.ts`) answers
- * the load gates from these rules; the service acts on the `uninstall` ones.
- */
+/** Each installed package receives revocations only from its bound source. */
 import { errorMessage } from "../../shared/error-message.js";
 import type { RevocationRule } from "../../plugins/revocation/revocation-registry.js";
 import type { PackageKind, Revocation } from "../catalog/types.js";
 
-/** An installed package and the source it is bound to. */
 export interface BoundInstall {
   kind: PackageKind;
   name: string;
@@ -21,11 +15,7 @@ export interface RevocationFeed {
   unreadable: Array<{ sourceId: string; message: string }>;
 }
 
-/**
- * `revocationsOf` answers a source's revocations at its pin (empty before its
- * first sync). A source whose snapshot cannot be read is reported, not
- * skipped silently: its revocations stop applying until it is repaired.
- */
+/** Reads revocations at the source pin; unreadable snapshots are reported and stop supplying rules. */
 export async function revocationFeed(
   installed: readonly BoundInstall[],
   revocationsOf: (sourceId: string) => Promise<readonly Revocation[]>,

@@ -4,17 +4,8 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { buildMcpAppHostContext } from "../mcp-app-host-context.js";
 import { MCP_APP_AVAILABLE_DISPLAY_MODES } from "../../../../shared/mcp-app-display-mode.js";
-// The anti-drift pin (bottom of this file) is a TEXT diff of the shipped upstream
-// `.d.ts` against this repo's local twin — deliberately, not a type-level check. The
-// upstream types cannot be imported for member-level resolution under
-// `moduleResolution: NodeNext` (the package's extensionless re-exports mis-resolve —
-// modelcontextprotocol/ext-apps#705, the very reason `mcp-app-host-context.ts`
-// re-declares the twin), so a pin written with `import type` would depend on the thing
-// that is broken. Reading the two source texts does not.
-
-// A representative subset of the curated `--ave-*` token map (values are the
-// resolved CSS strings `bundleToPluginTokens` produces). Deliberately omits some
-// tokens (e.g. `--ave-warning`) to exercise "emit only present keys".
+// Compare shipped declaration text because extensionless package imports fail member resolution under NodeNext; omit
+// fixture tokens to test partial maps.
 const LIGHT_TOKENS: Record<string, string> = {
   "--ave-bg": "hsl(0, 0%, 100%)",
   "--ave-surface": "hsl(0, 0%, 98%)",
@@ -86,12 +77,7 @@ describe("buildMcpAppHostContext", () => {
       displayMode: "inline",
     });
 
-    // The list must be exactly `MCP_APP_AVAILABLE_DISPLAY_MODES` — the same SoT
-    // `onrequestdisplaymode` checks a request against. Advertising a mode the handler
-    // would refuse (or refusing one we advertised) is the drift this pin exists for.
-    // `pip` IS one of them now (a renderer-side location store — see
-    // `mcp-app-card-location-store.ts` — makes it real); this assertion stays drift-safe
-    // regardless of the SoT's membership because it compares against the SoT itself.
+    // Advertised display modes must exactly match the handler's shared accepted set.
     expect(ctx.availableDisplayModes).toEqual([...MCP_APP_AVAILABLE_DISPLAY_MODES]);
     expect(ctx.availableDisplayModes).toContain("pip");
     expect(ctx.displayMode).toBe("inline");
@@ -180,8 +166,7 @@ describe("buildMcpAppHostContext", () => {
     for (const key of keys) {
       expect(key.startsWith("--ave-")).toBe(false);
     }
-    // Every emitted key is a standard ext-apps variable (starts with one of the
-    // fixed prefixes), never a bespoke bucket.
+    // Every emitted key is a standard ext-apps variable (starts with one of the fixed prefixes), never a bespoke bucket.
     for (const key of keys) {
       expect(
         key.startsWith("--color-") ||
@@ -244,16 +229,7 @@ describe("buildMcpAppHostContext", () => {
 
 });
 
-// ─── Anti-drift pin against the SHIPPED upstream package ──────────────────────
-//
-// `mcp-app-host-context.ts` re-declares the standard `McpUiStyleVariableKey`
-// vocabulary locally. That is the portability boundary of this whole feature: every key
-// we emit must be one an MCP App actually reads. A re-declared type drifts silently by
-// construction — upstream adds a key, ours does not, and nothing fails — so the twin is
-// PINNED here against the union in the installed
-// `@modelcontextprotocol/ext-apps/dist/src/spec.types.d.ts`.
-//
-// Text extraction rather than a type import: see the note at the top of this file.
+// Pin the local standard-style union to the installed declaration text so upstream additions cannot drift silently.
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, "../../../../..");

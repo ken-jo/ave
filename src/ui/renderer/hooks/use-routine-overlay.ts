@@ -21,11 +21,8 @@ import type { OnboardingProposalDisposition } from "../../../main/onboarding-pro
 type Api = ReturnType<typeof getApi>;
 
 export interface UseRoutineOverlayResult {
-  /**
-   * Populated by OverlayContextProvider DURING its render so the routine/overlay
-   * IPC subscriptions here can call addFire() from outside the React tree. App
-   * threads this straight into OverlayContextProvider.
-   */
+  /** Populated by OverlayContextProvider DURING its render so the routine/overlay IPC subscriptions here can call addFire()
+   * from outside the React tree. App threads this straight into OverlayContextProvider. */
   addFireRef: MutableRefObject<OverlayContextValue["addFire"] | null>;
   /** The same for dismiss(), so main can withdraw a card it staged. */
   dismissRef: MutableRefObject<OverlayContextValue["dismiss"] | null>;
@@ -44,20 +41,8 @@ export interface UseRoutineOverlayResult {
   ) => Promise<void>;
 }
 
-/**
- * Routine + plugin-overlay IPC ownership, extracted verbatim from App.tsx.
- *
- * Owns the routine-fire overlay pipeline: `runningRoutines`, the `addFireRef`
- * surfaced to OverlayContextProvider, the `overlayItemsRef` lookup map, and the
- * two IPC subscription effects (routine running/finished/failed/fired + pending
- * drain; plugin overlay show/dismiss). Also owns the two overlay action
- * callbacks.
- *
- * `handlePluginPrimaryAction` reaches a conversation through the tile registry
- * rather than a captured callback: the card is shown in ONE tile, and the turn
- * it starts belongs to that tile's conversation, which the window cannot know
- * at subscribe time.
- */
+/** Resolve primary actions through the card-owning tile registry at action time rather than a subscription-time
+ * conversation callback. */
 export function useRoutineOverlay({
   api,
   t,
@@ -71,24 +56,18 @@ export function useRoutineOverlay({
   /** The locale an accepted proposal's follow-up list is resolved in. */
   locale: string;
   registry: ChatGroupSessionRegistry;
-  /**
-   * Move the settings view onto a destination. A proposal's `settings` action
-   * names a tab and optionally a section within it, and the window owns
-   * navigation, so it supplies the move.
-   */
+  /** Move the settings view onto a destination. A proposal's `settings` action names a tab and optionally a section within
+   * it, and the window owns navigation, so it supplies the move. */
   onNavigateToSettings: (path: SettingsPath) => void;
-  /**
-   * A card addressed to the dedicated Suggestions conversation arrived. Main
-   * made that conversation exist (or moved it up) before sending, so the window
-   * re-reads its list: the row has to be listed for the card to mark it.
-   */
+  /** A card addressed to the dedicated Suggestions conversation arrived. Main made that conversation exist (or moved it up)
+   * before sending, so the window re-reads its list: the row has to be listed for the card to mark it. */
   onSuggestionStaged: () => void;
 }): UseRoutineOverlayResult {
   // runningRoutines tracks in-flight LLM sessions.
   const [runningRoutines, setRunningRoutines] = useState<Set<string>>(new Set());
 
-  // addFire ref is populated by OverlayContextProvider during render
-  // so the IPC subscription below can call it without prop-drilling
+  // addFire ref is populated by OverlayContextProvider during render so the IPC subscription below can call it without
+  // prop-drilling
   const addFireRef = useRef<OverlayContextValue["addFire"] | null>(null);
   const dismissRef = useRef<OverlayContextValue["dismiss"] | null>(null);
   const onSuggestionStagedRef = useRef(onSuggestionStaged);
@@ -96,11 +75,8 @@ export function useRoutineOverlay({
     onSuggestionStagedRef.current = onSuggestionStaged;
   }, [onSuggestionStaged]);
 
-  /**
-   * The one way a card enters the queue: routed first, so a card the user did
-   * not ask for is addressed to the Suggestions conversation and never to the
-   * focused one. Returns the card as queued.
-   */
+  /** The one way a card enters the queue: routed first, so a card the user did not ask for is addressed to the Suggestions
+   * conversation and never to the focused one. Returns the card as queued. */
   const stage = useCallback((incoming: OverlayItem): OverlayItem => {
     const item = routeToSuggestionsSession(incoming);
     addFireRef.current?.(item);
@@ -146,9 +122,7 @@ export function useRoutineOverlay({
       });
     });
 
-    // Major fix: clears running:true stuck OverlayItem when LLM session fails.
-    // Uses the same stale-replace path as fired so the running OverlayItem
-    // transitions to a visible error summary instead of staying spinning.
+    // Replace failed running overlays with error summaries through the stale-replacement path.
     const unsubFailed = api.onRoutineFailed((evt) => {
       setRunningRoutines((prev) => {
         const next = new Set(prev);
@@ -181,9 +155,8 @@ export function useRoutineOverlay({
     return () => { unsubStarted(); unsubFinished(); unsubFailed(); unsubFired(); };
   }, [api, pushRoutineResult, stage, t]);
 
-  // Overlay items ref tracks all items pushed via onOverlayShow so
-  // handlePluginPrimaryAction can look up pendingPrompt by id without needing
-  // to reach into OverlayContext (App.tsx is the parent of OverlayContextProvider).
+  // Overlay items ref tracks all items pushed via onOverlayShow so handlePluginPrimaryAction can look up pendingPrompt by id
+  // without needing to reach into OverlayContext (App.tsx is the parent of OverlayContextProvider).
   const overlayItemsRef = useRef<Map<string, OverlayItem>>(new Map());
   /** Ids changed while the initial alert snapshot is pending. */
   const alertSnapshotChangesRef = useRef<Set<string> | null>(null);
@@ -192,9 +165,8 @@ export function useRoutineOverlay({
   useEffect(() => {
     if (typeof api.onOverlayShow !== "function") return;
     const show = (incoming: OverlayItem): void => {
-      // The lookup handlePluginPrimaryAction reads by id; the queue takes the
-      // same (routed) object, so the confirm resolves the same conversation the
-      // card is drawn in.
+      // The lookup handlePluginPrimaryAction reads by id; the queue takes the same (routed) object, so the confirm resolves the
+      // same conversation the card is drawn in.
       const item = stage(incoming);
       overlayItemsRef.current.set(item.id, item);
     };
@@ -207,14 +179,13 @@ export function useRoutineOverlay({
       alertSnapshotChangesRef.current?.add(item.id);
       show(item);
     });
-    // Alert cards staged before this window was listening — at boot, or
-    // before a reload. Subscribe to both changes first. A snapshot response
-    // can arrive after a newer push or user action, so those ids take precedence.
+    // Alert cards staged before this window was listening — at boot, or before a reload. Subscribe to both changes first. A
+    // snapshot response can arrive after a newer push or user action, so those ids take precedence.
     let pulled = true;
     const unsubDismiss = typeof api.onOverlayDismiss === "function"
       ? api.onOverlayDismiss((id) => {
-          // Main withdrew the card: it leaves the queue as well as the lookup,
-          // so no one can confirm a card whose prompt main no longer stands by.
+          // Main withdrew the card: it leaves the queue as well as the lookup, so no one can confirm a card whose prompt main no
+          // longer stands by.
           alertSnapshotChangesRef.current?.add(id);
           overlayItemsRef.current.delete(id);
           dismissRef.current?.(id);
@@ -234,15 +205,8 @@ export function useRoutineOverlay({
     return () => { pulled = false; finishPull(); unsubShow(); unsubDismiss(); };
   }, [api, stage]);
 
-  // Insertion-overlay primary action handler (user confirm → main chat insert).
-  // Called from OverlayCardRegion with the OverlayItem.id after OverlayContext.dismiss()
-  // has already removed the item from the queue. overlayItemsRef still holds it.
-  //
-  // Two staged sources land here, and BOTH are non-user-authored: a plugin overlay
-  // trigger and an MCP App's `ui/message` that arrived with no turn in flight. The
-  // click is the gate — neither may start a turn on its own. They differ only in
-  // provenance, which rides the envelope already inside `pendingPrompt` and the send
-  // mode (→ `plugin-emitted` / `app-emitted` trust origin in main).
+  // User confirmation gates staged plugin and app prompts; preserve envelope provenance and retain the item lookup after
+  // queue dismissal.
   const reportAlertClosed = useCallback(
     (alertId: string, reason: AlertCardClosedReason) => {
       void api.alerts?.cardClosed(alertId, reason).catch((err) => {
@@ -252,17 +216,8 @@ export function useRoutineOverlay({
     [api],
   );
 
-  /**
-   * The insertion card the user acted on, and the tile that showed it.
-   *
-   * The tile is resolved from the card's ORIGIN, not from the surface that
-   * rendered it. The two agree whenever the origin conversation is open — that
-   * is how the card got there — but the tile can close between the paint and
-   * the click, and inserting into the caller's tile then would put a prompt
-   * staged for one conversation into another. A card with no origin has no
-   * conversation to contradict, so the group the caller named (a tile's own, or
-   * the focused one for the window's region) stands.
-   */
+  /** Resolve insertion by origin conversation at click time; a closed tile must not redirect its staged prompt into another
+   * conversation. */
   const resolveInsertion = useCallback((overlayItemId: string, chatGroupId: string) => {
     const item = overlayItemsRef.current.get(overlayItemId);
     if (!item) return null;
@@ -292,8 +247,8 @@ export function useRoutineOverlay({
     alertSnapshotChangesRef.current?.add(overlayItemId);
     overlayItemsRef.current.delete(overlayItemId);
 
-    // Insert as imported_trigger entry — staged provenance preserved, NOT a plain
-    // user bubble (architecture §9 plugin provenance contract; same rule for apps).
+    // Insert as imported_trigger entry — staged provenance preserved, NOT a plain user bubble (architecture §9 plugin
+    // provenance contract; same rule for apps).
     tile.insertImportedTriggerEntry({
       sessionId: source.kind === "alert" ? source.alertId : source.eventId,
       source: source.kind === "app" ? `app:${source.serverId}`
@@ -302,9 +257,8 @@ export function useRoutineOverlay({
       summary: item.summary,
     });
 
-    // Start THAT tile's turn (user-in-the-loop confirm → auto-process). Both
-    // modes skip the user-bubble append since the imported_trigger marker
-    // already represents the staged prompt.
+    // Start THAT tile's turn (user-in-the-loop confirm → auto-process). Both modes skip the user-bubble append since the
+    // imported_trigger marker already represents the staged prompt.
     void tile.ask(
       pendingPrompt,
       source.kind === "app" ? "app-message" : "trigger-import",
@@ -338,9 +292,8 @@ export function useRoutineOverlay({
     [resolveInsertion, runInsertion],
   );
 
-  // The user closed an alert card without accepting it. Main keeps the
-  // identity closed for the card's lifetime, so a re-raise does not bring it
-  // back.
+  // The user closed an alert card without accepting it. Main keeps the identity closed for the card's lifetime, so a
+  // re-raise does not bring it back.
   const handleAlertDismiss = useCallback(
     (overlayItemId: string) => {
       const item = overlayItemsRef.current.get(overlayItemId);
@@ -360,16 +313,7 @@ export function useRoutineOverlay({
     [api],
   );
 
-  // The user's answer to an onboarding proposal. Accepting performs the action
-  // the manifest declared — and only that: text into a composer, or the
-  // settings view onto the section that holds the option. Nothing here starts
-  // a turn, which is why a proposal never travels the `imported_trigger` path
-  // the insertion cards use.
-  //
-  // The answer is recorded whichever way it went, including "accepted": all
-  // three are final for this launch, and two of them are final for good. The
-  // host's reply re-stages whatever is still unanswered, so the next question
-  // arrives only after this one has one.
+  // Onboarding acceptance only fills a composer or navigates settings; record every disposition and never start a turn.
   const handleProposalAnswer = useCallback(
     async (
       overlayItemId: string,
@@ -383,8 +327,7 @@ export function useRoutineOverlay({
 
       if (disposition === "accepted") {
         if (action.kind === "composer") {
-          // The pane whose region showed the card — the focused one, where the
-          // user is — the same rule an insertion card inserts by.
+          // The pane whose region showed the card — the focused one, where the user is — the same rule an insertion card inserts by.
           const tile = registry.read(chatGroupId);
           if (tile) tile.prefillComposer(action.prompt);
         } else if (action.kind === "settings") {

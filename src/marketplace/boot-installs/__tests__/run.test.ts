@@ -53,11 +53,9 @@ describe("runBootInstalls (design §10.2)", () => {
     policy?: Partial<MarketplacePolicy>;
     rows?: CatalogRow[];
     synced?: Record<string, SourceOrigin>;
-    /** How a required source stands where it is not readable or unreachable as `synced` says. */
     sourceStates?: Record<string, RequirementSourceState>;
     failing?: Set<string>;
     signal?: AbortSignal;
-    /** Runs inside each install, before it lands. */
     during?: (name: string) => void;
   } = {}) {
     const input: BootInstallInput = {
@@ -65,7 +63,6 @@ describe("runBootInstalls (design §10.2)", () => {
       defaults: DEFAULT_INSTALLS,
       rows: options.rows ?? [row("ave", "meeting"), row("ave", "local-indexer")],
       synced: new Map(Object.entries(options.synced ?? { ave: "official" })),
-      // As the service reads them: each required source is readable while it has a snapshot, unreachable otherwise.
       requiredSources: new Map((options.policy?.requiredInstalls ?? []).map((item): [string, RequirementSourceState] => [item.source,
         options.sourceStates?.[item.source] ?? (Object.hasOwn(options.synced ?? { ave: "official" }, item.source) ? "readable" : "unreachable")])),
       installed: async (_kind, name) => installedState.get(name) ?? null,
@@ -89,7 +86,6 @@ describe("runBootInstalls (design §10.2)", () => {
     await expect(boot({ signal: shutdown.signal, during: () => shutdown.abort(reason) })).rejects.toBe(reason);
     expect(calls.map((call) => call.name)).toEqual(["meeting"]);
     const applied = await AppliedDefaults.open(file);
-    // The started install lands with its record; the next default is never reached.
     expect(applied.get(key("meeting"))).toMatchObject({ result: "installed" });
     expect(applied.has(key("local-indexer"))).toBe(false);
 
@@ -105,7 +101,7 @@ describe("runBootInstalls (design §10.2)", () => {
       { name: "meeting", source: "ave", switchSource: false, required: false },
       { name: "local-indexer", source: "ave", switchSource: false, required: false },
     ]);
-    installedState.clear(); // the user uninstalls both
+    installedState.clear();
     calls = [];
     const second = await boot();
     expect(second).toEqual({ installed: [], skipped: [], failed: [] });
@@ -167,10 +163,10 @@ describe("runBootInstalls (design §10.2)", () => {
     const rows = (v: string) => [row("ave", "meeting"), row("ave", "local-indexer"), row("corp", "wiki", { state: "candidate", version: version(v) })];
 
     expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toContainEqual(key("wiki", "corp"));
-    installedState.delete("wiki"); // removed behind the app's back: required means it comes back
+    installedState.delete("wiki");
     expect((await boot({ policy, synced, rows: rows("1.0.0") })).installed).toEqual([key("wiki", "corp")]);
 
-    // A newer version, another source, or an unreadable version: the boot pass replaces no running generation.
+    // Boot never replaces a running generation, even for an unreadable installed version.
     calls = [];
     expect((await boot({ policy, synced, rows: rows("1.1.0") }))).toMatchObject({ installed: [], failed: [] });
     installedState.set("wiki", { kind: "plugin", name: "wiki", version: "5.0.0", sourceId: "acme" });
@@ -197,7 +193,6 @@ describe("runBootInstalls (design §10.2)", () => {
     );
     expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", "corp", "disable")).toThrow(/cannot be disabled/u);
     expect(() => assertNotRequiredByPolicy(policy, "plugin", "meeting", "corp", "uninstall")).not.toThrow();
-    // The same name bound to another source, or to none, is not the required package.
     expect(lockedByPolicy(policy, "plugin", "wiki", "corp")).toEqual(key("wiki", "corp"));
     expect(lockedByPolicy(policy, "plugin", "wiki", "acme")).toBeUndefined();
     expect(() => assertNotRequiredByPolicy(policy, "plugin", "wiki", "acme", "uninstall")).not.toThrow();
@@ -249,11 +244,10 @@ describe("runBootInstalls (design §10.2)", () => {
       { key: key("yanked"), reason: "no version is offered to this installation" },
       { key: key("hidden-one", "team"), reason: "source team is hidden" },
     ]);
-    // The card reads the same reasons from the same judgement.
     const rows = [row("ave", "held", { state: "unavailable", reason: "pending" }), row("ave", "newer", { state: "upgrade_required", minAppVersion: "9.0.0" })];
     expect(requirementGap(key("held"), "readable", rows)).toEqual({ reason: "rollout-held" });
     expect(requirementGap(key("newer"), "readable", rows)).toEqual({ reason: "incompatible", minAppVersion: "9.0.0" });
-    // The source's state is judged before its rows: a hidden source's cached candidate is no proof it can be met.
+    // Judge source health before cached rows; hidden candidates cannot satisfy requirements.
     expect(requirementGap(key("meeting"), "hidden", [row("ave", "meeting")])).toEqual({ reason: "source-hidden" });
   });
 

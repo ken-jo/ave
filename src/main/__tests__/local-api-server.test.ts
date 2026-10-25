@@ -1,19 +1,4 @@
-/**
- * local-api-server — #1436 lifecycle wiring tests.
- *
- * Exercises the opt-in gate, per-boot secret generation + persistence via
- * `openFeatureNamespace`, a REAL fetch against the running loopback server, and
- * idempotent graceful shutdown (with the discovery file blanked afterwards).
- *
- * AVE_HOME is redirected to a per-test temp dir so the `~/.ave/local-api/`
- * discovery file lands in isolation (feature-namespace resolves it lazily on
- * every op, honouring the override). The module imports `electron` only as a
- * TYPE (erased at runtime) and its dispatch chain pulls no electron runtime
- * module, so no electron mock is needed for the node env.
- *
- * Every test that starts a server tears it down in afterEach so vitest exits
- * with no leaked handles.
- */
+// AVE_HOME points at a temporary directory; every real loopback listener is closed after each test.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,7 +25,7 @@ import type { A2AHttpRouter } from "../../api/a2a-router.js";
 import { PERMISSIONS, EXTERNAL_MUTATION_DENIED } from "../../contract/app-contract.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/** Minimal SettingsService stub for the independently snapshotted route gates. */
+// Minimal SettingsService stub for the independently snapshotted route gates.
 function stubSettings(
   system: Partial<SystemSettings>,
   features: Partial<FeatureFlags> = {},
@@ -69,11 +54,7 @@ const SERVICE_KEYS: readonly string[] = [
   "pluginMarketplace",
 ];
 
-/**
- * Build a services bag: a deep-proxy stands in for the full AppServices surface,
- * with `settingsService` (gate) + a `permissionManager.getMode` (smoke dispatch)
- * overridden to concrete values.
- */
+// Stub the full service surface while keeping settings and smoke-dispatch permissions concrete.
 function makeServices(
   system: Partial<SystemSettings>,
   getMode = "plan",
@@ -91,9 +72,8 @@ function makeServices(
           permissionManager: { getMode: () => getMode },
         };
       }
-      // When a test supplies a stub ApprovalGate, expose it so the wired
-      // external-mutation approver drives it. Otherwise fall through to the
-      // deep-proxy (the approver still builds, but no mutation test exercises it).
+      // When a test supplies a stub ApprovalGate, expose it so the wired external-mutation approver drives it. Otherwise fall through to the deep-proxy (the
+      // approver still builds, but no mutation test exercises it).
       if (prop === "approvalGate" && approvalGate) return approvalGate;
       if (prop === "auditLogger" && auditLog) return { log: auditLog };
       return Reflect.get(target, prop);
@@ -261,8 +241,7 @@ describe("local-api-server", () => {
       await expect(start).resolves.toBeNull();
       expect(existsSync(join(home, "local-api"))).toBe(false);
 
-      // Release the detached factory after shutdown; its stale generation must
-      // not continue into bind/discovery work.
+      // Release the detached factory after shutdown; its stale generation must not continue into bind/discovery work.
       resolveRuntime!({
         router: stubA2ARouter(),
         discovery: { protocolVersion: "1.0", agentCardPaths: [TEST_AGENT_CARD_PATH] },
@@ -548,7 +527,6 @@ describe("local-api-server", () => {
     });
   });
 
-  // ── #1409 approval-mediated external mutation ─────────────────────────────
   describe("external-mutation approver wiring", () => {
     it("returns undefined when no ApprovalGate is available (fail-closed default)", () => {
       expect(buildExternalMutationApprover(undefined, () => {})).toBeUndefined();
@@ -580,8 +558,7 @@ describe("local-api-server", () => {
       // Renderer-facing English reason (global default-language convention).
       expect(typeof req.reason).toBe("string");
       expect(req.reason as string).toMatch(/permission-mode change/);
-      // The gate owns `requireExplicit` (derived from policy) — the caller must
-      // NOT set it on the request (signature is Omit<ApprovalRequest,"requireExplicit">).
+      // The gate owns `requireExplicit` (derived from policy) — the caller must NOT set it on the request (signature is Omit<ApprovalRequest,"requireExplicit">).
       expect(req.requireExplicit).toBeUndefined();
     });
 
@@ -622,7 +599,6 @@ describe("local-api-server", () => {
       expect(logs.join("\n")).not.toContain("secret-from-gate-must-not-be-logged");
     });
 
-    // ── security MINOR-1 (#1441 cluster review): attention-DoS in-flight cap ──
     describe("in-flight cap (attention-DoS hardening, fail-closed)", () => {
       it("two concurrent asks → gate's requestAndWait called exactly once; the second resolves false immediately", async () => {
         let releaseGate!: (choice: "allow-once") => void;

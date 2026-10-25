@@ -1,8 +1,4 @@
-/**
- * Tool-result images reach the model on image-capable API-key routes. Native
- * multimodal tool-output routes keep the image in the tool result; Chat
- * Completions routes append a host-origin user image after that result group.
- */
+// Native routes keep tool images inline; Chat Completions appends them after the result group.
 import { describe, expect, it, vi } from "vitest";
 
 import type { GenericMessage, LLMVendor, ToolSchema } from "../llm/types.js";
@@ -150,8 +146,7 @@ describe("tool_result image wire gate — actual request and estimates", () => {
 
     for await (const _event of provider.streamTurn({
       model: "gpt-5.4-mini",
-      // A custom endpoint does not establish the model, and no name rule
-      // grants images (slice 7): the endpoint's report states image input.
+      // Custom endpoints grant image input only through reported capabilities, never name rules.
       modelCapabilities: { inputModalities: { input: ["text", "image"], source: "provider-reported" } },
       systemPrompt: "",
       messages: [
@@ -159,7 +154,6 @@ describe("tool_result image wire gate — actual request and estimates", () => {
         { ...IMAGE_ROW, toolUseId: "call-1" },
       ],
     })) {
-      // Draining reaches the synthetic response without an external request.
     }
 
     expect(customFetch).toHaveBeenCalledTimes(1);
@@ -191,7 +185,6 @@ describe("tool_result image wire gate — actual request and estimates", () => {
         { ...IMAGE_ROW, toolUseId: "call-1" },
       ],
     })) {
-      // Draining reaches the synthetic response without an external request.
     }
 
     expect(customFetch).toHaveBeenCalledTimes(1);
@@ -222,7 +215,6 @@ describe("tool_result image wire gate — actual request and estimates", () => {
         { ...IMAGE_ROW, toolUseId: "call-1" },
       ],
     })) {
-      // Draining reaches the synthetic response without an external request.
     }
 
     expect(customFetch).toHaveBeenCalledTimes(1);
@@ -259,7 +251,6 @@ describe("tool_result image wire gate — actual request and estimates", () => {
         { ...IMAGE_ROW, toolUseId: "call-1" },
       ],
     })) {
-      // Draining reaches the synthetic response without an external request.
     }
 
     expect(customFetch).toHaveBeenCalledTimes(1);

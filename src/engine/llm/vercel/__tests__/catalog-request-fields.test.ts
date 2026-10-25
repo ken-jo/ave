@@ -1,9 +1,4 @@
-/**
- * The request fields the model catalog decides, read off the bytes the
- * adapter hands to `fetch` (issue #2501 slice 3): the output limit after the
- * model's ceiling, and the reasoning level after the model's accepted levels.
- * Each case names what the request carried before the catalog decided it.
- */
+// Assert catalog-decided output limits and effort from the bytes handed to fetch.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { forbidAmbientFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
 import { activeModelCatalog, installModelCatalog } from "../../../../shared/model-catalog/active.js";
@@ -19,7 +14,7 @@ import { llmModelListCacheKey } from "../../../../shared/llm-model-list.js";
 import { collectRoundStream } from "../../../turn/stream-collector.js";
 import { apiRoundLlmSettings } from "../../../turn/round-llm-settings.js";
 
-/** The first request body the provider sent; the response is refused, which ends the turn after the request left. */
+// Capture the request before synthetic refusal terminates the stream.
 async function sentBody(
   vendor: LLMVendor,
   model: string,
@@ -41,7 +36,6 @@ async function sentBody(
     ...(params.outputTokenLimit === undefined ? {} : { outputTokenLimit: params.outputTokenLimit }),
     ...(params.tools ? { tools: [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }] } : {}),
   })) {
-    // Drain: the stream ends with the refusal.
   }
   expect(fetchResponse).toHaveBeenCalled();
   return JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
@@ -57,8 +51,6 @@ describe("request fields the catalog decides", () => {
   });
 
   it("clamps a requested output above the model's ceiling to the ceiling", async () => {
-    // claude-haiku-4-5: catalog output 64,000. The Anthropic SDK happens to
-    // know this model's limit as well; the OpenAI case below is one it does not.
     const body = await sentBody("claude", "claude-haiku-4-5", { outputTokenLimit: 100_000, enableThinking: false });
     expect(body.max_tokens).toBe(64_000);
   });
@@ -69,7 +61,6 @@ describe("request fields the catalog decides", () => {
   });
 
   it("clamps an OpenAI chat request to the model's ceiling", async () => {
-    // gpt-4o: catalog output 16,384. Before: 32,000.
     const body = await sentBody("openai", "gpt-4o", { outputTokenLimit: 32_000, enableThinking: false });
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(16_384);
   });
@@ -105,11 +96,7 @@ describe("request fields the catalog decides", () => {
     { enableThinking, reported: 8_192, catalog: undefined, expected: 8_192, sent: 8_192 },
     { enableThinking, reported: undefined, catalog: 8_192, expected: 8_192, sent: 4_096 },
   ]))("sends an endpoint-reported ceiling past the SDK's name table and records what it sends: reported $reported, catalog $catalog (thinking $enableThinking)", async ({ enableThinking, reported, catalog, expected, sent }) => {
-    // An unknown ceiling lets native serialization narrow to the SDK's model
-    // limit (claude-3-haiku: 4,096). The endpoint's own report outranks that
-    // name table, so its ceiling reaches the wire; a catalog ceiling does not.
-    // Either way the request controls observed after the projection are what
-    // the run records.
+    // Endpoint-reported ceilings outrank native model tables; record the serialized controls actually sent.
     if (catalog !== undefined) {
       installModelCatalog({
         ...bundled,
@@ -150,8 +137,7 @@ describe("request fields the catalog decides", () => {
       outputTokenLimit: sent,
       ...(thinking?.budget_tokens === undefined ? {} : { thinkingBudgetTokens: thinking.budget_tokens }),
     });
-    // Neither the unknown identity nor the limit-only entry declares
-    // reasoning. Enabling it does not manufacture a numeric control.
+    // Unknown reasoning capability must not manufacture a numeric control.
     expect(thinking).toBeUndefined();
   });
 
@@ -163,7 +149,7 @@ describe("request fields the catalog decides", () => {
   });
 
   it("preserves declared effort on a tool request without guessing the custom endpoint's protocol", async () => {
-    // The custom host does not establish the model; the named entry states its levels.
+    // Custom endpoint identity is unknown until a named entry declares accepted levels.
     const body = await sentBody("openai", "gpt-5.4", {
       baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true, catalogModel: "openai/gpt-5.4",
     });
@@ -177,7 +163,7 @@ describe("request fields the catalog decides", () => {
   });
 
   it("sends no effort at a custom endpoint whose model nobody names", async () => {
-    // Neither protocol nor reasoning levels are guessed from the model name.
+    // Neither protocol nor effort levels may be guessed from a model name.
     const body = await sentBody("openai", "gpt-5.4", {
       baseUrl: "https://gateway.invalid/v1", thinkingBudgetTokens: 16_000, tools: true,
     });
@@ -191,19 +177,16 @@ describe("request fields the catalog decides", () => {
   });
 
   it("sends the lowest level GPT-5 accepts for a budget that maps below it", async () => {
-    // gpt-5 accepts minimal/low/medium/high. Before: the name rule clamped "none" to "low".
     const body = await sentBody("openai", "gpt-5", { thinkingBudgetTokens: 100 });
     expect(body.reasoning).toMatchObject({ effort: "minimal" });
   });
 
   it("sends 'none' to a model whose catalog entry accepts it", async () => {
-    // gpt-5.1 accepts none. Before: the name rule held "none" to GPT-5.2+ and sent "low".
     const body = await sentBody("openai", "gpt-5.1", { thinkingBudgetTokens: 100 });
     expect(body.reasoning).toMatchObject({ effort: "none" });
   });
 
   it("sends no effort to a model the catalog does not know", async () => {
-    // Before slice 7 a name rule sent "low" here, guessed from "gpt-5" in the id.
     const body = await sentBody("openai", "gpt-5.0-fixture", { thinkingBudgetTokens: 100 });
     expect(body.reasoning).toBeUndefined();
     expect(body.reasoning_effort).toBeUndefined();
@@ -249,8 +232,7 @@ describe("request fields the catalog decides", () => {
   );
 
   it("sends no effort to a reasoning model whose levels the catalog does not list", async () => {
-    // Reasoning supported, no effort list: the levels are unknown, so no
-    // level is sent rather than one guessed from the name.
+    // Missing effort levels mean unknown; omit effort rather than guess.
     installModelCatalog({
       ...bundled,
       providers: { ...bundled.providers, openai: { models: { "gpt-5.4-nano": { id: "gpt-5.4-nano", limits: { context: 400_000 }, reasoning: { supported: true } } } } },
@@ -262,10 +244,7 @@ describe("request fields the catalog decides", () => {
   });
 
   it("sends a declared alias over Responses with its effort, tools or not", async () => {
-    // The user's catalog declaration says this alias is GPT-5.4, a reasoning
-    // model: the declaration picks the Responses wire as well as the levels.
-    // (An id-spelling rule sent it over Chat Completions and dropped the effort
-    // on every tool turn.)
+    // A named reasoning entry selects its protocol and accepted levels.
     const catalogModel = "openai/gpt-5.4";
     const model = "chat-alias-fixture";
     for (const hasTools of [true, false]) {
@@ -288,9 +267,7 @@ describe("request fields the catalog decides", () => {
   });
 
   it("records the reasoning a tool turn on Chat Completions actually sends", async () => {
-    // The endpoint's report names `reasoning_effort`, the Chat Completions
-    // parameter, for an id the catalog does not list: the request goes over
-    // the explicitly declared chat protocol without guessing tool restrictions.
+    // Endpoint-reported reasoning_effort explicitly selects chat protocol without guessed tool restrictions.
     const model = "chat-alias-fixture";
     const reasoning = { supported: true as const, source: "endpoint-report" as const, control: "reasoning_effort" as const };
     const request = { hasTools: true };
@@ -300,7 +277,6 @@ describe("request fields the catalog decides", () => {
     const withTools = await sentBody("openai", model, { thinkingBudgetTokens: 16_000, tools: true, modelCapabilities: { reasoning } });
     expect(withTools.messages).toBeDefined();
     expect(withTools.reasoning_effort).toBe("high");
-    // Without tools the same route carries the effort, and the plan says so.
     expect(planReasoning({ vendor: "openai", model, reasoning, enableThinking: true, budgetTokens: 16_000, request: { hasTools: false } }))
       .toMatchObject({ kind: "openai-effort", effort: "high" });
     expect((await sentBody("openai", model, { thinkingBudgetTokens: 16_000, modelCapabilities: { reasoning } })).reasoning_effort).toBe("high");
@@ -322,7 +298,6 @@ describe("request fields the catalog decides", () => {
         },
       },
     } as ModelCatalogDocument);
-    // Budget 20,000 maps to "max"; the fixture accepts up to "medium".
     const body = await sentBody("claude", "claude-sonnet-4-6", { thinkingBudgetTokens: 20_000 });
     expect(body.thinking).toEqual({ type: "adaptive" });
     expect(body.output_config).toMatchObject({ effort: "medium" });
@@ -343,7 +318,7 @@ describe("reasoning an endpoint's /models report states (design §5.1)", () => {
     expect(body.reasoning).toEqual({ effort: "high" });
     expect(body).not.toHaveProperty("reasoning_effort");
     expect(body).not.toHaveProperty("include_reasoning");
-    // Ave's lowest budget maps to "none", which contradicts thinking being on.
+    // Thinking enabled cannot request none when the endpoint requires reasoning.
     const lowest = await sentBody("openrouter", "lab/unlisted-reasoner", { baseUrl: openrouter, thinkingBudgetTokens: 100, modelCapabilities: reported("reasoning") });
     expect(lowest.reasoning).toEqual({ effort: "low" });
   });
@@ -383,9 +358,7 @@ describe("reasoning an endpoint's /models report states (design §5.1)", () => {
   });
 
   it("sends effort over the protocol whose parameter the report names", async () => {
-    // A custom endpoint does not establish the model; its report does, and the
-    // parameter it names is the wire: `reasoning_effort` is Chat Completions,
-    // `reasoning` is Responses.
+    // The endpoint-reported control selects the protocol, not its host or model spelling.
     const chat = await sentBody("openai", "chat-alias-fixture", {
       baseUrl: "https://proxy.invalid/v1", thinkingBudgetTokens: 16_000, modelCapabilities: reported("reasoning_effort"),
     });
@@ -397,7 +370,7 @@ describe("reasoning an endpoint's /models report states (design §5.1)", () => {
     expect(responses.input).toBeDefined();
     expect(responses).not.toHaveProperty("reasoning_effort");
     expect(responses.reasoning).toMatchObject({ effort: "high" });
-    // A report that names no control says the model reasons but not how to ask.
+    // Reasoning capability alone does not declare a request control.
     expect(planReasoning({
       vendor: "openai", model: "chat-alias-fixture", baseUrl: "https://proxy.invalid/v1", enableThinking: true, budgetTokens: 16_000,
       reasoning: reported().reasoning, request: { hasTools: false },
@@ -420,7 +393,7 @@ describe("the output limit a chat round records is the one it sends", () => {
     ["openai-compatible", "served-model", "https://gateway.invalid/v1", "max_tokens"],
     ["openrouter", "served-model", "https://openrouter.ai/api/v1", "max_tokens"],
   ] as const)("preserves the resolved ceiling through the %s %s adapter", async (vendor, model, baseUrl, field) => {
-    // A synthetic SDK key prevents ambient credential discovery in this fixture.
+    // A synthetic key prevents ambient credential discovery.
     if (vendor === "vertex-ai") vi.stubEnv("GOOGLE_VERTEX_API_KEY", "fixture-key");
     const block = { ...getLlmVendorSettings({}, vendor), model, enableThinking: false, thinkingBudgetTokens: 0 };
     const output = resolveOutputTokenLimit({ vendor, model, reported: 8_192,
@@ -486,7 +459,7 @@ describe("the output limit a chat round records is the one it sends", () => {
       llmSettings: round });
     expect(fetchResponse).toHaveBeenCalledOnce();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    // The declaration names the model's levels, not the endpoint's protocol.
+    // Declared effort levels do not establish the custom endpoint protocol.
     expect(body.messages).toBeDefined();
     expect(body.input).toBeUndefined();
     expect(body.model).toBe(model);
@@ -516,8 +489,7 @@ describe("the output limit a chat round records is the one it sends", () => {
   }
 
   it("sends the user's limit when the endpoint reports a ceiling above the catalog's", async () => {
-    // Catalog: gpt-5.4 output 128,000. Endpoint reports 200,000; the user asks 150,000.
-    // Re-clamping to the catalog in the adapter would send 128,000 while the turn recorded 150,000.
+    // Endpoint ceilings outrank catalog limits; wire controls and the turn record must agree.
     const { output, body } = await roundBody(200_000, 150_000);
     expect(output).toMatchObject({ effective: 150_000, effectiveSource: "user", ceiling: 200_000 });
     expect(body.max_output_tokens).toBe(150_000);
@@ -562,7 +534,6 @@ describe("a fallback model's output ceiling", () => {
 
   it.each([200_000, null])("uses its own ceiling after the primary resolved %s", async (outputCeiling) => {
     vi.useFakeTimers();
-    // The primary route carries a reported ceiling or an explicitly unknown one.
     const primary: LLMProvider = {
       vendor: "openai",
       streamTurn: vi.fn(async function* (): AsyncGenerator<StreamEvent> {
@@ -585,14 +556,13 @@ describe("a fallback model's output ceiling", () => {
         outputTokenLimit: 150_000,
         outputCeiling,
       })) {
-        // Drain: the fallback's request is refused, which ends the turn.
       }
     })().catch(() => undefined);
     await vi.advanceTimersByTimeAsync(30_000);
     await drained;
     expect(fetchResponse).toHaveBeenCalled();
     const body = JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
-    // The fallback's catalog ceiling bounds the request in both cases.
+    // Fallback requests resolve their own catalog ceiling.
     expect(body.max_tokens ?? body.max_completion_tokens).toBe(16_384);
   });
 
@@ -627,7 +597,6 @@ describe("a fallback model's output ceiling", () => {
         outputCeiling: 8_192,
         outputCeilingSource: "provider-reported",
       })) {
-        // Drain.
       }
     })();
     await vi.advanceTimersByTimeAsync(30_000);

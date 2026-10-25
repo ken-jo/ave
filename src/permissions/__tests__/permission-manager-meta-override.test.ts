@@ -1,43 +1,4 @@
-/**
- * Permission SOT V1 — PermissionManager owns the meta `decisionOverride`
- * re-elevation.
- *
- * Before this move the executor rewrote PermissionManager's `allow` verdict
- * into a `forceModal` ask for `meta`-category builtin tools whose author
- * declared `decisionOverride: "ask"` (the agent_spawn case), re-reading
- * `getMode()` to carve out allow-all mode. That block was layer-agnostic: it
- * fired for a layer-3 allow-rule hit OR a layer-5 `alwaysAllowed` hit as well
- * as the layer-6 override path.
- *
- * The SOT is now split between an immutable host-governance guard at the top
- * of `checkDetailed` and the existing post-computation re-elevation guard.
- * Forged external meta and builtin meta missing a valid override are denied
- * before mode/rules can weaken the trust boundary. Valid builtin `ask` meta is
- * still re-elevated after the normal layers so layer-3 and layer-5 allows
- * cannot bypass the common foreground reviewer path.
- *
- * The `mode !== "allow"` check in the post-guard is NOT dead code: at that
- * point in `checkDetailed` the mode is not narrowed (unlike inside the override
- * branch where strict/allow early-returns have already excluded those modes).
- * The allow-all invariant (`mode === "allow"` → no prompt for any
- * non-hard-blocked tool, agent_spawn included) is enforced by that live guard,
- * not by an early return.
- *
- * Truth-table axes:
- *   - decisionOverride="ask" × default                     → ask + forceModal (post-guard fires)
- *   - decisionOverride="ask" × auto + enabled threshold    → common foreground reviewer route
- *   - decisionOverride="ask" × allow (any layer)           → allow, NO prompt (post-guard skips)
- *   - decisionOverride="ask" × strict                      → ask layer 2, no forceModal
- *                                                            (layer-2 return before layer 3/5/6)
- *   - decisionOverride="ask" × layer-5 alwaysAllowed       → still ask + forceModal (MAJOR-2 fix)
- *   - decisionOverride="ask" × layer-5 alwaysAllowed+allow → allow, NO prompt
- *   - decisionOverride="ask" × layer-3 allow-rule          → still ask + forceModal (MAJOR-2 fix)
- *   - decisionOverride=undefined                           → immutable deny at layer 0
- *   - decisionOverride="always-allow-with-audit"           → override-`allow` (only "ask" elevates)
- *
- * `always-allow-with-audit` is short-circuited by the executor BEFORE
- * checkDetailed runs and is covered by the executor integration suite.
- */
+// Forged meta calls or missing overrides deny before rules/mode; valid ask overrides re-enter foreground review after rule and memory allows. Strict mode asks earlier; allow mode skips re-elevation, and explicit dock grants remain effective. Always-allow-with-audit is handled before this check.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 
@@ -53,7 +14,7 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
     pm = new PermissionManager("/tmp/test-meta-override-permissions.json");
   });
 
-  // ── Layer-6 (override branch) baseline ──────────────────────────────────
+  // Layer-6 (override branch) baseline
 
   it("default mode + decisionOverride='ask' → forceModal ask (layer 6)", () => {
     pm.setMode("default");
@@ -78,10 +39,7 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
   });
 
   it("allow mode + decisionOverride='ask' → allow, NO forceModal (#1469 axis)", () => {
-    // The allow-all invariant: the post-computation guard's `mode !== "allow"`
-    // check is the live SOT here — it skips the re-elevation so agent_spawn
-    // gets the same no-prompt behaviour as any other non-hard-blocked tool under
-    // the user's explicit allow-all opt-in.
+    // The allow-all invariant: the post-computation guard's `mode !== "allow"` check is the live SOT here — it skips the re-elevation so agent_spawn gets the same no-prompt behaviour as any other non-hard-blocked tool under the user's explicit allow-all opt-in.
     pm.setMode("allow");
     const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
       decisionOverride: "ask",
@@ -91,8 +49,7 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
   });
 
   it("strict mode + decisionOverride='ask' → ask layer 2 (mode-first, no forceModal)", () => {
-    // strict returns ask at layer 2 before layers 3/5/6, so the post-guard
-    // never fires (result.decision is already "ask", not "allow").
+    // strict returns ask at layer 2 before layers 3/5/6, so the post-guard never fires (result.decision is already "ask", not "allow").
     pm.setMode("strict");
     const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
       decisionOverride: "ask",
@@ -155,9 +112,7 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
   );
 
   it("default mode + decisionOverride='always-allow-with-audit' → allow (post-guard skips)", () => {
-    // Only "ask" triggers the post-guard; "always-allow-with-audit" keeps the
-    // override allow. (The executor short-circuits this value before reaching
-    // checkDetailed; this is defence-in-depth.)
+    // Only "ask" triggers the post-guard; "always-allow-with-audit" keeps the override allow. (The executor short-circuits this value before reaching checkDetailed; this is defence-in-depth.)
     pm.setMode("default");
     const result = pm.checkDetailed("ask_user_question", "builtin", "meta", null, {
       decisionOverride: "always-allow-with-audit",
@@ -167,23 +122,10 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
     expect(result.layer).toBe(6);
   });
 
-  // ── MAJOR-2 — layer-5 alwaysAllowed must not defeat the per-invocation gate
+  // MAJOR-2 — layer-5 alwaysAllowed must not defeat the per-invocation gate
 
   it("layer-5 alwaysAllowed + default mode + decisionOverride='ask' → allow (dock grant is honoured)", async () => {
-    // The priority here was deliberately inverted. It used to be "the tool
-    // author's per-invocation contract outranks a persisted grant", so the
-    // post-guard re-elevated to ask+forceModal even after the user had ticked
-    // "always allow" on this exact tool's modal.
-    //
-    // The observable result was a control that did nothing: the checkbox wrote
-    // to the grant store correctly, but `forceModal` meant the stored-grant
-    // lookup was never consulted on the next call, so the prompt returned every
-    // time. Users reasonably read that as broken rather than as policy.
-    //
-    // Now an explicit dock grant wins, and the cost is disclosed where the
-    // decision is made — the meta impact line in the approval dialog states
-    // that "always allow" is a standing grant for a tool that can start agents
-    // or change permissions.
+    // Explicit dock grants win over ask re-elevation; disclose their standing authority on the meta impact line so the checkbox remains effective.
     pm.setMode("default");
     await pm.addAlwaysAllowedPersist("agent_spawn");
     const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
@@ -194,10 +136,7 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
   });
 
   it("does NOT extend the exemption to a layer-3 allow rule", async () => {
-    // The scoping that keeps this safe. A broad allow-rule in settings, or a
-    // category default, is not someone looking at THIS tool and deciding — and
-    // it is the path a remote or sub-agent turn arrives through. Only the
-    // foreground dock click is treated as informed consent.
+    // The scoping that keeps this safe. A broad allow-rule in settings, or a category default, is not someone looking at THIS tool and deciding — and it is the path a remote or sub-agent turn arrives through. Only the foreground dock click is treated as informed consent.
     pm.setMode("default");
     pm.setRules([{ pattern: "agent_spawn", action: "allow" }]);
     const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
@@ -209,8 +148,7 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
   });
 
   it("layer-5 alwaysAllowed + allow mode + decisionOverride='ask' → allow (allow-all wins)", async () => {
-    // Even with a persisted grant, allow-all mode must mean no prompt at all.
-    // The post-guard's `mode !== "allow"` check skips the re-elevation.
+    // Even with a persisted grant, allow-all mode must mean no prompt at all. The post-guard's `mode !== "allow"` check skips the re-elevation.
     pm.setMode("allow");
     await pm.addAlwaysAllowedPersist("agent_spawn");
     const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {
@@ -220,12 +158,10 @@ describe("PermissionManager — meta decisionOverride re-elevation (V1 SOT)", ()
     expect(result.forceModal).toBeUndefined();
   });
 
-  // ── MAJOR-2 — layer-3 allow-rule must not defeat the per-invocation gate
+  // MAJOR-2 — layer-3 allow-rule must not defeat the per-invocation gate
 
   it("layer-3 allow-rule + default mode + decisionOverride='ask' → forceModal ask", () => {
-    // A user-created allow-rule (e.g. "agent_spawn" → allow) hits layer 3 and
-    // returns allow before categoryBasedDecision. The post-guard must still
-    // re-elevate.
+    // A user-created allow-rule (e.g. "agent_spawn" → allow) hits layer 3 and returns allow before categoryBasedDecision. The post-guard must still re-elevate.
     pm.setMode("default");
     pm.setRules([{ pattern: "agent_spawn", action: "allow" }]);
     const result = pm.checkDetailed("agent_spawn", "builtin", "meta", null, {

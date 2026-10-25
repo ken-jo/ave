@@ -1,13 +1,6 @@
-/**
- * Snapshot tests for VercelUnifiedProvider — vertex-ai slot.
- *
- * Google Vertex AI is the Gemini-on-GCP surface. It requires a GCP project +
- * location (region) and authenticates via service account / ADC (no apiKey).
- * We route through `@ai-sdk/google-vertex` via `createVertex()`.
- */
+// This route requires project/location and service-account credentials rather than an API key.
 import { describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
-
 
 describe("VercelUnifiedProvider vertex-ai", () => {
   it("creates the Vertex client with project + default location", async () => {
@@ -38,7 +31,7 @@ describe("VercelUnifiedProvider vertex-ai", () => {
     const { VercelUnifiedProvider } = await import("../adapter.js");
     const provider = new VercelUnifiedProvider(
       "vertex-ai",
-      "", // apiKey unused for Vertex
+      "",
       undefined,
       undefined,
       { vertexProject: "my-proj" },
@@ -130,7 +123,7 @@ describe("VercelUnifiedProvider vertex-ai", () => {
       return {
         ...actual,
         streamText: vi.fn(() => ({
-          stream: (async function* () { /* empty */ })(),
+          stream: (async function* () {  })(),
         })),
       };
     });
@@ -160,9 +153,7 @@ describe("VercelUnifiedProvider vertex-ai", () => {
     vi.resetModules();
     const { createProvider } = await import("../../provider-factory.js");
     const p = createProvider({ vendor: "vertex-ai", apiKey: "", vertexProject: "p" });
-    // PR #705: factory returns a lazy proxy that defers the Vercel adapter
-    // module load until first `streamTurn`. The vendor surface is preserved
-    // synchronously so reviewer-wiring + IPC handlers stay unchanged.
+    // Expose vendor identity synchronously while deferring adapter loading until first stream.
     expect(p.constructor.name).toBe("LazyVercelProvider");
     expect(p.vendor).toBe("vertex-ai");
   });

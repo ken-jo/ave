@@ -1,17 +1,4 @@
-/**
- * Permission SOT V3 — PermissionManager.resolveReviewerDecision.
- *
- * Pure unit coverage of the reviewer verdict→decision mapping that P1-b moved
- * out of `src/tools/pipeline/reviewer-dispatch.ts` into the PermissionManager
- * SOT. The mapping is behavior-neutral (tighten-0): these six cases encode the
- * EXACT rules the pipeline used before the move, so they double as the
- * behavior-neutrality proof.
- *
- * Rules:
- *   headless        : low → allow(layer 5) ; medium/high → deny(layer 5)
- *   foreground-auto : configured threshold (low or medium) → allow(layer 5) ; above it → ask
- * Every result carries `reviewer: { route, verdict }`.
- */
+// Permission SOT V3 — PermissionManager.resolveReviewerDecision. Pure unit coverage of the reviewer verdict→decision mapping that b moved out of `src/tools/pipeline/reviewer-dispatch.ts` into the PermissionManager SOT. The mapping is behavior-neutral (tighten-0): these six cases encode the EXACT rules the pipeline used before the move, so they double as the behavior-neutrality proof. Rules: headless : low → allow(layer 5) ; medium/high → deny(layer 5) foreground-auto : configured threshold (low or medium) → allow(layer 5) ; above it → ask Every result carries `reviewer: { route, verdict }`.
 import { describe, it, expect } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import type { RiskVerdict } from "../reviewer/risk-classifier.js";
@@ -90,12 +77,7 @@ describe("PermissionManager.resolveReviewerDecision", () => {
     });
 
     it("medium threshold: a requiresExplicitApproval medium → ask, not allow", () => {
-      // The threshold says "medium is fine to run unattended". A verdict
-      // carrying this flag is not saying the call is mildly risky — it is
-      // saying the host could not tell what the call does, and that is the
-      // opposite of a thing to run unattended. Without this the flagged verdict
-      // would be allowed with NO prompt, which is strictly weaker than the HIGH
-      // it replaced.
+      // The threshold says "medium is fine to run unattended". A verdict carrying this flag is not saying the call is mildly risky — it is saying the host could not tell what the call does, and that is the opposite of a thing to run unattended. Without this the flagged verdict would be allowed with NO prompt, which is strictly weaker than the HIGH it replaced.
       pm.setInteractiveAutoApprove("medium");
       const v: RiskVerdict = {
         level: "medium",

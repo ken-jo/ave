@@ -1,13 +1,4 @@
-/**
- * Boot step — RoutinesScheduler v2 branch wiring (§7, extracted from boot.ts
- * C18).
- *
- * Binds the scheduler's two execution branches: `onLlmSession` starts a
- * dedicated headless ConversationLoop turn (emitting running-started / finished
- * / failed / fired lifecycle events + persisting the routine session id), while
- * `onNotification` fires an OS notification. The scheduler is NOT started here —
- * main.ts calls `services.startRoutinesScheduler()` after IPC handlers attach.
- */
+/** Prepare scheduling now, but start only after IPC listeners attach so overdue routines are not lost. */
 import { ROUTINES } from "../../shared/ipc-channels.js";
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
@@ -21,28 +12,19 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
   const { routinesScheduler, routineEngine, routinesStore, getMainWindow, notificationService, memoryManager } = ctx;
   // Routine state is app-wide: every open main window shows it.
   const appWindows = () => ctx.host.desktop?.getAppWindows() ?? [getMainWindow()];
-  // Every routine card (running, failed, result) is addressed to the dedicated
-  // Suggestions conversation, not the focused one, so that conversation is
-  // made to exist — and rise in the list — in the same tick as the send.
+  // Create and promote the Suggestions conversation in the same tick as each card send.
   const announce = (channel: string, payload: unknown): void => {
     stageInSuggestionsSession(memoryManager);
     fanOutToAllWindows(appWindows(), channel, payload);
   };
 
-  // RoutinesScheduler v2 — fires per due routine, branching on execution mode.
-  // llm-session routines start a ConversationLoop with prePrompt.
-  // notification-only routines fire an OS notification.
   routinesScheduler.onLlmSession(({ routine }) => {
-    // Routine turns use a dedicated ConversationLoop but persist through the
-    // normal session repository as sessionKind="routine".
-    // Emit running-started/finished so renderer can show progress indicator.
+    // Routine loops are isolated but persist through the normal session repository.
     void (async () => {
       const firedAt = routine.lastFiredAt ?? new Date().toISOString();
       const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
 
-      // runningStarted fires before the headless turn finishes — enriched payload
-      // with title+firedAt so renderer can push a proper running OverlayItem
-      // immediately. The completed event later carries the routineSessionId.
+      // Emit running state immediately; completed events add the routine session id.
       try {
         announce(ROUTINES.runningStarted, {
           routineId: routine.id,
@@ -74,7 +56,6 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
         }
       } catch (err) {
         log.warn("routines llm-session run failed: %s", (err as Error).message);
-        // Emit failed so renderer knows to clear running state.
         try {
           announce(ROUTINES.failed, {
             routineId: routine.id,
@@ -84,16 +65,15 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
           // non-fatal
         }
       } finally {
-      // Always clear running state regardless of success/failure.
+      // Clear running state on both success and failure.
         try {
           fanOutToAllWindows(appWindows(), ROUTINES.runningFinished, routine.id);
         } catch {
           // non-fatal
         }
       }
-      // Use LLM response summary directly — no extractSummary needed.
       const summary = runSummary;
-      // Explicit allowlist payload — no ...routine spread to prevent PII leak.
+      // Allow-list event fields; spreading the routine could expose private content.
       try {
         announce(ROUTINES.fired, {
           id: routine.id,
@@ -120,9 +100,7 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
     } catch (err) {
       log.warn("routines notification emit failed: %s", (err as Error).message);
     }
-    // Emit fired event for notification-only branch so the UI reflects the
-    // fire consistently across both execution modes.
-    // Explicit allowlist — no ...routine spread to prevent prePrompt/notificationBody leak.
+    // Allow-list fields so prompts and notification bodies cannot leak into events.
     try {
       const firedAt = routine.lastFiredAt ?? new Date().toISOString();
       const title = routine.title ?? routine.notificationTitle ?? routine.id.slice(0, 8);
@@ -138,9 +116,4 @@ export function wireRoutinesScheduler(ctx: BootContext): void {
       log.warn("routines notification fired emit failed: %s", (err as Error).message);
     }
   });
-  // NOT started here. Boot order matters — if scheduler.start() runs
-  // before the renderer has its IPC listeners attached, a past-due
-  // routine fires immediately into a void. main.ts now invokes
-  // `services.startRoutinesScheduler()` AFTER `registerIpcHandlers()` to
-  // close that gap.
 }

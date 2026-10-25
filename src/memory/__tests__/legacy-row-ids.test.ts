@@ -1,13 +1,4 @@
-/**
- * Row identity for a session file written before rows carried ids.
- *
- * `loadSession` is the one door both readers of a session file come through —
- * the sidebar's history read and the conversation loop's resume — and they read
- * it independently, without writing anything back. So the ids it hands out have
- * to be (a) the same on every read, or a row the transcript named resolves to
- * nothing, and (b) distinct, or a lookup by id silently takes the first of two
- * rows answering to the same name.
- */
+// Independent legacy-session readers must derive identical row ids before anything writes them.
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createHash } from "node:crypto";
@@ -30,12 +21,7 @@ function writeRawSession(rows: readonly unknown[]): void {
   );
 }
 
-/**
- * Mirror of `legacyRowId`'s derivation, so a test can name the exact candidate
- * the production code will reach for at a given step and park something on it.
- * Deliberately re-derived here rather than exported: the point is to pin the
- * formula, and importing it would only assert it equals itself.
- */
+// Derive collision candidates independently so the test pins the formula instead of importing its result.
 function derivedRowId(index: number, step: number): string {
   const digest = createHash("sha256")
     .update(`${SESSION}:${index}:${step}`)
@@ -67,13 +53,11 @@ describe("loadSession — legacy row identity", () => {
     const first = idsOf(mm.loadSession(SESSION));
     expect(first.every((id) => id.startsWith("row-"))).toBe(true);
     expect(new Set(first).size).toBe(2);
-    // Two independent readers must land on the same names.
     expect(idsOf(mm.loadSession(SESSION))).toEqual(first);
   });
 
   it("re-mints the second of two rows claiming one id, and leaves the first alone", () => {
-    // A hand-merged or tampered file can carry duplicates. Passing them through
-    // would make `find by id` answer with whichever row came first.
+    // Duplicate persisted ids make id lookup ambiguous and must be reminted.
     writeRawSession([
       { role: "user", content: "original", meta: { messageId: "row-collision" } },
       { role: "assistant", content: "impostor", meta: { messageId: "row-collision" } },
@@ -85,14 +69,11 @@ describe("loadSession — legacy row identity", () => {
     expect(ids[1]).not.toBe("row-collision");
     expect(ids[1]).toMatch(/^row-[0-9a-f]{32}$/);
     expect(new Set(ids).size).toBe(3);
-    // Still deterministic with the collision in play.
     expect(idsOf(mm.loadSession(SESSION))).toEqual(ids);
   });
 
   it("lets a stored id win over a derived one that wants the same name", () => {
-    // Derive the name row 0 would be given if it had no id, then plant it on a
-    // LATER row that does. Reserving stored ids before deriving any means the
-    // row with real evidence of its identity keeps it, and row 0 moves.
+    // Reserve later stored ids before deriving earlier ones so synthetic identity cannot displace durable evidence.
     writeRawSession([
       { role: "user", content: "no id" },
       { role: "assistant", content: "b" },
@@ -111,11 +92,7 @@ describe("loadSession — legacy row identity", () => {
   });
 
   it("opens a session even when stored ids squat on a row's whole retry run", () => {
-    // Collisions used to spend the DLP retry budget: eight of them exhausted the
-    // 8 attempts and threw, so `loadSession` returned nothing and the session
-    // could not be opened at all. Plant exactly that — the first eight names
-    // row 8 would derive, parked on the rows ahead of it — and it must still
-    // come back with an id, from the ninth step.
+    // Collision retries must not spend the independent DLP-rejection budget or block session loading.
     const squatters = Array.from({ length: 8 }, (_, step) => derivedRowId(8, step));
     expect(new Set(squatters).size).toBe(8);
 

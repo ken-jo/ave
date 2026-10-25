@@ -1,9 +1,4 @@
-/**
- * The hostApi surface `sampleportal` reaches (plugin-hostapi-protocol.md §9.2) — both
- * forms of the auth window, the partition cookies, three workers and the
- * private-network probe — so the golden transcript beside this file shows every
- * frame that surface puts on the wire.
- */
+/** Record both auth-window forms, cookie reads, external URLs and host preferences through the child stub. */
 const SIGN_IN = {
   url: "https://portal.example.com/login",
   completionUrlPatterns: ["https://portal.example.com/home*"],

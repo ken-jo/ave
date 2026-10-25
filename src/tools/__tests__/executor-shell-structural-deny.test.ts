@@ -1,21 +1,5 @@
-/**
- * Structural (pre-execution) shell-command deny — one ladder position for both
- * builtin shell dialects.
- *
- * The bash dialect was denied at the runner's Step 2.5, before any approval or
- * permit minting. The PowerShell dialect was denied INSIDE the tool, after
- * `consumeHostShellExecutionPermit` had already burned the user's one-shot
- * allow — so the user was shown an approval modal for a command the host was
- * always going to structurally refuse, with no refund path.
- *
- * These tests drive the real `ToolExecutor` (the producer), not the analyzers,
- * so they fail if the runner stops calling either dialect analyzer.
- *
- * Platform note: `validatePowerShellCommand` fails closed when the PowerShell
- * parser cannot run (`{errors:[...]}` -> "parse error: ..."), so the DENY
- * assertions hold on every platform. The discriminating assertion is that no
- * approval was requested, which is false on either platform without the fix.
- */
+// Both shell dialects must reject structural violations before approval or one-shot permit consumption.
+// Parser unavailability also fails closed; absence of approval distinguishes the required ordering.
 import { describe, it, expect, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -25,7 +9,6 @@ import { ApprovalGate } from "../../permissions/approval-gate.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 
-/** Both builtin shell dialects, with a command their own analyzer refuses. */
 const DIALECTS = [
   {
     toolName: "bash",
@@ -39,11 +22,7 @@ const DIALECTS = [
   },
 ] as const;
 
-/**
- * Executor whose permission layer answers "ask" for the shell tool, so an
- * approval modal is the observable consequence of the structural deny NOT
- * firing first.
- */
+// Force ask so a missed structural denial becomes an observable approval request.
 function askingExecutor(toolName: string) {
   const registry = new ToolRegistry();
   const dialect = DIALECTS.find((d) => d.toolName === toolName)!;
@@ -77,7 +56,7 @@ describe("ToolExecutor — structural shell deny runs before approval, for both 
     );
 
     expect(results[0].is_error).toBe(true);
-    // No approval was requested: the deny happened at the pre-approval stage.
+    // Structural denial must happen before approval.
     expect(wc.send).not.toHaveBeenCalled();
   });
 
@@ -115,8 +94,7 @@ describe("ToolExecutor — structural shell deny runs before approval, for both 
   });
 
   it("lets a structurally clean bash command reach the approval modal", async () => {
-    // Companion negative: proves the deny is command-shaped, not tool-shaped —
-    // otherwise "no modal" above would be satisfied by refusing everything.
+    // A valid command ensures structural denial does not simply refuse every call.
     const { executor, wc } = askingExecutor("bash");
 
     void executor.executeAll(

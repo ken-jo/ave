@@ -15,24 +15,15 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   | "clearAuthPartitionService" | "shellOpenExternal"> {
   getAppWindows(): BrowserWindow[];
   getFocusedWindow(): BrowserWindow | null;
-  /**
-   * The open main window renderer whose tile shows `sessionId`, or null. A
-   * prompt about a session (approval, ask-user question) is drawn there first;
-   * boot falls back to the window in use (`promptSurfaceResolver`).
-   */
+  /** Resolve the session’s open window first; the prompt resolver may fall back to the active window. */
   findSessionSurface(sessionId: string | undefined): WebContents | null;
+  /** Terminal approval prompts belong only to the window owning the tab; never fall back. */
+  findTerminalSurface(tabId: string): WebContents | null;
   getAuthPartition(partition: string): Session;
   installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;
   revokePluginWebviews(pluginId: string, revokeSession: (sessionId: string) => void): void;
   onBootShutdown(run: () => Promise<void>, needed: () => boolean): void;
-  /**
-   * Initialise the OS notification presenter and report whether OS
-   * notifications are supported. Boot calls it once (`setupAuditAndNotification`)
-   * so the presenter exists before the first cue: on Windows, Electron
-   * registers the per-user Start Menu shortcut and the toast activator CLSID
-   * pinned in `early-boot-env.ts` when the presenter is created, and Action
-   * Center activation of a persisted or cold-start toast relies on both.
-   */
+  /** Initialize once before cues; Windows persisted-toast activation requires the shortcut and activator registration. */
   initializeNotificationPresenter(): boolean;
   notificationOptions: Partial<NotificationServiceOptions>;
   powerMonitor: PowerMonitorLike;
@@ -66,21 +57,15 @@ export function requireDesktopHost(host: Pick<BootHost, "desktop">): DesktopHost
   return host.desktop;
 }
 
-/**
- * Where an approval card or ask-user question about `sessionId` is drawn,
- * resolved each time one is raised (never bound at boot — the window open at
- * boot may be closed while another main window stays open): the open window
- * whose tile shows the session, else the main window in use. Null when no main
- * window is open (a headless run, or every window closed).
- */
+/** Resolve each prompt against live windows: session owner, then active main window, or null when headless. */
 export function promptSurfaceResolver(
   host: Pick<BootHost, "desktop">,
   getMainWindow: () => Pick<BrowserWindow, "webContents"> | null,
-): (sessionId: string | undefined) => WebContents | null {
-  return (sessionId) => {
+): (sessionId: string | undefined, terminalTabId?: string) => WebContents | null {
+  return (sessionId, terminalTabId) => {
+    if (terminalTabId !== undefined) return host.desktop?.findTerminalSurface(terminalTabId) ?? null;
     const holder = host.desktop?.findSessionSurface(sessionId) ?? null;
     if (holder) return holder;
-    // `getMainWindow` answers only live windows (`app-state.ts`).
     return getMainWindow()?.webContents ?? null;
   };
 }

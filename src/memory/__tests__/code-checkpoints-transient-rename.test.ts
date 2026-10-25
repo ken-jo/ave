@@ -1,7 +1,4 @@
-/**
- * Own file because it mocks `node:fs/promises` and the retry sleep for the
- * whole module graph; `code-checkpoints.test.ts` exercises the real filesystem.
- */
+// Keep module-wide filesystem and retry mocks isolated from real-filesystem checkpoint tests.
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -67,7 +64,7 @@ describe("code restore transient rename retry", () => {
     expect(sleeps).toEqual([transientFsLockDelayMs(1)]);
   });
 
-  // Emulating POSIX on a Windows host would also trip the ledger mode check.
+  // Do not emulate POSIX here; it would also trigger ledger mode checks on Windows.
   it.skipIf(hostPlatform === "win32")("does not retry on POSIX", async () => {
     renameFailures.push("EBUSY");
     expect(await restoreCodeCheckpoint(sessionId, "edit")).toEqual({ ok: false, error: "code-restore-failed" });

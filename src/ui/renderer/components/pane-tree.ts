@@ -1,20 +1,6 @@
-/**
- * The geometry of the tiled main area.
- *
- * Tiles are arranged freely, tmux style: any tile can be split along either
- * axis, so 1, 2, 3, and 4 tiles are each reachable in more than one shape and
- * the user picks which. That is a TREE, and it lives here as plain data rather
- * than inside the frame component, because every rule worth trusting — the
- * ceiling, what a close does to its parent, whether a shape is even legal — is
- * a statement about the data and should be testable without rendering anything.
- *
- * The tree carries POSITION only. A leaf keeps its `chatGroupId` wherever it
- * moves, so nothing that names a conversation — a keyboard command, a restore,
- * the main-process loop registry — ever has to name a position.
- */
+/** The tree stores geometry only; stable chatGroupIds preserve conversation identity across rearrangement. */
 
-/** Which way a split divides its space. Internal: it reaches callers through
- *  `PaneGutter.axis`, never by name. */
+/** Which way a split divides its space. Internal: it reaches callers through `PaneGutter.axis`, never by name. */
 export type SplitAxis = "row" | "column";
 
 export interface PaneLeaf {
@@ -130,12 +116,8 @@ export function splitLeaf(
   return normalize(rewrite(root));
 }
 
-/**
- * Remove a leaf, giving its space back to its siblings.
- *
- * Returns the tree unchanged when the id is not in it or is the last leaf —
- * an empty main area is not a state the rest of the app can render.
- */
+/** Remove a leaf, giving its space back to its siblings. Returns the tree unchanged when the id is not in it or is the last
+ * leaf — an empty main area is not a state the rest of the app can render. */
 export function closeLeaf(root: PaneNode, chatGroupId: string): PaneNode {
   if (countLeaves(root) <= 1) return root;
   if (!leafIds(root).includes(chatGroupId)) return root;
@@ -178,27 +160,14 @@ export interface PaneBox {
   height: number;
 }
 
-/**
- * The canvas height below which the SHORTEST tile stops meeting `tileFloor`.
- *
- * Anything the window draws BESIDE the canvas — a band rather than a float —
- * takes its height out of the grid, so it has to leave this much behind or the
- * tiles are squeezed under the floor the split and resize rules already
- * enforce, and their transcripts collapse to nothing.
- *
- * Read off the boxes rather than counted off the tree because a box carries
- * its share: with an even split the shortest share is `1 / rows` and this is
- * `rows * tileFloor`, and with an uneven one the short tile binds first and
- * this is more. The boxes are also what is actually on screen, so a maximized
- * tile and chat mode's single tile need no special case.
- */
+/** Compute required canvas height from the shortest visible tile share so uneven splits, maximize and chat mode obey the
+ * same floor. */
 export function minimumCanvasHeight(
   boxes: readonly PaneBox[],
   tileFloor: number,
 ): number {
-  // `box.height` is a PERCENTAGE of the canvas, as `areaStyle` writes it —
-  // seeding the fold with 100 keeps the units honest and makes "no tiles" mean
-  // one full-height tile rather than a division by a share nobody has.
+  // `box.height` is a PERCENTAGE of the canvas, as `areaStyle` writes it — seeding the fold with 100 keeps the units honest
+  // and makes "no tiles" mean one full-height tile rather than a division by a share nobody has.
   const shortestPercent = boxes.reduce((least, box) => Math.min(least, box.height), 100);
   return shortestPercent <= 0 ? tileFloor : Math.ceil((tileFloor * 100) / shortestPercent);
 }

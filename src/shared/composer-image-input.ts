@@ -1,4 +1,3 @@
-/** Browser-safe source of truth for composer image inputs. */
 export const MAX_COMPOSER_ATTACHMENT_COUNT = 5;
 export const MAX_COMPOSER_IMAGE_BYTES = 25 * 1024 * 1024;
 export const MAX_COMPOSER_IMAGE_BASE64_CHARS = Math.ceil(MAX_COMPOSER_IMAGE_BYTES / 3) * 4;

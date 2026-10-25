@@ -206,17 +206,15 @@ describe("remote authorization lifecycle", () => {
     await owner.authenticate(config.id);
     const previous = harness.sessions[0];
     secretStore.set(keyOf(config), "grant");
-    // A non-identity edit (headers) keeps the stored grant for the new session.
     await owner.connectServer({ ...config, headers: { "x-team": "a" } }, { force: true }).catch(() => undefined);
     await vi.waitFor(() => expect(secretStore.get("mcp.oauth.index")).toBeDefined());
     expect(harness.sessions).toHaveLength(2);
-    // Same key: the old session hands off (its in-flight refresh persists) and the new one reads after it.
+    // Same-identity sessions hand off refresh persistence before the successor reads credentials.
     expect(previous.handOff).toHaveBeenCalledTimes(1);
     expect(previous.dispose).not.toHaveBeenCalled();
     expect(harness.sessions[1].options?.after).toBeInstanceOf(Promise);
     expect(previous.clear).not.toHaveBeenCalled();
     expect(secretStore.get(keyOf(config))).toBe("grant");
-    // A new URL is a different credential identity: the old record goes.
     const moved = { ...config, url: "https://other.example.test/mcp" };
     await expect(owner.connectServer(moved, { force: true })).rejects.toThrow("MCP authentication required");
     await vi.waitFor(() => expect(secretStore.has(keyOf(config))).toBe(false));
@@ -269,7 +267,7 @@ describe("remote authorization lifecycle", () => {
   });
 
   it("deletes nothing when the configuration file is missing", async () => {
-    // A first run has no file and no index; a missing file with an index is not authority to delete either.
+    // A missing installed-set file with existing index state cannot authorize credential deletion.
     secretStore.set("mcp.oauth.index", JSON.stringify({ [config.id]: keyOf(config) }));
     secretStore.set(keyOf(config), "grant");
     await rm(path);
@@ -316,12 +314,11 @@ describe("remote authorization lifecycle", () => {
     let idle = false;
     const owner = manager();
     owner.setPackageTransactionProbe(() => idle);
-    // Mid-update the installed set may not name the package yet; nothing is pruned while a transaction is open.
+    // Reconcile only with a stable installed set outside package transactions.
     const source = { installedPackages: async () => new Set<string>(), list: () => [], reconnect: async () => {} };
     owner.registerBundledCredentialSource("plugin", source);
     await owner.disconnectAll();
     expect(secretStore.get("mcp.oauth.updating")).toBe("grant");
-    // Idle when asked, but a transaction opened while the installed set was being read: still deferred.
     let reads = 0;
     owner.setPackageTransactionProbe(() => reads === 0);
     owner.registerBundledCredentialSource("plugin", { ...source, installedPackages: async () => { reads += 1; return new Set<string>(); } });
@@ -346,14 +343,12 @@ describe("remote authorization lifecycle", () => {
     const declaration = (name: string) => ({ packageName: name, serverName: "remote", transport: "http" as const,
       url: "https://example.test/mcp", auth: "oauth" as const });
     const owner = manager();
-    // An install record that cannot vouch, or a list that cannot be read, deletes nothing.
+    // Unreadable or unverifiable installed inventories must delete no grants.
     owner.registerBundledCredentialSource("plugin", { installedPackages: async () => undefined, list: () => [declaration("active-kit")], reconnect: async () => {} });
     owner.registerBundledCredentialSource("plugin", { installedPackages: async () => { throw new Error("registry unreadable"); }, list: () => [], reconnect: async () => {} });
     owner.registerBundledCredentialSource("plugin", { installedPackages: async () => new Set(["active-kit", "disabled-kit"]), list: () => { throw new Error("unavailable"); }, reconnect: async () => {} });
     await owner.disconnectAll();
     expect(secrets.deleteSecret).not.toHaveBeenCalled();
-    // disabled-kit is installed but not loaded (not listed): kept. removed-kit is uninstalled: pruned.
-    // active-kit is listed without "dropped": that server's grant goes.
     owner.registerBundledCredentialSource("plugin", { installedPackages: async () => new Set(["active-kit", "disabled-kit"]),
       list: () => [declaration("active-kit")], reconnect: async () => {} });
     await owner.disconnectAll();

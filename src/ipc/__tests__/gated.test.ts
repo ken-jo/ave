@@ -1,10 +1,3 @@
-/**
- * Unit tests for gated.ts — validateSender, UNAUTHORIZED_FRAME,
- * auditUnauthorized, validatePluginFrame.
- *
- * These primitives were extracted from ipc-bridge.ts; this test file ensures
- * they retain the same semantics in their new home.
- */
 import { describe, it, expect, vi } from "vitest";
 import os from "node:os";
 import type { IpcMainInvokeEvent } from "electron";
@@ -30,8 +23,7 @@ describe("validateSender", () => {
     expect(validateSender(foreignFrameEvent("http://127.0.0.1:5173/"))).toBe(true);
   });
 
-  // The frame origin is URL-parsed, not substring-matched: a former
-  // `startsWith("http://localhost")` check accepted attacker hosts like these.
+  // Parse origins exactly; prefix matching admits attacker-controlled hostnames.
   it("rejects attacker host that starts with 'localhost'", () => {
     expect(validateSender(foreignFrameEvent("http://localhost.attacker.com/"))).toBe(false);
     expect(validateSender(foreignFrameEvent("https://localhost.attacker.com/"))).toBe(false);
@@ -49,9 +41,7 @@ describe("validateSender", () => {
     expect(validateSender(foreignFrameEvent("not-a-url"))).toBe(false);
   });
 
-  // Electron nulls `senderFrame` once the sending frame is destroyed or
-  // navigated away between `invoke` and handler execution, so an absent frame
-  // is an unprovable sender — not a trusted one.
+  // A destroyed or navigated frame loses senderFrame; absence must fail closed.
   it("refuses a missing senderFrame", () => {
     expect(validateSender(null)).toBe(false);
     expect(validateSender(undefined)).toBe(false);
@@ -89,9 +79,7 @@ describe("validateHostRendererSender", () => {
   });
 });
 
-// The shell predicate is one authority shared with `validatePluginFrame` and
-// `shouldBlockGlobalWebviewNavigation`. These rows pin the exact shape the
-// three guards agree on, so a looser spelling in any of them is a red test.
+// Sender, plugin-frame, and navigation guards must share the same shell predicate.
 describe("plugin-shell frame predicate — agreement across guards", () => {
   const HOST_LOOKALIKE = "file:///dist/src/index.html?next=plugin-ui-shell.html";
   const REMOTE_LOOKALIKE = "https://evil.example.com/plugin-ui-shell.html";
@@ -142,8 +130,7 @@ describe("auditUnauthorized", () => {
     expect(parsed.frameUrl).toBe("https://evil.example.com/");
   });
 
-  // Issue #471 — auditUnauthorized is the single shared call site for ~50
-  // IPC handlers, so the redact lands everywhere a frame URL is captured.
+  // Audit redaction must apply at the shared unauthorized-frame reporting boundary.
   it("redacts the user's home directory in file:// frame URLs", () => {
     const mockLogger = { log: vi.fn() };
     const home = os.homedir();
@@ -178,11 +165,9 @@ describe("validatePluginFrame", () => {
 
 describe("gated() integration — unauthorized path returns UNAUTHORIZED_FRAME", () => {
   it("handler is NOT called when sender is unauthorized", async () => {
-    // Simulate what domain files do: check validateSender, return UNAUTHORIZED_FRAME
     const handler = vi.fn(async () => ({ ok: true }));
     const event = foreignFrameEvent("https://evil.example.com/") as IpcMainInvokeEvent;
 
-    // Inline pattern (same as domain files use)
     const result = !validateSender(event) ? UNAUTHORIZED_FRAME : await handler(event);
 
     expect(handler).not.toHaveBeenCalled();

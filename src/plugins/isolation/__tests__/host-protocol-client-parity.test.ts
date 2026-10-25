@@ -1,20 +1,4 @@
-/**
- * The generated protocol client, held to the schema it projects and to the
- * frames the host really exchanged.
- *
- * `schemas/plugin-host-protocol/3/protocol-client.ts` is generated from the
- * committed schema, and `check:plugin-host-protocol-client` holds the file to
- * that output and compiles it. Neither proves a stub sends the right frame.
- * This does:
- *
- *  - bytes: regenerating gives the committed file, and the app version, which
- *    the schema's `$id` carries, never reaches it;
- *  - shape: `createHostClient` has exactly one method per `ave/host/*` entry
- *    of `$defs.methods`, read from the schema rather than from a list here;
- *  - frames: for every golden method recording under
- *    `fixtures/host-protocol/3/methods/`, the stub at that method's path, given
- *    the golden `params`, sends the golden frame's `method` and `params`.
- */
+/** Hold the generated client to published schemas and recorded host frames. */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -46,7 +30,6 @@ const HOST_METHODS = Object.keys(SCHEMA.$defs.methods)
   .filter((method) => method.startsWith("ave/host/"))
   .sort();
 
-/** A transport that records every frame the client asks it to send, and answers `reply`. */
 function recordingTransport(reply: (method: string) => unknown = () => null): {
   transport: HostClientTransport;
   sent: Array<{ method: string; params: unknown }>;
@@ -66,7 +49,6 @@ function recordingTransport(reply: (method: string) => unknown = () => null): {
   };
 }
 
-/** Every function reachable from `client`, by its dotted property path. */
 function stubPaths(value: unknown, prefix = ""): string[] {
   if (typeof value === "function") return [prefix];
   expect(Object.getPrototypeOf(value)).toBe(Object.prototype);
@@ -74,7 +56,6 @@ function stubPaths(value: unknown, prefix = ""): string[] {
     stubPaths(member, prefix ? `${prefix}.${key}` : key));
 }
 
-/** The stub for `method`, found by the path→property rule an author reads: `storage/read` → `storage.read`. */
 function stubFor(client: unknown, method: string): ((params: unknown) => Promise<unknown>) | undefined {
   let node: unknown = client;
   for (const segment of method.slice("ave/host/".length).split("/")) {
@@ -95,7 +76,7 @@ describe("the client is the schema's projection, byte for byte", () => {
     const committed = readFileSync(CLIENT_PATH, "utf-8");
     const appVersion = (JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf-8")) as { version: string })
       .version;
-    // The control: the schema really carries the app version the client must not.
+    // The schema includes the app version; generated client bytes must not.
     expect(SCHEMA.$id).toContain(`/v${appVersion}/`);
     expect(SCHEMA.description).toContain(appVersion);
     const retagged = {
@@ -130,7 +111,6 @@ describe("every golden ave/host recording is what its stub sends", () => {
         }),
       }))
       .filter(({ request }) => String(request.method).startsWith("ave/host/"));
-    // Every method the client has a stub for was recorded, so none goes unchecked.
     expect(golden.map(({ request }) => request.method).sort()).toEqual(HOST_METHODS);
 
     for (const { file, request, response } of golden) {

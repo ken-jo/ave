@@ -72,7 +72,6 @@ describe("MemoryManager file-backed tool_result artifacts", () => {
     });
     expect((loaded?.[0] as Record<string, unknown>).image).toBeUndefined();
 
-    // The caller's live in-memory object must NOT be mutated (image still there).
     expect(msg.image.data).toBe(base64);
   });
 

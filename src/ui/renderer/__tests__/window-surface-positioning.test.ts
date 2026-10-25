@@ -1,25 +1,4 @@
-/**
- * Which renderer surfaces may leave their pane.
- *
- * The workbench draws every surface about ONE conversation inside that
- * conversation's tile, and every surface about the WINDOW once, in flow, in
- * the window's own chrome (DESIGN.md "Workbench model"; tiled-chat-groups.md
- * "Every other surface a session raises"). `position: fixed` breaks both: a
- * fixed box resolves against the viewport, so it covers the tiles beside its
- * pane and the title bar, at a width the pane never agreed to. The audit log
- * used to do exactly that from inside the Permissions tab.
- *
- * So `fixed` is allowed only where the surface IS about the window and needs
- * viewport coordinates. That set is listed here with the reason each entry is
- * in it; a new `fixed` outside the list fails this test until its reason is
- * written down beside the others. The shared dialog/sheet primitives under
- * `src/components/ui` are Radix portals and sit outside the scanned tree.
- *
- * The same scan holds the stacking ladder (DESIGN.md "Stacking"): floating
- * overlays share the `z-50` band and order themselves by mount order; an
- * arbitrary `z-[N]` or a numeric `zIndex` is drift, listed only where the
- * surface has to sit above every product overlay at once.
- */
+/** Conversation surfaces stay within their tile; viewport-fixed positioning is reserved for window-owned surfaces. */
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
@@ -85,8 +64,7 @@ describe("renderer surfaces stay inside their pane", () => {
     const fixed = offenders([FIXED_IN_CLASS, FIXED_IN_STYLE]);
     const unlisted = fixed.filter((file) => !(file in FIXED_POSITIONING_ALLOWED));
     expect(unlisted, "fixed positioning outside the allow-list — a surface escaping its pane").toEqual([]);
-    // The list is a residual, not a registry: an entry whose file no longer
-    // positions against the viewport comes off it.
+    // The list is a residual, not a registry: an entry whose file no longer positions against the viewport comes off it.
     const stale = Object.keys(FIXED_POSITIONING_ALLOWED).filter((file) => !fixed.includes(file));
     expect(stale, "allow-list entries that no longer use fixed positioning").toEqual([]);
   });

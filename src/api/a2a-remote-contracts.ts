@@ -11,23 +11,12 @@ import { isPositiveSafeInteger } from "../shared/safe-integer.js";
 
 export const A2A_EXACT_SEND_REPLAY_URI =
   "urn:uuid:383a1d70-5c3b-42d9-a65d-9f084b7a1a44" as const;
-// google.rpc.ErrorInfo.domain is a logical namespace, not a network endpoint.
-// Reuse the domain-free extension identifier so protocol errors never imply
-// ownership of a DNS name.
+// ErrorInfo.domain is a logical namespace; use the extension identifier without implying DNS ownership.
 export const A2A_EXACT_SEND_REPLAY_ERROR_NAMESPACE = A2A_EXACT_SEND_REPLAY_URI;
 export const A2A_SPECIFICATION_URI = "https://a2a-protocol.org/v1.0.0/specification/" as const;
 export const A2A_EXACT_SEND_REPLAY_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
 export const A2A_REMOTE_ROUTE_TIMEOUT_MS = 5_000;
-/**
- * A2A's own HTTP budget, deliberately NOT read from `TOOL_TIMEOUT_POLICY`.
- *
- * It sits in a coherent set with `A2A_REMOTE_ROUTE_TIMEOUT_MS` and
- * `A2A_REMOTE_RECONCILIATION_MS` above and below it: three numbers that are
- * tuned against each other for this protocol's round trips. That it currently
- * equals the tool policy's default is a coincidence of value, not a shared
- * fact, and binding them would make a change made for the web-fetch tool move
- * a protocol deadline nobody was looking at.
- */
+// Keep the HTTP budget coupled to route and reconciliation deadlines, independently of tool timeout defaults.
 export const A2A_REMOTE_HTTP_TIMEOUT_MS = 15_000;
 export const A2A_REMOTE_RECONCILIATION_MS = 30_000;
 export const A2A_REMOTE_MAX_ROUTE_BYTES = 64 * 1_024;

@@ -140,8 +140,7 @@ describe("ConversationCommandPort", () => {
       scope: "33333333-3333-4333-8333-333333333333",
     });
     let checks = 0;
-    // The final check inside the deferred lease factory must still run after
-    // command admission and persona resolution have both succeeded.
+    // The final check inside the deferred lease factory must still run after command admission and persona resolution have both succeeded.
     const bridgeGuard = Object.freeze({ isCurrent: vi.fn(() => ++checks < 6) });
     const actor = createPlatformBridgeActor("d".repeat(64), { bridgeBinding, bridgeGuard });
 

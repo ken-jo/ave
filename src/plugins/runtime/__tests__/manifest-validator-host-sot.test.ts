@@ -1,14 +1,4 @@
-/**
- * Host-owned manifest validator SOT guard (ph2).
- *
- * The host compiles its OWN vendored `schemas/plugin-manifest.schema.json`
- * (imported as a bundler-visible JSON module) with AJV. This suite pins:
- *   1. the validator compiles + accepts every host-required field,
- *   2. the negative-strictness guards (formerly runtime probes, now test-time
- *      assertions per ph2) still REJECT removed / unreachable / removed-ui shapes,
- *   3. fail-closed semantics when AJV cannot compile the schema,
- *   4. schema ↔ types ↔ parsePluginJson coherence on a full-featured manifest.
- */
+/** Validate host schema, runtime types and materialization together; plugin-provided schema copies cannot widen admission. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { realpathSync } from "node:fs";
@@ -91,10 +81,7 @@ const validFirstTask = {
 
 describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
   it("enforces the same tools[].name grammar the schema pins", () => {
-    // Narrowed to the ONE definition this reads. A `Record` over every
-    // definition stopped overlapping once a definition without `properties`
-    // landed (`pluginOnboardingAction` is a `oneOf`), and widening the record
-    // to make that assignable would stop typing what is actually read.
+    // Narrow to the definition actually read rather than claiming every schema definition has properties.
     const toolDefinition = (manifestSchema as {
       definitions: { tool: { properties: Record<string, { pattern?: string }> } };
     }).definitions.tool;
@@ -108,7 +95,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
   });
 
   it("compiles the host schema into a working validator", async () => {
-
     const validator = await buildManifestValidator();
     expect(typeof validator).toBe("function");
   });
@@ -223,7 +209,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     );
   });
 
-  // ── accept-probes against the host-compiled validator ────────────────────
   it("accepts a pure MCP Tool[] object carrying _meta.ui.visibility", async () => {
     const validator = await buildManifestValidator();
     expect(
@@ -368,9 +353,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       ...validHighlight,
       action: { kind: "settings" },
     }],
-    // Every path segment opens with a letter. The schema shapes the string
-    // before the host resolves it against the tabs and sections it ships, so a
-    // spelling no registry id could ever carry is refused one layer earlier.
+    // Reject path spellings no registry tab or section could represent.
     ["settings action whose tab segment opens with a digit", {
       ...validHighlight,
       action: { kind: "settings", path: "2fa" },
@@ -409,13 +392,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
   });
 
   it("REJECTS a tool _meta carrying pathFields under an unknown vendor prefix (fail-closed)", async () => {
-    // Tool `_meta` is `additionalProperties:false`: the host owns only `ave/*`
-    // (and `ui`), so a manifest declaring pathFields under any other prefix is
-    // REJECTED at the load-time schema gate — it is NOT silently accepted with
-    // the security-bearing pathFields ignored (that would be fail-OPEN: the
-    // permission gate would stop seeing the plugin's filesystem effects). This is
-    // the schema half of the Doctor safety net: rejection → `manifest_schema`
-    // → `manifest-validation-error` → reinstall.
+    // Unknown tool metadata prefixes fail closed and classify as reinstall-fixable manifest validation.
     const validator = await buildManifestValidator();
     const result = validator(agentPluginsDocument({
       id: "unknown-meta-plugin",
@@ -439,8 +416,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
       ],
     }));
     expect(result).toBe(false);
-    // The rejection specifically names the unknown key as the disallowed
-    // additional property (not some unrelated failure).
     expect(validator.errors).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -523,8 +498,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
 
   it("still rejects single-label hosts that are not loopback literals", async () => {
     const validator = await buildManifestValidator();
-    // The loopback exemption is three exact literals — it is not a general
-    // relaxation of the one-dot rule that stops a bare label blanket-matching.
+    // Loopback exemptions are exact literals and must not relax bare-label host matching.
     for (const host of ["intranet", "localhost.", "::2", "127.0.0.1:1234"]) {
       expect(
         validator(agentPluginsDocument({
@@ -540,10 +514,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     }
   });
 
-  // "Declared POLICY, served CONTENT": a uiResources[] entry declares the uri +
-  // the resource's security policy. The card HTML is NOT a manifest field — the
-  // plugin serves its own bytes (RuntimePlugin.readUiResource), so `uri` is the
-  // only required member.
+  // Manifests declare card URI and policy; plugins serve content through the resource hook.
   it("accepts a uiResources[] ui:// serving declaration (csp buckets)", async () => {
     const validator = await buildManifestValidator();
     expect(
@@ -568,10 +539,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
   });
 
   it("accepts a uiResources[] entry declaring host-honorable `permissions` (camera/microphone/geolocation)", async () => {
-    // The inner app frame now carries `allow-same-origin` (spec origin requirement), so a
-    // declared permission can actually be delegated + honored. Main derives BOTH the frame
-    // `allow` attribute and the Electron session grant from this declaration; the accepted
-    // set is exactly what an e2e proved works (mcp-app-permissions.spec.ts).
+    // Only delegated permissions supported by the isolated app frame may pass schema validation.
     const validator = await buildManifestValidator();
     expect(
       validator(agentPluginsDocument({
@@ -592,10 +560,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
   });
 
   it("REJECTS a uiResources[] `permissions` key the host cannot honor (clipboardWrite / unknown) — fails LOUDLY", async () => {
-    // clipboardWrite is deliberately absent from the schema: measured, a script-initiated
-    // clipboard write is denied even when delegated, so accepting it would be an unhonored
-    // knob. `additionalProperties:false` on mcpUiResourcePermissions makes declaring it — or
-    // any unknown feature — fail validation loudly rather than silently doing nothing.
+    // Reject unsupported clipboardWrite rather than promise permission the browser cannot honor.
     const validator = await buildManifestValidator();
     const withPermission = (permissions: Record<string, unknown>) =>
       validator(agentPluginsDocument({
@@ -613,21 +578,14 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     expect(withPermission({ notARealFeature: {} })).toBe(false);
   });
 
-  // LOCKSTEP GUARD (cluster critic MINOR-2): the schema's `mcpUiResourcePermissions`
-  // properties are a SECOND hand-maintained enumeration of the accepted permission set,
-  // and its `$comment` names MCP_APP_PERMISSION_FEATURES as the SOT — but nothing bound
-  // them, so a 5th feature added to the table (or the schema) without the other would
-  // drift silently. Bind them here: adding/removing a feature on either side fails this
-  // test instead of shipping a schema that accepts a feature the host cannot honor, or
-  // rejects one it can.
+  // Keep schema permission keys equal to the host delegation table.
   it("schema `mcpUiResourcePermissions` keys match MCP_APP_PERMISSION_FEATURES exactly (no silent drift)", () => {
     const schemaKeys = Object.keys(
       manifestSchema.definitions.mcpUiResourcePermissions.properties,
     ).sort();
     const sotKeys = MCP_APP_PERMISSION_FEATURES.map((f) => f.key).sort();
     expect(schemaKeys).toEqual(sotKeys);
-    // Anchor the current accepted set so a change to EITHER side is visible in the diff,
-    // and clipboardWrite stays excluded on both.
+    // Pin the supported set, including excluded clipboardWrite.
     expect(sotKeys).toEqual(["camera", "geolocation", "microphone"]);
     expect(schemaKeys).not.toContain("clipboardWrite");
   });
@@ -667,9 +625,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     ).toBe(false);
   });
 
-  // The removed `html` member is now an unknown sub-property: a manifest still
-  // shipping a disk path is REJECTED, not silently tolerated (the host no longer
-  // reads plugin files, so an ignored `html` would be a lie in the manifest).
+  // Reject removed html paths; ignored declarations would falsely imply host file loading.
   it("rejects a uiResources[] entry still declaring the removed html path", async () => {
     const validator = await buildManifestValidator();
     expect(
@@ -705,7 +661,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     ).toBe(true);
   });
 
-  // ── negative-strictness guards (opposite polarity — each must REJECT) ───────
   it("rejects a pure tool carrying a removed field (writesToOwnSandbox)", async () => {
     const validator = await buildManifestValidator();
     expect(
@@ -798,7 +753,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     );
   });
 
-  // ── fail-closed: an uncompilable schema aborts plugin loading ───────────────
   describe("per-language display text (locales)", () => {
     const uiEntry = (locales: unknown) => ({
       id: "panel",
@@ -929,7 +883,6 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
     });
   });
 
-  // ── formatUnknownErrorMessage (still exported + used by the fail-closed wrap) ─
   it("formatUnknownErrorMessage stringifies Error / string / object / null", () => {
     expect(formatUnknownErrorMessage(new Error("boom"))).toBe("boom");
     expect(formatUnknownErrorMessage("failed")).toBe("failed");
@@ -941,10 +894,7 @@ describe("buildManifestValidator — host-owned schema SOT (ph2)", () => {
 });
 
 describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
-  // Full-featured manifest: pure Tool[] with _meta.ui.visibility + pathFields,
-  // an app-only auth trio, keywords, networkAccess, hostSecrets, requires,
-  // ui[], and configSchema. Must satisfy BOTH the compiled host schema AND the
-  // host cross-field checks in parsePluginJson end-to-end.
+  // Drive the complete authored manifest through both the compiled schema and host cross-field checks.
   const fullFeatured = {
     id: "full-featured-plugin",
     name: "Full Featured Plugin",
@@ -1032,9 +982,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
       interpreter: "python3",
     },
     startupTimeoutMs: 8000,
-    // `author` is portable Agent Plugins metadata, so it rides at the document
-    // level and is deliberately absent from PluginManifest — which is the point
-    // of the `"author" in parsed` assertion below.
+    // Portable author metadata belongs to the document, not the host manifest projection.
   } satisfies PluginManifest & { author: { name: string } };
 
   it("validates against the compiled host schema", async () => {
@@ -1061,11 +1009,7 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
       expect(parsed.auth?.statusTool).toBe("ff_status");
       expect(parsed.auth?.logoutTool).toBe("ff_logout");
       expect(parsed.packageName).toBe("@ave/full-featured-plugin");
-      // Portable Agent Plugins metadata is accepted by the schema (the fixture
-      // carries `author`) and deliberately does NOT cross into the manifest the
-      // host reads: it is catalog-facing, and `public-contract.ts` keeps catalog
-      // concepts out of the plugin contract. Asserted rather than assumed, so a
-      // future flattener change that starts leaking it is caught here.
+      // Assert portable metadata is accepted but never leaks into the host projection.
       expect("author" in parsed).toBe(false);
       expect(parsed.uiSlots).toEqual(["sidebar"]);
       expect(parsed.python).toEqual({
@@ -1074,7 +1018,6 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
         interpreter: "python3",
       });
       expect(parsed.requires?.minAppVersion).toBe("1.0.0");
-      // Per-language text reaches the manifest every surface reads, unchanged.
       expect(parsed.ui?.[0]?.locales).toEqual({ ko: { title: "설정", description: "플러그인 설정" } });
       expect(parsed.configSchema?.properties.enabled?.locales).toEqual({ ko: { title: "사용" } });
       expect(parsed.auth?.locales).toEqual({ ko: { label: "전체 기능 계정" } });
@@ -1088,7 +1031,6 @@ describe("schema ↔ types ↔ parsePluginJson coherence (ph2)", () => {
       expect(search?._meta?.ui?.visibility).toEqual(["model", "app"]);
       expect(search?._meta?.["ave/pathFields"]).toEqual(["path"]);
 
-      // Auth trio materialized as app-only (never model-visible).
       const status = parsed.tools.find((t) => t.name === "ff_status");
       expect(status?._meta?.ui?.visibility).toEqual(["app"]);
     } finally {
@@ -1254,7 +1196,6 @@ describe("colocated operation policy cross-field contract", () => {
     await expect(parse(invalid)).rejects.toThrow(
       /valid only for a read operation/,
     );
-    // The error path names the real _meta key, not a stale namespace.
     await expect(parse(invalid)).rejects.toThrow(
       /\._meta\.ave\/operationPolicy\.operations\.save\.successfulResultStatuses'/,
     );

@@ -161,7 +161,10 @@ INPUT origin classification (user-keyboard | plugin-emitted | llm-tool-arg | fil
 │   ├ Sensitive list:                                        │
 │   │   ~/.ssh/, ~/.aws/credentials, ~/.netrc, ~/.pgpass,    │
 │   │   /etc/shadow, /etc/sudoers, ~/.bash_history,          │
-│   │   ~/Library/Cookies/**, ~/.config/**/Login Data,       │
+│   │   ~/Library/Cookies/**, ~/Library/Keychains/**,        │
+│   │   ~/.local/share/keyrings, ~/.password-store,          │
+│   │   ~/.config/op, browser profile roots (3 OS),          │
+│   │   ~/.config/**/Login Data,                             │
 │   │   **/.env, **/.env.*, **/id_{rsa,ed25519,ecdsa},       │
 │   │   ~/.ave/secrets/**, ~/.ave/audit*,                  │
 │   │   ~/.ave/permissions/deferred-queue.jsonl,            │
@@ -288,7 +291,11 @@ export function canonicalizePathForMatch(rawPath: string): string {
 - OS/system: `/etc/shadow`, `/etc/sudoers`, `/etc/passwd-`
 - User credentials: `~/.netrc`, `~/.pgpass`, `~/.npmrc`
 - Shell history: `~/.bash_history`, `~/.zsh_history`, `~/.python_history`, `~/.psql_history`, `~/.viminfo`
-- Browser/keychain: `~/Library/Cookies/**`, `~/.config/**/Login Data`, `~/Library/Keychains/**`
+- Keychain/keyring/password manager: `~/Library/Keychains/**`, `~/.local/share/keyrings/**`, `~/.local/share/kwalletd/**`, `~/.password-store/**`, `~/.config/op/**`, 1Password 7/8 group container `~/Library/Group Containers/2BUA8C4S2C.com.{agilebits,1password}`
+- Browser: `~/Library/Cookies/**`, `~/Library/Containers/com.apple.Safari`, `~/.config/**/Login Data`, 그리고 브라우저 프로필 루트 전체 — macOS `~/Library/Application Support/{Google, Microsoft Edge, Microsoft Edge Beta, Microsoft Edge Dev, Microsoft Edge Canary, BraveSoftware, Chromium, Arc, Vivaldi, com.operasoftware.Opera, com.operasoftware.OperaGX, Firefox}`(`Google` vendor parent 하나가 Chrome 의 모든 채널을 덮어 새 채널도 자동 포함), Linux `~/.mozilla`, `~/.config/{google-chrome, google-chrome-beta, google-chrome-unstable, chromium, BraveSoftware, microsoft-edge, microsoft-edge-beta, microsoft-edge-dev, vivaldi, opera}`, snap `~/snap/{firefox, chromium, brave, thunderbird}`, Flatpak `~/.var/app/{org.mozilla.firefox, org.chromium.Chromium, com.google.Chrome, com.brave.Browser, com.microsoft.Edge, org.mozilla.Thunderbird}`, Windows `%LOCALAPPDATA%\{Google\Chrome, Google\Chrome Beta, Google\Chrome Dev, Google\Chrome SxS, Microsoft\Edge, Microsoft\Edge Beta, Microsoft\Edge Dev, Microsoft\Edge SxS, BraveSoftware\Brave-Browser, Chromium, Vivaldi}\User Data`, `%APPDATA%\Opera Software`, `%APPDATA%\Mozilla\Firefox\Profiles`
+- Mail client: Thunderbird 프로필 `~/Library/Thunderbird`, `~/.thunderbird`, `%APPDATA%\Thunderbird` (저장된 계정 암호 `logins.json` + `key4.db`)
+- 위 항목은 `SENSITIVE_PATH_ENTRIES` 행이라 host guard 와 3개 OS 의 sandbox read/write floor 에 동시에 projection 된다. Firefox 와 Linux Chromium 은 복호화 키(`key4.db`, `Local State` 키)가 프로필 안에 있다. macOS keychain DB 는 로그인 암호로 암호화되지만, main 과의 parity 때문에 행으로 둔다 — main 의 builtin shell 은 실제 HOME 전체를 deny 하므로 예전 Keychains/Cookies 제외 결정은 그 전제에서 쓰였고, 홈 전체 deny 가 없는 ip2 에서 제외를 유지하면 main 보다 약해진다. 대가는 main 과 같다: sandbox 안의 credential helper — git `osxkeychain`, `security`, docker credential helper, 1Password `op` CLI, `pass`, keychain 기반 `codesign` — 는 실패하며, 승인된 비-sandbox 실행에서는 동작한다. `Google` parent 는 같은 위치의 다른 Google 앱 데이터(예: Android Studio 설정, GoogleUpdater)도 sandbox 명령에서 가린다. floor 에 걸린 읽기는 native 권한 오류로 보이게 실패한다. 홈 전체 deny 는 하지 않는다.
+- Shell 스캔: glob 인자는 첫 wildcard 앞의 literal 디렉터리 prefix 로도 검사한다(`~/.mozilla/firefox/*/log*ns.json`). 상대 경로와 재귀 검색 root 는 같은 입력 안의 정적 `cd`/`chdir`/`pushd` 가 남길 수 있는 모든 작업 디렉터리에 대해 resolve 한다. `;`, `||`, pipeline, subshell 뒤에는 이전 디렉터리가 모두 후보로 남는다(`(cd ~) && grep -r x .` 는 fail-closed 로 홈 검색으로 본다). `&&` 의 오른쪽만 좁힌다: 왼쪽이 성공한 뒤에만 실행되므로 왼쪽의 정적 `cd` 대상이 오른쪽의 작업 디렉터리 전부다(`cd src && grep -r x ..` 는 프로젝트를 검색하며 그 부모가 아니다). 명령 단위 디렉터리 옵션은 그 명령 하나를 기존 후보에 더해 옮긴다: `env -C`/`--chdir`, `git -C`/`--work-tree`, `make -C`/`--directory`, `tar -C`/`--directory`, `ninja`/`meson`/`cargo`/`go -C`, `just -d`, `npm -C`/`--prefix`, `pnpm -C`/`--dir`/`--prefix`, `yarn`/`bun --cwd`, `uv --directory`/`--project`, `poetry -C`/`-P`. 값이 비정적이면 비정적 `cd` 와 같은 ordinary ask 다. 트리 전체를 읽는 명령도 재귀 검색으로 보고, 보호 항목과 같거나 그 위의 root 는 floor 다: `grep -r`/`rg`, archive 생성(`tar c`/`r`/`u`, `zip -r`), 재귀 복사(`cp -r`/`-a`, `rsync -r`/`-a`, `scp -r`, 원격 operand 제외), 그리고 매치마다 프로그램(`-exec`, `fd -x`)이나 `xargs` 단계로 넘기는 `find`/`fd`/`du -a`/`ls`(`-R` 여부 무관). 단순 `find`/`fd`/`du`/`ls` 는 이름만 나열한다. `xargs` 뒤의 재귀 reader 는 스캔이 볼 수 없는 입력에서 root 를 받는다: 앞 단계가 보호 항목과 같거나 그 위의 정적 경로를 이름으로 대거나(`echo ~ | xargs grep -r x`), 앞 단계가 실행되는 디렉터리가 그렇거나(`cd ~ && git ls-files | xargs rg foo`), 비정적 cd 뒤라면 floor 다. 그 밖의 경우(`git ls-files | xargs rg foo`, 파일·치환에서 오는 root)는 ordinary ask 이고, sandbox lane 에서는 OS floor 에 맡긴다. 파일에서 읽는 root 목록(`tar -T`, `--files-from`)은 ordinary ask 다. 파일 내용을 읽지 않는 metadata lister(`ls`, `du`, `stat`, `tree`, `eza`/`exa`, `lsd`)의 glob 이 확장 결과로만 보호 디렉터리에 닿으면(`ls ~/Library/Application\ Support/*`, `du -sh ~/Library/*`) 역시 ordinary ask 다. literal prefix 가 이미 보호 경로인 glob(`ls ~/.ssh/*`), `xargs` 로 넘기는 lister, 파일 입력 옵션이 있는 lister(`tree --fromfile`/`--hintro`/`--infofile`/`--gitfile`, `du --files0-from`/`-X`/`--exclude-from`, `lsd --config-file`), 내용 읽기는 계속 floor 다. 비정적 `cd` 대상(변수·치환·glob·`~user`·`cd -`·디렉터리를 바꾸는 `eval`·재할당된 `HOME`·`CDPATH`)은 ordinary ask 다(sandbox 자동 허용 lane 은 OS floor 가 막으므로 멈추지 않는다). 그 뒤의 상대 재귀 검색은 모든 lane 에서 floor 다.
 - Env/secrets: `**/.env`, `**/.env.*`
 - SSH keys outside `.ssh/`: `**/id_{rsa,ed25519,ecdsa}` (generic glob)
 - **Ave 자체:** `~/.ave/secrets/**`, `~/.ave/audit*`, `~/.ave/permissions/deferred-queue.jsonl`, `~/.ave/sessions/**`, `~/.config/ave/hooks/**`
@@ -747,9 +754,9 @@ interface AuditModeChange extends AuditCommon {
 /permission reviewer interactive off|low
 ```
 
-Reviewer provider/model 은 지능 설정의 active LLM provider/model 을 따른다.
-`permissions.reviewer.provider/model` 은 이전 버전 호환용 persisted field 이며
-사용자-facing slash/API surface 가 아니다.
+Reviewer 모델은 권한 설정의 `permissions.judge.model` 이며, 비워 두면(unset)
+지능 설정의 active chat provider/model 을 따른다. 이전 버전이 쓴
+`permissions.reviewer.provider/model` 키는 로드 시 버려지고 다음 저장 때 파일에서 사라진다.
 
 **Trust origin gate (security C2):**
 - Slash dispatch 는 `trustOrigin === "user-keyboard"` 인 입력만 처리
@@ -975,8 +982,8 @@ Phase 2 executor 작업 중 사용자가 결정한 4 항목 — spec 에 binding
 
 | 항목 | 결정 | 함의 |
 |---|---|---|
-| Layer 5 provider/model | **active chat LLM provider/model 추종** + vendor-neutral abstraction | `LlmRiskClassifier` 는 thin adapter 를 유지하되 runtime provider/model 은 `settings.llm.provider` 와 active vendor block 의 `model`, `baseUrl`, Vertex project/location 을 따른다. 기존 `permissions.reviewer.provider/model` 은 이전 버전 호환용 persisted field 로 남기지만 사용자-facing SOT 가 아니다. |
-| Layer 5 provider/model surface | **지능 설정에서만 변경** | `/permission reviewer provider|model` 및 reviewer-local UI controls 는 제거한다. Runtime, UI, slash 출력은 active Intelligence LLM 을 SOT 로 표시해야 한다. |
+| Layer 5 provider/model | **active chat LLM provider/model 추종** + vendor-neutral abstraction | `LlmRiskClassifier` 는 thin adapter 를 유지하되 runtime provider/model 은 `settings.llm.provider` 와 active vendor block 의 `model`, `baseUrl`, Vertex project/location 을 따른다. 기존 사용자가 권한 설정에서 고른 `permissions.judge.model` 이 있으면 그것을 쓴다. 이전 `permissions.reviewer.provider/model` 키는 제거됐다(로드 시 버림). |
+| Layer 5 provider/model surface | **권한 설정의 검토 모델 선택기** | `/permission reviewer provider|model` 은 없다. 권한 설정의 검토 모델 선택기(`permissions.judge.model`)가 자동 승인 검토자와 judge 기본 단계를 함께 정하고, 비워 두면 active Intelligence LLM 을 따른다. |
 | Layer 6 hook v1 ship | **빈 디렉토리** | `~/.config/ave/hooks/` 만 mkdir. 기본 hook 없음. 사용자가 적극적으로 추가하기 전까지 attack surface 0. Sample hook 의 ergonomic value < security 이라는 trade-off |
 | Layer 5 cache invalidation | **Selective by `invalidationKey`** | `invalidationKey = hash(allowedDirectories, scope)` 의 매치만 cache hit. settings 변경 시 매치 안 되는 entry 만 무효, 동일 context 의 cache 보존. cold-start hit-rate 보존. 가정: verdict 의 settings-dependent input 은 (allowedDirectories, scope) 뿐 (Phase 4 hook chain 결과가 verdict 영향 시 hook hash 도 invalidationKey 에 포함 필요) |
 | arch.md §6.3 rewrite | **In-place rewrite** | 기존 §6.3 의 3-layer model 자리에 10-layer 으로 직접 덮어쓰기. 외부 link / anchor (`#permissions`) 호환 유지. Phase 5 deliverable |

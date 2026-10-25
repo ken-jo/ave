@@ -1,15 +1,4 @@
-/**
- * Unit tests for getAveAppVersion.
- *
- * Guards the regression that produced the Settings → 일반 → 앱 버전
- * `vunknown` display in dev mode (PR #1011 used `app.getAppPath()` which
- * pointed at the Electron binary's directory).
- *
- * The helper walks candidate paths relative to its own bundled location
- * so the same resolution works for the dev launcher
- * (`electron dist/src/main/main.js`) and the packaged
- * (`app.asar/dist/src/main/main.js`) layouts.
- */
+/** Resolve package metadata relative to the bundle so development and archive layouts both work. */
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   getAveAppVersion,
@@ -25,7 +14,6 @@ describe("getAveAppVersion", () => {
     const v = getAveAppVersion();
     expect(v).not.toBe("unknown");
     expect(v).not.toBe("");
-    // Loose semver shape — accepts pre-release / build metadata.
     expect(v).toMatch(/^\d+\.\d+\.\d+/);
   });
 

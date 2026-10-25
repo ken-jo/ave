@@ -1,28 +1,11 @@
-/**
- * Tool pipeline — reviewer dispatch lanes (headless + interactive-auto).
- *
- * Extracted from `executor.ts` (C7 decomposition). Free functions that take the
- * executor's {@link PermissionManager} and drive the risk-reviewer for the two
- * non-modal foreground/headless approval lanes, emitting permission-review
- * callback events as they go. No other executor state is touched.
- *
- * `finalInput` is the RAW finalized tool input — the same object the foreground
- * modal lane classifies via `tryUserApprovalMemorySkip`. These lanes used to be
- * handed `maskToolInputForDisplay(finalInput)` instead, which made the rule
- * classifier grade masked text: a DLP-masked value can stop parsing as a URL, so
- * an Azure endpoint whose resource name begins with a key-shaped prefix
- * (`test-`, `live-`, `proj-`, `sk-`…) lost its trusted-host match and rated HIGH
- * in this lane while the foreground lane rated the identical call LOW. Masking
- * now happens at the single place that needs it — `buildUserPrompt`, which
- * re-masks every value before the reviewer LLM sees it — so the verdict no
- * longer depends on which lane asked. A separate `cacheIdentityInput` parameter
- * is gone with it: it existed only because the classified input differed from
- * the real one.
- */
+/** Classify raw finalized input consistently across reviewer and modal lanes; DLP-masked URLs can change risk classification.
+ * Mask only at the reviewer prompt boundary before data reaches the model. */
 import type { ToolSource, ToolCategory } from "../types.js";
 import type {
   PermissionManager,
   PermissionCheckResult,
+  ReviewerDispatchResult,
+  ReviewerLane,
 } from "../../permissions/permission-manager.js";
 import type { PermissionEvaluationContext } from "../../permissions/evaluation-context.js";
 import type { HostShellExecutionPlan } from "../../permissions/host-shell-execution-plan.js";
@@ -37,6 +20,30 @@ import type {
 } from "../executor.js";
 import { emitPermissionReview, summarizeInputForDeferred } from "./display-mask.js";
 import { errorMessage } from "../../shared/error-message.js";
+
+function resolveDispatchedJudge(
+  reviewer: ReviewerDispatchResult,
+  lane: ReviewerLane,
+): PermissionCheckResult | null {
+  const outcome = reviewer.judge;
+  if (!outcome) return null;
+  // Shadow preserves the pre-existing automatic lane; ordinary asks still reach the person while their configured chain only records its opinion.
+  if (reviewer.judgeBaselineAllowed === true) return null;
+  if (!outcome.judged) {
+    return {
+      decision: lane === "headless" ? "deny" : "ask",
+      reason: `Judge automation paused: ${outcome.skip}`,
+      layer: 5,
+      forceModal: true,
+    };
+  }
+  return {
+    decision: outcome.applied ? outcome.decision : lane === "headless" ? "deny" : "ask",
+    reason: outcome.applied ? outcome.rationale : "Judge shadow review requires user approval",
+    layer: 5,
+    ...(outcome.fallback ? { forceModal: true } : {}),
+  };
+}
 
 export async function dispatchReviewerForHeadless(
   permissionManager: PermissionManager | undefined,
@@ -129,9 +136,7 @@ export async function dispatchReviewerForHeadless(
       ...(sandboxAttestation.ownerPluginSandboxRoot !== undefined
         ? { ownerPluginSandboxRoot: sandboxAttestation.ownerPluginSandboxRoot }
         : {}),
-      // Thread worker identity so the reviewer reports the genuine asrt
-      // capability for wrapped external workers and scopes the verdict cache by
-      // the correct substrate.
+      // Thread worker identity so the reviewer reports the genuine asrt capability for wrapped external workers and scopes the verdict cache by the correct substrate.
       ...(meta.mcpServerId !== undefined ? { mcpServerId: meta.mcpServerId } : {}),
       ...(meta.pluginId !== undefined ? { pluginId: meta.pluginId } : {}),
       ...(meta.workerId !== undefined ? { workerId: meta.workerId } : {}),
@@ -150,18 +155,19 @@ export async function dispatchReviewerForHeadless(
     },
     { defer: "medium-high", abortSignal },
   );
-  // V3 SOT — PermissionManager owns the verdict→decision mapping; the pipeline
-  // only wires the human-facing message + deferred-queue metadata around it.
-  // The review-status telemetry is derived from the resolved decision so the
-  // auto-approve disclosure and the audit decision share one source.
+  // V3 SOT; PermissionManager owns the verdict→decision mapping; the pipeline only wires the human-facing message + deferred-queue metadata around
+  // it. The review-status telemetry is derived from the resolved decision so the auto-approve disclosure and the audit decision share one source.
   const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
-  const resolved = autoDecisionOutcome
-    ? permissionManager.resolveReviewerDecision(reviewer.verdict, "headless")
+  const judged = resolveDispatchedJudge(reviewer, "headless");
+  const resolved = judged ?? (autoDecisionOutcome
+    ? reviewer.builtinDecision === undefined
+      ? permissionManager.resolveReviewerDecision(reviewer.verdict, "headless")
+      : permissionManager.resolveReviewerDecision(reviewer.verdict, "headless", reviewer.builtinDecision)
     : {
         decision: "deny" as const,
         reason: `headless reviewer ${reviewer.outcome} — execution blocked`,
         layer: 5,
-      };
+      });
   const decision: PermissionCheckResult = {
     ...resolved,
     reviewer: { route: "headless", verdict: reviewer.verdict, outcome: reviewer.outcome },
@@ -182,7 +188,7 @@ export async function dispatchReviewerForHeadless(
     return {
       allowed: false,
       message:
-        t("be_executor.permHoldReviewer", { toolName, source, reason: reviewer.verdict.reason }) +
+        t("be_executor.permHoldReviewer", { toolName, source, reason: judged ? decision.reason : reviewer.verdict.reason }) +
         (reviewer.deferredId ? ` (deferredId=${reviewer.deferredId})` : ""),
       permissionResult: {
         ...decision,
@@ -216,10 +222,10 @@ export async function dispatchReviewerForInteractiveAuto(
   hostShellExecutionPlan?: HostShellExecutionPlan,
   abortSignal?: AbortSignal,
   auditInput?: Record<string, unknown>,
+  sessionId?: string,
 ): Promise<PermissionCheckResult | null> {
   if (context.headless === true) return null;
-  // PermissionManager's resolved route marker is the sole eligibility SOT.
-  // Reaching this dispatcher means foreground review was explicitly selected.
+  // PermissionManager's resolved route marker is the sole eligibility SOT. Reaching this dispatcher means foreground review was explicitly selected.
   const mgr = permissionManager;
   if (!mgr) return null;
   emitPermissionReview(callbacks, {
@@ -236,6 +242,7 @@ export async function dispatchReviewerForInteractiveAuto(
     reviewer = await mgr.dispatchReviewer(
       toolName,
       {
+        ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,
         pathFields,
@@ -294,8 +301,7 @@ export async function dispatchReviewerForInteractiveAuto(
       reason: "foreground reviewer cancelled by caller",
       ...(approvalPurpose ? { approvalPurpose } : {}),
     });
-    // Cancellation is terminal. Deliberately omit reviewer metadata so this
-    // result can never be recorded as a fresh/cache text-authorization grant.
+    // Cancellation is terminal. Deliberately omit reviewer metadata so this result can never be recorded as a fresh/cache text-authorization grant.
     return {
       decision: "deny",
       reason: "foreground reviewer cancelled by caller",
@@ -304,26 +310,27 @@ export async function dispatchReviewerForInteractiveAuto(
   }
 
 
-  // V3 SOT — PermissionManager owns the verdict→decision mapping.
-  // Verdicts through the configured inclusive threshold allow; higher verdicts
-  // ask the user. HIGH still requires explicit approval with justification.
+  // V3 SOT; PermissionManager owns the verdict→decision mapping. Verdicts through the configured inclusive
+  // threshold allow; higher verdicts ask the user. HIGH still requires explicit approval with justification.
   const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
-  const resolved = autoDecisionOutcome
-    ? mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto")
+  const judged = resolveDispatchedJudge(reviewer, "foreground-auto");
+  const resolved = judged ?? (autoDecisionOutcome
+    ? reviewer.builtinDecision === undefined
+      ? mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto")
+      : mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto", reviewer.builtinDecision)
     : {
         decision: "ask" as const,
         reason: `foreground reviewer ${reviewer.outcome} — explicit approval required`,
         layer: 5,
         forceModal: true,
-      };
+      });
   const decision: PermissionCheckResult = {
     ...resolved,
     reviewer: { route: "foreground-auto", verdict: reviewer.verdict, outcome: reviewer.outcome, approvalBasis: reviewer.approvalBasis },
   };
   const failedWithoutApprovalSurface =
     !autoDecisionOutcome && context.approvalSurface === "unavailable";
-  // Review-status telemetry derived from the resolved decision so the
-  // auto-approve disclosure and the audit decision share one source.
+  // Review-status telemetry derived from the resolved decision so the auto-approve disclosure and the audit decision share one source.
   emitPermissionReview(callbacks, {
     status: failedWithoutApprovalSurface
       ? "failed"
@@ -333,7 +340,7 @@ export async function dispatchReviewerForInteractiveAuto(
     source,
     ...meta,
     verdictLevel: reviewer.verdict.level,
-    reason: failedWithoutApprovalSurface
+    reason: judged || failedWithoutApprovalSurface
       ? decision.reason
       : reviewer.verdict.reason,
     ...(approvalPurpose ? { approvalPurpose } : {}),

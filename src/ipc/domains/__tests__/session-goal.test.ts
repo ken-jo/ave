@@ -1,11 +1,4 @@
-/**
- * Session-goal IPC boundary — the conversation is named, never resolved, and
- * the chip's three answers reach the store unchanged.
- *
- * Same rule as the session-tasks domain: the window can hold several
- * conversations, so an unnamed call has no answer. Pausing "the current
- * session" would stop a goal in a tile the caller never meant.
- */
+// Require a session id; a multi-conversation window has no unambiguous default.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { invokeFileIpcHandler } from "./test-helpers.js";
@@ -50,10 +43,7 @@ beforeEach(() => {
   handlers.clear();
 });
 
-// Real session ids: the handlers validate the argument against the one session-id
-// SOT (`isValidSessionId`), which takes a UUID with an optional namespace prefix.
-// A readable stand-in like "tile-2" is rejected there, so the test would prove
-// the rejection rather than the routing it is about.
+// Use valid session UUIDs so identifier validation does not preempt the boundary under test.
 const SESSION_A = "3f0c1a92-6d41-4b7e-9a05-2c8ef1b4d730";
 const SESSION_B = "b71e4d38-0c25-4af6-8e19-5d63a90c7f42";
 

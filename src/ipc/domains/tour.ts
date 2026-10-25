@@ -37,16 +37,10 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
-/**
- * What a proposal key may look like. It becomes an object key in
- * `proposals.json`, so it is bounded and restricted to the characters the two
- * halves it is built from can contain (`<pluginId>:<proposalId>`) — an
- * unbounded key would let a stray call grow the file without limit.
- */
+// Bound proposal keys before they become persisted object keys.
 const PROPOSAL_KEY_PATTERN = /^[a-zA-Z0-9._-]+:[a-zA-Z0-9._-]+$/;
 const PROPOSAL_KEY_MAX_LENGTH = 200;
 
-/** Bounded to the manifest schema's own locale-tag ceiling. */
 const LOCALE_TAG_MAX_LENGTH = 35;
 
 function readLocale(value: unknown): string {
@@ -58,29 +52,10 @@ function readLocale(value: unknown): string {
 export function registerTourHandlers(deps: IpcDeps): void {
   const { auditLogger } = deps;
 
-  /**
-   * Proposal keys answered since this process started.
-   *
-   * A "later" answer is stored so the NEXT launch asks again; this set is what
-   * stops the same launch from asking again the moment the card closes. Held in
-   * the registration closure rather than at module scope so a test gets a fresh
-   * launch by registering again.
-   */
+  // Persist later answers for the next launch; a registration-local set prevents reasking during this launch.
   const answeredThisLaunch = new Set<string>();
 
-  /**
-   * Compute what is still unanswered and stage the head of that queue as an
-   * overlay card on the renderer that asked.
-   *
-   * ONE card at a time: the user answers a question before being shown the
-   * next, and the next is chosen from state that already includes the answer
-   * just given. The card goes out on the ordinary `OVERLAY_V1.show` path, so it
-   * is queued, pinned to a tile, and navigated exactly like the plugin and
-   * routine cards beside it — nothing about a proposal needs its own surface.
-   *
-   * This is NOT `triggerConversation`: no turn runs, and the prompt an accepted
-   * composer action carries only reaches the composer.
-   */
+  // Stage one unanswered proposal at a time from state that includes prior answers.
   const stagePendingProposals = async (
     sender: WebContents,
     locale: string,
@@ -236,8 +211,6 @@ export function registerTourHandlers(deps: IpcDeps): void {
     },
   );
 
-  // mark-complete and dismiss share one guarded scenario-state write:
-  // host-renderer sender, non-empty scenarioId, then the store mutation.
   const handleScenarioMutation = (
     channel: typeof CHANNELS.tour.markComplete | typeof CHANNELS.tour.dismiss,
     mutate: (scenarioId: string) => Promise<TourState>,
@@ -310,9 +283,7 @@ export function registerTourHandlers(deps: IpcDeps): void {
           message: "scenarioId must be a non-empty string",
         };
       }
-      // Fan out through the shared app-renderer broadcast: destroyed-window
-      // and send-race handling live there; `log` receives the per-window warn
-      // so one window's failure never blocks the others.
+      // Use shared renderer fan-out so destroyed windows and send races cannot block peers.
       broadcastToAppWindows(deps, TOUR_START_CHANNEL, { scenarioId }, { logger: log });
       return { ok: true, scenarioId };
     },

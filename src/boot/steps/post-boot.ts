@@ -1,14 +1,6 @@
 import type { BootHost } from "../host-runtime.js";
 import type { TelemetryService } from "../../main/telemetry.js";
 import type { PluginTelemetryClient } from "../../telemetry/client.js";
-/**
- * Boot §4.2 Step 8 — Post-boot hooks (release prep + announcements).
- *
- * Wires anonymous telemetry, crash reporter, auto-updater, plugin lifecycle
- * telemetry, first-boot consent prompt, and the announcement poller. The
- * marketplace's update notices start with the window (design §7.3).
- * All init is best-effort (try/catch around release prep; non-fatal).
- */
 import type { BrowserWindow } from "electron";
 import type { SettingsService } from "../../data/settings-store.js";
 import type { AuditLogger } from "../../audit/audit-logger.js";
@@ -40,33 +32,13 @@ export interface ReleasePrepInput {
   networkFetch: typeof fetch;
   /** Boot-configured tracing; its batched spans are flushed on quit. */
   tracing: TracingHandle;
-  /**
-   * The service endpoint: telemetry posts to the endpoint its document names
-   * (design §11). The document is read for telemetry only once the user opted in.
-   */
+  /** Read the service document for telemetry only after opt-in. */
   serviceClient: Pick<ServiceClient, "ensureResolved" | "telemetryEndpoint">;
-  /**
-   * Whether this launch may open the connections in here that nothing forces
-   * it to open: the release check, the two telemetry uploaders, and crash
-   * reporting off the machine. A headless one-shot run passes `false` — no
-   * operator can act on an update prompt or a consent prompt, and a run asked
-   * for one turn should not report on itself. Local crash minidumps are still
-   * collected either way; only their upload is discretionary.
-   *
-   * Every one of these is ALSO settings-driven, and this never widens that:
-   * `true` leaves each of them deciding exactly as before.
-   */
+  /** Headless runs disable discretionary egress; local minidumps remain and settings still govern allowed uploads. */
   discretionaryEgress: boolean;
 }
 
-/**
- * Start crash reporter, anonymous telemetry, plugin-lifecycle telemetry, and
- * the auto-updater. All default-off or settings-driven. Non-fatal on error.
- *
- * A launch without discretionary egress keeps only the local half: crash
- * minidumps still land in the Ave-owned dump directory, and nothing else in
- * here is constructed at all.
- */
+/** Initialize release services best-effort; without discretionary egress, construct only local crash collection. */
 export function wireReleasePrep(input: ReleasePrepInput, host: BootHost): ReleasePrepOutput {
   if (host.desktop) return host.desktop.prepareRelease(input);
   return {};
@@ -75,28 +47,13 @@ export function wireReleasePrep(input: ReleasePrepInput, host: BootHost): Releas
 export interface AnnouncementCheckInput {
   getMainWindow: () => BrowserWindow | null;
   settingsService: SettingsService;
-  /** The service endpoint's active announcements (design §11). */
   listAnnouncements: () => Promise<MarketplaceAnnouncement[]>;
-  /** Poll interval; the design's 6 hours unless a test passes another. */
   intervalMs?: number;
 }
 
-/** Announcements are fetched after boot and every 6 hours (design §11). */
 const ANNOUNCEMENT_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
-/**
- * Announcement polling. Fetches the service endpoint's active announcement
- * set, drops the ids the user has already dismissed (persisted in
- * `settings.marketplace.dismissedAnnouncementIds`), and pushes the remainder
- * to the renderer via `MARKETPLACE.announcements`. Runs once after the real
- * renderer load and then every {@link ANNOUNCEMENT_INTERVAL_MS}, while the
- * update-check switch is on.
- *
- * The dedup key folds in the target webContents, full visible payload, and
- * dismissed id set so a dismiss clears the banner, server-side corrections to
- * an existing announcement id rebroadcast, and a replaced main window receives
- * the current payload at least once.
- */
+/** Poll only while updates are enabled; dedupe by target window, visible payload, and dismissed ids. */
 export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
   const { getMainWindow, settingsService, listAnnouncements } = input;
   const marketplaceSettings = settingsService.get("marketplace");
@@ -142,8 +99,7 @@ export function wireAnnouncementCheck(input: AnnouncementCheckInput): void {
         createdAt: a.createdAt,
         startsAt: a.startsAt,
         endsAt: a.endsAt,
-        // In the key so that re-pointing a live announcement's button
-        // rebroadcasts, the same way a corrected title does.
+        // Include button targets so link corrections rebroadcast even when the title is unchanged.
         actions: a.actions,
       })),
       dismissed: normalizeDismissedAnnouncementIds(dismissed),

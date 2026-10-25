@@ -32,8 +32,6 @@ export function makeConversationLoopMemoryManager(
 ): ConversationLoopDeps["memoryManager"] {
   const sessions: Record<string, GenericMessage[]> = messages === null ? {} : { [sessionId]: messages };
   return {
-    // The prompt builder reads the PromptMemorySource contract off this double,
-    // so it carries every member the contract requires.
     ...makePromptMemorySource(),
     listSessions: () => Object.keys(sessions).map((id) => ({ id, modifiedAt: new Date() })),
     getMemoryIndex: () => "",
@@ -67,7 +65,6 @@ export function makeConversationLoopLongHistory(count = 20): GenericMessage[] {
   return messages;
 }
 
-/** Supplies the boot-owned reviewer required by normal ConversationLoop fixtures. */
 export function makeConversationLoopMemoryReviewer(): NonNullable<ConversationLoopDeps["memoryReviewer"]> {
   return {
     review: async () => "reviewed recap",
@@ -96,9 +93,7 @@ export function makeConversationLoopDeps(
       listAll: () => [],
       getToolCatalogForScope: () => [],
       getToolSchemasForScope: () => [],
-      // The executable surface (`getVisibleTools`) and the MODEL-facing one
-      // (`getModelVisibleTools`, which subtracts MCP Apps app-only tools) are
-      // distinct registry listings; the turn's tool scope reads the latter.
+      // Model-visible tools exclude app-only tools even when the executable registry includes them.
       getVisibleTools: () => [],
       getModelVisibleTools: () => [],
     } as unknown as ConversationLoopDeps["toolRegistry"],
@@ -119,17 +114,7 @@ export function makeConversationTurnProvider() {
   };
 }
 
-/**
- * Plain-ASCII history whose `estimateMessagesTokens` result exceeds `threshold`.
- *
- * Shared because both the preflight-trigger suite and the trace suite need a
- * history that crosses the same threshold — two copies would drift the moment
- * the estimator's chars-per-token assumption changes, and only one of them
- * would be updated.
- *
- * ASCII on purpose: the estimator weights Korean text differently, so Latin
- * filler keeps the size predictable from the character count alone.
- */
+// ASCII filler keeps token thresholds predictable; Hangul uses a different estimator weight.
 export function makeHistoryExceedingEstimateThreshold(threshold: number): GenericMessage[] {
   const charsPerMsg = (threshold / 2 + 500) * 4;
   return [
@@ -138,15 +123,7 @@ export function makeHistoryExceedingEstimateThreshold(threshold: number): Generi
   ];
 }
 
-/**
- * A compact result that looks like a real one: the history collapses to a
- * boundary stub plus the two most recent messages, and the boundary carries a
- * summary the preamble renderer can read.
- *
- * The suites that mock `compactWithBoundary` need the shape the loop reads
- * back, not a real compaction — and both of them read back the same fields, so
- * a second copy is a second answer to "what did compaction return".
- */
+// Include the boundary summary and preserved tail consumed by the loop.
 export function makeSyntheticCompactResult(
   originalMessages: GenericMessage[],
 ): CompactWithBoundaryResult {
@@ -182,13 +159,6 @@ export function makeSyntheticCompactResult(
   };
 }
 
-/**
- * The turn a scripted provider serves when the model answers and stops: one
- * text delta, then `message_complete` with `end_turn`.
- *
- * The subagent suites each script this same clean round before asserting on
- * what the spawn persisted; the answer text is the only part that is theirs.
- */
 export function endTurnScript(text: string): StreamEvent[][] {
   return [
     [

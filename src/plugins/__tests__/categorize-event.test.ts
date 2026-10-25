@@ -27,10 +27,8 @@ describe("categorizeEvent", () => {
   it("returns 'other' for unknown / plugin-owned namespaces (host stays agnostic to plugin ids)", () => {
     expect(categorizeEvent("unknown.event")).toBe("other");
     expect(categorizeEvent("system.boot")).toBe("other");
-    // task.* retired 2026-05-11 — host owner removed in Phase 4
     expect(categorizeEvent("task.created")).toBe("other");
-    // Plugin-owned namespaces are NOT in PUBLIC_EVENT_NAMESPACES
-    // (open-source-readiness) — categorized as "other".
+    // Plugin-owned event namespaces are categorized as "other".
     expect(categorizeEvent("samplehub.work_item.due_soon")).toBe("other");
   });
 

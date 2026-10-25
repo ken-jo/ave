@@ -106,8 +106,7 @@ describe("BareRepo", () => {
   });
 
   it("reads a commit's time without the blobs rename detection would want", async () => {
-    // A commit that deletes one file and adds others: `git show` would diff it
-    // against its parent and try to fetch blobs this clone never has.
+    // git show may fetch absent parent blobs; this fixture must exercise tree export instead.
     const renamed = createFixtureRepo(root, "renamed");
     try {
       renamed.commit({ "README.md": "start\n" }, "start");
@@ -158,9 +157,7 @@ describe("BareRepo", () => {
     const bare = await BareRepo.init(t.runner, localRepoDir());
     await bare.fetchRef(remote, undefined, "pin");
     const [blob] = missingBlobs(bare.dir, second, "skills/beta/SKILL.md");
-    // The contract environment of a call that may reach this remote: the lazy
-    // fetch a partial clone would start on a missing object is not blocked by
-    // the protocol allow-list here, only by GIT_NO_LAZY_FETCH.
+    // GIT_NO_LAZY_FETCH, not the remote protocol allow-list, blocks missing-object fetches.
     const env = t.runner.environment(remote);
     const before = server.seen.length;
     // Async: the fixture server answers from this process.
@@ -292,8 +289,7 @@ describe("BareRepo", () => {
     });
   });
 
-  // GitLab answers a repository path without `.git` with a redirect to the same path with `.git`;
-  // the stored address never carries `.git`, and git follows no redirect.
+  // Try the canonical .git suffix explicitly because git redirects are disabled.
   describe("a host that redirects the address to its .git form", () => {
     let suffixed: FixtureRepo;
     let head: string;
@@ -340,7 +336,6 @@ describe("BareRepo", () => {
       expect(requestsTo("landing")).toBe(0);
     });
 
-    /** A runner that fails with `failures` in order, then succeeds, recording the address of each call. */
     function scriptedRunner(failures: MarketplaceError[]): { runner: GitCommands; addresses: string[] } {
       const addresses: string[] = [];
       return {

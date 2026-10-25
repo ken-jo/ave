@@ -3,10 +3,8 @@ import { Button } from "../../../components/ui/button.js";
 import { Textarea } from "../../../components/ui/textarea.js";
 import { useTranslation } from "../../../i18n/react.js";
 
-/**
- * Inline editor for resending a user message. Renders as a
- * compact Textarea over the original bubble with Save/Cancel controls.
- */
+/** Inline editor for resending a user message. Renders as a compact Textarea over the original bubble with Save/Cancel
+ * controls. */
 export function UserMessageEditor({
   initialText,
   onCancel,
@@ -21,10 +19,8 @@ export function UserMessageEditor({
   const { t } = useTranslation();
   const [draft, setDraft] = useState(initialText);
   return (
-    /* The bubble IS the input frame: it owns the border, the padding and the
-       focus ring. The Textarea inside stays chromeless — its default
-       `border border-input` plus its own focus ring drew a second box inside
-       this one. */
+    /** The bubble IS the input frame: it owns the border, the padding and the focus ring. The Textarea inside stays chromeless
+     * — its default `border border-input` plus its own focus ring drew a second box inside this one. */
     <div
       data-testid="user-message-editor"
       className="ml-auto w-full max-w-[75%] rounded-lg border border-message-user-border bg-message-user p-2 text-body-sm text-message-user-foreground transition-colors focus-within:border-message-user-action focus-within:ring-1 focus-within:ring-message-user-action motion-reduce:transition-none"

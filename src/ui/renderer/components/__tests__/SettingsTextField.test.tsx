@@ -1,12 +1,4 @@
-/**
- * SettingsTextField — the shared "type a value, press Save" settings row.
- *
- * The behaviours worth pinning are the ones that used to be re-derived per
- * tab: Save applies what is in the box and is reachable whenever the box
- * differs from it, the field's own normalize rule decides what "apply" means,
- * a settings broadcast that did not move the value must not wipe an
- * in-progress edit, and one that did move it must win.
- */
+/** Preserve a draft across unchanged broadcasts, but let a changed committed value replace it. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
@@ -63,9 +55,8 @@ describe("SettingsTextField", () => {
       normalize: (raw) => raw.trim() || "fallback",
     });
     const input = (await findByTestId("field")) as HTMLInputElement;
-    // Clearing means "use the default". Save stays reachable so the field can
-    // snap back to showing what the app is running on, and commits nothing
-    // because the default is already the stored value.
+    // Clearing means "use the default". Save stays reachable so the field can snap back to showing what the app is running on,
+    // and commits nothing because the default is already the stored value.
     fireEvent.change(input, { target: { value: "" } });
     expect(((await findByTestId("field-save")) as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(await findByTestId("field-save"));

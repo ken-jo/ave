@@ -19,19 +19,11 @@ import { applyInstalledContent, resetInstalledContentForTests } from "../../inst
 import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { installedTheme, installedThemeContent, NO_LANGUAGE_BRIDGE } from "../../../../../test/renderer/installed-theme.js";
 
-// The host-context WIRING test (below) needs to observe both the args
-// `createMcpAppBridge` is called with and the `bridge.setHostContext` calls that
-// follow a theme change — neither is visible from the mounted <webview> DOM node
-// the other describe blocks assert against. Mock the whole module so every test
-// in this file gets a lightweight fake bridge instead of standing up a real
-// AppBridge + WebviewIpcTransport (which the other tests never inspected anyway).
-// `vi.hoisted` is required because `vi.mock` factories run before local `const`
-// declarations are initialized.
+// Use vi.hoisted for bridge fixtures because mock factories execute before local const initialization.
 const { createMcpAppBridgeMock } = vi.hoisted(() => ({ createMcpAppBridgeMock: vi.fn() }));
 vi.mock("../mcp-app-bridge.js", () => ({
   createMcpAppBridge: createMcpAppBridgeMock,
 }));
-
 
 const renderCard = (payload: McpUiPayload) =>
   render(<McpAppView payload={payload} />, { wrapper: ThemeWrapper });
@@ -47,8 +39,8 @@ function ThemeToggleButton({ toBundleId }: { toBundleId: string }) {
 }
 
 let disconnectHandler: ((serverId: string) => void) | null = null;
-// Main now returns a BUNDLE: the sandbox-proxy URL the <webview> navigates to,
-// plus the app HTML that is handed to the proxy over the bridge (never in the URL).
+// Main now returns a BUNDLE: the sandbox-proxy URL the <webview> navigates to, plus the app HTML that is handed to the
+// proxy over the bridge (never in the URL).
 const readUiResource = vi.fn(async (serverId: string) => ({
   proxyUrl: `ave-mcp-app://${Buffer.from(serverId, "utf8").toString("hex")}/proxy.html?t=tok-${serverId}`,
   html: "<html><body>card</body></html>",
@@ -56,10 +48,8 @@ const readUiResource = vi.fn(async (serverId: string) => ({
 const disposeUiSession = vi.fn();
 /** The gated save path behind `ondownloadfile`. */
 const downloadFile = vi.fn(async () => ({ ok: true as const, disposition: "saved" as const }));
-/**
- * The gated per-card context slot behind `onupdatemodelcontext`. Declared with its real
- * arity so the assertions below can read the THREE renderer-supplied bindings positionally.
- */
+/** The gated per-card context slot behind `onupdatemodelcontext`. Declared with its real arity so the assertions below can
+ * read the THREE renderer-supplied bindings positionally. */
 const postUiModelContext = vi.fn(
   async (_serverId: string, _sessionId: string, _cardId: string, _params: unknown) => ({
     ok: true as const,
@@ -85,7 +75,6 @@ function stubAve() {
   });
   (window as unknown as { ave: unknown }).ave = (globalThis as unknown as { ave: unknown }).ave;
 }
-
 
 /** The display-mode halves (5th arg) of the deps createMcpAppBridge was seeded with. */
 function seededDisplayDeps() {
@@ -150,8 +139,7 @@ describe("McpAppView — MAJOR-1 per-server partition as a createElement PROP", 
     const { container } = renderCard(payload("github"));
     await waitFor(() => expect(webviewNode(container)).toBeTruthy());
     const node = webviewNode(container)!;
-    // The whole point of the fix: the attribute must be present on the mounted
-    // node (Electron binds partition only before src loads), NOT set post-mount.
+    // Partition must be an initial webview attribute because it binds before src loads.
     expect(node.getAttribute("partition")).toBe(mcpAppPartitionName("github"));
     // Sandbox posture also declared as creation-time props.
     expect(node.getAttribute("webpreferences")).toContain("contextIsolation=yes");
@@ -162,8 +150,8 @@ describe("McpAppView — MAJOR-1 per-server partition as a createElement PROP", 
     // the document gets a real origin + a real CSP response header.
     expect(node.getAttribute("src")?.startsWith("ave-mcp-app://")).toBe(true);
     expect(node.getAttribute("src")).not.toContain("data:text/html");
-    // No preload ATTRIBUTE: it is silently ignored under sandbox=yes and stripped
-    // by the will-attach guards. The relay preload is session-registered.
+    // No preload ATTRIBUTE: it is silently ignored under sandbox=yes and stripped by the will-attach guards. The relay preload
+    // is session-registered.
     expect(node.getAttribute("preload")).toBeNull();
   });
 
@@ -211,9 +199,8 @@ describe("McpAppView — b3 disable-in-place on disconnect", () => {
 describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
   it("seeds createMcpAppBridge with a populated, leak-free hostContext, then pushes updates via bridge.setHostContext on a theme change", async () => {
     const { container, getByTestId } = render(<McpAppView payload={payload("github")} />, {
-      // `initialBundleId={DEFAULT_BUNDLE_ID}` ("moonstone", shell "light") gives a
-      // known starting theme. The toggle button (real ThemeProvider context) later
-      // drives a switch to "midnight" (shell "dark") to exercise the update path.
+      // `initialBundleId={DEFAULT_BUNDLE_ID}` ("moonstone", shell "light") gives a known starting theme. The toggle button (real
+      // ThemeProvider context) later drives a switch to "midnight" (shell "dark") to exercise the update path.
       wrapper: ({ children }) => (
         <ThemeProvider initialBundleId={DEFAULT_BUNDLE_ID}>
           <ThemeToggleButton toBundleId="midnight" />
@@ -223,9 +210,8 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
     });
     await waitFor(() => expect(webviewNode(container)).toBeTruthy());
 
-    // (a) The INITIAL seed: createMcpAppBridge's 4th arg is a populated, standard
-    // hostContext — theme present, at least one standard `--color-*` style
-    // variable, and NEVER a proprietary `--ave-*` key (the portability guarantee).
+    // (a) The INITIAL seed: createMcpAppBridge's 4th arg is a populated, standard hostContext — theme present, at least one
+    // standard `--color-*` style variable, and NEVER a proprietary `--ave-*` key (the portability guarantee).
     expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(1);
     const seededContext = createMcpAppBridgeMock.mock.calls[0]![3] as {
       theme?: string;
@@ -241,9 +227,8 @@ describe("McpAppView — standard McpUiHostContext wiring (P0)", () => {
     };
     expect(fakeBridge.setHostContext).not.toHaveBeenCalled();
 
-    // (b) THE UPDATE PATH — the flagship guard: switching the active theme via the
-    // real ThemeProvider must reach the mounted bridge through `setHostContext`,
-    // NOT re-create the bridge (attachWebview stays keyed on [payload, bundle]).
+    // (b) THE UPDATE PATH — the flagship guard: switching the active theme via the real ThemeProvider must reach the mounted
+    // bridge through `setHostContext`, NOT re-create the bridge (attachWebview stays keyed on [payload, bundle]).
     act(() => {
       fireEvent.click(getByTestId("theme-toggle"));
     });
@@ -470,9 +455,8 @@ describe("McpAppView — display-mode applier (the EXISTING window seams, reused
     // `fullscreen` is a surface inside this renderer, served by the shared location store.
     expect(applied).toBe("fullscreen");
 
-    // Replace, don't clone. The inline instance is gone — no <webview>, and its
-    // bridge/transport were torn down. Exactly one live bridge exists for this card, and
-    // it is the one the fullscreen panel mounts.
+    // Replace, don't clone. The inline instance is gone — no <webview>, and its bridge/transport were torn down. Exactly one
+    // live bridge exists for this card, and it is the one the fullscreen panel mounts.
     await waitFor(() => expect(screen.getByTestId("mcp-app-fullscreen")).toBeInTheDocument());
     expect(webviewNode(container)).toBeNull();
     expect(transport.close).toHaveBeenCalledTimes(1);
@@ -489,9 +473,8 @@ describe("McpAppView — display-mode applier (the EXISTING window seams, reused
 
     await act(() => seededDisplayDeps().applyDisplayMode("fullscreen"));
 
-    // The old bug: this mount set `displayMode = "fullscreen"` and pushed it into its own
-    // (still live) host context, so a spec-conformant app swapped to its fullscreen layout
-    // inside a 300px transcript box. It must never publish that.
+    // The old bug: this mount set `displayMode = "fullscreen"` and pushed it into its own (still live) host context, so a
+    // spec-conformant app swapped to its fullscreen layout inside a 300px transcript box. It must never publish that.
     expect(seededDisplayDeps().getDisplayMode()).toBe("inline");
     for (const call of bridge.setHostContext.mock.calls) {
       expect((call[0] as { displayMode?: string }).displayMode).not.toBe("fullscreen");
@@ -511,8 +494,8 @@ describe("McpAppView — display-mode applier (the EXISTING window seams, reused
     );
     expect(webviewNode(home.container)).toBeNull();
 
-    // The FULLSCREEN mount (McpAppFullscreenPanel's own McpAppView instance) — SAME
-    // locationId, a SEPARATE React tree, coexisting with the now-dormant home mount.
+    // The FULLSCREEN mount (McpAppFullscreenPanel's own McpAppView instance) — SAME locationId, a SEPARATE React tree,
+    // coexisting with the now-dormant home mount.
     const full = render(
       <McpAppView payload={payload("github")} displayMode="fullscreen" locationId={locationId} />,
       { wrapper: ThemeWrapper },
@@ -527,7 +510,6 @@ describe("McpAppView — display-mode applier (the EXISTING window seams, reused
     await waitFor(() => expect(webviewNode(home.container)).toBeTruthy());
     expect(home.container.querySelector('[data-testid="mcp-app-fullscreen"]')).toBeNull();
   });
-
 
   it("an inline request that the store guard rejects does not claim a move that never happened", async () => {
     // This mount has no store entry (nothing ever moved this card here), so the guarded
@@ -596,9 +578,8 @@ describe("McpAppView — pip (the shared location store, not a second window sta
   it("pip -> inline: a SECOND mount (the pip surface) revives the home mount directly through the store — no IPC", async () => {
     const locationId = "shared-loc-pip-inline";
 
-    // The HOME mount — explicit shared `locationId` so a second, independently
-    // rendered McpAppView (below) can address the SAME store entry, exactly like
-    // McpAppPipPanel does with the home's real (randomUUID) id.
+    // The HOME mount — explicit shared `locationId` so a second, independently rendered McpAppView (below) can address the
+    // SAME store entry, exactly like McpAppPipPanel does with the home's real (randomUUID) id.
     const home = render(<McpAppView payload={payload("github")} locationId={locationId} />, {
       wrapper: ThemeWrapper,
     });
@@ -608,16 +589,14 @@ describe("McpAppView — pip (the shared location store, not a second window sta
     await waitFor(() => expect(home.container.querySelector('[data-testid="mcp-app-pip"]')).toBeTruthy());
     expect(webviewNode(home.container)).toBeNull();
 
-    // The PIP mount (McpAppPipPanel's own McpAppView instance) — SAME locationId, a
-    // SEPARATE React tree, coexisting with the (now dormant) home mount.
+    // The PIP mount (McpAppPipPanel's own McpAppView instance) — SAME locationId, a SEPARATE React tree, coexisting with the
+    // (now dormant) home mount.
     const pip = render(
       <McpAppView payload={payload("github")} displayMode="pip" locationId={locationId} />,
       { wrapper: ThemeWrapper },
     );
     await waitFor(() => expect(webviewNode(pip.container)).toBeTruthy());
-    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(2); // home's (torn down) + pip's live one
-
-    // The app inside the PIP mount requests "inline".
+    expect(createMcpAppBridgeMock).toHaveBeenCalledTimes(2); // home's (torn down) + pip's live one // The app inside the PIP mount requests "inline".
     const applied = await act(() => pipDeps().applyDisplayMode("inline"));
     expect(applied).toBe("inline");
 
@@ -642,8 +621,7 @@ describe("McpAppView — pip (the shared location store, not a second window sta
       <McpAppView payload={payload("github")} displayMode="pip" locationId={locationId} />,
       { wrapper: ThemeWrapper },
     );
-    await waitFor(() => expect(webviewNode(pip.container)).toBeTruthy()); // pip: live
-    // Exactly one <webview> across BOTH trees at this step.
+    await waitFor(() => expect(webviewNode(pip.container)).toBeTruthy()); // pip: live // Exactly one <webview> across BOTH trees at this step.
     expect([webviewNode(home.container), webviewNode(pip.container)].filter(Boolean)).toHaveLength(1);
 
     // pip -> inline
@@ -668,19 +646,14 @@ describe("McpAppView — pip (the shared location store, not a second window sta
     const applied = await act(() => seededDisplayDeps().applyDisplayMode("fullscreen"));
 
     expect(applied).toBe("fullscreen");
-    // The STORE now says this card is in the fullscreen slot — this is what
-    // `McpAppPipPanel` (the pip mount's actual PARENT in production) reacts to by
-    // unmounting its child. An away mount does NOT self-police via its own `location`
-    // read (only the home mount does — see the `mountDisplayMode === "inline"` gate on
-    // the render branch), so THIS isolated mount keeps rendering until something ELSE
-    // unmounts it; that is exactly right, and is exercised at the panel level
-    // (McpAppPipPanel.test.tsx).
+    // Away mounts are retired by their parent panels, not their own location read; isolated mounts therefore remain live until
+    // explicitly unmounted.
     const { getCardLocation, getSlotOccupant } = await import(
       "../../state/mcp-app-card-location-store.js"
     );
     expect(getCardLocation(locationId)).toEqual({ kind: "fullscreen" });
-    // BOTH ends of the move: the pip slot the card LEFT is empty, so the pip panel tears
-    // its bridge down instead of keeping a second live copy of the card.
+    // BOTH ends of the move: the pip slot the card LEFT is empty, so the pip panel tears its bridge down instead of keeping a
+    // second live copy of the card.
     expect(getSlotOccupant("pip")).toBeNull();
     expect(getSlotOccupant("fullscreen")?.cardId).toBe(locationId);
   });
@@ -695,8 +668,8 @@ describe("McpAppView — pip (the shared location store, not a second window sta
 
     const applied = await act(() => seededDisplayDeps().applyDisplayMode("pip"));
 
-    // Both away surfaces live in THIS renderer's heap, so the move is the same store
-    // write in either direction — the old cross-process decline has no reason to exist.
+    // Both away surfaces live in THIS renderer's heap, so the move is the same store write in either direction — the old
+    // cross-process decline has no reason to exist.
     expect(applied).toBe("pip");
     const { getCardLocation } = await import("../../state/mcp-app-card-location-store.js");
     expect(getCardLocation(locationId)).toEqual({ kind: "pip" });
@@ -726,13 +699,11 @@ describe("McpAppView — home-mount unmount reclaims a leaked away entry (MAJOR-
     await act(() => homeDeps().applyDisplayMode("pip"));
     await waitFor(() => expect(pip.container.querySelector("webview")).toBeTruthy());
     expect(getCardLocation(locationId)).toEqual({ kind: "pip" });
-    expect(webviewNode(home.container)).toBeNull(); // home dormant
-
-    // The user leaves the conversation → the transcript child (the HOME mount) unmounts.
+    expect(webviewNode(home.container)).toBeNull(); // home dormant // The user leaves the conversation → the transcript child (the HOME mount) unmounts.
     home.unmount();
 
-    // The leaked entry is reclaimed and the pip bridge torn down: store back to inline,
-    // nobody occupies pip, and the panel renders nothing (its away McpAppView unmounted).
+    // The leaked entry is reclaimed and the pip bridge torn down: store back to inline, nobody occupies pip, and the panel
+    // renders nothing (its away McpAppView unmounted).
     await waitFor(() => expect(getSlotOccupant("pip")).toBeNull());
     expect(getCardLocation(locationId)).toEqual({ kind: "inline" });
     expect(pip.container.querySelector('[data-testid="mcp-app-pip-panel"]')).toBeNull();
@@ -741,8 +712,8 @@ describe("McpAppView — home-mount unmount reclaims a leaked away entry (MAJOR-
   it("a card in pip within a live conversation is NOT killed by an unrelated home re-render", async () => {
     const { getCardLocation, getSlotOccupant } = await import("../../state/mcp-app-card-location-store.js");
     const locationId = "loc-rerender-safe";
-    // Stable payload identity so a re-render does NOT re-run the payload effect (which
-    // has its own fresh-card reclaim) — this isolates the unmount effect under test.
+    // Stable payload identity so a re-render does NOT re-run the payload effect (which has its own fresh-card reclaim) — this
+    // isolates the unmount effect under test.
     const p = payload("github");
 
     const home = render(<McpAppView payload={p} locationId={locationId} />, { wrapper: ThemeWrapper });
@@ -751,8 +722,8 @@ describe("McpAppView — home-mount unmount reclaims a leaked away entry (MAJOR-
     await act(() => homeDeps().applyDisplayMode("pip"));
     expect(getCardLocation(locationId)).toEqual({ kind: "pip" });
 
-    // A benign re-render of the still-MOUNTED home (e.g. a parent state change) — no
-    // unmount. The unmount cleanup must not fire, so the pip card survives.
+    // A benign re-render of the still-MOUNTED home (e.g. a parent state change) — no unmount. The unmount cleanup must not
+    // fire, so the pip card survives.
     home.rerender(<McpAppView payload={p} locationId={locationId} />);
 
     expect(getCardLocation(locationId)).toEqual({ kind: "pip" });
@@ -793,8 +764,8 @@ describe("McpAppView — model-context sink is BOUND to server + session + card"
     expect(postUiModelContext).toHaveBeenCalledTimes(1);
     const [serverId, sessionId, cardId, forwarded] = postUiModelContext.mock.calls[0]!;
     expect(serverId).toBe("github");
-    // No ChatContext in this harness → the origin session is empty, which is never the
-    // live session id, so main drops the update. Fail-safe, same as `onmessage`.
+    // No ChatContext in this harness → the origin session is empty, which is never the live session id, so main drops the
+    // update. Fail-safe, same as `onmessage`.
     expect(sessionId).toBe("");
     // A card id the RENDERER minted: stable, non-empty, and never named by the app.
     expect(cardId).toMatch(/^[0-9a-f-]{36}$/i);

@@ -1,14 +1,4 @@
-/**
- * Authorization for the recommended-work channel.
- *
- * There is no capability string: a plugin authorizes itself to propose in a
- * kind by DECLARING that kind in its manifest, exactly as it authorizes an
- * `email.*` emit by declaring an `email.*` entry in `emittedEvents`. These
- * tests pin the reading of that declaration, and in particular that it is
- * FAIL-CLOSED AND ALL-OR-NOTHING — a malformed block grants nothing rather
- * than the entries that happened to parse, because a partially-honoured
- * consent declaration would grant slots the user never read a label for.
- */
+/** Manifest declarations authorize work kinds; a malformed declaration must grant nothing, including valid sibling entries. */
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { getDeclaredWorkProposalKinds } from "../runtime/manifest-validation.js";
 import { MAX_PROPOSAL_KINDS } from "../../shared/work-board-types.js";
@@ -25,8 +15,6 @@ function kinds(workProposals: unknown): string[] {
 
 describe("workProposals — declaration is the grant", () => {
   beforeEach(() => {
-    // The rejection path warns; silence it so a fail-closed case does not read
-    // as a broken test run.
     vi.spyOn(console, "warn").mockImplementation(() => {});
   });
   afterEach(() => vi.restoreAllMocks());
@@ -52,9 +40,7 @@ describe("workProposals — declaration is the grant", () => {
   });
 
   it("grants NOTHING — not the valid half — when one entry is malformed", () => {
-    // The first entry is perfectly well formed. Honouring it would give the
-    // plugin a slot alongside one the user could not have been shown a label
-    // for, which is the partial grant this rule exists to prevent.
+    // A valid sibling must not survive a malformed consent label as a partial grant.
     for (const bad of [
       [{ id: "stale-index", label: "Stale index" }, { id: "Embed-Failed", label: "Nope" }],
       [{ id: "stale-index", label: "Stale index" }, { id: "embed-failed", label: "" }],

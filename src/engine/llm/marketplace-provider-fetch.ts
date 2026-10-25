@@ -6,10 +6,7 @@ import {
 } from "../../shared/llm-vendor-defaults.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
-/**
- * The three NetworkGuard axes a provider fetch may open, each already narrowed
- * to the configured origin (or closed outright).
- */
+// Network access axes are closed or narrowed to the configured origin.
 export type ModelProviderNetworkAccess = {
   allowPrivateNetworks: false | ((url: URL) => boolean);
   allowLoopback: false | ((url: URL) => boolean);
@@ -40,17 +37,8 @@ function originFor(value: string): string | null {
   }
 }
 
-/**
- * A configured model-provider base URL is an explicit user trust decision,
- * unlike a URL supplied by tool/model content. Keep private/loopback/tailnet
- * access constrained to that exact origin so an SDK request cannot pivot to
- * another host or follow a redirect into the local network.
- *
- * The CGNAT axis is here for the same reason the RFC1918 one is: a self-hosted
- * endpoint the user typed in reaches its host over whatever network that host
- * lives on, and an authenticated overlay (tailnet) hands its peers 100.64/10
- * addresses. Nothing but this saved-endpoint decision opens that range.
- */
+/** Saved endpoints authorize private, loopback, and overlay access only at their exact origin.
+ * SDK pivots and redirects must not extend that trust to another host. */
 export function configuredModelProviderNetworkAccess(baseUrl: string): ModelProviderNetworkAccess {
   const sameOrigin = sameOriginScopeFor(baseUrl);
   return {
@@ -148,11 +136,7 @@ function createOriginLockedProviderFetch(
   return guardedFetch;
 }
 
-/**
- * Returns true only for a fetch created for this exact origin by the trusted
- * self-hosted provider factory. A caller cannot enable credentialed HTTP with
- * an arbitrary fetch function or a standalone boolean.
- */
+/** Only trusted factory-created fetches for the exact origin authorize credentialed HTTP. */
 export function isGuardedInsecureCredentialedModelProviderFetch(
   baseUrl: string | undefined,
   fetchImpl: typeof fetch | undefined,
@@ -162,12 +146,7 @@ export function isGuardedInsecureCredentialedModelProviderFetch(
   return policy?.allowInsecureCredentialedHttp === true && policy.origin === originFor(baseUrl);
 }
 
-/**
- * Marketplace presets retain their original network policy: only explicit
- * keyless presets may reach loopback, and no preset may reach private networks
- * or tailnet peers.
- * Every request is nevertheless origin-locked before it reaches NetworkGuard.
- */
+// Presets allow only explicit keyless loopback access; all requests stay origin-locked.
 export function createGuardedMarketplaceProviderFetch(
   baseUrl: string,
   preset: MarketplaceInstalledProviderPreset,
@@ -183,43 +162,14 @@ export function createGuardedMarketplaceProviderFetch(
   );
 }
 
-/**
- * Single selection ladder for the runtime `fetch` a provider config is built
- * with. Hoisted out of `createLoopProvider` (engine/turn/provider.ts) and
- * `reviewerStreamProviderFor` (boot/steps/reviewer-permission-wiring.ts), which
- * carried byte-identical copies of this 4-way ladder.
- *
- * Precedence:
- *   1. A marketplace preset with a baseUrl → origin-locked marketplace fetch
- *      (its own keyless-loopback / no-private policy).
- *   2. A saved self-hosted trusted-network vendor (no preset, non-empty baseUrl)
- *      → origin-locked model-provider fetch (private/loopback + insecure
- *      credentialed HTTP for that exact origin).
- *   3. azure-foundry → the Electron main-process `llmFetch` (may be undefined).
- *   4. Otherwise → undefined (SDK default fetch).
- *
- * The azure branch returns `llmFetch` directly rather than
- * `llmFetch ? llmFetch : undefined`: `fetch` is always truthy, so the only
- * falsy value `llmFetch` can hold is `undefined`, which the ternary would also
- * yield — the two forms are equivalent.
- */
+/** Select origin-locked preset or saved self-hosted fetches before vendor transport defaults. */
 export function selectProviderRuntimeFetch(args: {
   vendor: LLMVendor;
   baseUrl: string | undefined;
   providerMetadata: MarketplaceInstalledProviderPreset | undefined;
-  /**
-   * The Azure Foundry private-endpoint transport. Scoped: it REFUSES every
-   * host that is not Azure Foundry (`safe-llm-fetch.ts`), so it is the
-   * transport for that one vendor and cannot stand in for the others.
-   */
+  // This private-endpoint transport refuses other vendors and cannot serve as a general fetch.
   llmFetch: typeof fetch | undefined;
-  /**
-   * The host's general outbound transport — Chromium's stack, which follows
-   * the machine's proxy configuration and reads its trust store. The guarded
-   * branches below run on it. Required: with an ambient default here, a
-   * self-hosted endpoint would silently go direct on a machine configured
-   * otherwise, which is the defect this whole seam exists to prevent.
-   */
+  // Guarded requests must use the host proxy and trust-store transport, never an ambient direct fetch.
   networkFetch: typeof fetch;
 }): typeof fetch | undefined {
   const { vendor, baseUrl, providerMetadata, llmFetch, networkFetch } = args;

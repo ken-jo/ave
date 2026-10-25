@@ -16,18 +16,12 @@ export interface ChatTranscriptProps {
   suggestedRepliesActive: boolean;
   transcriptEntries: React.ReactNode;
   chatEndRef: RefObject<HTMLDivElement | null>;
-  /** A turn is streaming into this transcript. */
   streaming?: boolean;
   /** Shown in place of the transcript on an empty conversation (suggested tasks). */
   emptyState?: React.ReactNode;
 }
 
-/**
- * Presentational chat transcript scroll region: skill badges, empty state, the
- * rendered transcript entries, and the bottom anchor.
- * Scroll behavior lives in `useChatScroll` — this component only receives the
- * viewport ref + already-rendered nodes.
- */
+/** Scroll behavior belongs to useChatScroll; this component only draws supplied nodes and viewport refs. */
 export function ChatTranscript({
   scrollViewportRef,
   readingColumnClass,
@@ -42,10 +36,7 @@ export function ChatTranscript({
   streaming = false,
 }: ChatTranscriptProps) {
   const { t } = useTranslation();
-  // Screen readers: the transcript is an ARIA log (implicitly polite-live), and
-  // `aria-busy` holds announcements while tokens stream so a reply is not read
-  // out fragment by fragment. The end of a turn is announced once, from a
-  // separate status node, on the streaming → idle edge.
+  // Hold ARIA log announcements while streaming; announce completion once from a separate status node.
   const wasStreamingRef = useRef(streaming);
   const [completionNotice, setCompletionNotice] = useState("");
   useEffect(() => {

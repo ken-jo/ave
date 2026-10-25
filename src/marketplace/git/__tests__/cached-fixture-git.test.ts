@@ -48,7 +48,6 @@ describe("cached fixture repositories", () => {
     try {
       const trace = join(root, "ownership-trace.jsonl");
       const env = { ...gitFixtureEnv(join(root, "ownership-home")), GIT_TRACE2_EVENT: trace };
-      // Check the persisted policy independently of hostGit's command flags.
       execFileSync(git.git.path, ["commit", "--quiet", "--allow-empty", "-m", "owned command"], { cwd: owned.work, env });
       const events = readFileSync(trace, "utf8").trim().split("\n").map((line) => JSON.parse(line) as { event: string; argv?: string[] });
       expect(events.filter((event) => event.event === "child_start" && event.argv?.includes("maintenance"))).toEqual([]);
@@ -72,7 +71,6 @@ describe("cached fixture repositories", () => {
     const seed = createFixtureRepo(root, "release-seed", "release");
     let copied: FixtureRepo | undefined;
     try {
-      // Check the worktree as well as the served repository's HEAD.
       writeFileSync(join(seed.work, ".git", "HEAD"), "ref: refs/heads/main\n");
       expect(() => copyFixtureRepo(root, "work-mismatch", seed, { branch: "release" })).toThrow("fixture seed must be on branch release");
       expect(existsSync(join(root, "work-mismatch"))).toBe(false);
@@ -112,9 +110,7 @@ describe("cached fixture repositories", () => {
     }
   });
 
-  // The two tree-ish forms BareRepo.export emits. For a tree-ish `git archive`
-  // stamps every entry with the current time, so a second real run is no
-  // reference: the replay must equal the bytes the one real run streamed.
+  // Archive timestamps vary per run, so compare replay with the original stream bytes.
   it.each([
     { form: "root tree", treeish: (commit: string) => `${commit}^{tree}`,
       files: { "export/README.md": "root\n", "export/plugin/tool.txt": "tool\n" } },
@@ -174,7 +170,6 @@ describe("cached fixture repositories", () => {
   });
 });
 
-/** Regular files of a tar stream, by entry name. */
 function tarFiles(tar: Buffer): Record<string, string> {
   const files: Record<string, string> = {};
   for (let offset = 0; offset + 512 <= tar.length;) {

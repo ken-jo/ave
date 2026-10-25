@@ -1,9 +1,4 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
-/**
- * The terminal IPC domain, between two app windows: a terminal's output goes
- * to the window that owns it only, and the other window cannot type into,
- * resize, close or read the blocks of it.
- */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import type { TerminalEmit } from "../../main/terminal/pty-manager.js";

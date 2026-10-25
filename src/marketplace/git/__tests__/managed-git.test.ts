@@ -22,7 +22,7 @@ const KEY = `${process.platform}-${process.arch}`;
 
 /** A stand-in for the copy: answers --version and hash-object like git would. */
 function fakeGitScript(version = VERSION, oid = SMOKE_OID): string {
-  return `#!/bin/sh\ncase "$1" in\n  --version) echo "git version ${version}" ;;\n  hash-object) cat >/dev/null; echo "${oid}" ;;\n  *) exit 1 ;;\nesac\n`;
+  return `#!/bin/sh\nwhile [ "$1" = "-c" ]; do shift 2; done\ncase "$1" in\n  --version) echo "git version ${version}" ;;\n  hash-object) cat >/dev/null; echo "${oid}" ;;\n  *) exit 1 ;;\nesac\n`;
 }
 
 async function buildArchive(dir: string, name: string, layout: (root: string) => void): Promise<Buffer> {

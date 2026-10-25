@@ -1,12 +1,4 @@
-/**
- * Boot §4.2 — triggerConversation gate subsystem.
- *
- * Extracted from `plugin-runtime.ts` (C5, behavior-preserving). Owns the pure
- * `evaluateTriggerSpec` decision function, the RateLimiter / Dedupe /
- * DenyThrottle helper classes, and their module-level singletons. The
- * singletons are defined ONCE here and imported by the host-api factory — a
- * second instance would break gating state (see the C1 trigger-gating test).
- */
+/** Share the gate’s rate, dedupe, and denial state across HostApi instances. */
 import type { AuditEntry } from "../../../audit/audit-logger.js";
 import type {
   ConversationTriggerResult,
@@ -20,13 +12,7 @@ import { stripUntrustedTags } from "../../../lib/strip-untrusted-tags.js";
 import { t } from "../../../i18n/index.js";
 import type { SuggestionLedger } from "../../../alerts/suggestion-ledger.js";
 
-/**
- * In-memory dedupe for `hostApi.triggerConversation()`. A plugin can set
- * `dedupeKey` on a trigger spec to suppress repeats from the same observation
- * (e.g., the same mail re-emitting events). Keyed per pluginId so two plugins
- * cannot collide. TTL is intentionally short — long-term suppression should
- * live in the plugin, not the host.
- */
+/** Dedupe per plugin with a short TTL; long-term suppression belongs to the plugin. */
 export const TRIGGER_CONVERSATION_DEDUPE_TTL_MS = 5 * 60 * 1000;
 
 export class TriggerConversationDedupe {
@@ -45,15 +31,11 @@ export class TriggerConversationDedupe {
     return true;
   }
   record(pluginId: string, dedupeKey: string): void {
-    // True LRU: delete-then-set refreshes Map insertion order so a frequently
-    // re-recorded key won't be evicted as "oldest" when capping. Map#set on
-    // an existing key would otherwise leave the original insertion position.
+    // Delete before set to refresh insertion order; Map.set alone does not implement LRU.
     const key = this.key(pluginId, dedupeKey);
     if (this.seen.has(key)) this.seen.delete(key);
     this.seen.set(key, Date.now());
     if (this.seen.size > 256) {
-      // Cap unbounded growth; drop the oldest recorded key. Cheap for the
-      // small N expected.
       const oldestKey = this.seen.keys().next().value;
       if (oldestKey !== undefined) this.seen.delete(oldestKey);
     }
@@ -72,64 +54,27 @@ const ALLOWED_PRIORITIES: ReadonlySet<"low" | "normal" | "high"> = new Set([
 ] as const);
 /** Bound dedupeKey length so a malicious / buggy plugin cannot bloat audit logs. */
 const MAX_DEDUPE_KEY_LEN = 128;
-/**
- * Bound prompt length. The host trusts the plugin's templated-only contract
- * (a comment in `types.ts`) but offers no enforcement; capping prevents an
- * accidental whole-mail dump from blowing past the LLM context. 4 KB is
- * generous for templated suggestions and tight enough to reject a body.
- */
+/** Cap templated prompts to prevent whole-document dumps from exhausting context. */
 const MAX_PROMPT_LEN = 4096;
-// `isPluginOverlaySource` is the strict rule for the `source` field of every
-// overlay trigger spec: bounded length, the SAME pattern used by the trigger
-// executor envelope, the IPC bridge's originSource detection and the
-// permission manager's overlay-trigger origin override, and no `--` — the
-// spelling only the alert pipeline mints. See
-// `shared/overlay-trigger-source.ts` for the single definition. Without this
-// gate, malformed sources (`overlay:`, `overlay:_x`, `overlay:Bad/Path`) could
-// flow into audit logs and system prompts where loose substrings would be
-// confusing.
+// Use the shared bounded source grammar; double-dash sources are reserved for host alerts.
 
-/**
- * Per-plugin rate limit for `triggerConversation()`. A plugin that omits
- * `dedupeKey` (or rotates it per call) is otherwise unbounded and could
- * stage N concurrent overlay prompts. Token bucket capped at 6 calls / 60
- * seconds per plugin (sustained), with
- * burst of 3 — picked so the sample scenarios (one-meeting-mail, one-task-
- * deadline) do not throttle but a tight loop adversary is stopped early.
- */
+/** Rate-limit per plugin so rotated or omitted dedupe keys cannot bypass the cap. */
 export const TRIGGER_CONVERSATION_RATE_LIMIT_WINDOW_MS = 60_000;
 export const TRIGGER_CONVERSATION_RATE_LIMIT_MAX_CALLS = 6;
 
-/**
- * Plugin overlay prompts have plugin provenance even after the user clicks the
- * overlay action. They must never dispatch host slash commands such as
- * `/load`, `/compact`, or `/permission`; those are user-keyboard only.
- */
+/** Plugin provenance survives user confirmation; overlay prompts must never dispatch privileged slash commands. */
 export function sanitizePluginPendingPrompt(prompt: string): string {
   return stripLeadingSlash(prompt);
 }
 
-/**
- * Wrap a plugin-authored prompt in its provenance fence.
- *
- * Construction and body sanitization — leading slash stripped, the body's own
- * closing tag neutralized so a prompt carrying a literal
- * `</imported-from-proactive>` cannot author text that reads, to the model, as
- * sitting outside its provenance fence — belong to `shared/staged-origins.ts`,
- * which every staged kind shares. A rule added there covers overlay prompts too,
- * instead of needing this copy to be found and edited as well.
- */
+/** Use shared staged-origin sanitization so plugin text cannot close its provenance fence. */
 export function formatPluginPendingPrompt(prompt: string, source: string): string {
   return formatStagedEnvelope(stagedOriginFor("plugin-emitted"), prompt, source);
 }
 
 export const OVERLAY_SUMMARY_DISPLAY_CAP = 2_000;
 
-/**
- * Build the user-visible overlay preview. The full prompt still flows through
- * `pendingPrompt`; this display string is bounded and stripped of
- * plugin-authored `<untrusted-*>` wrappers before reaching renderer chrome.
- */
+/** Bound and strip provenance wrappers from previews; retain the full prompt separately. */
 export function deriveOverlaySummaryForDisplay(
   spec: Pick<ConversationTriggerSpec, "prompt" | "summary">,
 ): string {
@@ -156,11 +101,7 @@ export class TriggerConversationRateLimiter {
     this.maxCalls = maxCalls;
   }
 
-  /**
-   * True when adding one more call would exceed the cap. Compacts the
-   * underlying map entry as a side-effect — without this the entry would
-   * grow unboundedly during sustained denial loops.
-   */
+  /** Compact timestamps during cap checks so repeated denials cannot grow the map unboundedly. */
   isOverCap(pluginId: string, now: number = Date.now()): boolean {
     const calls = this.recent.get(pluginId) ?? [];
     const cutoff = now - this.windowMs;
@@ -180,46 +121,14 @@ export class TriggerConversationRateLimiter {
 
 export const triggerConversationRateLimiter = new TriggerConversationRateLimiter();
 
-/**
- * Separate bucket for round-trips the USER initiated against one MCP server: running
- * a server-declared prompt from the picker, and attaching a declared resource.
- *
- * Sharing the actor bucket above let a chatty plugin or app card spend the budget and
- * block the user's own clicks on that server — one throttle, two unrelated budgets.
- * Same shape, its own counters.
- *
- * The two user surfaces share this budget on purpose: what it protects is the server
- * (and the host's own event loop) from a renderer looping on the user's behalf, and
- * that concern does not care which of the two calls is looping.
- *
- * The number had to move once attaching stopped being one click per call: at a flat
- * 20, three full-attachment turns in a minute hit `rate-limited` mid-turn — a person
- * working normally, told they are going too fast. 48 is roughly six such turns at
- * today's per-turn bound, with room for prompt runs alongside them, and still a hard
- * stop for a loop (the adversary here is a renderer bug, which exhausts it in well
- * under a second).
- *
- * NOT derived from `MCP_RESOURCE_ATTACHMENTS_PER_TURN`, though it was briefly: this is
- * a ceiling on requests to somebody else's server, and that one is a budget for our own
- * context window. Deriving it meant raising the window budget silently raised how hard
- * a server can be hit — a change to one quietly re-deciding the other. The relationship
- * is CHECKED instead (see the trigger-gate test), so moving either one forces a look at
- * both rather than one following the other.
-*/
+/** User-initiated server reads share a separate budget; keep it independent of context attachment limits. */
 export const USER_PROMPT_RATE_LIMIT_MAX_CALLS = 48;
 export const userPromptRateLimiter = new TriggerConversationRateLimiter(
   TRIGGER_CONVERSATION_RATE_LIMIT_WINDOW_MS,
   USER_PROMPT_RATE_LIMIT_MAX_CALLS,
 );
 
-/**
- * Suppress a flood of identical denial audit rows. Without this, a plugin in
- * a tight loop with always-bad input (e.g. invalid source) hits the gate
- * before the rate limiter `record` runs (denials don't consume cap), so it
- * could write thousands of audit rows / second. We log the first denial of
- * a (pluginId, reason) pair, then suppress identical follow-ups for 60s and
- * emit one consolidated "...denials suppressed" line at expiry.
- */
+/** Throttle denial audits separately because rejected input never consumes the acceptance rate limit. */
 const TRIGGER_DENY_AUDIT_WINDOW_MS = 60_000;
 
 export class TriggerDenyAuditThrottle {
@@ -230,13 +139,7 @@ export class TriggerDenyAuditThrottle {
     this.windowMs = windowMs;
   }
 
-  /**
-   * Returns whether the caller should write the audit row right now.
-   * - First seen → returns true, marks suppression window open.
-   * - Within open window → returns false, increments suppressed count.
-   * - Window expired → returns true (with a "suppressed N" hint via
-   *   {@link drainSuppressed}).
-   */
+  /** Emit the first denial, suppress repeats during the window, then report the suppressed count. */
   shouldEmit(pluginId: string, reason: string, now: number = Date.now()): boolean {
     const key = `${pluginId}::${reason}`;
     const entry = this.state.get(key);
@@ -245,8 +148,6 @@ export class TriggerDenyAuditThrottle {
       return true;
     }
     if (now - entry.suppressedSince >= this.windowMs) {
-      // Window expired — emit again, and the caller can summarize the
-      // suppressed period via drainSuppressed().
       this.state.set(key, { suppressedSince: now, count: 0 });
       return true;
     }
@@ -254,11 +155,7 @@ export class TriggerDenyAuditThrottle {
     return false;
   }
 
-  /**
-   * Returns the count of suppressed events since the last emit for this key
-   * and resets the counter (caller appends `... +N suppressed` to the audit
-   * row). Returns 0 if the most recent decision was an emit.
-   */
+  /** Drain and reset suppressed counts for the next emitted audit row. */
   drainSuppressed(pluginId: string, reason: string): number {
     const entry = this.state.get(`${pluginId}::${reason}`);
     if (!entry) return 0;
@@ -270,21 +167,7 @@ export class TriggerDenyAuditThrottle {
 
 export const triggerDenyAuditThrottle = new TriggerDenyAuditThrottle();
 
-/**
- * Pure decision function for the `triggerConversation` gate. Extracted from
- * createHostApi so production code and tests share one implementation —
- * any future drift would have to be intentional.
- *
- * Returns either:
- *   { kind: "deny", result }      — fully-formed ConversationTriggerResult
- *                                   the host should return; audit row has
- *                                   already been written.
- *   { kind: "allow", result, ... } — caller should stage an overlay item
- *                                   with the normalized fields.
- *
- * The function ALSO writes the success / deny audit rows so the caller
- * stays simple (no double-bookkeeping).
- */
+/** Returns a normalized allow or denial and writes its audit row; callers must not duplicate bookkeeping. */
 export interface EvaluateTriggerSpecInput {
   /** Host delivery precondition, checked after input validation and before state changes. */
   assertDeliveryAvailable?: () => void;
@@ -295,13 +178,8 @@ export interface EvaluateTriggerSpecInput {
   capabilities: readonly string[];
   dedupe: TriggerConversationDedupe;
   rateLimiter: TriggerConversationRateLimiter;
-  /** Burst-suppress identical denial audit rows. */
   denyAuditThrottle?: TriggerDenyAuditThrottle;
-  /**
-   * Present when the plugin's manifest declares an `alerts` block: only the
-   * `declared` sources are accepted, each at most once per window. The
-   * ledger must be loaded before the call.
-   */
+  /** Alert-contract plugins accept only declared sources; load the acceptance ledger before evaluating. */
   suggestions?: {
     declared: readonly string[];
     ledger: Pick<SuggestionLedger, "isLimited" | "record">;
@@ -334,18 +212,14 @@ export function evaluateTriggerSpec(
   const denyAuditThrottle = input.denyAuditThrottle;
   const now = input.now ?? Date.now;
 
-  // NEVER slice-before-validate: slicing a too-long source could turn
-  // obviously-bad input into a passing prefix. Reject outright (below)
-  // so the regex sees the original.
+  // Validate the original source; truncating first could turn invalid input into a valid prefix.
   const source = typeof spec?.source === "string" ? spec.source : "";
   const { visibility, priority, dedupeKey } = normalizeTriggerSpecFields(
     spec ?? ({} as ConversationTriggerSpec),
   );
 
   const auditDeny = (reasonInput: string) => {
-    // Reason key is the first `reason=<value>` token, used to throttle
-    // identical denials per-(pluginId, reason). Different reasons (e.g.
-    // capability_denied vs invalid_source) get independent windows.
+    // Throttle denials independently by plugin and the first reason token.
     const reasonKey = (/reason=([a-z_]+)/.exec(reasonInput)?.[1]) ?? "unknown";
     if (denyAuditThrottle && !denyAuditThrottle.shouldEmit(pluginId, reasonKey, now())) {
       return;
@@ -370,14 +244,11 @@ export function evaluateTriggerSpec(
       result: { accepted: false, reason: "capability_denied", source: "" },
     };
   }
-  // A too-long source is rejected outright; the regex sees the original
-  // string (no slice-before-validate). Same for prompt length.
   if (!isPluginOverlaySource(source)) {
     auditDeny(`reason=invalid_source source=${source.slice(0, 32) || "<empty>"}`);
     return {
       kind: "deny",
-      // Echo only the first 32 chars so a malicious 10MB source cannot
-      // pin into the caller-visible result either.
+      // Bound source echoes so oversized input cannot inflate caller-visible errors.
       result: { accepted: false, reason: "invalid_source", source: source.slice(0, 32) },
     };
   }
@@ -428,17 +299,12 @@ export function evaluateTriggerSpec(
 
   input.stageDelivery?.(source);
 
-  // Allow path — record both bookkeeping operations BEFORE returning so the
-  // caller never gets an "accepted=true" without the dedupe + rate window
-  // having advanced.
+  // Advance dedupe and rate state before returning acceptance.
   if (dedupeKey) dedupe.record(pluginId, dedupeKey);
   rateLimiter.record(pluginId, now());
   suggestions?.ledger.record(pluginId, source, now());
 
-  // Compose the success audit row with sanitized contextKeys — key names
-  // can carry PII so we accept only keys matching a strict identifier shape
-  // and report a count for the rest. Single audit row per accepted trigger;
-  // the loop-side trigger row would be redundant.
+  // Context-key names can carry PII; audit only strict identifiers and count the rest.
   let contextSuffix = "";
   if (spec?.context) {
     const KEY_SHAPE = /^[a-zA-Z_][a-zA-Z0-9_]{0,32}$/;
@@ -472,11 +338,7 @@ export function evaluateTriggerSpec(
   };
 }
 
-/**
- * Normalize plugin-supplied trigger fields to known/safe values BEFORE they
- * flow into audit logs or downstream pipelines. Unknown enum values fall
- * back to defaults. Non-string dedupeKey is dropped.
- */
+/** Normalize untrusted fields before audit: default unknown enums and drop non-string dedupe keys. */
 export function normalizeTriggerSpecFields(spec: ConversationTriggerSpec): {
   visibility: "silent" | "summary-only" | "user-visible";
   priority: "low" | "normal" | "high";

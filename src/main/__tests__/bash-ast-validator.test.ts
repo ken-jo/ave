@@ -1,21 +1,11 @@
-/**
- * BashAstValidator 단위 테스트
- *
- * 13 차단 패턴 + 정상 명령어 + 모드 분기 + non-bash 도구 + 빈 input 검증
- */
-
 import { strict as assert } from "node:assert";
 import { execFileSync } from "node:child_process";
 import { describe, it } from "vitest";
 import { BashAstValidator } from "../bash-ast-validator.js";
 
-// ─── Helper ─────────────────────────────────────────
-
 function makeInput(command: string): Record<string, unknown> {
   return { command };
 }
-
-// ─── 기본 deny 모드 ──────────────────────────────────
 
 describe("BashAstValidator — deny 모드 (기본)", () => {
   const validator = new BashAstValidator();
@@ -197,8 +187,6 @@ describe("BashAstValidator — deny 모드 (기본)", () => {
   });
 });
 
-// ─── 정상 명령어 allow ───────────────────────────────
-
 describe("BashAstValidator — 정상 명령어 allow", () => {
   const validator = new BashAstValidator();
 
@@ -313,8 +301,6 @@ describe("BashAstValidator — uv run fixed child programs", () => {
   });
 });
 
-// ─── warn 모드 분기 ──────────────────────────────────
-
 describe("BashAstValidator — warn 모드", () => {
   const validator = new BashAstValidator({ mode: "warn" });
 
@@ -336,8 +322,6 @@ describe("BashAstValidator — warn 모드", () => {
   });
 });
 
-// ─── non-bash 도구 → 즉시 allow ─────────────────────
-
 describe("BashAstValidator — non-bash 도구", () => {
   const validator = new BashAstValidator();
 
@@ -356,8 +340,6 @@ describe("BashAstValidator — non-bash 도구", () => {
     assert.equal(r.decision, "allow");
   });
 });
-
-// ─── 빈 input / command 없음 → allow ────────────────
 
 describe("BashAstValidator — 빈 input", () => {
   const validator = new BashAstValidator();
@@ -384,8 +366,6 @@ describe("BashAstValidator — 빈 input", () => {
     assert.equal(r.patternId, "sudo-escalation");
   });
 });
-
-// ─── 도구 이름 매칭 ──────────────────────────────────
 
 describe("BashAstValidator — bash 도구 이름 매칭", () => {
   const validator = new BashAstValidator();

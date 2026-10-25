@@ -12,15 +12,7 @@ import {
 } from "../onboarding-proposal-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/**
- * `~/.ave/onboarding/proposals.json` — the answers, and the selection that
- * reads them.
- *
- * The behaviours worth pinning are the three answers pulling in different
- * directions: `accepted` and `never` end the proposal, `later` ends it only
- * for the launch it was given in, and the launch boundary is a set the caller
- * owns rather than a timestamp comparison.
- */
+// Accepted and never persist across launches; later suppresses only the launch recorded by the caller.
 describe("onboarding-proposal-store", () => {
   let prevAveHome: string | undefined;
   let tempDir: string;
@@ -224,8 +216,7 @@ describe("onboarding-proposal-store", () => {
       );
       expect(sameLaunch.map((p) => p.key)).not.toContain("meeting:first-task");
 
-      // A new launch starts with an empty set, and the stored `later` is not
-      // terminal, so the question comes back.
+      // A new launch starts with an empty set, and the stored `later` is not terminal, so the question comes back.
       const nextLaunch = pendingOnboardingProposals([meeting], state, new Set(), "en");
       expect(nextLaunch[0].key).toBe("meeting:first-task");
     });

@@ -39,7 +39,7 @@ describe("administrative policy absence", () => {
     expect(await isAdminPolicyFileAbsent(policyPath, readFailure("ENOENT"), inspectEntry)).toBe(false);
   });
 
-  // Windows reports a path through a regular file as ENOENT, not ENOTDIR.
+  // Windows reports paths through regular files as ENOENT rather than ENOTDIR.
   it.each([
     ["the parent", [policyPath]],
     ["a grandparent", [join(dirname(policyPath), "nested", "policy.json"), join(dirname(policyPath), "nested")]],

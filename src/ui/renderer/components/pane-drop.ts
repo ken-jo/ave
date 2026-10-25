@@ -1,13 +1,4 @@
-/**
- * Dropping a conversation onto a tile.
- *
- * The gesture says two things at once — WHICH conversation, and WHERE it goes —
- * and the second one is the edge it lands on. An outer band on any of a tile's
- * four sides splits that tile on the matching axis; the middle replaces what the
- * tile is holding. That is the same gesture editor groups use elsewhere, so it
- * needs no teaching, and it is the only model where the shape the user wants is
- * expressed by where they let go rather than by a separate control.
- */
+/** Edge drops split on the matching axis; center drops replace the tile's conversation. */
 import type { DropEdge } from "./pane-tree.js";
 
 /** The drag payload's MIME type. Own type so a file drag never looks like one. */
@@ -44,8 +35,7 @@ export function dropTargetAt(
     { edge: "top", depth: fromTop <= bandY ? fromTop : Infinity },
     { edge: "bottom", depth: fromBottom <= bandY ? fromBottom : Infinity },
   ];
-  // The nearest edge wins, so a corner resolves to one side rather than
-  // flickering between two as the pointer moves a pixel.
+  // The nearest edge wins, so a corner resolves to one side rather than flickering between two as the pointer moves a pixel.
   const nearest = candidates.reduce((best, each) => (each.depth < best.depth ? each : best));
   return nearest.depth === Infinity ? "center" : nearest.edge;
 }

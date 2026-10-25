@@ -1,24 +1,5 @@
 import { createBootHostFixture, stationaryLeaseState } from "../../../../__tests__/support/host-runtime.js";
-/**
- * What happens to a `config.onChange` listener that THROWS, on the real host.
- *
- * The member wraps the plugin's callback in the generation scope, and the
- * wrapper is asynchronous — so the failure does not travel back into
- * `emitPluginConfigChange`'s per-listener try/catch the way a synchronous
- * listener's does. Before `wrapListener` existed the wrapped promise was
- * discarded with `void`, which left the rejection with nothing attached: this
- * process installs no `unhandledRejection` handler, so on Node's defaults one
- * plugin listener ended the Electron main process.
- *
- * The out-of-process boundary reaches this on purpose — `encodeConfigChange`
- * REFUSES a value JSON cannot carry rather than delivering a payload the plugin
- * would read as "the key was cleared" — which is what makes the containment
- * load-bearing rather than hypothetical.
- *
- * Driven through `createHostApiFactory` itself rather than a reconstruction of
- * it: the defect was in how that file used the wrapper, so a harness that wired
- * the wrapper its own way would have proven nothing about the shipped call.
- */
+/** Async config-listener failures must be handled at the producer boundary to avoid process-wide unhandled rejections. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,14 +26,7 @@ const MANIFEST = {
   tools: [],
 } as unknown as PluginManifest;
 
-/**
- * Only the deps `config.onChange` and the factory's own construction reach.
- *
- * Every other member of `CreateHostApiFactoryDeps` is a closure capture that
- * this case never calls, and filling them with working fakes would hide which
- * ones the path actually touches — the same argument the isolation suites make
- * for their partial hostApi casts.
- */
+/** Provide only dependencies this path touches so the fixture exposes its actual boundary. */
 function hostApiUnderTest(pluginDataDir: string): {
   api: ReturnType<ReturnType<typeof createHostApiFactory>>;
   scope: HostApiGenerationScope;
@@ -91,7 +65,6 @@ function hostApiUnderTest(pluginDataDir: string): {
     shellOpenExternal: async () => undefined,
     approvalGate: {},
     routinesStore: {},
-    // Read at construction: every start registers the plugin's alert kinds.
     getAlertsService: () => undefined,
   } as never);
   const api = factory(PLUGIN_ID, MANIFEST, pluginDataDir, incarnation, null, undefined, null);
@@ -122,15 +95,11 @@ describe("a config.onChange listener that throws, on the real host member", () =
     process.on("unhandledRejection", onUnhandled);
     try {
       api.config.onChange("apiKey", () => {
-        // What `encodeConfigChange` does for a value JSON cannot carry. The
-        // out-of-process host handler registers exactly this shape of callback.
+        // Use the out-of-process callback shape, which rejects values JSON cannot carry.
         throw new Error("value cannot cross the boundary");
       });
       emitPluginConfigChange(PLUGIN_ID, "apiKey", new Date());
-      // Node reports an unhandled rejection on the macrotask AFTER the
-      // microtask queue drains, so a turn of the timer queue is what makes
-      // "nobody attached a handler" observable at all. Awaiting only
-      // microtasks here would pass with the defect present.
+      // Await a macrotask; unhandled rejections are reported after microtasks drain.
       await new Promise((settle) => setTimeout(settle, 20));
       expect(unhandled).toEqual([]);
       expect(

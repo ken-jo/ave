@@ -36,11 +36,7 @@ function preparationError(pluginId: string, path: string): Error {
   );
 }
 
-/**
- * Exact owner for HostApi effects created by one immutable plugin generation.
- * The scope is explicit (not ALS-only), so callbacks scheduled by start() keep
- * the correct generation even after the factory call has returned.
- */
+/** Explicit generation ownership survives callbacks scheduled after factory return. */
 export class HostApiGenerationScope {
   readonly token = Object.freeze({});
   private state: ScopeState = "preparing";
@@ -71,7 +67,6 @@ export class HostApiGenerationScope {
     this.preparePublish()();
   }
 
-  /** Validate before commit and return an assignment-safe publication closure. */
   preparePublish(): () => void {
     if (!this.binding)
       throw new Error(
@@ -181,28 +176,7 @@ export class HostApiGenerationScope {
     };
   }
 
-  /**
-   * Wrap a callback whose result NOBODY awaits, and contain what it throws.
-   *
-   * {@link wrapCallback} returns a promise; a bus listener has no caller to
-   * hand one to. Discarding it with `void` does not discard the FAILURE —
-   * `runWithLease` propagates what the callback threw, so the discarded
-   * promise rejects with nothing attached. Node's default since v15 turns an
-   * unhandled rejection into an uncaught exception, and the Electron main
-   * process registers a handler for NEITHER — the only `uncaughtException`
-   * handler in this repo is in `scripts/run-electron-dev.mjs`, which is the
-   * launcher process and not this one. So one plugin's listener was enough to
-   * end the host. The event buses whose listeners get wrapped already contain
-   * their SYNCHRONOUS ones with a per-listener try/catch and a log line
-   * (`plugins/config-change-bus.ts`, `boot/types.ts`); this is that same
-   * containment for the wrapped ones, so both halves of one bus fail alike.
-   *
-   * DELIBERATELY NOT FOLDED INTO {@link wrapCallback}. `onShutdown` hands its
-   * wrapped callback to a runner that AWAITS it and needs the rejection —
-   * swallowing it there would report a plugin's failed shutdown as a clean
-   * one. The difference is whether a caller is waiting, and that is known at
-   * the wrap site, not inside the wrapper.
-   */
+  /** Contain failures from callbacks nobody awaits; choose this wrapper at the event-registration site. */
   wrapListener<TArgs extends readonly unknown[]>(
     callback: (...args: TArgs) => unknown,
   ): (...args: TArgs) => void {
@@ -261,11 +235,7 @@ export class HostApiGenerationScope {
     this.disposeAll();
   }
 
-  /**
-   * Retire the scope, running each registered disposer once. A disposer that
-   * throws stays registered, so a retried retirement runs only the ones that
-   * failed.
-   */
+  /** Retry only failed disposers; successful retirement effects must run once. */
   retire(): readonly Error[] {
     if (this.state !== "retired") {
       this.state = "retired";
@@ -318,13 +288,7 @@ export class HostApiGenerationScope {
     }
 
     const effect = pathEffectClass(path);
-    // A path with no entry in the effect SOT is refused, which is what now
-    // covers `callTool`: it was removed from that map when the hostApi surface
-    // was frozen, because the surviving `callTool` is the plugin UI webview
-    // bridge rather than a hostApi member. Naming it here as well restated a
-    // rule the last clause already enforces, and a redundant special case
-    // reads as a rule of its own — someone removing the map entry later would
-    // reasonably assume this line was still doing the work.
+    // Refuse every path absent from the effect table; UI callTool is not a HostApi member.
     if (effect === "write" || effect === "verb-derived" || !HOSTAPI_EFFECT_BY_PATH[path]) {
       throw preparationError(this.pluginId, path);
     }

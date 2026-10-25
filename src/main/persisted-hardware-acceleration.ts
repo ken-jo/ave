@@ -1,30 +1,8 @@
-/**
- * Synchronous boot-time reader + resolver for the hardware-acceleration
- * preference.
- *
- * `app.disableHardwareAcceleration()` only has an effect before
- * `app.whenReady()`, which is long before the async bootstrap constructs
- * `SettingsService`. So, exactly like {@link readPersistedAppModeSync}, the
- * persisted value has to be read straight off the settings file — the same file
- * `SettingsService` writes, via `settingsFilePath`, so a choice made in Settings
- * is the one honored on the next launch.
- *
- * "Next launch" is the whole point and the reason the UI says so: nothing here
- * can be applied to the running process. A toggle that silently did nothing
- * until a restart would be worse than no toggle.
- */
+// Read the saved GPU preference before app.whenReady(), when acceleration can still be changed.
 import { readPersistedSystemBooleanSync } from "./persisted-settings-sync.js";
 import { resolveEnvBackedBoolean } from "../shared/env-backed-settings.js";
 
-/**
- * Read `system.hardwareAcceleration` from the persisted settings file.
- *
- * Returns `undefined` when the file is absent, unreadable, or the field is
- * missing or not a boolean — all of which mean "the user has not chosen", not
- * "the user chose off". {@link resolveHardwareAcceleration} turns that absence
- * into the platform default; conflating the two here would silently flip the
- * GPU on for every first-run Windows user.
- */
+// Undefined means no user choice; keep it distinct from false so the Windows platform default is preserved.
 export function readPersistedHardwareAccelerationSync(
   userDataPath: string,
 ): boolean | undefined {
@@ -32,32 +10,16 @@ export function readPersistedHardwareAccelerationSync(
 }
 
 export interface HardwareAccelerationInputs {
-  /** Persisted `system.hardwareAcceleration`, or undefined when unset. */
+  // Persisted `system.hardwareAcceleration`, or undefined when unset.
   readonly setting: boolean | undefined;
-  /**
-   * The process environment. Which variable can force this on, and at which
-   * value, is ENV_BACKED_SETTINGS' business — the same registry the Settings
-   * UI reads to tell the user the environment is deciding.
-   */
+  // The process environment. Which variable can force this on, and at which value, is ENV_BACKED_SETTINGS' business — the same registry the Settings UI
+  // reads to tell the user the environment is deciding.
   readonly env: NodeJS.ProcessEnv;
   readonly platform: NodeJS.Platform;
 }
 
-/**
- * Decide whether this launch enables hardware acceleration. A disabled
- * preference still permits a separate software display-compositor process.
- *
- * Precedence, highest first:
- *   1. `AVE_KEEP_GPU=1` — the pre-existing escape hatch, kept because it is
- *      the only lever available to a dev/CI launcher that cannot write the
- *      profile (`scripts/run-electron.mjs` mirrors the same guard).
- *   2. The persisted setting — what the person using the packaged app chose.
- *   3. The platform default: OFF on Windows/Linux; ON on macOS.
- *
- * The env sits ABOVE the setting rather than below it on purpose: it is the
- * lever for the case where the app will not render at all, and a lever that a
- * bad persisted value could veto would be no lever.
- */
+// Environment GPU recovery override wins over saved preference, then platform default.
+// It must remain usable when a bad preference prevents rendering; disabled acceleration still permits a software compositor child.
 export function resolveHardwareAcceleration(inputs: HardwareAccelerationInputs): boolean {
   return resolveEnvBackedBoolean(
     "system.hardwareAcceleration",

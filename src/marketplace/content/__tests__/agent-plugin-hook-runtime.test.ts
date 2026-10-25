@@ -64,7 +64,6 @@ describe("installed hook activation", () => {
     const running = await acquire("agent-plugin/review-plugin", firstActivation);
     expect(runtime.hasCallsInFlight("review-plugin")).toBe(true);
 
-    // Same hook bytes in a new version: still approved, and published without asking.
     const { retired } = await runtime.activate(item("1.0.1", "d".repeat(64), "b".repeat(64), hookFile(HOOK_SOURCE)));
     expect(manager.size()).toBe(1);
     expect(manager.hooksOfType("pre")[0]!.owner).toMatchObject({ pluginVersion: "1.0.1", generationId: "d".repeat(64) });
@@ -77,7 +76,6 @@ describe("installed hook activation", () => {
     running.release();
     await retired;
 
-    // The hook program changed: the approval does not carry, and nothing runs until it is reviewed.
     await runtime.activate(item("1.0.2", "e".repeat(64), "b".repeat(64), hookFile("process.exit(1)")));
     expect(manager.size()).toBe(0);
     await runtime.deactivate("review-plugin");

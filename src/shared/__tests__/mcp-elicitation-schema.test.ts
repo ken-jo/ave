@@ -1,8 +1,4 @@
-/**
- * The single authority for elicitation-schema support. Both the approval dock
- * and the main-process resolver consume this parser; anything it accepts must be
- * renderable, and anything it rejects must be refused end to end.
- */
+/** Accepted elicitation schemas must be renderable and rejected ones refused end to end. */
 import { describe, expect, it } from "vitest";
 import { parseElicitationSchema } from "../mcp-elicitation-schema.js";
 

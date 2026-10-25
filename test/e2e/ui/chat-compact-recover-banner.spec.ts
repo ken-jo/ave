@@ -2,23 +2,7 @@ import { test, expect } from './fixtures';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 import { sendRendererStreamEvent as sendStreamEvent } from './seeded-electron.js';
 
-/**
- * #916 force-recover OFF-override banner + #917 recovery_exhausted banner.
- *
- * Uses app.evaluate to inject `ave:chat:stream` events directly into the
- * renderer — the same channel the IPC layer uses — so the React state machine
- * is exercised without needing a real LLM connection.
- *
- * Coverage:
- *   B1 (#916): compact_started with triggerSource=force-recover shows a
- *      distinct "자동 압축을 끄셨지만" warning in the StatusBar.
- *   B2 (#916): compact_started with triggerSource=estimate shows the standard
- *      "자동 압축 중..." info label (no OFF-override text).
- *   B3 (#917): recovery_exhausted event shows a persistent "압축으로 복구 불가"
- *      error item in the StatusBar.
- *   B4 (#917): after recovery_exhausted, compact_started (normal) does NOT
- *      replace the error banner (StatusBar still shows error text).
- */
+// Inject stream events to exercise recovery banners without a live model connection.
 
 test.describe('compact recovery banners (#916 + #917)', () => {
   test('B1 (#916): force-recover compact_started shows OFF-override warning in StatusBar', async ({
@@ -42,7 +26,6 @@ test.describe('compact recovery banners (#916 + #917)', () => {
     const statusBar = mainWindow.locator('[data-testid="status-bar"]');
     await statusBar.waitFor({ state: 'visible', timeout: 8_000 });
 
-    // StatusBar should show the force-recover OFF-override message.
     await expect
       .poll(
         async () => (await statusBar.textContent()) ?? '',
@@ -50,7 +33,6 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       )
       .toContain(t('app.compactForceRecoverValue'));
 
-    // Cleanup: send compact_notice to clear indicator.
     await sendStreamEvent(app, {
       type: 'compact_notice',
       removedMessages: 5,
@@ -143,7 +125,6 @@ test.describe('compact recovery banners (#916 + #917)', () => {
       )
       .toContain(t('app.compactExhaustedValue'));
 
-    // Subsequent normal compact cycle should NOT remove the exhausted banner.
     await sendStreamEvent(app, {
       type: 'compact_started',
       triggerSource: 'estimate',

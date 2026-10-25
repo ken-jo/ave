@@ -1,16 +1,9 @@
-/**
- * Sandboxed PluginStorage — verifies path-traversal guards, ENOENT handling,
- * and JSON helpers stay scoped to the host-only storage root.
- */
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-// Reversible fake safeStorage seam. `encryptString` wraps the plaintext in a
-// recognizable envelope (so the on-disk bytes are demonstrably NOT plaintext),
-// `decryptString` unwraps it; `enc.available` toggles the isEncryptionAvailable
-// gate per test. Mirrors the settings-store.test.ts electron-mock pattern.
+// Use a recognizable ciphertext envelope so tests can distinguish encryption from plaintext persistence.
 const mockedElectron = vi.hoisted(() => {
   const enc = { available: true };
   return {
@@ -64,34 +57,25 @@ describe("createPluginStorage path guards", () => {
   it("allows paths inside the root", () => {
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     const target = s.resolve("subdir", "file.txt");
-    // Compare against the canonical root (mkdtemp on macOS lives under /tmp,
-    // which realpath resolves to /private/tmp).
+    // Canonicalize the root: macOS resolves /tmp to /private/tmp.
     const canonicalRoot = realpathSync(dataDir);
     expect(target.startsWith(canonicalRoot + sep)).toBe(true);
   });
 
   it("rejects writes through symlinks pointing outside the root", async () => {
-    // Create a real escape target inside outsideDir, then plant a directory
-    // symlink/junction inside dataDir that points to outsideDir. Windows can
-    // create junctions without Developer Mode or SeCreateSymbolicLinkPrivilege,
-    // so this still exercises real reparse-point traversal locally.
+    // A Windows directory junction exercises real traversal without symlink privileges.
     writeFileSync(join(outsideDir, "escape.txt"), "untouched", "utf-8");
     symlinkSync(outsideDir, join(dataDir, "escape"), dirLinkType);
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
-    // The realpath of `escape/escape.txt` resolves outside the root → reject.
     await expect(s.write(join("escape", "escape.txt"), "tampered")).rejects.toThrow(
       /symlink escapes plugin storage root/,
     );
-    // The escape target on disk must remain untouched.
     expect(readFileSync(join(outsideDir, "escape.txt"), "utf-8")).toBe("untouched");
-    // Direct attempts to traverse through the link path should be rejected.
     expect(() => s.resolve("..", outsideDir.split(sep).pop()!, "escape.txt"))
       .toThrow(/escapes plugin storage root/);
   });
 
   it("rejects reads through symlinks pointing outside the root", async () => {
-    // Plant a directory symlink/junction inside dataDir whose realpath escapes
-    // via outsideDir.
     writeFileSync(join(outsideDir, "secret.txt"), "shhh", "utf-8");
     symlinkSync(outsideDir, join(dataDir, "escape"), dirLinkType);
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
@@ -102,10 +86,7 @@ describe("createPluginStorage path guards", () => {
   });
 
   it("rejects writes whose existing ancestor is a symlink to outside", async () => {
-    // The new file (`payload.txt`) doesn't exist yet, but its closest
-    // existing ancestor (`escape/`) is a symlink whose realpath points
-    // outside the root. The realpath check must climb up to the symlink
-    // and reject before any write touches disk.
+    // For a missing leaf, containment must reject an existing escaping ancestor before any write.
     symlinkSync(outsideDir, join(dataDir, "escape"), dirLinkType);
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     await expect(s.write("escape/payload.txt", "x")).rejects.toThrow(
@@ -114,11 +95,7 @@ describe("createPluginStorage path guards", () => {
   });
 
   it("rejects dangling symlinks (target doesn't exist)", async () => {
-    // Plant a symlink inside dataDir whose *target* does not exist. realpath
-    // raises ENOENT (because the chain is broken) but lstat sees the
-    // symlink. The host cannot validate where the symlink would resolve, so
-    // it must fail closed — otherwise a plugin could plant a dangling link
-    // whose target is created later out of band.
+    // Fail closed on dangling links; their targets may be created later.
     const danglingRel = process.platform === "win32" ? join("dangling", "payload.txt") : "dangling.txt";
     symlinkSync(
       join(outsideDir, "does-not-exist"),
@@ -132,14 +109,7 @@ describe("createPluginStorage path guards", () => {
   });
 });
 
-/**
- * What an install swap looks like from inside a live storage handle. The swap
- * renames the plugin root aside, renames the promoted payload into its place,
- * and carries `data/` in last — so for those few syscalls the data root this
- * handle was built for is not on disk. A call landing there must be refused,
- * and refused for the right reason: it is not a sandbox escape, and auditing
- * it as one sends whoever reads the log looking for a planted symlink.
- */
+/** A storage root missing during an install swap is unavailable, not a sandbox escape. */
 describe("createPluginStorage — the data root is never recreated", () => {
   it("refuses a write once the data root has been renamed away, and leaves it absent", async () => {
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
@@ -159,16 +129,13 @@ describe("createPluginStorage — the data root is never recreated", () => {
 
   it("refuses the same way whether the root went missing before or after construction", async () => {
     const parked = `${dataDir}-parked`;
-    // AFTER construction: the handle exists, the root moves under it.
     const built = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     renameSync(dataDir, parked);
     try {
       await expect(built.writeJson("state.json", { a: 1 })).rejects.toThrow(
         /storage root is absent/,
       );
-      // BEFORE construction: `getPluginStorage` resolves rather than ensures,
-      // so it hands an absent directory here on purpose. Same classified,
-      // audited refusal — not a raw ENOENT about a path.
+      // A per-request handle may receive an absent root; classify and audit it rather than leaking raw ENOENT.
       const rejections: string[] = [];
       expect(() => createPluginStorage("p", dataDir, mockedElectron.safeStorage, (message) => {
         rejections.push(message);
@@ -194,13 +161,7 @@ describe("createPluginStorage — the data root is never recreated", () => {
   });
 });
 
-/**
- * The root's ancestors are trusted host paths and are resolved; the root itself
- * must be the real directory the host created. No confined child can write the
- * host-only storage root or the plugin root above it; a handle is built per
- * request, so as defense in depth a root that became a link must still not
- * become the canonical root of the next handle.
- */
+/** Resolve trusted ancestors but refuse a root replaced by a link, even though storage is host-only. */
 describe("createPluginStorage — the data root itself is the host's directory", () => {
   it("refuses a root a plugin replaced with a link after the host created it, and writes nothing outside", () => {
     rmSync(dataDir, { recursive: true });
@@ -213,8 +174,7 @@ describe("createPluginStorage — the data root itself is the host's directory",
       expect(rejections).toEqual(["storage: rejected a storage root that is not the host's directory"]);
       expect(readdirSync(outsideDir)).toEqual([]);
     } finally {
-      // The link goes on its own, before the recursive teardown can reach it:
-      // on Windows a recursive removal walks into a junction's target.
+      // Unlink before teardown; recursive removal may follow a Windows junction.
       removeLinkOnly(dataDir);
     }
   });
@@ -330,9 +290,7 @@ describe("createPluginStorage I/O", () => {
   });
 
   it("a recursive rm removes a link inside the tree without following it", async () => {
-    // No confined child can write the storage root, so a link here could only
-    // come from the host itself; the recursive delete still unlinks it rather
-    // than emptying what it points at.
+    // Even host-only storage deletion must unlink planted links without touching their targets.
     writeFileSync(join(outsideDir, "keep"), "keep");
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     await s.write("a/c.txt", "x");
@@ -381,7 +339,6 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
     await s.writeEncrypted("auth/token.enc", secret);
 
     expect(mockedElectron.safeStorage.encryptString).toHaveBeenCalledWith(secret);
-    // On-disk bytes are the ciphertext envelope, NOT the plaintext.
     const onDisk = readFileSync(join(dataDir, "auth", "token.enc"), "utf-8");
     expect(onDisk).toBe(`ENC(${secret})`);
     expect(onDisk).not.toBe(secret);
@@ -395,7 +352,7 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
     await expect(s.writeEncrypted("nope.enc", "secret")).rejects.toBeInstanceOf(
       PluginStorageEncryptionUnavailableError,
     );
-    // The plaintext was never persisted (no-fallback rule).
+    // Encryption failure must never persist plaintext.
     expect(existsSync(join(dataDir, "nope.enc"))).toBe(false);
     expect(mockedElectron.safeStorage.encryptString).not.toHaveBeenCalled();
   });
@@ -412,7 +369,7 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
 
   it("readEncrypted fails closed when encryption is unavailable (even if the file exists)", async () => {
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
-    await s.writeEncrypted("auth/token.enc", "secret"); // encryption available here
+    await s.writeEncrypted("auth/token.enc", "secret");
     mockedElectron.enc.available = false;
     await expect(s.readEncrypted("auth/token.enc")).rejects.toBeInstanceOf(
       PluginStorageEncryptionUnavailableError,
@@ -424,10 +381,7 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
     await expect(s.readEncrypted("missing.enc")).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  // POSIX-only: mode bits are meaningful on mac/linux, a no-op on Windows.
-  // Pins the storage-namespace rule (0o700 dir / 0o600 file) so the secret
-  // ciphertext can never regress to world/group-readable — and asserts the same
-  // uniform rule for the plaintext writers + explicit mkdir.
+  // On POSIX, both plaintext and ciphertext storage require 0o700 directories and 0o600 files.
   it.skipIf(process.platform === "win32")(
     "created files are 0o600 inside 0o700 dirs (encrypted + plaintext, POSIX)",
     async () => {
@@ -446,7 +400,6 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
   );
 
   it("path-escape rejection applies to the encrypted variants too", async () => {
-    // Absolute + lexical .. escapes.
     const s = createPluginStorage("p", dataDir, mockedElectron.safeStorage);
     await expect(s.writeEncrypted("/etc/passwd", "x")).rejects.toThrow(
       /absolute paths are not allowed/,
@@ -455,7 +408,6 @@ describe("createPluginStorage encrypted-at-rest variants", () => {
       /escapes plugin storage root/,
     );
 
-    // Symlink escape: planting a junction inside dataDir that points outside.
     writeFileSync(join(outsideDir, "loot.txt"), "untouched", "utf-8");
     symlinkSync(outsideDir, join(dataDir, "escape"), dirLinkType);
     await expect(s.writeEncrypted(join("escape", "loot.txt"), "tampered")).rejects.toThrow(

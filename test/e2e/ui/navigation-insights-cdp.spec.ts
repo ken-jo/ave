@@ -126,10 +126,6 @@ async function selectSettingsTab(
   await page.getByRole("tab", { name }).click();
 }
 
-/**
- * Work board, routines and insights live in the sidebar's Features group
- * (001bcb741), not as rail rows of their own: open the group, then the row.
- */
 async function openFeatureRow(
   page: import("@playwright/test").Page,
   rowTestId: string,
@@ -220,10 +216,7 @@ test.describe("navigation and monthly insights under CDP", () => {
       await expect(ctx.page.getByRole("tabpanel", { name: /Model|모델/ })).toBeVisible();
       await expectNoLegacyBack(cdp);
 
-      // Leaving Settings for the conversation must flush the inline Settings
-      // debounce before unmount. Reopening reads the saved value from disk on a
-      // fresh mount. The Home row is gone (001bcb741); the conversation's own
-      // sidebar row is how a user returns to it.
+      // Leaving settings must flush its debounce; reopening reads persisted values on a fresh mount.
       await ctx.page.getByTestId(`sidebar-session-${SESSION_ID}`).click();
       await expect(ctx.page.getByTestId("view-path-current-home")).toBeVisible();
       await ctx.page.getByTestId("sidebar-settings").click();
@@ -236,8 +229,7 @@ test.describe("navigation and monthly insights under CDP", () => {
         ? "false"
         : "true";
       await privacyToggle.click();
-      // The first step replays Chat -> Model within Settings; the second exits
-      // Settings to Home and exercises the unmount flush boundary.
+      // Multiple back steps exercise tab history before settings unmount.
       await ctx.page.getByTestId(TEST_IDS.viewPathBack).click();
       await ctx.page.getByTestId(TEST_IDS.viewPathBack).click();
       await expect(ctx.page.getByTestId("view-path-current-home")).toBeVisible();
@@ -253,9 +245,7 @@ test.describe("navigation and monthly insights under CDP", () => {
       await expect(ctx.page.getByTestId(TEST_IDS.viewPathBack)).toBeVisible();
       await expect(ctx.page.getByTestId("view-path-forward")).toBeVisible();
       await expect(ctx.page.getByTestId("view-path-breadcrumb")).toBeHidden();
-      // ResizeObserver/month range effects can briefly re-enter loading while
-      // the narrow layout settles; sample CDP only after the same visible data
-      // contract has returned.
+      // Wait for visible data after responsive loading settles before sampling.
       await expect(ctx.page.getByTestId("insights-provider-usage")).toContainText(
         "openai-compatible",
       );

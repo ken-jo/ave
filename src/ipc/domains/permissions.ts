@@ -1,14 +1,30 @@
-/**
- * Permissions domain IPC handlers.
- * Covers: ave:permission:*, ave:approval:*, ave:policy:*
- */
-import { ipcMain } from "electron";
+/** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
+import { ipcMain, session } from "electron";
 import { randomUUID } from "node:crypto";
+import { isRuleSpecifier, normalizeRuleSpecifierInput } from "../../permissions/rules/rule-specifier.js";
+import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
+import { shellRuleCoversCommand } from "../../permissions/rules/shell-rule-approval.js";
 import { loadPolicy, savePolicy } from "../../permissions/policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
-import type { ApprovalDecision } from "../../permissions/approval-gate.js";
+import { UNATTRIBUTED_APPROVAL_SESSION_ID, type ApprovalDecision } from "../../permissions/approval-gate.js";
 import { PERMISSIONS } from "../../shared/ipc-channels.js";
-import { resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
+import {
+  UPSTREAM_PROXY_CREDENTIALS_SECRET,
+  UPSTREAM_PROXY_MODES,
+  type UpstreamProxySettings,
+  type UpstreamProxyView,
+} from "../../shared/upstream-proxy.js";
+
+/** The destination the Settings diagnostic line resolves. */
+const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
+import { errorMessage } from "../../shared/error-message.js";
+import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
+import {
+  RECENT_EGRESS_DENIALS_LIMIT,
+  RECENT_EGRESS_DENIALS_WINDOW_HOURS,
+  type EgressDenialRow,
+} from "../../shared/egress-denials.js";
+import { envForcedValueForSettingsPath, resolveEnvBackedBoolean } from "../../shared/env-backed-settings.js";
 import {
   isSessionOnlyApprovalMemoryScope,
   type PermissionReviewSuggestionPayload,
@@ -39,25 +55,30 @@ import type {
   PermissionRulesCommand,
 } from "../../permissions/permission-slash.js";
 import {
-  REVIEWER_PROVIDERS_SET,
-  type ReviewerProvider,
 } from "../../permissions/permission-settings-store.js";
 import {
   recordApproval,
   approvalCacheKeyIdentity,
   revokeApprovalByKey,
   listApprovals,
+  listSessionApprovals,
   canonicalStringify,
 } from "../../permissions/user-approval-store.js";
-import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { isEgressGrantNetwork } from "../../shared/egress-grant-scopes.js";
+import { isTerminalTabId } from "../../shared/tab-id.js";
 import type {
   SandboxWindowsStatusInfo,
   SandboxWindowsInstallResult,
   SandboxRuntimeCapabilityInfo,
+  ShellSandboxStatusInfo,
 } from "../../shared/sandbox-capability-info.js";
 import {
-  detectSandboxCapability,
+  detectPluginWorkerSandboxCapability,
+  detectShellSandboxCapability,
+  getHostShellExecutionPlan,
   getSandboxBootOutcome,
+  getWindowsSandboxSubstrate,
+  isShellSandboxRequestedAtBoot,
   type SandboxCapability,
 } from "../../permissions/sandbox-capability.js";
 import {
@@ -69,6 +90,8 @@ import {
   handleSetPermissionMode,
 } from "../handlers/permissions.js";
 
+import { getHostShellExecutionPlanAuditProjection } from "../../permissions/host-shell-execution-plan.js";
+
 const log = createLogger("ave");
 
 function validateRulePatternInput(pattern: unknown): { ok: true; pattern: string } | { ok: false; error: string; message: string } {
@@ -78,6 +101,12 @@ function validateRulePatternInput(pattern: unknown): { ok: true; pattern: string
   const normalized = pattern.trim();
   if (normalized.length === 0) {
     return { ok: false, error: "invalid-pattern", message: "pattern must be non-empty" };
+  }
+  if (isRuleSpecifier(normalized)) {
+    try { validatePermissionRule({ pattern: normalized, action: "deny" }); } catch {
+      return { ok: false, error: "invalid-pattern", message: "Invalid command rule" };
+    }
+    return { ok: true, pattern: normalized };
   }
   if (normalized.length > 128) {
     return { ok: false, error: "invalid-pattern", message: "pattern must not exceed 128 characters" };
@@ -206,15 +235,8 @@ function createPermissionReviewSuggestionTracker() {
   };
 }
 
-/**
- * Notify all renderers that the allowed-directories config mutated
- * (session-add via slash dispatch / PermissionsTab dirDispatch / etc.).
- * Multi-window subscribers (PermissionsTab) refresh their views without
- * manual reload. Sent as a hint event — listeners pull fresh state via
- * the existing `permission.dirDispatch("list")` rather than receiving
- * the full list in the broadcast payload (avoids serialization size
- * and keeps a single source of truth in the slash dispatcher).
- */
+/** Notify all renderers that the allowed-directories config mutated (session-add via slash dispatch / PermissionsTab dirDispatch / etc.). Multi-window subscribers (PermissionsTab) refresh their views without manual reload. Sent as a hint
+ * event; listeners pull fresh state via the existing `permission.dirDispatch("list")` rather than receiving the full list in the broadcast payload (avoids serialization size and keeps a single source of truth in the slash dispatcher). */
 export type PermissionConfigBroadcastTarget = Pick<IpcDeps, "getMainWindow" | "getAppWindows">;
 
 export function broadcastPermissionConfigChanged(deps: PermissionConfigBroadcastTarget): void {
@@ -233,37 +255,22 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // read-only, sender guard optional
   ipcMain.handle(PERMISSIONS.getMode, () => handleGetMode(deps));
 
-  // read-only, sender guard optional — honest OS sandbox capability for the
-  // current platform. `available`/`kind` report the PLATFORM's potential
-  // (macOS/Linux can fully confine, Windows can partially confine filesystem +
-  // network, others cannot), NOT whether a runner is currently registered —
-  // registration is boot-time + opt-in, so reporting the platform potential
-  // lets the toggle show "not available on this platform" rather than reading
-  // as unavailable merely because it's off.
-  // `enabled` separately reflects the current setting.
+  // read-only, sender guard optional; honest OS sandbox capability for the current platform. `available`/`kind` report the PLATFORM's potential (macOS/Linux can fully confine, Windows can partially confine filesystem + network, others cannot), NOT whether a runner
+  // is currently registered; registration is verified at boot, so reporting the platform potential lets the toggle show "not available on this platform" rather than reading as unavailable merely because it's off. `enabled` separately reflects the current setting.
   ipcMain.handle(PERMISSIONS.sandboxCapability, async () => {
-    const { sandboxConfinementForPlatform } = await import(
+    const { sandboxConfinementForPlatform, describeShellSandboxStatus, sandboxBootOutcomeView } = await import(
       "../../shared/sandbox-capability-info.js"
     );
     const platform = process.platform;
-    // Must answer the same question boot answered (`sandboxOptIn` in
-    // sandbox-init.ts), so it resolves through the registry rather than
-    // re-stating which variable forces it on.
+    const storedShellSetting = deps.settingsService.get("features")?.osToolSandbox ?? false;
+    // Must answer the same question boot answered (`shellRequested` in sandbox-init.ts), so it resolves through the registry rather than re-stating which variable forces it on.
     const enabled = resolveEnvBackedBoolean(
       "features.osToolSandbox",
-      deps.settingsService.get("features")?.osToolSandbox ?? false,
+      storedShellSetting,
       process.env,
       false,
     );
-    // Map the platform to the simplified confinement strength. macOS (Seatbelt)
-    // and Linux (bwrap) confine fs + process + network ("full"). Windows
-    // (srt-win) confines filesystem + network but not process, which is a
-    // genuine PARTIAL confinement, NOT "none". Earlier code reported Windows as
-    // network-only; ASRT 0.0.76 uses the dedicated srt-sandbox user ACL backend.
-    //
-    // The gate (enabled) only controls whether the ASRT sandbox initializes at
-    // boot, not what the platform is capable of, so report the platform's
-    // potential even when off — the toggle text stays honest before opt-in.
+    // Report potential confinement independently of activation: full on macOS/Linux, filesystem and network only on Windows.
     const kind: "full" | "partial" | "none" =
       platform === "linux" || platform === "darwin"
         ? "full"
@@ -271,22 +278,49 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           ? "partial"
           : "none";
     const available = kind !== "none";
-    // Meaningful, platform-honest reason surfaced to the UI alongside the
-    // capability. This describes PLATFORM POTENTIAL only. Runtime registration
-    // is boot-time + opt-in, so it is reported separately below. On Windows the
-    // filesystem confinement is against the host only: every confined process
-    // runs as the one `srt-sandbox` account, so plugins are not isolated from
-    // each other there (owner decision 2026-10-10, plugin-hostapi-protocol.md
-    // §9.8 A2).
+    // Meaningful, platform-honest reason surfaced to the UI alongside the capability. This describes PLATFORM POTENTIAL only. Runtime registration is boot-time, so it is reported separately below. On Windows the filesystem
+    // confinement is against the host only: every confined process runs as the one `srt-sandbox` account, so plugins are not isolated from each other there (owner decision 2026-10-10, plugin-hostapi-protocol.md §9.8 A2).
     const potentialReason =
       platform === "darwin"
         ? "ASRT (Seatbelt) confines filesystem, process, and network egress when enabled"
         : platform === "linux"
           ? "ASRT (bwrap) confines filesystem, process, and network egress when enabled"
           : platform === "win32"
-            ? "ASRT (srt-win) confines filesystem access and network egress against the host; every confined process, plugins included, runs as one shared sandbox account, so plugins are not isolated from each other; process isolation is unavailable on Windows; needs a one-time admin install"
+            ? "Agent shell commands run each in its own Microsoft Execution Containers container where Windows offers it (filesystem, process and network confined; no admin install). ASRT (srt-win) confines plugin processes' filesystem access and network egress against the host after a one-time admin install; every confined plugin runs as one shared sandbox account, so plugins are not isolated from each other"
             : "OS sandbox is fail-closed on this platform; tools run unconfined";
-    const runtime = runtimeInfoFromCapability(detectSandboxCapability());
+    // Per scope: ASRT is one runtime, but each scope is confined only when it was requested at boot, so a worker-only boot must not show shells as sandboxed (and the reverse).
+    const runtime = runtimeInfoFromCapability(detectShellSandboxCapability());
+    const workerRuntime = runtimeInfoFromCapability(detectPluginWorkerSandboxCapability());
+    const boot = getSandboxBootOutcome();
+    // The route a default host shell takes right now; the same plan the bash and powershell tools run under,
+    // so "on" means shells are contained, not merely that ASRT is running (Windows Plan B runs shells plain).
+    const shellPlan = getHostShellExecutionPlan();
+    const envForced = envForcedValueForSettingsPath("features.osToolSandbox") === true;
+    let shell: ShellSandboxStatusInfo;
+    try {
+      shell = describeShellSandboxStatus({
+        platformSupported: kind !== "none",
+        setting: storedShellSetting,
+        envForced,
+        requestedAtBoot: isShellSandboxRequestedAtBoot(),
+        boot,
+        shellPlanMode: shellPlan.mode,
+        shellPlanFallback: shellPlan.fallbackReason,
+      });
+    } catch (error) {
+      // The boot seal and the shell plan contradict each other; a host bug, not a user state. It is reported loudly here and on the one row
+      // that depends on it; the rest of this snapshot (and every Settings section loaded beside it) still describes what the host does observe.
+      const message = errorMessage(error);
+      log.error("sandboxCapability: shell sandbox status contract violated: %s", message);
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "permissions",
+        type: "error",
+        output: `[sandbox-status:contract-violation] ${message}`,
+      });
+      shell = { state: "error", setting: storedShellSetting, envForced, causes: [] };
+    }
+    const privacyFailure = getAveHomePrivacyFailure();
     return {
       platform,
       enabled,
@@ -295,35 +329,215 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       reason: potentialReason,
       potentialReason,
       runtime,
-      // What the gate decided THIS boot. The runtime snapshot cannot stand in
-      // for it: a degraded gate never publishes a capability, so `runtime`
-      // reports the same "no OS sandbox configured" it reports when the user
-      // never turned the sandbox on.
-      boot: getSandboxBootOutcome(),
+      workerRuntime,
+      ...(privacyFailure ? { homePrivacyError: {
+        path: privacyFailure.failedPath ?? privacyFailure.home,
+        category: privacyFailure.category,
+        extraPrincipals: privacyFailure.extraPrincipals,
+        approvedForSession: areExtensionsWithoutIsolationApproved(),
+      } } : {}),
+      // What the gate decided THIS boot. The runtime snapshot cannot stand in for it: a degraded gate never publishes a capability, so `runtime` reports the same "no OS
+      // sandbox configured" it reports when the user never turned the sandbox on. Raw dependency messages stay main-side (boot log); the renderer gets the classified causes.
+      boot: boot === null ? null : sandboxBootOutcomeView(boot),
+      shell,
+      // Windows: which substrate carries shells and extensions this boot and how strongly their egress is attributed (proxy-egress PR 9).
+      windowsSubstrate: platform === "win32" ? getWindowsSandboxSubstrate() : null,
+      shellExecutionPlan: getHostShellExecutionPlanAuditProjection(shellPlan),
       confines: sandboxConfinementForPlatform(platform, kind),
     };
   });
 
-  // read-only, sender guard optional — Windows srt-win install readiness. The
-  // ASRT package surface is intentionally hidden behind asrt-windows-support.ts
-  // because Windows support is moving quickly upstream. Non-win32 → a clean
-  // "not-applicable" shape. Non-mutating: no UAC/install; a `cannot-read` WFP
-  // enum may run ASRT's local behavioral egress verifier.
+  // read-only, sender guard optional; Windows srt-win install readiness. The ASRT package surface is intentionally hidden behind asrt-windows-support.ts because Windows support
+  // is moving quickly upstream. Non-win32 → a clean "not-applicable" shape. Non-mutating: no UAC/install; a `cannot-read` WFP enum may run ASRT's local behavioral egress verifier.
   ipcMain.handle(PERMISSIONS.sandboxWindowsStatus, async (): Promise<SandboxWindowsStatusInfo> => {
     return readAsrtWindowsStatus();
   });
 
-  // MUTATING (sender-frame-guarded + user-keyboard intent) — the SINGLE
-  // user-consented privilege-escalation entry point. Triggers ASRT's one
-  // self-elevating UAC prompt via installWindowsSandbox(). NEVER auto-triggered:
-  // the renderer only invokes this from an explicit "Install now" click inside
-  // the consent panel. Guard pattern mirrors the peer mutating handlers
-  // (addRule/removeRule/setMode): foreign frames are rejected + audited, and a
-  // synthetic submission without an active user gesture is refused. The
-  // intent is checked here, synchronously at entry and before any await: the
-  // status read inside installAsrtWindowsSandbox can take ~45 s, far longer
-  // than the renderer's ~5 s user activation, so the renderer must not read
-  // status before invoking this (issue #1608).
+  // read-only, sender-frame-guarded (it is audit data, like auditShow); the proxy denies of the last 24
+  // h, newest first, from the sandbox audit channel the deny monitor writes (egress-deny-monitor.ts).
+  ipcMain.handle(PERMISSIONS.egressDenialsRecent, async (e): Promise<EgressDenialRow[] | typeof UNAUTHORIZED_FRAME> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressDenialsRecent, e); return UNAUTHORIZED_FRAME; }
+    const { readRecentSandboxEgressDenials } = await import("../../audit/sandbox-audit-sink.js");
+    const rows = await readRecentSandboxEgressDenials({
+      windowMs: RECENT_EGRESS_DENIALS_WINDOW_HOURS * 3_600_000,
+      limit: RECENT_EGRESS_DENIALS_LIMIT,
+    });
+    return rows.map((row) => ({ timestamp: row.timestamp, source: row.invocation, deny: row.deny }));
+  });
+
+  // read-only, sender-frame-guarded; the shell egress grants that outlive a call (conversation, terminal tab, workspace, always), for Settings → Permissions → Network.
+  ipcMain.handle(PERMISSIONS.egressGrantsList, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantsList, e); return UNAUTHORIZED_FRAME; }
+    const { listEgressGrants } = await import("../../permissions/egress-runtime.js");
+    try {
+      return { ok: true as const, grants: await listEgressGrants() };
+    } catch (error) {
+      return { ok: false as const, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
+  });
+
+  // MUTATING (sender-frame-guarded + user-keyboard intent): revoke one shell egress grant. The payload names it exactly; anything else is refused.
+  ipcMain.handle(PERMISSIONS.egressGrantRevoke, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.egressGrantRevoke, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { scope, origin, host, port, workspaceRoot, sessionId, tabId, network } = body;
+    if (network !== undefined && !isEgressGrantNetwork(network)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: invalid network class" };
+    }
+    if (scope !== "conversation" && scope !== "tab" && scope !== "workspace" && scope !== "always") {
+      return { ok: false, error: "invalid-egress-grant-scope", message: "revoke: scope must be conversation, tab, workspace or always" };
+    }
+    if (typeof host !== "string" || host.length === 0 || typeof port !== "number" || !Number.isInteger(port)) {
+      return { ok: false, error: "invalid-egress-grant-destination", message: "revoke: host and port are required" };
+    }
+    if (scope === "workspace" ? typeof workspaceRoot !== "string" : workspaceRoot !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-workspace", message: "revoke: a workspace grant names its workspaceRoot, no other grant does" };
+    }
+    if (scope === "conversation" ? typeof sessionId !== "string" || sessionId.length === 0 : sessionId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-conversation", message: "revoke: a conversation grant names its sessionId, no other grant does" };
+    }
+    if (scope === "tab" ? typeof tabId !== "string" || !isTerminalTabId(tabId) : tabId !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-tab", message: "revoke: a tab grant names its terminal tabId, no other grant does" };
+    }
+    const persistent = scope === "workspace" || scope === "always";
+    if (persistent
+      ? (scope === "workspace" ? origin !== "shell" : origin !== "shell" && origin !== "terminal")
+      : origin !== undefined) {
+      return { ok: false, error: "invalid-egress-grant-origin", message: "revoke: a workspace or always grant names its origin (shell, or terminal for always), no other grant does" };
+    }
+    const destination = { host, port, ...(network === undefined ? {} : { network }) };
+    const { revokeEgressGrant } = await import("../../permissions/egress-runtime.js");
+    try {
+      const { removed, closed } = await revokeEgressGrant(
+        scope === "conversation" ? { scope, sessionId: sessionId as string, ...destination }
+        : scope === "tab" ? { scope, tabId: tabId as string, ...destination }
+        : scope === "workspace" ? { scope, origin: "shell", workspaceRoot: workspaceRoot as string, ...destination }
+        : { scope, origin: origin as "shell" | "terminal", ...destination },
+      );
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: "settings",
+        type: "approval",
+        output: `[egress-grant:revoke] scope=${scope}${persistent ? ` origin=${String(origin)}` : ""} host=${host} port=${port} removed=${removed} closedConnections=${closed}`,
+      });
+      return removed ? { ok: true } : { ok: false, error: "not-found", message: "revoke: no such grant" };
+    } catch (error) {
+      return { ok: false, error: "egress-grant-store-unreadable", message: errorMessage(error) };
+    }
+  });
+
+  // Upstream proxy (owner decision 2026-10-20). Main-owned setting: these two handlers are its only reader
+  // and writer for the renderer, and neither ever returns a credential value (only whether one is stored).
+  const upstreamProxyView = async (): Promise<UpstreamProxyView> => {
+    const { describeUpstreamProxy, upstreamProxyDeps, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
+    const routerDeps = upstreamProxyDeps(deps.settingsService, (url) => session.defaultSession.resolveProxy(url));
+    const settings = deps.settingsService.get("upstreamProxy");
+    const stored = parseStoredProxyCredentials(deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET));
+    return {
+      settings,
+      // Only credentials that would be sent count: bound to the manual proxy as it is now.
+      hasCredentials: stored !== null && stored.origin === settings.manualUrl,
+      diagnostic: await describeUpstreamProxy(routerDeps, UPSTREAM_PROXY_DIAGNOSTIC_URL),
+    };
+  };
+
+  ipcMain.handle(PERMISSIONS.upstreamProxyGet, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxyGet, e); return UNAUTHORIZED_FRAME; }
+    return upstreamProxyView();
+  });
+
+  ipcMain.handle(PERMISSIONS.upstreamProxySet, async (e, payload: unknown) => {
+    // This setter redirects all sandbox egress, and the keyboard-intent marker below is the renderer's own claim: it also requires the main
+    // frame of one of Ave's own windows (the approvalRespond rule), never a subframe or another webContents that loads a host-renderer URL.
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    const appWindowMainFrame = e.senderFrame !== null && e.senderFrame === e.sender?.mainFrame
+      && windows.some((window) => window?.webContents === e.sender);
+    if (!validateHostRendererSender(e) || !appWindowMainFrame) { auditUnauthorized(auditLogger, PERMISSIONS.upstreamProxySet, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const { parseProxyUrl, proxyOrigin, parseStoredProxyCredentials } = await import("../../permissions/upstream-proxy.js");
+    const { normalizeUpstreamProxy } = await import("../../data/settings-normalization.js");
+    const next = deps.settingsService.get("upstreamProxy");
+    if (body.mode !== undefined) {
+      if (typeof body.mode !== "string" || !(UPSTREAM_PROXY_MODES as readonly string[]).includes(body.mode)) {
+        return { ok: false, error: "invalid-upstream-proxy-mode", message: "upstream proxy: mode must be off, system or manual" };
+      }
+      next.mode = body.mode as UpstreamProxySettings["mode"];
+    }
+    if (body.resolvesNames !== undefined) {
+      if (typeof body.resolvesNames !== "boolean") {
+        return { ok: false, error: "invalid-upstream-proxy-resolves-names", message: "upstream proxy: resolvesNames must be a boolean" };
+      }
+      next.resolvesNames = body.resolvesNames;
+    }
+    if (body.bypass !== undefined) {
+      if (typeof body.bypass !== "string" || body.bypass.length > 8192) {
+        return { ok: false, error: "invalid-upstream-proxy-bypass", message: "upstream proxy: the bypass list must be text of at most 8192 characters" };
+      }
+      next.bypass = body.bypass;
+    }
+    let credentials: { username: string; password: string } | undefined;
+    if (body.manualUrl !== undefined) {
+      if (typeof body.manualUrl !== "string" || body.manualUrl.length > 2048) {
+        return { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: the URL must be text of at most 2048 characters" };
+      }
+      if (body.manualUrl.trim() === "") {
+        next.manualUrl = "";
+      } else {
+        const parsed = parseProxyUrl(body.manualUrl);
+        if (!parsed.ok) {
+          return parsed.reason === "socks"
+            ? { ok: false, error: "upstream-proxy-socks-unsupported", message: "upstream proxy: SOCKS proxies cannot be used as the sandbox's upstream" }
+            : { ok: false, error: "invalid-upstream-proxy-url", message: "upstream proxy: enter http://host:port or https://host:port" };
+        }
+        next.manualUrl = proxyOrigin(parsed);
+        credentials = parsed.auth;
+      }
+    }
+    if (next.mode === "manual" && next.manualUrl === "") {
+      return { ok: false, error: "upstream-proxy-url-required", message: "upstream proxy: manual mode needs a proxy URL" };
+    }
+    // Stored credentials are bound to the manual proxy's origin: entered with a URL, they are saved for that URL's origin; a URL
+    // change to another host, port or scheme removes them (and says so), so the old proxy's password is never sent to the new one.
+    let credentialsChange: "replaced" | "cleared" | "removed" | "unchanged" = "unchanged";
+    if (credentials !== undefined) {
+      await deps.settingsService.setSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET, JSON.stringify({ ...credentials, origin: next.manualUrl }));
+      credentialsChange = "replaced";
+    } else if (body.clearCredentials === true) {
+      await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      credentialsChange = "cleared";
+    } else {
+      const storedSecret = deps.settingsService.getSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+      const stored = parseStoredProxyCredentials(storedSecret);
+      if (storedSecret !== null && (stored === null || stored.origin !== next.manualUrl)) {
+        await deps.settingsService.deleteSecret(UPSTREAM_PROXY_CREDENTIALS_SECRET);
+        credentialsChange = "removed";
+      }
+    }
+    // `set` notifies the boot router, which drops its cached routes.
+    const stored = normalizeUpstreamProxy(next);
+    await deps.settingsService.set("upstreamProxy", stored);
+    auditLogger.log({
+      timestamp: new Date().toISOString(),
+      sessionId: "settings",
+      type: "approval",
+      output: `[upstream-proxy:set] mode=${stored.mode} manual=${stored.manualUrl === "" ? "-" : stored.manualUrl}`
+        + ` credentials=${credentialsChange}`
+        + ` bypassEntries=${stored.bypass === "" ? 0 : stored.bypass.split(",").filter((entry) => entry.trim() !== "").length}`
+        + ` resolvesNames=${stored.resolvesNames}`,
+    });
+    return {
+      ok: true as const,
+      view: await upstreamProxyView(),
+      ...(credentialsChange === "removed" ? { credentialsRemoved: true as const } : {}),
+    };
+  });
+
+  // Only explicit user consent may trigger privilege elevation; reject foreign frames and synthetic gestures, with auditing.
+  // Check intent synchronously before awaits, and invoke directly from the click because a status probe can outlast activation.
   ipcMain.handle(PERMISSIONS.sandboxWindowsInstall, async (e, payload: unknown): Promise<SandboxWindowsInstallResult | typeof UNAUTHORIZED_FRAME | { ok: false; error: string; message: string }> => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.sandboxWindowsInstall, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
@@ -333,6 +547,21 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "not-applicable", message: "Windows sandbox install is only available on win32" };
     }
     return installAsrtWindowsSandbox();
+  });
+
+  ipcMain.handle(PERMISSIONS.approveExtensionsWithoutIsolation, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approveExtensionsWithoutIsolation, e); return UNAUTHORIZED_FRAME; }
+    const intent = requireUserKeyboardIntent(payloadRecord(payload).intent);
+    if (!intent.ok) return intent;
+    const failure = getAveHomePrivacyFailure();
+    if (failure === undefined) return { ok: false, error: "not-applicable", message: "Home privacy approval is not applicable" };
+    if (!areExtensionsWithoutIsolationApproved()) {
+      auditLogger.log({ timestamp: new Date().toISOString(), sessionId: "permissions", type: "approval",
+        output: JSON.stringify({ action: "extensions_without_isolation_approved", who: "user-ui",
+          category: failure.category, path: failure.failedPath ?? failure.home }) });
+      approveExtensionsWithoutIsolation();
+    }
+    return { ok: true };
   });
 
   ipcMain.handle(PERMISSIONS.setMode, async (e, payload: unknown) => {
@@ -354,6 +583,35 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     return pm.listPersistedRules();
   });
 
+  ipcMain.handle(PERMISSIONS.listScopedRules, async (e) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.listScopedRules, e); return UNAUTHORIZED_FRAME; }
+    const pm = conversationLoop.permissionManager;
+    return pm ? pm.listScopedRules() : { rules: [], errors: [] };
+  });
+
+  ipcMain.handle(PERMISSIONS.removeScopedRule, async (e, payload: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.removeScopedRule, e); return UNAUTHORIZED_FRAME; }
+    const body = payloadRecord(payload);
+    const intent = requireUserKeyboardIntent(body.intent);
+    if (!intent.ok) return intent;
+    const pm = conversationLoop.permissionManager;
+    if (!pm) return { ok: false, error: "no-permission-manager" };
+    try {
+      // Only a row enumerated by this host can name a stored project identity.
+      const listed = await pm.listScopedRules();
+      const row = listed.rules.find((rule) => rule.pattern === body.pattern && rule.action === body.action &&
+        rule.scope === body.scope && rule.projectCwd === body.projectCwd && rule.source === body.source &&
+        rule.storedFile === body.storedFile);
+      if (!row) return { ok: false, error: "invalid-rule" };
+      await pm.removeRulePersist(row, row.scope === "project"
+        ? { kind: "project", projectCwd: row.projectCwd!, storedFile: row.storedFile! } : { kind: "user" });
+      deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
+      return { ok: true };
+    } catch (error) {
+      return { ok: false, error: "remove-failed", message: errorMessage(error) };
+    }
+  });
+
   ipcMain.handle(PERMISSIONS.addRule, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.addRule, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
@@ -366,20 +624,30 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = parsePermissionRulesCommand(`add ${action} ${validated.pattern}`);
+    const ruleAction = action === "allow" ? "allow" : "deny";
+    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
+      ? { verb: "rules", sub: "add", action: ruleAction, pattern: validated.pattern }
+      : parsePermissionRulesCommand(`add ${ruleAction} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "add") return { ok: false, error: "parse-error", message: "add rule command did not parse as add" };
     const pm = conversationLoop.permissionManager;
     if (!pm) return { ok: false, error: "no-permission-manager", message: "permission manager not initialized" };
+    if (isRuleSpecifier(parsed.pattern)) {
+      // The store's own check: refused prefixes, irreversible argv and wildcards outside the allowlist.
+      try { validatePermissionRule({ pattern: parsed.pattern, action: parsed.action }); } catch (error) {
+        return { ok: false, error: "invalid-rule", message: errorMessage(error) };
+      }
+    }
     try {
-      if (parsed.action === "allow") {
+      if (isRuleSpecifier(parsed.pattern)) {
+        await pm.addRulePersist({ pattern: parsed.pattern, action: parsed.action }, { kind: "user" });
+      } else if (parsed.action === "allow") {
         await pm.addAlwaysAllowedPersist(parsed.pattern);
       } else {
         await pm.addAlwaysDeniedPersist(parsed.pattern);
       }
       deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
-      // No explicit broadcast — PermissionManager.addAlwaysAllowed/DeniedPersist
-      // fire broadcastConfigChanged via the boot-wired setter.
+      // No explicit broadcast; PermissionManager.addAlwaysAllowed/DeniedPersist fire broadcastConfigChanged via the boot-wired setter.
       return { ok: true, rule: { pattern: parsed.pattern, action: parsed.action } };
     } catch (err) {
       return { ok: false, error: "add-failed", message: (err as Error).message };
@@ -398,7 +666,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const validated = validateRulePatternInput(body.pattern);
     if (!validated.ok) return validated;
     const { parsePermissionRulesCommand } = await import("../../permissions/permission-slash.js");
-    const parsed = parsePermissionRulesCommand(`remove ${action} ${validated.pattern}`);
+    const ruleAction = action === "allow" ? "allow" : "deny";
+    const parsed: PermissionRulesCommand | { ok: false; error: string } = isRuleSpecifier(validated.pattern)
+      ? { verb: "rules", sub: "remove", action: ruleAction, pattern: validated.pattern }
+      : parsePermissionRulesCommand(`remove ${ruleAction} ${validated.pattern}`);
     if (isParseError<PermissionRulesCommand>(parsed)) return { ok: false, error: "parse-error", message: parsed.error };
     if (parsed.sub !== "remove") return { ok: false, error: "parse-error", message: "remove rule command did not parse as remove" };
     const pm = conversationLoop.permissionManager;
@@ -406,15 +677,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     try {
       await pm.removeRule(parsed.pattern, parsed.action);
       deps.toolRegistry.setDenyRules(pm.getVisibilityDenyRules());
-      // No explicit broadcast — PermissionManager.removeRule fires
-      // broadcastConfigChanged via the boot-wired setter.
+      // No explicit broadcast; PermissionManager.removeRule fires broadcastConfigChanged via the boot-wired setter.
       return { ok: true };
     } catch (err) {
       return { ok: false, error: "remove-failed", message: (err as Error).message };
     }
   });
 
-  // ave:approval:request direction is main→renderer (webContents.send) — no ipcMain.handle needed
+  // ave:approval:request direction is main→renderer (webContents.send); no ipcMain.handle needed
   ipcMain.handle(PERMISSIONS.approvalRespond, (e, decision: ApprovalDecision) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
@@ -424,7 +694,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const nativeRenderer = e.senderFrame === e.sender?.mainFrame &&
         windows.some((window) => window?.webContents === e.sender);
       honoredDecision = nativeRenderer
-        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision)
+        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision, e.sender)
         : approvalGate.resolve(decision.requestId, decision);
     }
     if (honoredDecision) {
@@ -433,42 +703,22 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     return { ok: true };
   });
 
-  // The requests the gate is still waiting on, as the renderer received them.
-  // Read once by a renderer that (re)loaded after a request went out; the
-  // masked, signed payload is the same one `ave:approval:request` carried.
+  // The requests the gate is still waiting on, as the renderer received them. Read once by a renderer that
+  // (re)loaded after a request went out; the masked, signed payload is the same one `ave:approval:request` carried.
   ipcMain.handle(PERMISSIONS.approvalPending, (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalPending, e); return UNAUTHORIZED_FRAME; }
     return approvalGate ? approvalGate.listPendingRendererRequests(e.sender) : [];
   });
 
-  /**
-   * `/allow <sentence>` — issue #1940.
-   *
-   * The reply is a PROPOSAL and never a grant. It names one `ApprovalChoice`
-   * that the pending request's own card already renders as a button; the
-   * renderer moves focus there and the user still presses it. Nothing on this
-   * path calls `approvalGate.resolve`.
-   *
-   * Why propose rather than decide: published miss rates for this class of
-   * permission classifier — the share of genuinely dangerous actions they wave
-   * through — are high enough that a model verdict cannot be the final gate. A
-   * model wrong on a meaningful fraction of dangerous calls is a fine way to
-   * pre-fill a form and an unacceptable way to answer a permission prompt. The
-   * confirm press is the mitigation for that error rate, so it is not optional
-   * and not skippable on a confident answer.
-   *
-   * The renderer supplies only a request id and the raw sentence. Tool name,
-   * category, source, and both paths are read out of the gate's own pending
-   * entry, so a renderer cannot describe a request that was never raised.
-   */
+  /** Approval-sentence results are proposals only; require the user to confirm an existing pending choice and never resolve the gate here.
+   * Read identity and paths from the host pending entry, not renderer claims. */
   ipcMain.handle(PERMISSIONS.approvalSentenceSelect, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, PERMISSIONS.approvalSentenceSelect, e);
       return UNAUTHORIZED_FRAME;
     }
     const body = payloadRecord(payload);
-    // Only a keyboard-origin submission speaks for the user. Agent output,
-    // tool results and remote-controller text all reach the composer.
+    // Only a keyboard-origin submission speaks for the user. Agent output, tool results and remote-controller text all reach the composer.
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
 
@@ -505,13 +755,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         message: "approval sentence selector is not wired",
       };
     }
-    // The reasoning-blind boundary. `ApprovalRequestFacts` is a CLOSED record,
-    // so this literal is where a future disclosure would have to be typed out
-    // deliberately — adding a field to the gate snapshot cannot leak through
-    // here, because an extra key is a compile error rather than a passenger.
-    // The selector re-derives the wire envelope field by field for the same
-    // reason; this is the caller half of that boundary, not a second copy of
-    // it. Nothing agent-authored is in scope: no `reason`, no `args`.
+    // The reasoning-blind boundary. `ApprovalRequestFacts` is a CLOSED record, so this literal is where a future disclosure would have to be typed out deliberately; adding a field to the gate snapshot cannot leak through here, because an extra key is
+    // a compile error rather than a passenger. The selector re-derives the wire envelope field by field for the same reason; this is the caller half of that boundary, not a second copy of it. Nothing agent-authored is in scope: no `reason`, no `args`.
     const facts: ApprovalRequestFacts = {
       toolName: state.toolName,
       category: state.toolCategory ?? "unknown",
@@ -525,9 +770,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     });
     switch (selection.outcome) {
       case "selected":
-        // Only the choice crosses back. The host-resolved path stays here —
-        // the card derives the same scope list from the same authority, so it
-        // already knows which path this choice means.
+        // Only the choice crosses back. The host-resolved path stays here; the card derives the
+        // same scope list from the same authority, so it already knows which path this choice means.
         return { ok: true, requestId, choice: selection.option.choice };
       case "declined":
         return {
@@ -554,12 +798,10 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // read-only, sender guard optional
   ipcMain.handle(PERMISSIONS.policyGet, async () => {
     const policy = await loadPolicy();
-    // `editable` is host-derived, never re-derived in the renderer: it is the
-    // same predicate that decides whether `savePolicy` will accept a write.
+    // `editable` is host-derived, never re-derived in the renderer: it is the same predicate that decides whether `savePolicy` will accept a write.
     return { ...policy, editable: isPolicyUserEditable(policy) };
   });
 
-  // ── Permission policy — `/permission dir` slash dispatcher (IPC) ──────────
   ipcMain.handle(
     PERMISSIONS.dirDispatch,
     async (e, args: { rawArgs: string }) => {
@@ -579,18 +821,15 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       const requiresPersistentLifecycle =
         parsed.verb === "deny" || (parsed.verb === "allow" && !parsed.session);
       if (requiresPersistentLifecycle && !lifecycle) {
-        // Fail closed: a Settings mutation must never fall back to the slash
-        // dispatcher's settings-only persistence path.
+        // Fail closed: a Settings mutation must never fall back to the slash dispatcher's settings-only persistence path.
         return { ok: false, error: "workspace lifecycle unavailable" };
       }
       const result = await dispatchPermissionDirCommand(parsed, undefined, lifecycle);
       if (result.ok && result.verb === "allow" && result.sessionOnly && result.sessionDirectory) {
         conversationLoop.addSessionAdditionalDirectory(result.sessionDirectory);
       }
-      // Notify all renderer windows whenever the directory config mutates
-      // (any successful allow/deny that touches persisted or session
-      // additions). The `verb === "list"` short-circuit avoids spurious
-      // broadcasts from read-only list queries.
+      // Notify all renderer windows whenever the directory config mutates (any successful allow/deny that touches persisted
+      // or session additions). The `verb === "list"` short-circuit avoids spurious broadcasts from read-only list queries.
       if (result.ok && result.verb !== "list") {
         broadcastPermissionConfigChanged(deps);
       }
@@ -598,7 +837,6 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ── Permission policy — `/permission reviewer` slash dispatcher (IPC) ─────
   ipcMain.handle(
     PERMISSIONS.reviewerDispatch,
     async (e, args: { rawArgs: string }) => {
@@ -618,10 +856,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         parsed,
         deps.rewireReviewerAgent,
       );
-      // Surface the runtime degrade flag (persisted mode="llm" but wiring fell
-      // back to rule because no provider/key is configured). This is a runtime
-      // condition computed at boot wiring, not a persisted setting, so it is
-      // read from the live PermissionManager rather than the settings file.
+      // Surface the runtime degrade flag (persisted mode="llm" but wiring fell back to rule because no provider/key is configured). This is a
+      // runtime condition computed at boot wiring, not a persisted setting, so it is read from the live PermissionManager rather than the settings file.
       if (result.ok) {
         const pm = conversationLoop.permissionManager;
         return {
@@ -633,55 +869,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     },
   );
 
-  // ── Reviewer provider key-presence check ─────────────────────────────────
-  // Used by the renderer settings UI to determine which reviewer providers
-  // are activatable (key-driven dynamic activation). Read-only, but gated
-  // to prevent a foreign frame from probing which LLM API keys are present.
-  //
-  // Returns UNAUTHORIZED_FRAME (sibling handler parity) instead of
-  // bare `false` on validateSender failure. Bare `false` is indistinguishable
-  // from "key not present", masking the security rejection from the caller.
-  //
-  // MEDIUM: input allowlist — only the five known reviewer provider strings
-  // are accepted; anything else short-circuits before touching the secret store.
-  // Minor: REVIEWER_PROVIDERS_SET imported from permission-settings-store (single SOT).
-  ipcMain.handle(PERMISSIONS.reviewerProviderHasKey, async (e, provider: unknown) => {
-    if (!validateHostRendererSender(e)) {
-      auditUnauthorized(auditLogger, PERMISSIONS.reviewerProviderHasKey, e);
-      return UNAUTHORIZED_FRAME;
-    }
-    // MEDIUM: reject unknown provider names before touching the secret store.
-    if (typeof provider !== "string" || !REVIEWER_PROVIDERS_SET.has(provider as ReviewerProvider)) {
-      return false;
-    }
-    const { reviewerProviderKeyPresent } = await import(
-      "../../permissions/reviewer/provider-adapters.js"
-    );
-    return reviewerProviderKeyPresent(
-      provider,
-      (key) => deps.settingsService.getSecret(key),
-      // Foundry endpoint lives in the plain settings (not encrypted).
-      () =>
-        getLlmVendorSettings(
-          deps.settingsService.get("llm").vendors,
-          "azure-foundry",
-        ).baseUrl ?? null,
-    );
-  });
-
-  // ── Permission policy — deferred queue surface ────────────────────────────
-  // Returns DLP-redacted tool inputs + verdicts.
-  //
-  // Host-renderer only. This and the five channels around it are READ-ONLY but
-  // not low-risk, and read-only is what previously earned them the base
-  // validator — which admits plugin UI shells by design. Reading the approval
-  // queue tells a plugin what the user is about to be asked to approve, which
-  // is reconnaissance for timing a request against it, not a read. Same for
-  // the audit log, the hook trust state, and which providers hold a key.
-  //
-  // This comment used to say the channel was "gated to prevent a compromised
-  // foreign frame from harvesting them" while using the validator that does
-  // not reject those frames.
+  // Deferred inputs and verdicts are DLP-redacted and host-renderer-only; plugin access would expose pending approval and trust state.
   ipcMain.handle(PERMISSIONS.deferredList, async (e) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, PERMISSIONS.deferredList, e);
@@ -710,32 +898,17 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     };
   });
 
-  /**
-   * The one resolve path for a deferred entry.
-   *
-   * Two gestures reach it — the queue dialog's button and the answer to the
-   * question the host asks in the tile that deferred the call — and both must
-   * land the same grant, the same audit row, and the same queue mutation.
-   * `approvalSource` is the only thing that differs, and it is recorded rather
-   * than branched on.
-   */
+  /** The one resolve path for a deferred entry. Two gestures reach it; the queue dialog's button and the answer to the question the host asks in the tile that deferred the call;
+   * and both must land the same grant, the same audit row, and the same queue mutation. `approvalSource` is the only thing that differs, and it is recorded rather than branched on. */
   const resolveDeferredEntry = async (request: {
     id: string;
     decision: "approved" | "rejected";
     reason?: string;
     approvalSource: DeferredApprovalSource;
-    /**
-     * Grant breadth for an `"approved"` decision. `"always"` writes
-     * settings.json and must therefore be an explicitly confirmed choice,
-     * never a default.
-     */
+    /** Grant breadth for an `"approved"` decision. `"always"` writes settings.json and must therefore be an explicitly confirmed choice, never a default. */
     scope: DeferredGrantScope;
-    /**
-     * Explicit acknowledgement of adjacency warnings. Never defaulted to
-     * true: this is the same widening gate the foreground card enforces
-     * with its warning checkbox, and it lives in
-     * `dispatchPermissionDirCommand` for both callers.
-     */
+    /** Explicit acknowledgement of adjacency warnings. Never defaulted to true: this is the same widening gate the
+     * foreground card enforces with its warning checkbox, and it lives in `dispatchPermissionDirCommand` for both callers. */
     acknowledgeWarnings: boolean;
   }) => {
     const pm = conversationLoop.permissionManager;
@@ -756,12 +929,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         return { ok: false as const, error: "permission-audit-not-ready" };
       }
 
-      // An approval must GRANT something. The original call is long dead —
-      // its turn ended and its tool_use_id is consumed — so approving can
-      // only mean "make the next equivalent call succeed". When the lane
-      // recorded no reconstructable grant there is nothing to make succeed,
-      // and recording an approval would tell the user their click did
-      // something it did not. Refuse instead.
+      // An approval must GRANT something. The original call is long dead; its turn ended and its tool_use_id is consumed; so approving can only mean "make the next equivalent call succeed".
+      // When the lane recorded no reconstructable grant there is nothing to make succeed, and recording an approval would tell the user their click did something it did not. Refuse instead.
       if (request.decision === "approved") {
         if (!current.grant) {
           return { ok: false as const, error: "no-grant-available" };
@@ -770,8 +939,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           "../../permissions/permission-slash.js"
         );
         const lifecycle = getWorkspaceRootLifecycle();
-        // Mirrors the dirDispatch handler: a settings mutation must never
-        // fall back to the slash dispatcher's settings-only path.
+        // Mirrors the dirDispatch handler: a settings mutation must never fall back to the slash dispatcher's settings-only path.
         if (request.scope === "always" && !lifecycle) {
           return { ok: false as const, error: "workspace lifecycle unavailable" };
         }
@@ -786,9 +954,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
           lifecycle,
         );
         if (!dirResult.ok) {
-          // `requiresAcknowledgement` is the adjacency gate — the same one
-          // the foreground card renders as a warning checkbox. Pass it back
-          // so the caller can ask, rather than acknowledging on their behalf.
+          // `requiresAcknowledgement` is the adjacency gate; the same one the foreground card renders as a
+          // warning checkbox. Pass it back so the caller can ask, rather than acknowledging on their behalf.
           return {
             ok: false as const,
             error: "grant-failed",
@@ -845,21 +1012,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
   };
 
-  /**
-   * Put a newly deferred entry to the user as a question, in the tile whose
-   * turn deferred it.
-   *
-   * A deferred approval is a question — "may this run?" — so it is drawn by the
-   * card every other question uses instead of by a widget of its own, and it
-   * belongs to the conversation that raised it rather than to the window. An
-   * entry with no conversation (local API, plugin panel) is not asked; the
-   * queue dialog stays its surface.
-   *
-   * "Approve" is offered only when the entry recorded a grant, because the
-   * resolve path refuses an approval that would grant nothing — an option that
-   * can only fail is not an option. Leaving the question unanswered keeps the
-   * entry pending, which is what the third choice says out loud.
-   */
+  /** Ask in the originating conversation; entries without one remain in the queue dialog.
+   * Offer approval only with a recorded grant; unanswered questions remain pending. */
   const askDeferredApproval = async (entry: DeferredEntry): Promise<void> => {
     const gate = deps.askUserQuestionGate;
     if (!gate || !entry.sessionId) return;
@@ -890,31 +1044,25 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       id: entry.id,
       decision: answer === approveChoice ? "approved" : "rejected",
       approvalSource: "question-card",
-      // The narrowest breadth the lane offers. Widening writes settings.json,
-      // which is a choice the queue dialog states in full; a three-word card
-      // choice cannot state it, so it never makes it.
+      // The narrowest breadth the lane offers. Widening writes settings.json, which is a choice the
+      // queue dialog states in full; a three-word card choice cannot state it, so it never makes it.
       scope: NARROWEST_DEFERRED_SCOPE,
-      // The adjacency gate is a warning list plus a checkbox, which this card
-      // has no room to show. An unacknowledged approval fails here and the
-      // entry stays pending for the queue dialog, which does show them —
-      // acknowledging on the user's behalf is the one thing it must not do.
+      // The adjacency gate is a warning list plus a checkbox, which this card has no room to show. An unacknowledged approval fails here and
+      // the entry stays pending for the queue dialog, which does show them; acknowledging on the user's behalf is the one thing it must not do.
       acknowledgeWarnings: false,
     });
     if (!result.ok) {
       log.warn("deferred approval answer not applied: %s", result.error);
     }
   };
-  // Nothing awaits the question: the deferred call's turn is over, so the ask
-  // runs on its own and the catch is what keeps a rejected promise from
-  // escaping into the process.
+  // Nothing awaits the question: the deferred call's turn is over, so the ask runs on its own and the catch is what keeps a rejected promise from escaping into the process.
   conversationLoop.permissionManager?.setDeferredEntryAsk((entry) => {
     askDeferredApproval(entry).catch((err: unknown) => {
       log.warn("deferred approval could not be asked: %s", (err as Error).message);
     });
   });
 
-  // Resolve a pending entry — gated. The renderer's button click
-  // dispatches with `decision` ∈ {"approved","rejected"}.
+  // Resolve a pending entry; gated. The renderer's button click dispatches with `decision` ∈ {"approved","rejected"}.
   ipcMain.handle(
     PERMISSIONS.deferredResolve,
     async (
@@ -924,10 +1072,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         decision: "approved" | "rejected";
         reason?: string;
         intent?: unknown;
-        /**
-         * Provenance of the approval gesture. Required: callers declare which
-         * surface the user gestured on so the audit chain records it.
-         */
+        /** Provenance of the approval gesture. Required: callers declare which surface the user gestured on so the audit chain records it. */
         approvalSource: DeferredApprovalSource;
         scope?: DeferredGrantScope;
         acknowledgeWarnings?: boolean;
@@ -963,17 +1108,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         decision: params.decision,
         ...(params.reason === undefined ? {} : { reason: params.reason }),
         approvalSource: params.approvalSource,
-        // Absent scope resolves narrow. An "always" grant only happens when
-        // the caller said so.
+        // Absent scope resolves narrow. An "always" grant only happens when the caller said so.
         scope: params.scope ?? NARROWEST_DEFERRED_SCOPE,
         acknowledgeWarnings: params.acknowledgeWarnings === true,
       });
     },
   );
 
-  // ── Permission policy — `/permission audit show|verify` IPC handlers ─────
-  // Audit entries can contain DLP-redacted tool inputs and decision
-  // metadata; gated so foreign frames cannot harvest them.
+  // Audit entries can contain DLP-redacted tool inputs and decision metadata; gated so foreign frames cannot harvest them.
   ipcMain.handle(
     PERMISSIONS.auditShow,
     async (e, args: { last?: number }) => {
@@ -1055,10 +1197,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   ipcMain.handle(PERMISSIONS.userApprovalRecord, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRecord, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
-    // Issue #798: parity with peer mutating handlers (addRule, removeRule,
-    // setMode, dirDispatch, reviewerDispatch, deferredResolve, policySet).
-    // Gates on user-keyboard freshness so a synthetic record submission
-    // from a compromised renderer cannot record without an active gesture.
+    // parity with peer mutating handlers (addRule, removeRule, setMode, dirDispatch, reviewerDispatch, deferredResolve, policySet).
+    // Gates on user-keyboard freshness so a synthetic record submission from a compromised renderer cannot record without an active gesture.
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
     const scope = body.scope;
@@ -1066,22 +1206,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     const displayedVerdictAtApproval = body.verdictAtApproval;
     const nlJustification = body.nlJustification;
     const args = body.args;
-    // Issue #799 — server-side ApprovalRequest binding.
-    //
-    // Pre-fix this handler trusted the renderer to faithfully echo back
-    // `body.toolName`, `body.source`, `body.trustOrigin`, and
-    // `body.approvalCacheKey`. A renderer XSS could swap any of these and
-    // make the recorded entry a memory hit for a different
-    // (toolName, source, trustOrigin, approvalCacheKey) tuple than the
-    // one the main process emitted — defeating cache identity isolation.
-    //
-    // Fix: the renderer now sends `requestId` (the original
-    // ApprovalRequest.id). The handler reads the canonical
-    // toolName/source/trustOrigin/approvalCacheKey from the in-flight
-    // ApprovalGate entry via `getRequestSnapshot()`. The renderer can no
-    // longer spoof identity fields or the input — it can only contribute the
-    // user's decision metadata (decision, scope, displayed verdict and NL
-    // justification) plus the user-intent freshness gate.
+    // Bind approval identity and input to the host's pending requestId; renderer-supplied identity would permit cache-key spoofing.
+    // Accept only decision metadata after the fresh-user-intent gate.
     const requestId = body.requestId;
     if (typeof requestId !== "string" || requestId.length === 0) {
       return { ok: false, error: "invalid-request-id", message: "user-approval record: requestId required (server-side ApprovalRequest binding)" };
@@ -1097,20 +1223,59 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (decision === "deny" && scope !== "persistent") {
       return { ok: false, error: "deny-requires-persistent-scope", message: "Exact deny decisions are managed persistently in Settings" };
     }
-    // Server-side SOT lookup. If the approval already resolved/timed out
-    // or never existed, reject — we never silently create an orphan entry
-    // that the renderer can later use to fish for memory hits.
+    // Server-side SOT lookup. If the approval already resolved/timed out or never existed, reject; we
+    // never silently create an orphan entry that the renderer can later use to fish for memory hits.
     const snapshot = approvalGate?.getRequestSnapshot(requestId) ?? null;
     if (!snapshot) {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
+    if (body.rule !== undefined) {
+      const rule = payloadRecord(body.rule);
+      const context = snapshot.shellRule;
+      if (!context || typeof rule.pattern !== "string" || (rule.scope !== "project" && rule.scope !== "user") || scope !== "persistent") {
+        return { ok: false, error: "invalid-rule", message: "A command rule requires a live shell request" };
+      }
+      const command = snapshot.args && typeof snapshot.args === "object" ? (snapshot.args as Record<string, unknown>).command : undefined;
+      // Same normalization as the dock preview; the store itself stays strict.
+      const pattern = normalizeRuleSpecifierInput(rule.pattern);
+      // A rule the store refuses or that cannot cover the live command is invalid whatever the request allows, so it is checked first.
+      try {
+        if (typeof command !== "string" || !shellRuleCoversCommand(pattern, decision, command, context.projectCwd)) {
+          return { ok: false, error: "invalid-rule", message: "The rule does not cover this command" };
+        }
+      } catch (error) {
+        return { ok: false, error: "invalid-rule", message: errorMessage(error) };
+      }
+      if (decision === "allow" && !context.persistentAllowed) {
+        return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create an allow rule" };
+      }
+      if (displayedVerdictAtApproval !== snapshot.verdictAtApproval) return { ok: false, error: "verdict-mismatch" };
+      const pm = conversationLoop.permissionManager;
+      if (!pm) return { ok: false, error: "no-permission-manager" };
+      try {
+        await pm.addRulePersist({ pattern, action: decision }, rule.scope === "project"
+          ? { kind: "project", projectCwd: context.projectCwd } : { kind: "user" });
+      } catch (error) {
+        // A rule that validated but could not be stored: corrupt file, lock or I/O.
+        return { ok: false, error: "rule-save-failed", message: errorMessage(error) };
+      }
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:remembered] store=rules decision=${decision} scope=${rule.scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+      });
+      broadcastPermissionConfigChanged(deps);
+      return { ok: true };
+    }
+    if (decision === "allow" && scope === "persistent" && snapshot.shellRule) {
+      return { ok: false, error: "command-rule-required", message: "A persistent shell allow must record the offered command rule" };
+    }
     if (!snapshot.durableApprovalRecordAllowed) {
       return { ok: false, error: "one-shot-not-recordable", message: "user-approval record: one-shot approvals cannot be recorded" };
     }
-    // An allow for a session-only scope (browser actions) is never written to
-    // disk, whatever the renderer asked for: the lifetime is a property of the
-    // host-derived scope, not of the button that was pressed. (A persistent
-    // exact deny stays available from Settings; it only ever narrows.)
+    // An allow for a session-only scope (browser actions) is never written to disk, whatever the renderer asked for: the lifetime is a property of
+    // the host-derived scope, not of the button that was pressed. (A persistent exact deny stays available from Settings; it only ever narrows.)
     if (
       decision === "allow" &&
       scope === "persistent" &&
@@ -1123,15 +1288,21 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       return { ok: false, error: "verdict-mismatch", message: "user-approval record: displayed verdict does not match the host request" };
     }
     const verdictAtApproval = snapshot.verdictAtApproval;
-    // Conservative risk display during a failed assessment does not decide
-    // persistence. Only the gate's live eligibility snapshot can authorize it.
+    // Conservative risk display during a failed assessment does not decide persistence. Only the gate's live eligibility snapshot can authorize it.
+    if (decision === "allow" && scope === "session" && snapshot.shellRule && !snapshot.shellRule.sessionAllowed) {
+      return { ok: false, error: "one-shot-not-recordable", message: "This request cannot create a session approval" };
+    }
+    // Every session approval (shell, browser, terminal, any exact tool approval) belongs to the
+    // root conversation of the request, so one without a conversation has nothing to be scoped to.
+    if (scope === "session" && !snapshot.sessionId) {
+      return { ok: false, error: "missing-session", message: "This request has no conversation session" };
+    }
     if (decision === "allow" && (!snapshot.persistentAllowAllowed || !snapshot.workingDirectoryIdentity)) {
       return { ok: false, error: verdictAtApproval === "high" ? "high-is-one-shot" : "one-shot-not-recordable", message: "This request requires a one-shot approval and cannot be recorded" };
     }
     try {
-      // Canonicalize the host-owned raw input from ApprovalGate. The renderer
-      // still sends `args` for wire compatibility and display, but it cannot
-      // swap the exact tuple that is persisted from Settings or the card.
+      // Canonicalize the host-owned raw input from ApprovalGate. The renderer still sends `args` for wire
+      // compatibility and display, but it cannot swap the exact tuple that is persisted from Settings or the card.
       let canonicalArgs: string;
       try {
         if (snapshot.args === null || typeof snapshot.args !== "object" || Array.isArray(snapshot.args)) {
@@ -1141,26 +1312,30 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       } catch {
         return { ok: false, error: "args-not-json", message: "user-approval record: args must be canonicalizable JSON" };
       }
-      // Authority fields come from the main-process snapshot, never the
-      // renderer body. The renderer contribution is reduced to decision
-      // metadata; the exact tool/input identity remains host-owned.
+      // Authority fields come from the main-process snapshot, never the renderer body. The renderer
+      // contribution is reduced to decision metadata; the exact tool/input identity remains host-owned.
       await recordApproval(snapshot.toolName, canonicalArgs, snapshot.source, {
         decision,
         scope,
+        ...(scope === "session" ? { sessionId: snapshot.sessionId } : {}),
+        ...(snapshot.projectCwd === undefined ? {} : { projectCwd: snapshot.projectCwd }),
         verdictAtApproval,
         nlJustification: typeof nlJustification === "string" ? nlJustification : null,
         trustOrigin: snapshot.trustOrigin,
-        // Throws (→ "managed") when the host request carried a key without
-        // its identity mode: never guess which identity to persist under.
+        // Throws (→ "managed") when the host request carried a key without its identity mode: never guess which identity to persist under.
         approvalCacheKey: approvalCacheKeyIdentity(snapshot.approvalCacheKey, snapshot.approvalMemory),
         ...(decision === "allow" ? {
           workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
           riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
         } : {}),
       });
-      // User-approval store mutation — outside PermissionManager, so
-      // emit the broadcast explicitly to keep the Active Approvals view
-      // in multi-window PermissionsTab fresh.
+      auditLogger.log({
+        timestamp: new Date().toISOString(),
+        sessionId: snapshot.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+        type: "approval",
+        output: `[approval:remembered] store=exact decision=${decision} scope=${scope} toolName=${JSON.stringify(snapshot.toolName)} source=${JSON.stringify(snapshot.source)}`,
+      });
+      // User-approval store mutation; outside PermissionManager, so emit the broadcast explicitly to keep the Active Approvals view in multi-window PermissionsTab fresh.
       broadcastPermissionConfigChanged(deps);
       return { ok: true };
     } catch (err) {
@@ -1170,12 +1345,8 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(PERMISSIONS.userApprovalRevoke, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRevoke, e); return UNAUTHORIZED_FRAME; }
-    // Issue #798: revoke is destructive (forces re-approval). Gate on
-    // user-keyboard intent for parity with peer mutating handlers.
-    //
-    // Payload contract: object `{ key, intent }`. The preload bridge
-    // auto-injects `intent`; untrusted callers that submit a raw string
-    // key will fail the `payloadRecord` narrow and return `invalid-key`.
+    // revoke is destructive (forces re-approval). Gate on user-keyboard intent for parity with peer mutating handlers. Payload contract: object `{ key, intent
+    // }`. The preload bridge auto-injects `intent`; untrusted callers that submit a raw string key will fail the `payloadRecord` narrow and return `invalid-key`.
     const body = payloadRecord(payload);
     const intent = requireUserKeyboardIntent(body.intent);
     if (!intent.ok) return intent;
@@ -1185,8 +1356,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
     try {
       await revokeApprovalByKey(key.trim());
-      // Destructive — emit broadcast so the Active Approvals table refreshes
-      // in any concurrently open PermissionsTab.
+      // Destructive; emit broadcast so the Active Approvals table refreshes in any concurrently open PermissionsTab.
       broadcastPermissionConfigChanged(deps);
       return { ok: true };
     } catch (err) {
@@ -1194,12 +1364,9 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     }
   });
 
-  ipcMain.handle(PERMISSIONS.userApprovalList, async (e) => {
+  ipcMain.handle(PERMISSIONS.userApprovalList, async (e, payload?: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalList, e); return UNAUTHORIZED_FRAME; }
-    try {
-      return await listApprovals();
-    } catch {
-      return [];
-    }
+    if (payloadRecord(payload).scope === "session") return listSessionApprovals();
+    return listApprovals();
   });
 }

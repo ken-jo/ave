@@ -32,6 +32,7 @@ import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../engine/__tests__/conversation-loop-test-helpers.js";
 import { createTracer, type TraceEntry } from "../../observability/conversation-trace.js";
 import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureAncestorPermissions } from "../../__tests__/support/native-executable.js";
+import { createPrivateDirectory } from "../codex-executable-location.js";
 import type { CodexExecutableArtifact } from "../codex-executable-artifact.js";
 import type { LLMProvider } from "../../engine/llm/types.js";
 
@@ -73,16 +74,16 @@ interface Harness {
 const harnesses: Harness[] = [];
 const TEST_RUNTIME_PARENT = tmpdir();
 
-function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Harness {
+async function createHarness(onMessage?: (message: JsonRecord, harness: Harness) => boolean | void): Promise<Harness> {
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-conversation-runtime-"));
   if (process.platform !== "win32") normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
   const sqliteHome = join(runtimeRoot, "sqlite");
   const workspaceDir = join(runtimeRoot, "workspace");
-  mkdirSync(runtimeHome);
-  mkdirSync(sqliteHome);
-  mkdirSync(workspaceDir);
-  const artifact = codexExecutableArtifactFixture(runtimeHome);
+  await createPrivateDirectory(runtimeHome);
+  await createPrivateDirectory(sqliteHome);
+  await createPrivateDirectory(workspaceDir);
+  const artifact = await codexExecutableArtifactFixture(runtimeHome);
 
   const child = new FakeAppServerProcess();
   const spawnCalls: Harness["spawnCalls"] = [];
@@ -204,8 +205,7 @@ describe("app-server argv", () => {
 });
 
 describe("isCodexAppServerRequestId", () => {
-  // Both Codex transports share this predicate. It is the only gate between a
-  // subprocess-supplied reverse-RPC id and code that echoes or forwards that id,
+  // Both Codex transports share this predicate. It is the only gate between a subprocess-supplied reverse-RPC id and code that echoes or forwards that id,
   // so the accepted set is pinned here rather than left to either call site.
   it("accepts integers and plain bounded strings", () => {
     expect(isCodexAppServerRequestId(0)).toBe(true);
@@ -238,7 +238,7 @@ describe("native RPC timeout context", () => {
     async (operation) => {
       vi.useFakeTimers();
       try {
-        const harness = createHarness((message, current) => {
+        const harness = await createHarness((message, current) => {
           if (message.method === operation) return;
           if (message.method === "initialize") reply(current.child, requestId(message), {});
           if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
@@ -265,7 +265,7 @@ describe("native RPC timeout context", () => {
   it("does not apply the RPC response deadline to an acknowledged running turn", async () => {
     vi.useFakeTimers();
     try {
-      const harness = createHarness((message, current) => {
+      const harness = await createHarness((message, current) => {
         if (message.method === "initialize") reply(current.child, requestId(message), {});
         if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
         if (message.method === "turn/start") reply(current.child, requestId(message), { turn: { id: "turn-1", status: "inProgress" } });
@@ -285,11 +285,11 @@ describe("native RPC timeout context", () => {
 
   it("writes an actual missing RPC response through the provider and collector to the error trace", async () => {
     vi.useFakeTimers();
-    const verification = createHarness((message, current) => {
+    const verification = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
     });
@@ -328,7 +328,7 @@ describe("native RPC timeout context", () => {
 
 describe("CodexConversationRuntime", () => {
   it("refuses a qualified executable replaced before app-server spawn", async () => {
-    const harness = createHarness();
+    const harness = await createHarness();
     chmodSync(harness.artifact.executable, 0o700);
     writeFileSync(harness.artifact.executable, "#!/bin/sh\necho substituted\n");
     chmodSync(harness.artifact.executable, 0o500);
@@ -336,7 +336,7 @@ describe("CodexConversationRuntime", () => {
     expect(harness.spawnCalls).toEqual([]);
   });
   it("rejects a non-string method envelope before it can consume a pending response", async () => {
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method !== "initialize") return;
       current.child.stdout.write(`${JSON.stringify({
         id: requestId(message),
@@ -358,7 +358,7 @@ describe("CodexConversationRuntime", () => {
 
   it("distinguishes a running process error from a start failure after initialization", async () => {
     vi.spyOn(managedChildProcesses, "forceKillManagedChildProcess").mockImplementation(() => undefined);
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         current.child.pid = 123;
         reply(current.child, requestId(message), {});
@@ -408,11 +408,11 @@ describe("CodexConversationRuntime", () => {
     { phase: "stdout-parse", kind: "protocol" },
     { phase: "turn-completion", kind: "server", statusCode: 503 },
   ] satisfies ProviderTransportDiagnostics[])("carries $phase failure through the service and provider to the collector", async (transport) => {
-    const verification = createHarness((message, current) => {
+    const verification = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
       if (message.method !== "turn/start") return;
@@ -426,11 +426,11 @@ describe("CodexConversationRuntime", () => {
         } });
       }
     });
-    const reverification = createHarness((message, current) => {
+    const reverification = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
     });
-    const nextRuntime = createHarness();
+    const nextRuntime = await createHarness();
     const { service, runtimes, audit } = await createServiceForRuntimes(harness, [
       verification.runtime, harness.runtime, reverification.runtime, nextRuntime.runtime,
     ]);
@@ -468,11 +468,11 @@ describe("CodexConversationRuntime", () => {
   ])("preserves $label through the runtime, provider and conversation collector", async ({ text, reasoning }) => {
     const completedText = text.length ? text.join("") : "Snapshot text is not a stream fallback.";
     const completedThought = reasoning.length ? reasoning.join("") : "Snapshot reasoning is not a stream fallback.";
-    const verification = createHarness((message, current) => {
+    const verification = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "account/read") reply(current.child, requestId(message), { account: { type: "chatgpt" } });
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
       if (message.method !== "turn/start") return;
@@ -531,7 +531,7 @@ describe("CodexConversationRuntime", () => {
     async (method) => {
       const deltas: string[] = [];
       const accepted = [" ".repeat(256_000), "\u00a0".repeat(128_000), "é".repeat(128_000)];
-      const harness = createHarness((message, current) => {
+      const harness = await createHarness((message, current) => {
         if (message.method === "initialize") reply(current.child, requestId(message), {});
         if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
         if (message.method !== "turn/start") return;
@@ -570,7 +570,7 @@ describe("CodexConversationRuntime", () => {
   );
 
   it.each(["", " \t\r\n"])("still rejects a blank complete input %j before spawning", async (text) => {
-    const harness = createHarness();
+    const harness = await createHarness();
     await expect(harness.runtime.startTurn({ text })).rejects.toMatchObject({ code: "codex-operation-failed" });
     expect(harness.spawnCalls).toHaveLength(0);
   });
@@ -579,7 +579,7 @@ describe("CodexConversationRuntime", () => {
     const textDeltas: unknown[] = [];
     const reasoningDeltas: unknown[] = [];
     const completions: unknown[] = [];
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), { userAgent: "test" });
         return;
@@ -589,8 +589,7 @@ describe("CodexConversationRuntime", () => {
         return;
       }
       if (message.method === "turn/start") {
-        // Notifications can arrive before the turn/start response. The client
-        // must correlate them to the pending active turn without losing deltas.
+        // Notifications can arrive before the turn/start response. The client must correlate them to the pending active turn without losing deltas.
         notify(current.child, "item/agentMessage/delta", {
           threadId: "thread-1",
           turnId: "turn-1",
@@ -713,7 +712,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("keeps only the newest exact Codex last usage snapshot across the turn/start reply race", async () => {
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -795,7 +794,7 @@ describe("CodexConversationRuntime", () => {
 
   it("stages a subscription image as localImage bytes and removes it after completion", async () => {
     let stagedPath: string | undefined;
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -832,7 +831,7 @@ describe("CodexConversationRuntime", () => {
     const green = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGNg+M/wHwAEAQH/cetH5QAAAABJRU5ErkJggg==";
     const stagedPaths: string[] = [];
     const stagedImages: Buffer[] = [];
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
       if (message.method !== "turn/start") return;
@@ -882,8 +881,7 @@ describe("CodexConversationRuntime", () => {
       ],
     });
     await expect(harness.runtime.startTurn(payload)).resolves.toMatchObject({ status: "completed" });
-    // User bytes remain untouched; governed images may be re-encoded, so their
-    // contract is the decoded pixels and attachment order, not PNG compression.
+    // User bytes remain untouched; governed images may be re-encoded, so their contract is the decoded pixels and attachment order, not PNG compression.
     expect(stagedImages[0]).toEqual(Buffer.from(green, "base64"));
     const stagedPixels = [];
     for (const image of stagedImages) {
@@ -898,7 +896,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("rejects unprojected native image counts above the limit before spawning", async () => {
-    const harness = createHarness();
+    const harness = await createHarness();
     await expect(harness.runtime.startTurn({
       text: "Inspect the loaded images.",
       attachments: Array.from({ length: MAX_SUBSCRIPTION_PROMPT_ATTACHMENTS + 1 }, () => ({
@@ -909,7 +907,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("rejects unprojected native image bytes above the limit before staging", async () => {
-    const harness = createHarness();
+    const harness = await createHarness();
     const bytes = Buffer.alloc(Math.floor(MAX_SUBSCRIPTION_ATTACHMENT_BYTES / 2) + 1);
     Buffer.from("iVBORw0KGgo=", "base64").copy(bytes);
     const data = bytes.toString("base64");
@@ -928,7 +926,7 @@ describe("CodexConversationRuntime", () => {
     const data = bytes.toString("base64");
     const userImageCount = limit === "count" ? MAX_SUBSCRIPTION_PROMPT_ATTACHMENTS : 1;
     const stagedPaths: string[] = [];
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
       if (message.method !== "turn/start") return;
@@ -960,7 +958,7 @@ describe("CodexConversationRuntime", () => {
 
   it("removes a staged localImage when turn/start fails", async () => {
     let stagedPath: string | undefined;
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -988,7 +986,7 @@ describe("CodexConversationRuntime", () => {
 
   it("removes a staged localImage when an active turn is interrupted", async () => {
     let stagedPath: string | undefined;
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1050,7 +1048,7 @@ describe("CodexConversationRuntime", () => {
           close: async () => undefined,
         } as unknown as fs.FileHandle;
       }) as unknown as typeof fs.open);
-      const harness = createHarness((message, current) => {
+      const harness = await createHarness((message, current) => {
         if (message.method === "initialize") {
           reply(current.child, requestId(message), {});
           return;
@@ -1076,7 +1074,7 @@ describe("CodexConversationRuntime", () => {
   }
 
   it("removes only stale exact staged image files before a new staging session", async () => {
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1111,7 +1109,7 @@ describe("CodexConversationRuntime", () => {
 
   it("projects a safe TPM diagnostic from a turn/start response error", async () => {
     const rawDetail = "429 rate limit for private-plan: tokens per minute account=secret";
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1166,7 +1164,7 @@ describe("CodexConversationRuntime", () => {
 
   it("projects a safe context diagnostic from a failed turn completion", async () => {
     const rawDetail = "context_length_exceeded for private conversation history";
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1213,7 +1211,7 @@ describe("CodexConversationRuntime", () => {
     { response: null, readiness: "unknown" },
   ])("fails closed with bounded internal readiness $readiness", async ({ response, readiness }) => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1238,7 +1236,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("verifies the shared ChatGPT account without creating a thread or a billable turn", async () => {
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1268,7 +1266,7 @@ describe("CodexConversationRuntime", () => {
   });
 
   it("fails closed when the shared runtime does not report ChatGPT authentication", async () => {
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1301,7 +1299,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolve) => { signalTurnStart = resolve; });
     const onTextDelta = vi.fn();
     const onDynamicToolCall = vi.fn(async () => "must not run");
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") {
         reply(current.child, requestId(message), { thread: { id: "thread-1" } });
@@ -1352,7 +1350,7 @@ describe("CodexConversationRuntime", () => {
     "subAgentActivity", "webSearch", "imageView", "sleep", "imageGeneration",
     "enteredReviewMode", "exitedReviewMode", "unknownNativeItem",
   ])("terminates the transport when an ungoverned %s item starts", async (type) => {
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1422,7 +1420,7 @@ describe("CodexConversationRuntime", () => {
     const observations: unknown[] = [];
     let sentRequests = false;
     let repliesSeen = 0;
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1530,7 +1528,7 @@ describe("CodexConversationRuntime", () => {
   it("serializes the shared UTF-8 description budget unchanged and rejects excess before spawning", async () => {
     const description = "é".repeat(SUBSCRIPTION_TOOL_BRIDGE_CONTRACT.maxDescriptionBytes / 2);
     const dynamicTools = [{ name: "describe_project", description, inputSchema: { type: "object", properties: {} } }];
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") reply(current.child, requestId(message), {});
       if (message.method === "thread/start") reply(current.child, requestId(message), { thread: { id: "thread-1" } });
       if (message.method === "turn/start") {
@@ -1543,7 +1541,7 @@ describe("CodexConversationRuntime", () => {
       .resolves.toMatchObject({ status: "completed" });
     expect(methodMessages(harness, "thread/start")[0]?.params).toMatchObject({ dynamicTools: [{ description }] });
     expect(onDynamicToolCall).not.toHaveBeenCalled();
-    const invalid = createHarness();
+    const invalid = await createHarness();
     await expect(invalid.runtime.startTurn({
       text: "Describe the project", dynamicTools: [{ ...dynamicTools[0]!, description: description + "x" }],
     }, { onDynamicToolCall })).rejects.toMatchObject({ code: "codex-operation-failed" });
@@ -1558,7 +1556,7 @@ describe("CodexConversationRuntime", () => {
     }] as const;
     const onDynamicToolCall = vi.fn(async () => "must not run");
     let nativeReplies = 0;
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1625,7 +1623,7 @@ describe("CodexConversationRuntime", () => {
     const waitForTurnStart = new Promise<void>((resolveTurnStart) => {
       turnStartSeen = resolveTurnStart;
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1670,7 +1668,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1718,7 +1716,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1764,7 +1762,7 @@ describe("CodexConversationRuntime", () => {
       signalTurnStart = resolveTurnStart;
     });
     const completed = vi.fn();
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1837,7 +1835,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1868,7 +1866,7 @@ describe("CodexConversationRuntime", () => {
     const waitForTurnStart = new Promise<void>((resolveTurnStart) => {
       turnStartSeen = resolveTurnStart;
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1913,7 +1911,7 @@ describe("CodexConversationRuntime", () => {
       });
       return "Ave tool result.";
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -1992,7 +1990,7 @@ describe("CodexConversationRuntime", () => {
     const turnStartReceived = new Promise<void>((resolveTurnStart) => {
       signalTurnStart = resolveTurnStart;
     });
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -2059,7 +2057,7 @@ describe("CodexConversationRuntime", () => {
 
   it("rejects malformed dynamic tool requests without invoking Ave", async () => {
     const onDynamicToolCall = vi.fn(async () => "must not run");
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -2108,7 +2106,7 @@ describe("CodexConversationRuntime", () => {
 
   it("rejects a dynamic tool request for another thread or turn", async () => {
     const onDynamicToolCall = vi.fn(async () => "must not run");
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -2179,7 +2177,7 @@ describe("CodexConversationRuntime", () => {
 
   it("rejects unknown dynamic tools even for the active Ave turn", async () => {
     const onDynamicToolCall = vi.fn(async () => "must not run");
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;
@@ -2228,7 +2226,7 @@ describe("CodexConversationRuntime", () => {
   });
   it("does not start a Codex thread or turn when aborted during initialization", async () => {
     let initializeRequest: JsonRecord | undefined;
-    const harness = createHarness((message) => {
+    const harness = await createHarness((message) => {
       if (message.method === "initialize") initializeRequest = message;
     });
     const abortController = new AbortController();
@@ -2249,7 +2247,7 @@ describe("CodexConversationRuntime", () => {
 
   it("does not start a Codex turn when aborted while creating its thread", async () => {
     let threadStartRequest: JsonRecord | undefined;
-    const harness = createHarness((message, current) => {
+    const harness = await createHarness((message, current) => {
       if (message.method === "initialize") {
         reply(current.child, requestId(message), {});
         return;

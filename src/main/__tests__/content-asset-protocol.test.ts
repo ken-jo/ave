@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { CONTENT_ASSET_CUSTOM_SCHEME, parseContentAssetUrl, respondToContentAsset } from "../content-asset-protocol.js";
 
-/** A request from the app's own window: a `file:` page, whose origin is opaque. */
+// A request from the app's own window: a `file:` page, whose origin is opaque.
 const APP = { origin: "null", referrer: "" };
 const TOKEN = "t0123456789abcdef0123456789abcdef";
 const base = `ave-content://${TOKEN}`;

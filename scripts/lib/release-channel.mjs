@@ -1,35 +1,12 @@
-/**
- * The R2 release channel: where installed apps update from and where the
- * website's download buttons point.
- *
- * `package.json` `build.publish` holds exactly one `generic` entry. That entry
- * is what electron-builder embeds as the packaged `app-update.yml`, and its
- * URL is the one source for everything below:
- *
- *   <origin>/<feed prefix>/latest.yml, latest-mac.yml, latest-linux.yml
- *       the update feed. electron-updater requests `<url>/<channel>.yml` and
- *       resolves each `url:` inside it against the same base, so the feed and
- *       the files it names live under one prefix.
- *   <origin>/<feed prefix>/<Product>-<version>-<rest>
- *       versioned installers and their `.blockmap` sidecars. The version in
- *       the name keeps every release, and electron-updater finds the previous
- *       version's blockmap by replacing the version in the new file's URL.
- *   <origin>/latest/<rest>
- *       stable download aliases for the website, server-side copies of the
- *       versioned installers that carry the versioned name as their download
- *       filename.
- *
- * `planR2Upload` turns a staging directory listing into the ordered upload
- * plan; `scripts/upload-release-r2.mjs` executes it.
- */
+// Derive update-feed, versioned installer and stable-alias paths from the single publish URL.
+// Keep feeds and referenced files under the same prefix.
 
 export const FEED_FILES = Object.freeze(["latest.yml", "latest-mac.yml", "latest-linux.yml"]);
 const LATEST_PREFIX = "latest/";
 const REQUIRED_SECRETS = Object.freeze(["R2_ACCOUNT_ID", "R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_BUCKET"]);
 
-/** Versioned objects never change once uploaded. */
 export const IMMUTABLE_CACHE = "public, max-age=31536000, immutable";
-/** The feed and the `latest/` aliases change every release: always revalidate. */
+// Feed files and stable aliases change each release and must always revalidate.
 export const REVALIDATE_CACHE = "public, no-cache, must-revalidate";
 
 const INSTALLER_TYPES = Object.freeze({
@@ -51,7 +28,6 @@ function escapeRegExp(text) {
   return text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
 }
 
-/** The single `generic` publish entry, held to the shape the updater needs. */
 export function releaseChannel(packageJson) {
   const publish = packageJson?.build?.publish;
   if (!Array.isArray(publish) || publish.length !== 1) {
@@ -92,17 +68,11 @@ export function releaseChannel(packageJson) {
   });
 }
 
-/** The public URL of the stable alias for a versioned installer suffix. */
 export function latestDownloadUrl(channel, rest) {
   return `${channel.origin}/${channel.latestPrefix}${rest}`;
 }
 
-/**
- * The file names and version an electron-builder `latest*.yml` names. The
- * format is electron-builder's own fixed serialization, so this reads the
- * `version:`, `url:` and `path:` keys line by line instead of pulling a YAML
- * parser into the publishing job.
- */
+// Read the updater's fixed feed serialization without adding a general YAML parser.
 export function feedReferences(text) {
   const unquote = (value) => value.replace(/^(['"])(.*)\1$/u, "$2");
   const version = /^version:\s*(.+?)\s*$/mu.exec(text)?.[1];
@@ -197,8 +167,7 @@ export function planR2Upload({ packageJson, tag, files, readFeed }) {
   return { channel, version, operations };
 }
 
-/** Names of required secrets that are unset or empty. GitHub passes a secret
- *  that does not exist as an empty string, so empty counts as missing. */
+// Empty secrets count as missing.
 export function missingSecrets(env) {
   return REQUIRED_SECRETS.filter((name) => typeof env[name] !== "string" || env[name].trim().length === 0);
 }

@@ -188,8 +188,8 @@ describe("ToolApprovalContent MCP elicitation form", () => {
       },
     })("hr-server");
 
-    // The resolver seam is declared as returning `unknown`; the resolver's own
-    // contract is `ElicitResult`, which is what the server would receive.
+    // The resolver seam is declared as returning `unknown`; the resolver's own contract is `ElicitResult`, which is what the
+    // server would receive.
     const result = (await resolve("q1", {
       method: "elicitation/create",
       mode: "form",

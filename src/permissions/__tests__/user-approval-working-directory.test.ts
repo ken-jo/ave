@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
@@ -60,7 +61,7 @@ describe("exact decisions scoped to the captured working directory", () => {
     expect(await lookupUserDecision("probe", "{}", "builtin", "user-keyboard", undefined, join(root, "second"))).toMatchObject({ decision: "deny" });
   });
 
-  it("freezes an alias before approval and does not retarget the saved grant", async () => {
+  it.skipIf(!canCreateSymlinks())("freezes an alias before approval and does not retarget the saved grant", async () => {
     const first = join(root, "first");
     const alias = join(root, "alias");
     symlinkSync(first, alias);
@@ -75,7 +76,7 @@ describe("exact decisions scoped to the captured working directory", () => {
     expect(await lookupApproval("probe", "{}", "builtin", undefined, undefined, first)).not.toBeNull();
     expect(await lookupApproval("probe", "{}", "builtin", undefined, undefined, alias)).toBeNull();
   });
-  it("keeps the displayed and recorded scope fixed while an approval is pending", async () => {
+  it.skipIf(!canCreateSymlinks())("keeps the displayed and recorded scope fixed while an approval is pending", async () => {
     const first = join(root, "first");
     const alias = join(root, "alias");
     symlinkSync(first, alias);

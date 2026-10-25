@@ -1,34 +1,9 @@
-/**
- * Sprint 4-D T4 — Host-side cross-plugin integration tests.
- *
- * Tests the event bus wiring in boot/types.ts (emitEvent / onEvent) with a
- * stub pluginRuntime. All scenarios run in-process — no Electron, no FS, no
- * real plugin code loaded.
- *
- * Scenario 1  — meeting.summary.created → calendar handler called
- * Scenario 2  — email.invite.detected   → calendar handler called
- * Scenario 3  — calendar.event.upcoming → meeting auto-start is deferred: no
- *               plugin subscribes to it, so there is no host behavior to test
- *               here. Its wiring belongs in the meeting plugin's own suite.
- * Scenario 4  — memory.private.secret   → event bus rejects (private namespace)
- * Scenario 5  — email.new emitted by a plugin that did not declare the email
- *               namespace in emittedEvents → dropped
- * Scenario 5b — email.new emitted by a plugin declaring email.* → delivered
- * Scenario 10 — emit gate: email plugin (declares email.*) cannot emit meeting.*
- *
- * Scenarios 6–9 and 11 removed: they tested locally-defined helpers (HTML
- * escape, OData escape, idempotency, PATCH-vs-POST, namespace duplicates) that
- * live in plugin repos and are already covered by calendar plugin PR #9 and
- * event-namespace-policy.test.ts. True cross-plugin integration lives in
- * plugin repos' own test suites.
- */
+/** Exercise host event routing in-process; plugin behavior belongs in plugin suites. */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// ─── Event bus under test (pure TS, no Electron deps) ────────────────────────
 import { emitEvent, onEvent, offEvent } from "../boot/types.js";
 
-// ─── Capability helpers ───────────────────────────────────────────────────────
 import {
   canEmitEvent,
   requiredCapabilityForEmit,
@@ -36,16 +11,7 @@ import {
   PUBLIC_EVENT_NAMESPACES,
 } from "../plugins/capabilities.js";
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-/**
- * Minimal stub that mimics the emittedEvents-gated emitEvent logic from
- * createHostApi (via the production `canEmitEvent` predicate), without touching
- * Electron or a real PluginRuntime. The second arg is the plugin's declared
- * `emittedEvents`; a gated namespace it did not declare is dropped + warned.
- */
+/** Use the production emit predicate without loading the plugin runtime. */
 function makeStubEmitEvent(pluginId: string, emittedEvents: string[]) {
   return (type: string, data?: Record<string, unknown>) => {
     if (!canEmitEvent(type, emittedEvents)) {
@@ -59,24 +25,17 @@ function makeStubEmitEvent(pluginId: string, emittedEvents: string[]) {
   };
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Test suite
-// ─────────────────────────────────────────────────────────────────────────────
-
 describe("Sprint 4-D T4 — cross-plugin event flow (host event bus)", () => {
-  // Collect all unsubscribe disposers so each test cleans up handlers.
   const disposers: Array<() => void> = [];
 
   afterEach(() => {
     for (const d of disposers.splice(0)) d();
   });
 
-  // ─── Scenario 1: meeting.summary.created → calendar ────────────────────
   it("Scenario 1 — meeting.summary.created triggers calendar handler", () => {
     const calendarHandler = vi.fn();
     disposers.push(onEvent("meeting.summary.created", calendarHandler));
 
-    // meeting plugin declares the meeting namespace via emittedEvents.
     const meetingEmit = makeStubEmitEvent("meeting", ["meeting.summary.created"]);
 
     const payload = {
@@ -99,12 +58,10 @@ describe("Sprint 4-D T4 — cross-plugin event flow (host event bus)", () => {
     );
   });
 
-  // ─── Scenario 2: email.invite.detected → calendar ──────────────────────
   it("Scenario 2 — email.invite.detected triggers calendar handler", () => {
     const calendarHandler = vi.fn();
     disposers.push(onEvent("email.invite.detected", calendarHandler));
 
-    // email plugin declares the email namespace via emittedEvents.
     const emailEmit = makeStubEmitEvent("email", ["email.invite.detected"]);
 
     const payload = {
@@ -126,12 +83,8 @@ describe("Sprint 4-D T4 — cross-plugin event flow (host event bus)", () => {
     );
   });
 
-  // ─── Scenario 4: private namespace → rejected ───────────────────────────
   it("Scenario 4 — memory.private.secret is classified as private and subscription is blocked at wiring time", () => {
-    // The event bus itself does not enforce namespace policy — that happens in
-    // boot/plugins.ts#registerManifestEventSubscriptions which calls
-    // classifySubscription() and skips private events. We verify the
-    // classification function used by that gating logic.
+    // Manifest subscription wiring, rather than the raw bus, rejects private namespaces.
 
     expect(classifySubscription("memory.private.secret")).toBe("private");
     expect(classifySubscription("memory.private.anything")).toBe("private");
@@ -139,44 +92,30 @@ describe("Sprint 4-D T4 — cross-plugin event flow (host event bus)", () => {
     expect(classifySubscription("audit.log")).toBe("private");
     expect(classifySubscription("dlp.redacted")).toBe("private");
 
-    // Verify that even if a rogue plugin somehow emits the event through the
-    // raw emitEvent bus (bypassing HostApi), a subscriber set up via the
-    // manifest wiring path would never be registered because classifySubscription
-    // returns "private" and registerManifestEventSubscriptions skips it.
-
     const spy = vi.fn();
     disposers.push(onEvent("memory.private.secret", spy));
 
-    // Raw emit (not through HostApi — simulates internal host only path).
     emitEvent("memory.private.secret", { secret: "hunter2" });
 
-    // If a subscriber was somehow registered (test scaffolding above), it fires
-    // on raw emit — but in production the manifest wiring never registers it.
-    // What matters is the classification gate: assert it correctly blocks.
     expect(classifySubscription("memory.private.secret")).toBe("private");
 
-    // And confirm PUBLIC_EVENT_NAMESPACES does NOT include these namespaces.
     expect(PUBLIC_EVENT_NAMESPACES.has("memory")).toBe(false);
     expect(PUBLIC_EVENT_NAMESPACES.has("audit")).toBe(false);
     expect(PUBLIC_EVENT_NAMESPACES.has("dlp")).toBe(false);
     expect(PUBLIC_EVENT_NAMESPACES.has("settings")).toBe(false);
   });
 
-  // ─── Scenario 5: emit gate — undeclared namespace ───────────────────────
   it("Scenario 5 — plugin that did not declare the email namespace cannot emit email.new", () => {
     const spy = vi.fn();
     disposers.push(onEvent("email.new", spy));
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // meeting plugin declares only the meeting namespace (not email) via emittedEvents.
     const meetingEmit = makeStubEmitEvent("meeting", ["meeting.summary.created"]);
     meetingEmit("email.new", { subject: "Test" });
 
-    // Event must NOT fan out to any subscriber.
     expect(spy).not.toHaveBeenCalled();
 
-    // Host must log a warn explaining the drop.
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("dropped — missing capability 'mail-source'"),
     );
@@ -184,18 +123,15 @@ describe("Sprint 4-D T4 — cross-plugin event flow (host event bus)", () => {
     warnSpy.mockRestore();
   });
 
-  // ─── Scenario 10: emit gate — email plugin cannot emit meeting.* ─────────
   it("Scenario 10 — plugin that did not declare the meeting namespace cannot emit meeting.*", () => {
     const spy = vi.fn();
     disposers.push(onEvent("meeting.summary.created", spy));
 
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    // email plugin declares only the email namespace (not meeting) via emittedEvents.
     const emailEmit = makeStubEmitEvent("email", ["email.new"]);
     emailEmit("meeting.summary.created", { sessionId: "fake", summary: "fake" });
 
-    // Must be dropped — missing capability
     expect(spy).not.toHaveBeenCalled();
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("dropped — missing capability 'meeting-recorder'"),
@@ -204,7 +140,6 @@ describe("Sprint 4-D T4 — cross-plugin event flow (host event bus)", () => {
     warnSpy.mockRestore();
   });
 
-  // ─── Bonus: emit gate allows a declared namespace ────────────────────────
   it("Scenario 5b — plugin declaring email.* in emittedEvents can emit email.new", () => {
     const spy = vi.fn();
     disposers.push(onEvent("email.new", spy));

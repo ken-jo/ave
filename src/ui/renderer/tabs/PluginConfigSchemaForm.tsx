@@ -1,7 +1,3 @@
-
-
-
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -112,16 +108,8 @@ export function PluginConfigSchemaForm({
   const propertyKeys = useMemo(() => Object.keys(properties), [properties]);
   const [draft, setDraft] = useState<PluginConfigFormValues>(() => ({ ...values }));
   const dirtyKeysRef = useRef<Set<string>>(new Set());
-  // Resync rule:
-  //  - On plugin SWITCH (pluginId changed): hard reset draft to the new
-  //    plugin's saved values + clear secret drafts. Drafts from a previous
-  //    plugin must not bleed into the next one.
-  //  - On values CHANGE (same plugin — e.g. after a per-field save commits
-  //    or a cross-window broadcast arrives): merge in the new saved values
-  //    BUT preserve any field the user has typed-but-not-yet-saved. Without
-  //    this preservation, saving field A would re-fire this effect with the
-  //    parent's updated `values` and clobber the unsaved drafts of B / C /…
-  //    causing silent data loss (per-field save's whole point is per-field).
+  // On plugin switch reset all drafts and secrets; on same-plugin updates merge saved values while preserving unsaved
+  // fields.
   const prevPluginIdRef = useRef(pluginId);
   useEffect(() => {
     if (prevPluginIdRef.current !== pluginId) {
@@ -151,9 +139,8 @@ export function PluginConfigSchemaForm({
     });
   }, [pluginId, values, properties]);
   const [secretDrafts, setSecretDrafts] = useState<Record<string, string>>({});
-  /** Per-key saving indicator — drives the inline Save button's loading state
-   *  on text / number / array / secret fields. Toggle / enum auto-save uses
-   *  the parent's `saving` prop. */
+  /** Per-key saving indicator — drives the inline Save button's loading state on text / number / array / secret fields.
+   * Toggle / enum auto-save uses the parent's `saving` prop. */
   const [fieldSaving, setFieldSaving] = useState<Record<string, boolean>>({});
   const required = new Set(schema.required ?? []);
 

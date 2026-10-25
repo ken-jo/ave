@@ -7,13 +7,7 @@ function lifecycleError(code: string): Error & { code: string } {
   return Object.assign(new Error("workspace session metadata lifecycle failed"), { code });
 }
 
-/**
- * Detach a removed root from every durable conversation namespace before the
- * permission registry shrinks. The durable removal intent is already committed
- * before this runs, so failure must never call `allowProjectRoot`: keeping every
- * installed root guard is what prevents late metadata writers from reviving the
- * removed binding while a later retry finishes the remaining namespaces.
- */
+// Detach every durable namespace before shrinking permissions; failed cleanup must retain all installed root guards.
 export async function detachWorkspaceRootSessions(
   root: string,
   candidates: readonly WorkspaceSessionMetadataStore[],
@@ -21,9 +15,7 @@ export async function detachWorkspaceRootSessions(
   const managers = [...new Set(candidates)];
   if (managers.length === 0) throw lifecycleError("MEMORY_MANAGER_UNAVAILABLE");
 
-  // Start every namespace before awaiting any one result. Each MemoryManager
-  // installs its root tombstone synchronously before its first await, so a
-  // failure in one store must not prevent the others from becoming guarded.
+  // Start every namespace before awaiting results so one failure cannot prevent other tombstones from being installed.
   const settled = await Promise.allSettled(managers.map(async (manager) => {
     if (typeof manager.detachSessionsFromProject !== "function") {
       throw lifecycleError("MEMORY_DETACH_UNAVAILABLE");

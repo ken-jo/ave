@@ -1,7 +1,4 @@
-/**
- * Answers construct after 10.5 s — past the runtime's 10 s activation bound,
- * inside the session's 20 s cleanup deadline.
- */
+/** Delay construct beyond the activation bound but inside the session cleanup deadline. */
 import { constructed, reply, speak, WITHHOLD } from "./speak.mjs";
 
 speak({

@@ -1,18 +1,3 @@
-/**
- * S12 — PluginTelemetryClient unit tests.
- *
- * Tests:
- *   1. Opt-out: track() is a no-op when enabled=false.
- *   2. Prompt-not-answered: track() is a no-op before consent prompt answered.
- *   3. Batching: multiple track() calls flush together in a single POST.
- *   4. Batch interval: flush() is called at the configured interval.
- *   5. PII scrubber: paths and emails are stripped before emission.
- *   6. Flush posts the payload with device_uuid to the service endpoint, with no credential.
- *   7. Flush skips when queue empty.
- *   8. Flush re-queues on non-ok HTTP response.
- *
- * No filesystem, no Electron, no process.env.
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { PluginTelemetryClient, loadOrCreateDeviceUuid, relocateDeviceUuid } from "../telemetry/client.js";
 import { scrubPii } from "../telemetry/client.js";
@@ -21,8 +6,6 @@ import { cleanupTmpDir } from "../__tests__/support/tmp-dir-teardown.js";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-
-// ─── Helpers ────────────────────────────────────────────────────────────────
 
 let telemetryTmpDir: string;
 
@@ -50,8 +33,6 @@ function okFetch(): typeof fetch {
   return vi.fn().mockResolvedValue({ ok: true, status: 200 } as Response);
 }
 
-// ─── Tests ──────────────────────────────────────────────────────────────────
-
 describe("PluginTelemetryClient", () => {
   beforeEach(() => {
     telemetryTmpDir = mkdtempSync(join(tmpdir(), "ave-telemetry-"));
@@ -62,7 +43,6 @@ describe("PluginTelemetryClient", () => {
     await cleanupTmpDir(telemetryTmpDir);
   });
 
-  // 1. Opt-out skips emission
   it("track() is a no-op when enabled=false", async () => {
     const fetch = okFetch();
     const client = new PluginTelemetryClient(makeDeps({ enabled: false, fetchImpl: fetch }));
@@ -72,7 +52,6 @@ describe("PluginTelemetryClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  // 2. No prompt answered — events must never be emitted
   it("track() is a no-op before consent prompt is answered", async () => {
     const fetch = okFetch();
     const client = new PluginTelemetryClient(
@@ -84,7 +63,6 @@ describe("PluginTelemetryClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  // 3. Batching — multiple track() calls flush in a single POST
   it("batches multiple events into a single POST", async () => {
     const fetch = okFetch();
     const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch }));
@@ -104,7 +82,6 @@ describe("PluginTelemetryClient", () => {
     expect(client.queueLength).toBe(0);
   });
 
-  // 4. Batch interval — flush is called on timer
   it("calls flush at the configured interval", async () => {
     vi.useFakeTimers();
     const fetch = okFetch();
@@ -119,14 +96,12 @@ describe("PluginTelemetryClient", () => {
     await vi.advanceTimersByTimeAsync(1);
     expect(fetch).toHaveBeenCalledOnce();
     expect(client.queueLength).toBe(0);
-    // stop() clears the interval: a later tick with a queued event sends nothing.
     client.stop();
     client.track("plugin_update", { slug: "com.example.foo", version: "1.0.1" });
     await vi.advanceTimersByTimeAsync(INTERVAL * 3);
     expect(fetch).toHaveBeenCalledOnce();
   });
 
-  // 5. PII scrubber — paths and emails are stripped
   it("scrubPii strips absolute paths and email addresses", () => {
     expect(scrubPii("/home/user/documents/secret.txt")).toContain("[path]");
     expect(scrubPii("C:\\Users\\example\\AppData\\Local\\ave")).toContain("[path]");
@@ -135,7 +110,6 @@ describe("PluginTelemetryClient", () => {
     expect(scrubPii("1.2.3")).toBe("1.2.3");
   });
 
-  // 6. Flush posts to the service document's endpoint with no credential (design §11).
   it("flush posts to the service endpoint with no credential", async () => {
     const fetch = okFetch();
     const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch }));
@@ -199,7 +173,6 @@ describe("PluginTelemetryClient", () => {
     expect(endpoint).not.toHaveBeenCalled();
   });
 
-  // 6b. Concurrent flush calls coalesce — only one POST per batch.
   it("concurrent flush() calls share the in-flight request", async () => {
     let resolveFetch: (v: Response) => void = () => {};
     const fetch = vi.fn().mockImplementation(
@@ -217,11 +190,9 @@ describe("PluginTelemetryClient", () => {
     const c = client.flush();
     resolveFetch({ ok: true, status: 200 } as Response);
     await Promise.all([a, b, c]);
-    // Only one POST, regardless of how many overlapping flush() calls arrived.
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  // 7. Flush is a no-op when queue is empty
   it("flush skips POST when queue is empty", async () => {
     const fetch = okFetch();
     const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch }));
@@ -229,7 +200,6 @@ describe("PluginTelemetryClient", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  // 8. Re-queue on non-ok HTTP response
   it("re-queues events when server returns non-ok status", async () => {
     const fetch = vi.fn().mockResolvedValue({ ok: false, status: 503 } as Response);
     const client = new PluginTelemetryClient(
@@ -237,11 +207,9 @@ describe("PluginTelemetryClient", () => {
     );
     client.track("plugin_install", { slug: "com.example.foo", version: "1.0.0" });
     await client.flush();
-    // Event must still be in queue for retry
     expect(client.queueLength).toBe(1);
   });
 
-  // 9. plugin_error errorClass is included, message is not
   it("plugin_error event includes errorClass but no error message", async () => {
     const fetch = okFetch();
     const client = new PluginTelemetryClient(makeDeps({ fetchImpl: fetch }));
@@ -261,7 +229,6 @@ describe("PluginTelemetryClient", () => {
 describe("relocateDeviceUuid — the device keeps its id when its home moves", () => {
   const UUID = "11111111-1111-4111-8111-111111111111";
 
-  /** A device whose id already sits in the old root, with the move already done. */
   function afterRelocation(run: (paths: { oldPath: string; newPath: string }) => void): void {
     const root = mkdtempSync(join(tmpdir(), "ave-device-uuid-"));
     try {
@@ -291,12 +258,7 @@ describe("relocateDeviceUuid — the device keeps its id when its home moves", (
     });
   });
 
-  /*
-   * Recreating the old file is ALSO the assertion that the move removed it:
-   * "wx" fails when the path exists, so a surviving old file fails here rather
-   * than in a separate existsSync — which would be asking the directory twice
-   * about a file this test then writes, the check-then-use race CodeQL flags.
-   */
+  /* Exclusive creation proves migration removed the old file without a check-then-use race. */
   it("never lets a stale old file clobber the newer id", () => {
     afterRelocation(({ oldPath, newPath }) => {
       mkdirSync(dirname(oldPath), { recursive: true });

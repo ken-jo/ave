@@ -1,7 +1,3 @@
-/**
- * render_html unit tests — guards for security-sensitive sanitize + wrap
- * behavior so regressions in the CSP / strip list fail loudly.
- */
 import { describe, it, expect } from "vitest";
 import {
   createRenderHtmlTool,
@@ -97,7 +93,7 @@ describe("sanitizeHtml", () => {
     expect(sanitized).not.toMatch(/href="\/abs/);
     expect(sanitized).not.toMatch(/href="rel\.html/);
     expect(sanitized).not.toMatch(/href="javascript:/);
-    // Fragment-only href is allowed.
+    // Fragment-only links remain allowed.
     expect(sanitized).toContain(`href="#top"`);
     expect(warnings).toContain("removed <a href>");
   });
@@ -192,7 +188,7 @@ describe("createRenderHtmlTool.execute", () => {
     expect(r.kind).toBe("ave.render_html");
     expect(r.html).toContain("Content-Security-Policy");
     expect(r.html).toContain("<p>hi</p>");
-    // inline scripts + event handlers are preserved end-to-end
+    // Preserve inline scripts and event handlers through the full render path.
     const scripted = parseOk(
       (await runRenderHtml({
         html: `<button onclick="doThing()">go</button><script>function doThing(){}</script>`,

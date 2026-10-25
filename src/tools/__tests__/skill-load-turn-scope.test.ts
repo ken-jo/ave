@@ -1,25 +1,4 @@
-/**
- * `skill_load` of a PLUGIN skill is admitted by the same turn scope that admits
- * that plugin's TOOLS.
- *
- * `ToolScope.activePluginIds` is one set with several readers: the prompt's
- * skill catalog and plugin-card filters read it directly, and it reaches
- * enforcement as `permissionContext.allowedPluginIds`. The enforced arm keyed on
- * `tool.source === "plugin"`, which covers a plugin's tools but not its SKILL —
- * `skill_load("plugin:<id>:<localId>")` is a BUILTIN tool that pulls a
- * plugin-owned body into the system prompt. So a turn narrowed to plugin A could
- * be refused every one of plugin B's tools and still load plugin B's skill body.
- *
- * docs/development/skill-loading-policy.md states the intent that these are one
- * authority: the model must not "see (or load) a skill that references Tools it
- * currently cannot call".
- *
- * WHAT IS DRIVEN HERE: the REAL `ToolExecutor` pipeline over the REAL
- * `createSkillLoadTool`. The deny is observed as "the tool's plugin work never
- * started" (`acquirePluginGeneration` not called) rather than by string match
- * alone, and each denial case is paired with an ADMITTED case so a blanket
- * refusal cannot pass the suite.
- */
+// Plugin skill loading uses the same turn authority as plugin tools (docs/development/skill-loading-policy.md).
 import { describe, it, expect, vi } from "vitest";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -35,11 +14,7 @@ function skillFixture(name: string) {
   return { name, description: "d", body: "body", resources: [] as const, frontmatter: {} };
 }
 
-/**
- * A real `skill_load` tool whose downstream work is observable. Every gate the
- * tool itself owns is pre-satisfied (approval already recorded, lease granted,
- * body present) so that a refusal can only come from the turn-scope gate.
- */
+// Pre-satisfy tool-owned gates so only turn scope can refuse.
 function skillLoadHarness() {
   const acquirePluginGeneration = vi.fn(async () => ({
     generation: { pluginId: "x" } as never,
@@ -54,11 +29,7 @@ function skillLoadHarness() {
     overlay: { register: vi.fn(), unregister: vi.fn() } as unknown as SkillLoadToolDeps["overlay"],
     approvals: { isApproved: async () => true, record: async () => undefined } as unknown as
       SkillLoadToolDeps["approvals"],
-    // The tool's own approval gate must never be consulted here: `isApproved`
-    // above already returns true, so any refusal can only come from the
-    // turn-scope gate. A throwing gate keeps that precondition honest — if a
-    // change ever routes this harness through the modal, this fails loudly
-    // instead of quietly turning a scope test into an approval test.
+    // A throwing approval gate ensures scope tests cannot pass through an unrelated approval denial.
     approvalGate: {
       requestAndWait: async () => {
         throw new Error("approval gate must not be consulted in a turn-scope test");
@@ -73,9 +44,7 @@ function skillLoadHarness() {
   registry.register(createSkillLoadTool(deps));
   const wc = makeMockWebContents();
   const permissionManager = new PermissionManager("/tmp/nonexistent-permissions.json");
-  // `skill_load` is category "write", so the later layers would otherwise open a
-  // modal and block. Allowing here isolates the turn-scope gate: it runs BEFORE
-  // this, so a refusal below can only be the scope gate.
+  // Allow later permission layers so only the earlier turn-scope gate can refuse.
   permissionManager.checkDetailed = () => ({
     decision: "allow",
     reason: "would otherwise allow",
@@ -120,7 +89,7 @@ describe("skill_load — plugin skills obey the turn's plugin scope", () => {
 
     expect(result.is_error).toBe(true);
     expect(result.content).toContain(OUT_OF_SCOPE);
-    // The refusal is BEFORE the tool runs — no generation lease, no body read.
+    // Scope refusal must precede generation leasing and body reads.
     expect(harness.acquirePluginGeneration).not.toHaveBeenCalled();
     expect(harness.store.loadPluginGeneration).not.toHaveBeenCalled();
   });

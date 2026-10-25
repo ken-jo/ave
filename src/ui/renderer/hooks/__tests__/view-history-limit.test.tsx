@@ -4,11 +4,8 @@ import { act, renderHook } from "@testing-library/react";
 import { useViewHistory, VIEW_HISTORY_LIMIT } from "../use-view-history.js";
 import type { ViewLocation } from "../../utils/view-location.js";
 
-/**
- * The cap, exercised at the hook because reaching it through the app would
- * mean scripting more than fifty real navigations for one property. The
- * wiring itself is proven end to end in App-view-history.test.tsx.
- */
+/** The cap, exercised at the hook because reaching it through the app would mean scripting more than fifty real navigations
+ * for one property. The wiring itself is proven end to end in App-view-history.test.tsx. */
 describe("useViewHistory entry cap", () => {
   it("drops the oldest entries instead of growing without bound", () => {
     let location: ViewLocation = { view: "home" };
@@ -16,8 +13,7 @@ describe("useViewHistory entry cap", () => {
       () => useViewHistory(location, (to) => { location = to; }),
     );
 
-    // Alternate between two settings pages so every step is a distinct
-    // location and therefore a real entry.
+    // Alternate between two settings pages so every step is a distinct location and therefore a real entry.
     const overshoot = 12;
     for (let i = 0; i < VIEW_HISTORY_LIMIT + overshoot; i += 1) {
       location = { view: "settings", settingsTab: i % 2 === 0 ? "llm" : "permissions" };

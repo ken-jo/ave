@@ -1,8 +1,4 @@
-/**
- * The revocation registry answers the load gates from the rules the snapshot
- * feed hands it (design §10.4): a version inside a rule's range is blocked
- * with that source's action and reason; anything else is allowed.
- */
+/** Revocations apply only to the installed source binding and matching version range. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const logs = vi.hoisted(() => ({ error: vi.fn() }));

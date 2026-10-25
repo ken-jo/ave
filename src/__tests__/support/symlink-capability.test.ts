@@ -22,7 +22,6 @@ function failure(code: string): NodeJS.ErrnoException {
   return Object.assign(new Error(`${code}: symlink`), { code });
 }
 
-/** A stand-in for Vitest's skip that records each call and stops the caller. */
 function recordingSkip(): { skip: TestContext["skip"]; notes: string[] } {
   const notes: string[] = [];
   const skip = ((note?: string) => {

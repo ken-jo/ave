@@ -1,13 +1,4 @@
-/**
- * Shared parser for the `runtime` block on MCP plugin entries.
- *
- * The git marketplace's MCP installer (`src/marketplace/app/mcp-installer.ts`)
- * and the MCP name rules (`src/mcp/safe-names.ts`) validate the same
- * discriminated union shape; two parsers would let a preview classify a
- * runtime block differently from what the install path does.
- *
- * This is the single source of truth.
- */
+/** Share runtime-block parsing between installation and name validation so unsupported discriminants fail consistently. */
 
 import type { McpOAuthMetadata, McpRuntimeSpec } from "./types.js";
 import {
@@ -25,13 +16,7 @@ const CLIENT_REGISTRATION_MODES = new Set([
   "manual",
 ]);
 
-/**
- * Parse a `runtime` block (advisory catalog row OR authoritative
- * extracted manifest) into the {@link McpRuntimeSpec} discriminated
- * union. Returns undefined when the discriminator or required field
- * is missing — the caller decides whether that's a hard failure
- * (install path) or a soft fallback (catalog preview).
- */
+/** Return undefined for invalid runtime blocks; the caller chooses hard install refusal or advisory preview behavior. */
 export function parseMcpRuntimeSpec(value: unknown): McpRuntimeSpec | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const r = value as Record<string, unknown>;
@@ -123,7 +108,7 @@ function parseMcpOAuthMetadata(value: unknown): McpOAuthMetadata | undefined {
   if (typeof raw.clientRegistration === "string" && CLIENT_REGISTRATION_MODES.has(raw.clientRegistration)) {
     out.clientRegistration = raw.clientRegistration as McpOAuthMetadata["clientRegistration"];
   }
-  // Kept verbatim (trimmed): an invalid value must reach the session and fail clearly, not vanish here.
+  // Preserve trimmed invalid values so the session reports them rather than silently omitting them.
   if (typeof raw.clientId === "string" && raw.clientId.trim()) {
     out.clientId = raw.clientId.trim();
   }

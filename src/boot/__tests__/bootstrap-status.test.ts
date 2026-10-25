@@ -1,10 +1,4 @@
-/**
- * Phase 2d — bootstrap status emit helper.
- *
- * The notifyBootstrapStatus helper is best-effort: a destroyed or
- * disconnected webContents must never throw out of boot, since the
- * managed-plugin bootstrap is supposed to be graceful end-to-end.
- */
+/** Bootstrap status delivery must tolerate destroyed or disconnected webContents. */
 import { describe, it, expect, vi } from "vitest";
 import { latestBootstrapStatus, notifyBootstrapStatus } from "../bootstrap-status.js";
 import { CHANNELS } from "../../contract/app-contract.js";
@@ -23,8 +17,7 @@ function makeFakeWindow(opts: {
 }
 
 function asWindow(fake: ReturnType<typeof makeFakeWindow>): never {
-  // Test fake — the helper only reads `webContents.send` and `isDestroyed`,
-  // so we shape it to match without pulling in Electron types.
+  // Only send and isDestroyed are required; avoid loading desktop types.
   return {
     isDestroyed: fake.isDestroyed,
     webContents: { send: fake.send },
@@ -85,9 +78,7 @@ describe("latestBootstrapStatus", () => {
   });
 
   it("records a status emitted before any window exists", () => {
-    // The cold-boot case: `main.ts` awaits bootstrap while the window still
-    // shows the splash document, so nothing is listening. Without the record
-    // the outcome would be lost before the renderer could ever ask for it.
+    // Cold boot records the outcome before the renderer starts listening.
     notifyBootstrapStatus(null, { phase: "error", message: "catalog fetch failed" });
     expect(latestBootstrapStatus()).toEqual({
       phase: "error",

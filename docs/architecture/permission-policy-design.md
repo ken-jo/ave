@@ -72,7 +72,9 @@ Existing rule files are retained unchanged. Rules previously keyed to home or an
 3. Apply hard-deny rules: denied sensitive-path operations, invalid manifests,
    sandbox limits, explicit deny policies, and unsafe origin combinations.
 4. Resolve policy mode.
-5. If reviewer mode is active, request a reviewer verdict for eligible calls.
+5. Apply mandatory per-call gates, user ask/allow rules and saved grants, then
+   the mode matrix. An eligible call still undecided may enter the configured
+   judge chain; existing auto-review uses the builtin judge adapter.
 6. Route to user approval, inline allow, deferred queue, or deny.
 7. Execute only after the decision is resolved.
 8. Write audit data for allow, ask, deny, deferred, reviewer unavailable, and
@@ -228,6 +230,50 @@ requirements keep their own authority.
 | Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
 | Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
 
+The path scan checks a glob argument's literal directory prefix, before its
+first wildcard, as well as its expansions, so a wildcard below a protected
+entry (`~/.mozilla/firefox/*/log*ns.json`) is a floor whatever the profile or
+file name. Relative paths, including recursive-search roots, resolve against
+every working directory that a static `cd`, `chdir` or `pushd` earlier in the
+same input may leave in force. A change is never assumed to fail or to be
+undone by a subshell, so after `;`, `||`, a pipeline or a subshell each earlier
+directory stays a candidate (`(cd ~) && grep -r x .` searches the home as far
+as the scan knows). Only the right side of `&&` narrows: it runs after the left
+succeeded, so a static `cd` on the left is its whole working directory
+(`cd src && grep -r x ..` searches the project, not its parent). A
+command-local directory option moves that one command, on top of its earlier
+candidates: `env -C`/`--chdir`, `git -C`/`--work-tree`, `make -C`/`--directory`,
+`tar -C`/`--directory`, `ninja`/`meson`/`cargo`/`go -C`, `just -d`,
+`npm -C`/`--prefix`, `pnpm -C`/`--dir`/`--prefix`, `yarn`/`bun --cwd`,
+`uv --directory`/`--project` and `poetry -C`/`-P`; a non-static value is an
+ordinary ask like a non-static `cd`. Whole-tree readers count as recursive
+searches whose root at or above a protected entry is a floor: `grep -r`/`rg`,
+archive creation (`tar c`/`r`/`u`, `zip -r`), recursive copies (`cp -r`/`-a`,
+`rsync -r`/`-a`, `scp -r`, remote operands excluded), and `find`, `fd` or
+`du -a`, and `ls` (with or without `-R`) when every match is handed to a
+program (`-exec`, `fd -x`) or to an `xargs` stage. A plain `find`/`fd`/`du`/`ls`
+still only lists names. A recursive reader behind `xargs` takes roots from its
+input, which the scan cannot see: it is a floor when a feeding stage names a
+static path at or above a protected entry (`echo ~ | xargs grep -r x`), when
+the directory the stages run in is (`cd ~ && git ls-files | xargs rg foo`), or
+after a non-static cd; otherwise (`git ls-files | xargs rg foo`, roots from a
+file or a substitution) it is an ordinary ask that the sandboxed lane leaves to
+the OS floor. A root list read from a file (`tar -T`, `--files-from`) is an
+ordinary ask. A metadata lister (`ls`, `du`, `stat`, `tree`, `eza`/`exa`,
+`lsd`) reads no file content, so a glob whose expansion only reaches a
+protected directory (`ls ~/Library/Application\ Support/*`, `du -sh ~/Library/*`)
+is an ordinary ask too; a glob whose literal prefix is protected
+(`ls ~/.ssh/*`), a lister feeding `xargs`, a lister given a file-input option
+(`tree --fromfile`/`--hintro`/`--infofile`/`--gitfile`, `du --files0-from`/`-X`/
+`--exclude-from`, `lsd --config-file`), and every content read stay a floor. A directory
+change whose target is not static is an ordinary ask: a variable, substitution,
+glob or `~user` target, `cd -` or a stack reference before the input changed
+directory, an `eval` whose text is not static or changes directory, a
+reassigned `HOME`, or `CDPATH`/`cdable_vars`/`autocd`. The ordinary ask does
+not stop the sandboxed automatic lane, whose OS floor still confines reads. A
+later relative recursive search is a floor in every lane, because its root
+cannot be ruled out.
+
 Ordinary asks remain rememberable under the existing approval-scope and risk
 requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
 but it does not invalidate an otherwise applicable tool allow rule or saved
@@ -277,17 +323,423 @@ language or project command-rule scope today. Existing tool allow rules and
 saved grants can satisfy its ordinary asks; no new command-rule grammar is
 implied.
 
-The sink catalogue is retained because shell egress has not been delegated to a
-proxy. The OS tool sandbox remains opt-in; its current network allowlist is
-shared and strict, without per-domain approval or denial UI. Windows host-shell
-execution remains a plain child. This classification contract changes neither
-sandbox/proxy behavior nor the normal sandbox-off approval path. Native shell
-execution and egress behavior are outside the classifier validation evidence.
+The sink catalogue remains a host policy floor, including for unsandboxed
+commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
+boundary and proxy approval contract. Classification evidence alone does not
+prove native confinement or egress enforcement.
 The [implementation design](../design/permissions-always-allow-and-judge.md#shell-classification-buckets)
 records the retained credential and sink coverage. The guest risk grading below
 is a separate contract.
 
 ## Shell Execution And Explicit Host Approval
+
+### OS shell sandbox policy
+
+This policy applies to builtin Bash and PowerShell tool invocations. Workspace
+PTYs retain the [terminal policy](#commands-typed-into-a-workspace-terminal),
+including their own attributed domain approvals and socket policy.
+The user terminal's host shell is a separate lane.
+
+`features.osToolSandbox` defaults to `true` on macOS and Linux. Windows remains
+explicitly default-off until its shell confinement gate is enabled. Loading
+settings preserves an explicit stored `true` or `false`; the platform default
+applies only when the value is absent. A setting expresses activation intent,
+while successful capability probing establishes availability. Unavailability
+has a machine-readable reason and is logged once for the activation attempt.
+An explicit `AVE_SANDBOX_ENABLED=1` request aborts startup on macOS and Linux
+if activation fails. Settings/default activation instead warns and continues
+without OS isolation; Windows also warns and continues when unavailable.
+
+The existing host-issued
+[`HostShellExecutionPlan`](../../src/permissions/host-shell-execution-plan.ts)
+is the invocation's source of execution state. Its `sandboxed` field is true
+only when the sandbox is enabled, the capability probe passed and the selected
+command will use the verified confined shell route. `executionMode: "host"`
+requests and unavailable confinement carry `sandboxed: false`; any excluded
+command or retry that runs outside confinement must use that same state.
+The field participates in the plan's audit projection and
+cache identity. Permission consumers receive the plan before deciding; neither
+a renderer flag nor a process-wide capability can establish that a particular
+command will run sandboxed. This state contract does not redefine command-rule
+matching or approval precedence.
+
+Sandbox writes are limited to the invocation's admitted project roots and
+temporary directories. Mandatory write denies protect these entries beneath
+each admitted write root, taking precedence over grants:
+
+- `.bashrc`, `.zshrc`, `.profile`, `.bash_profile` and `.zprofile`;
+- `.gitconfig` and the repository control paths defined below;
+- `.vscode/**`;
+- Ave settings, permission settings, rules, policies and approval grants, with
+  paths derived from their owning stores rather than copied filenames.
+
+The Windows MXC PowerShell container receives the same denies from the same
+policy builder: an existing protected entry inside a write grant becomes
+read-only and an absent one is denied, so it cannot be created.
+
+The existing sensitive-write floor owns real-home startup-file protection; the
+root-relative policy does not maintain a second real-home filename list.
+Denies cover creation when a protected path does not yet exist, as well as
+modification of existing content, except for the Linux Git metadata policy
+below. Linux mounts only existing Git controls and quarantines newly created
+controls after the invocation. Startup-file and application-store denies retain
+their existing creation protection. The
+[write policy](../../src/permissions/sandbox-write-policy.ts) retains both a
+protected entry and its canonical target when it is a link. An existing regular
+`.git` pointer file remains write-denied. Its resolved metadata directory and linked
+worktree common directory receive the same control-path protection, including
+the `gitdir` and `commondir` records that could redirect later discovery.
+Ordinary data in those directories is writable only when already admitted;
+resolving a pointer grants no new write root. Controls remain protected when their
+targets are outside the current write grants. Metadata discovery reads regular
+files without executing a command. Symbolic `.git` markers refuse preparation;
+directory-link traversal stays within the admitted root's canonical tree.
+Derived metadata paths containing pattern characters remain literal paths;
+macOS denies include absent targets, while Linux Git deny mounts require an
+existing entry. Reads have limits of 64 KiB per file and 1 MiB
+across the invocation. Exceeding either metadata limit refuses preparation.
+Metadata must round-trip as UTF-8; only terminal CR/LF delimiters are removed,
+so spaces, tabs and nonbreaking spaces remain path data. Physical resolution
+follows links before parent components and preserves filesystem spelling.
+Metadata routing inspects at most 64 components; missing-path resolution is
+bounded at 64 ancestors. On macOS, existing routing links receive literal
+entry pins.
+On Linux, the same bounded inspection covers mandatory control paths and
+the existing sensitive-write floor, whose paths still come from their owning stores.
+A bind mount follows the link instead of protecting its directory
+entry, so every write grant containing the routing link's parent is removed.
+Independent child and sibling grants remain; an ordinary write grant on that
+same parent cannot coexist with this protection. Non-Git sensitive-write
+protection can also protect the first missing component of a missing target.
+An unresolved parent component beyond a missing ancestor refuses preparation.
+Linux does not replay routing links as deny binds; target denies remain with
+their existing owners so a link cannot mask an unrelated target subtree.
+Symbolic `.git` marker entries refuse preparation; linked worktrees use
+regular pointer files.
+Unexpected discovery failures fail closed, either by refusing preparation or
+removing the affected root's write grant rather than trusting partial results.
+`buildMandatorySandboxWritePolicy` returns the retained `allowWrite` roots and
+mandatory `denyWrite` entries in the existing filesystem configuration. The
+[sandbox wrapper](../../src/permissions/asrt-sandbox.ts) composes these denies
+with the existing sensitive write floor for each invocation. Store-owned paths
+come from the [application settings store](../../src/data/settings-store.ts),
+[permission settings store](../../src/permissions/permission-settings-store.ts),
+[global rule store](../../src/permissions/rules/rule-files.ts) and
+[project rule store](../../src/permissions/rules/project-rule-files.ts).
+The same boundary covers policy files and saved permission and egress grants.
+Relocation of a store must relocate its protection too. A command cannot
+rewrite its own settings, rules or exclusions through a broader grant.
+
+#### Repository metadata
+
+An existing `.git` directory is writable within an admitted root. Git can update
+objects, refs, the index, `HEAD`, logs and `COMMIT_EDITMSG`, so ordinary commit,
+branch, stash and merge operations can run inside confinement. The sandbox
+continues to protect configuration, executable hooks and discovery records.
+In the table, a protected entry is denied on macOS even when absent. On Linux,
+an entry present during preparation is deny-mounted; an entry absent then may
+be created during execution and is quarantined after confirmed exit:
+
+| Path relative to a repository metadata directory | Write policy |
+| --- | --- |
+| `hooks/**`, `config`, `config.worktree` | Protected configuration and executable hooks. |
+| `modules/**/hooks/**`, `modules/**/config`, `modules/**/config.worktree` | Protected submodule controls, including future entries where backend patterns apply. |
+| `worktrees/*/config.worktree`, `worktrees/*/commondir`, `worktrees/*/gitdir` | Protected linked-worktree configuration and discovery. |
+| `commondir`, `gitdir` and a checkout's regular `.git` pointer file | Protected routing entries, including already resolved control targets. |
+| `objects/info/alternates`, `objects/info/http-alternates` | Protected object-store paths and alternate URLs. |
+| `remotes/**`, `branches/**` | Protected legacy remote URL and refspec definitions; these are configuration-equivalent routing inputs. |
+| `info/attributes` | Linux protects this control; macOS retains writable attributes as described below. |
+| `objects/**`, `refs/**`, `index`, `HEAD`, `logs/**`, `COMMIT_EDITMSG` | Writable subject to the control-path exceptions. |
+
+A `.git` entry absent when a command is prepared remains blocked from creation
+on macOS. Repository initialization and cloning there require the existing
+[explicit host execution route](#shell-execution-and-explicit-host-approval).
+A protected-path failure reports: "`.git` metadata is protected; rerun outside
+the sandbox after approval". The caller must submit `executionMode: "host"`
+with a justification for that exact action; no automatic unsandboxed retry,
+parallel approval path or lasting sandbox disable is introduced. Metadata
+protection does not change command-rule interpretation.
+
+On Linux, an absent `.git` entry is not a deny-mount target. Initialization or
+cloning can create it inside the current invocation; successful post-exit
+quarantine moves the new marker or metadata directory out of the write root
+and reports where it can be restored. It is temporary access during that
+invocation, not a persistent repository grant. Existing repositories retain
+ordinary object, ref, index and `HEAD` writes without creating absent routing
+files as mount points: a missing `commondir`, for example, remains absent when
+Git reads it.
+
+The additional-file audit follows the
+[repository layout manual](https://git-scm.com/docs/gitrepository-layout#_description).
+`info/` is not denied as a whole. `info/exclude`, `info/sparse-checkout`,
+`info/refs` and `objects/info/packs` contain patterns or repository data rather
+than command definitions. `info/grafts` changes apparent ancestry, like
+writable replacement refs, and is not treated as code or configuration
+injection. On macOS `info/attributes` remains writable: an attribute selects a
+driver, while its clean, smudge, process, merge or diff command must already be
+defined in configuration. The
+[attribute manual](https://git-scm.com/docs/gitattributes#_filter) documents this
+separation; existing trusted drivers can still run when selected. Linux treats
+`info/attributes` as a protected control: an existing file is denied, and a new
+file is quarantined after execution. This limits persistence of a new driver
+selection without claiming that it cannot run during that invocation. Alternates
+are protected for routing integrity, without claiming that their contents are
+executable commands. The [fetch manual](https://git-scm.com/docs/git-fetch#REMOTES)
+documents the legacy `remotes/` and `branches/` files as alternatives to remote
+configuration. Their URLs can select transport helpers, so those subtrees are
+protected alongside configuration.
+
+The policy intentionally differs across the referenced implementations:
+
+| Property | Ave policy | Reference behavior |
+| --- | --- | --- |
+| Existing metadata directory | Permit ordinary Git writes; deny controls. | The [runtime at `c66fb77`](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/sandbox-utils.ts#L39-L49) permits `.git`; its [macOS builder](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/macos-sandbox-utils.ts#L126-L133) denies hooks and conditionally config. |
+| Whole-directory protection | Existing `.git` directories remain writable. | The [permission builder at `970111f`](https://github.com/openai/codex/blob/970111f/codex-rs/protocol/src/permissions.rs#L2360-L2380) protects an existing top-level `.git` and resolved pointer target; its [Seatbelt matcher](https://github.com/openai/codex/blob/970111f/codex-rs/sandboxing/src/seatbelt.rs#L591-L603) covers protected names and descendants. |
+| Nested controls | Case-insensitive macOS patterns at any depth; bounded Linux scan before every command. | The [Linux builder at `c66fb77`](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/linux-sandbox-utils.ts#L537-L566) scans per command and uses `.git/HEAD` to identify nested repositories. |
+| Missing `.git` | macOS creation denied; Linux creation allowed during the invocation, then recoverable quarantine. | The pinned [Linux marker handling](https://github.com/anthropic-experimental/sandbox-runtime/blob/c66fb77/src/sandbox/linux-sandbox-utils.ts#L408-L427) leaves an absent marker unmounted. |
+| Bare layout in a non-repository root | macOS prevention; recoverable Linux post-command quarantine plus host Git hardening. | The [protected-path documentation](https://code.claude.com/docs/en/sandboxing#protected-paths) describes top-level bare-layout protection and Linux cleanup. Ave preserves moved entries for recovery. |
+
+#### Bare layouts and host Git
+
+For each write root outside a repository, macOS denies top-level `HEAD`,
+`objects`, `refs` and `config`; it also denies `hooks` when `HEAD` already
+exists. Linux does not bind-mount missing bare-layout entries, because doing
+so would create host files. Before each invocation it classifies the roots and
+snapshots which of these entries are absent. After exit it quarantines newly
+appeared `HEAD`, `objects`, `refs` and `config`, including nonempty contents;
+it also quarantines a newly appeared `hooks` when `HEAD` is present at cleanup.
+Pre-command entries are preserved, and a changed root identity prevents moving
+through a substituted root. Absence at preparation does not prove which
+process created an entry: a concurrent editor or user terminal can create a
+reserved name that this sweep then moves. Quarantine preserves that entry
+instead of deleting potentially unrelated work. It is a post-command response,
+not a write denial while the process runs.
+
+The shared quarantine helper uses Ave's private `sandbox-quarantine` feature
+namespace and a unique timestamped slot for each invocation. Each entry moves
+by atomic rename on the same filesystem, using the shared atomic staging
+helper. A symbolic link moves as a link; its target is never followed.
+Cross-device or other rename failures are logged and fail clearly without a
+copy or delete fallback. Earlier successful moves remain recoverable if a
+later move fails. The existing result annotator and terminal output carry a
+notice listing each original path and its quarantine destination, with an
+instruction to inspect the entry and move it back to its original path when
+restoring it. The tool result includes the notice. Quarantine failures make an
+otherwise successful shell result an error with `sandboxCleanupFailed`
+metadata. A post-spawn process error can return before child termination; its
+later quarantine outcome is logged after exit rather than changing that
+already returned error result.
+
+The Linux sweep also covers newly appeared Git controls within the bounded
+discovery area, including repositories created without a `HEAD` yet and
+submodule and linked-worktree controls. A new or replaced marker entry is
+quarantined as a whole, as is a previously resolved metadata store that was
+absent at preparation and materialized during execution. Newly encountered
+submodule and private-worktree stores are also quarantined as whole entries
+before their new routing records can select cleanup targets. The sweep reuses
+the metadata/control discovery rules and already resolved stores captured
+before execution, restricted to the final effective write roots. Read- or
+write-denied control subtrees are excluded from cleanup. It preserves
+pre-existing entries and does not trust a replaced marker or follow a new
+routing pointer, symbolic link or ordinary directory link to choose arbitrary
+cleanup targets. Initially trusted directory links retain their captured
+physical route. Resolving an external store does not authorize quarantining
+controls the command could not write. For a previously unresolved trusted
+store, cleanup moves its newly appeared first missing ancestor as an entry;
+a new routing link never selects the linked target for relocation. Quarantine
+does not roll back other data writes permitted during the invocation.
+If moving an entire marker or store
+would include a protected descendant, cleanup fails visibly and retains its
+hold rather than moving protected state.
+Preparation also refuses deny patterns that cleanup cannot represent safely,
+including character classes and patterns combining POSIX backslashes with
+wildcards. It never treats an unsupported pattern as a successful empty sweep.
+An incomplete cleanup scan or exceeded budget reports failure rather than
+claiming that all new controls were quarantined. These guarantees describe a
+successful post-exit sweep: controls can be visible during execution, and
+concurrent processes or a failed sweep can observe or leave them in place.
+
+Every Ave-owned Git subprocess uses the shared argument builder in
+[host-git.ts](../../src/shared/host-git.ts), including marketplace operations,
+ignore queries, runtime admission and version probes. It supplies `safe.bareRepository=explicit`,
+`core.fsmonitor=false` and a neutralized `core.hooksPath` on each invocation,
+while retaining the caller's environment, credential and transport gates.
+Hooks may be enabled only by an explicit caller policy for a demonstrated
+requirement. Sandboxed agent commands and user-entered terminal commands do
+not acquire host authority through this helper.
+
+Linux invocation preparation also registers canonical retained write roots
+with `holdSandboxGitWrites` after taking its metadata snapshot and before
+spawning the child. The shared `isHostGitWorkspaceAvailable` check defers
+queries in overlapping roots, including ancestor or descendant workspaces;
+independent siblings remain available. The current Ave-owned Git consumer of
+user-project metadata is the synchronous project-instruction `check-ignore`
+query. While a hold is active, it returns its existing conservative
+"not ignored" answer without spawning Git or memoizing that temporary answer.
+Future Ave-owned callers that read user-workspace Git metadata must use the
+same availability check as well as the shared argument builder.
+
+The invocation releases its hold only after quarantine succeeds. A failed
+cleanup retains the hold for that host process's remaining lifetime, deferring
+the coordinated query when its checkout root overlaps a held root.
+Overlapping invocations have independent holds; releasing one does not release
+another. Holds compare canonical checkout-root paths; they do not track every
+checkout-to-gitdir or commondir relationship. A sibling checkout whose root
+does not overlap a hold can still query a changed external metadata store
+shared with a held workspace. This is ordering within the current Ave process,
+not filesystem isolation for arbitrary Git processes. It neither persists across a host crash
+or restart nor cancels Git work already running before the hold. External
+editors, user terminals and other processes can still observe newly created
+controls during execution or after failed cleanup. The shared Git flags do
+not neutralize every configured filter or helper.
+
+The [safe configuration documentation](https://github.com/git/git/blob/7e34d8174dcda3435d1404c9a30bef46afe6c13e/Documentation/config/safe.adoc)
+explains that `explicit` refuses implicitly discovered bare repositories while
+permitting an explicit `--git-dir` or `GIT_DIR`. The
+[breaking-change rationale](https://github.com/git/git/blob/7e34d8174dcda3435d1404c9a30bef46afe6c13e/Documentation/BreakingChanges.adoc#L219-L241)
+describes how a planted bare repository can make even a status query execute a
+configured monitor. The [core configuration manual](https://git-scm.com/docs/git-config#Documentation/git-config.txt-corehooksPath)
+documents per-command hook neutralization.
+
+IDE integrations and user terminals run their own Git processes and do not
+inherit Ave's host helper. A Linux command can expose a planted layout before
+quarantine, and forced host termination can prevent the sweep altogether. Recommend
+`git config --global safe.bareRepository explicit` for those independent
+clients, as recommended by the safe configuration documentation. The setting
+does not disable an already configured filter, credential helper or other
+trusted command in a normal repository. Linux quarantine limits persistence of
+new controls after a successful sweep; it does not make all Git configuration
+inert or prevent its use during execution.
+
+#### Preparation and native validation
+
+On Linux, a missing Git control is omitted from deny mounts so preparation
+does not manufacture an empty marker, configuration file or routing record on
+the host. The carried Linux runtime patch applies this rule to its cwd and
+nested mandatory Git candidates as well. The sensitive-write and application-store
+protection owners remain
+unchanged. Their absent-path protection can still require temporary mount
+points. Normal mount-point cleanup is limited to ownership-checked empty
+entries; abrupt host termination, including SIGKILL or OOM termination, can
+leave residue. Successful normal cleanup does not prove crash cleanup.
+Recovery must preserve unrelated, replaced or nonempty paths.
+
+On Linux, nested repositories are discovered beneath admitted roots before every
+sandboxed command, through directory depth three with the root at depth zero:
+`a/b/c/.git` is included. Each root's own protected entries are denied
+independently of this scan. Discovery ignores ignore-file rules and skips
+`node_modules`, `.git`, `.hg`, `.svn`, `.venv`, `venv`, `vendor`, `dist`,
+`build` and `.cache` trees. All roots share one invocation budget of 16,384
+directory entries. Canonical roots are scanned from narrower roots to their
+ancestors. Root bindings are captured once and retained grants use those
+canonical identities, so retargeting an alias cannot grant an unscanned target.
+Actual grants preserve physical Unicode and POSIX backslash spellings; matching
+normalization cannot grant or deny a different physical sibling. macOS also
+walks beyond depth three, including dependency/build and Git metadata trees,
+to resolve existing regular pointer files and refuse symbolic `.git` markers.
+Patterns alone cannot protect an arbitrary canonical target of an existing
+deep marker. This walk has the same shared budgets; an incomplete walk removes
+the containing write grant. A large dependency tree can therefore make a broad
+macOS project grant read-only; independently admitted narrower roots can survive.
+Incomplete enumeration, an exhausted entry budget or more than
+16 KiB of discovered metadata and routing-pin path bytes for that root removes
+its write grant.
+Containing ancestor grants are also removed so they cannot reopen a failed
+child; independently scanned narrower roots keep their grants when a broader
+root is removed. Required metadata denies remain explicit outside the roots
+and above retained child grants. If the final serialized write-deny
+policy cannot fit within 32 KiB, preparation fails clearly.
+When discovery narrows write access, the existing tool result and terminal
+output identify the scan limit or failure, the removed roots and the actual
+retained write roots. A project too large to scan therefore produces an
+explicit reason for narrowed access before a later filesystem permission error.
+On macOS, case-insensitive backend patterns additionally protect nested Git
+controls at any depth, including future entries. Typed exact-entry Seatbelt
+rules protect marker creation and regular pointer-file writes without denying
+an existing directory's children. Linux uses `.git/HEAD` to classify repository
+and non-repository roots; discovery also inspects controls in partial `.git`
+directories without `HEAD`. It uses literal discovered controls and re-scans
+on each command rather than retaining one wrapper's scan. Newly created
+repositories within the discovery bounds are
+handled by the post-exit quarantine sweep, not by mounts added to a running
+process. Deliberately skipped or deeper directories remain outside the Linux
+discovery coverage. This distinction must remain explicit in validation.
+
+Here a command means a new sandboxed process invocation through the wrapper.
+A persistent workspace PTY receives its OS profile when it starts; later blocks
+typed into that same process do not re-enter wrapper preparation or replace its
+existing Linux mounts. The unprivileged sandbox has dropped the capabilities
+needed to remount them, and the host wrapper has no live mount-update API.
+Shell-owned prompt or OSC markers cannot establish a reliable enforcement
+boundary: foreground code can emit them, background jobs can keep running, and
+raw terminal input does not pass through `terminal_run`. A post-block check
+cannot establish that a control file was not used before that check.
+
+Before each agent-typed command on Linux, the host re-scans the effective write
+roots and compares controls with the identities captured for that terminal's
+initial profile. New controls, replaced markers or directory links, or a scan failure
+refuses typing through the existing unverified-directory error path and asks
+the caller to close and reopen the Agent terminal. The baseline never advances
+without creating a fresh sandbox profile. Adding an authorized project outside
+the original write grant does not make it writable in the old shell.
+
+Repository metadata appearing after the last check inside an existing Agent
+write grant still has an exposure window from its appearance until that Agent
+shell exits. There is no time limit while the shell remains alive: foreground
+commands and background descendants can use it before the next check, and raw
+terminal input does not run that check. Reopening the Agent terminal creates a
+fresh profile and scans the metadata then present. Startup and terminal replay
+output, and every terminal tool result, carry an explicit notice describing the
+window and the need to reopen after metadata changes. This is a visible
+limitation, not a claim of per-block prevention or post-block quarantine. Fresh
+shell invocations retain the per-command rescan described above.
+
+A very large ambient root, such as the shared temporary directory, may
+therefore lose its broad write grant. An explicitly admitted working directory
+or private invocation temporary directory remains writable when its narrower
+scan succeeds. These bounds do not change command-rule or approval semantics.
+
+Native control-write, repository-metadata and socket regression tests require
+working isolation on macOS and Linux, with ordinary write or connection
+positive controls. Missing dependencies or failed initialization fail those
+tests. Windows skips explicitly. Local runs may explicitly opt out with
+`AVE_SKIP_NATIVE_SANDBOX_TESTS=1`; CI does not honor that opt-out. Generated
+wrapper arguments alone do not establish native enforcement.
+
+#### Reads, network and status
+
+Reads remain broad. This policy adds no sandbox read denies and preserves
+existing read protections, including the [saved-session projection](#saved-session-reads).
+The host sensitive-path floor and other mandatory host gates retain authority
+even for a sandboxed command.
+
+Sandboxed shell network traffic must pass through the local egress proxy.
+The shell domain allowlist starts empty; plugin-declared domains do not seed
+it. An unknown destination invokes the host approval callback and the existing
+approval dock, offering allow once, always for this destination, or deny when
+the destination can hold a persistent grant. Allow once covers that host and
+port for the current shell invocation. Always persists the destination through the
+[egress grant store](../../src/permissions/egress-grants.ts), so later matching
+requests can proceed without another ask. Grants retain the destination's
+network class and shell origin; they do not authorize plugin or terminal
+traffic. Persistent scopes require verified public destinations and sufficient
+invocation attribution. Local or private-network and unverified destinations
+offer only allow once or deny; reserved destinations remain denied. The store
+retains other scopes for its existing consumers, but builtin shell prompts
+offer only once and always.
+Deny, approval failure and timeout return a clear network access error to the
+command without opening egress.
+Headless and auto-mode requests use the same configured permission reviewer
+and escalation path as other asks. Direct sockets cannot bypass the proxy.
+Unix-domain sockets are denied for shell commands by default; plugin worker
+control channels do not grant shell access to those sockets.
+
+When shell confinement is inactive because the setting is off, the runtime is
+unavailable or the platform is unsupported, the chat header and Settings show
+a persistent, non-dismissable sandbox-off status and localized reason. The
+status reports effective shell confinement, including a platform that can
+confine plugins but cannot confine shell commands. Session approval does not
+change sandbox activation for later commands.
 
 ### Route-neutral execution foundation
 
@@ -508,18 +960,62 @@ Bash and PowerShell accept `executionMode: "default" | "host"` and an optional
 requires a nonblank justification and foreground execution. The host selects
 the final plan after input hooks and before environment capture and path
 analysis. Outside an operator-attested guest, host mode selects plain execution
-without OS confinement and requires a fresh exact-action `allow-once`, including
-in allow mode or when sandboxing was already disabled. Sensitive-path,
-directory, command and dynamic-syntax checks remain mandatory on that route.
+without OS confinement. Following the reference hosts (Claude Code, Codex), a
+user allow rule that matches the command approves it without a prompt;
+otherwise it requires a fresh exact-action `allow-once`, including in allow mode
+or when sandboxing was already disabled. Deny rules still deny, and the shell
+floor (credential paths and the sink catalogue) and ask rules still force the
+per-call modal over any allow rule. Sensitive-path, directory, command and
+dynamic-syntax checks remain mandatory on that route.
 
-Only a response from the verified local desktop renderer can authorize this
-explicit request. The approval displays the exact command, cwd and justification
-and states that the command runs once as the current user without the OS sandbox.
-Headless and remote-controller requests are denied before approval. Automatic,
-remembered, plugin, platform and parent-agent decisions cannot authorize host
-mode. The signed approval receipt binds the final action; an opaque permit is
-consumed once before spawn. Changed commands, cwd, plans or request fields and
-replayed permits fail closed. The parser and plan in
+Without a matching allow rule, only a response from the verified local desktop
+renderer can authorize this explicit request. The approval displays the exact
+command, cwd and justification and states that the command runs once as the
+current user without the OS sandbox. Headless and remote-controller requests are
+denied before approval or rule evaluation. Automatic, remembered, allow-mode,
+plugin, platform and parent-agent decisions cannot authorize host mode. The
+opaque permit is minted from one of two host-issued, action-bound proofs — the
+signed approval receipt, or the PermissionManager's own layer-3 allow-rule
+decision for the same command and resolved cwd — and is consumed once before
+spawn. Changed commands, cwd, plans or request fields and replayed permits or
+rule decisions fail closed.
+
+An allow-rule proof is issued only for an explicit host execution plan. It
+belongs to the issuing PermissionManager and its policy epoch, including the
+project-rule revision. Rule, mode and relevant settings changes revoke
+outstanding proofs and permits. The proof also captures the cwd's physical
+realpath, device and inode during evaluation. Both proof consumption and the
+permit check immediately before spawn require the same policy epoch and physical
+directory. The checks also re-read hashes of the persisted user and relevant
+project rule stores; another writer's change or a read error revokes authority
+without requiring a cache reload. A changed identity or version rejects
+execution with an error. Rejected authority requires normal authorization again.
+
+Persisted policy mutations in this host and the final execution grant share a
+serial queue: a queued deny is durable before validation can grant the waiting
+child. Final validation and the grant run synchronously. Uncoordinated external
+edits that land after final validation are honoured from the next command.
+
+Permit-bearing shells spawn with the bound physical realpath. On macOS and
+Linux, a host-authored prelude checks the child's physical cwd and device/inode
+before the user command, then waits for the host's final policy grant on a
+private pipe. The prelude reports guard failure through that pipe and closes it
+before user code runs. The host maps guard failure to the revocation error;
+ordinary command output and exit status, including 197, remain intact. Native
+Windows shell routes use the physical spawn path but lack a child-side identity
+check; directory rename/replacement after the host check remains a limitation
+on that platform. Their final policy validation and native spawn share the same
+serial queue.
+
+A sandbox that is requested but unavailable (missing `bwrap` or `socat`, or a
+start failure) is not a one-shot route. The shell runs as a plain child under
+the normal rules, exactly like sandbox-off, while its plan keeps
+`fallbackReason: "requested-sandbox-unavailable"`: the approval card, the
+model's shell-environment description and the tool result say the sandbox is
+unavailable. The Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`)
+keeps its allow-once permit until its own routing change (OWNER ITEM: pending —
+the permissions-2 line instead reviews it in the foreground and lets its card
+offer rules, #90; headless it is denied either way). The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and
 [execution permit](../../src/permissions/host-shell-execution-permit.ts) own this
@@ -698,8 +1194,18 @@ separate permission category. The checks in this section apply to Agent:
 - The reviewer sees the Agent companion's active containment. Execution
   requires filesystem and process confinement for that exact incarnation;
   an unavailable or changed capability fails closed. Its write paths, deny
-  floors, and egress allow-list were fixed at spawn, so later configuration
-  changes do not reach that running companion.
+  floors and initial egress allow-list are fixed at spawn. Egress approvals
+  and revocations still apply through the live proxy and grant store.
+
+Agent terminal egress starts with an empty domain allowlist. Plugin manifests
+and model endpoint domains authorize worker traffic only; they do not grant
+terminal access. Unknown destinations use the existing tab banner and approval
+reviewer, with allow once, this tab, always for this destination, or deny where
+the destination is eligible for those scopes. Allow once covers one connection;
+tab and persistent grants retain their existing attribution and revocation
+rules. A background descendant keeps its terminal's attributed proxy identity
+and follows the same approval path. Closing the terminal releases its pending
+asks and tab grants. These approvals do not change Manual's host shell.
 
 The target terminal is resolved once, before any decision, and sealed into the
 approval scope: an explicit `tabId`, then the terminal the conversation's pane
@@ -831,12 +1337,26 @@ Typing is a fixed protocol (pty-manager `typeLineAtPrompt`):
    resend checks unchanged user-input generation, foreground shell identity,
    absence of shell children, and the approved directory with the OS. A user
    keystroke aborts immediately, even if the shell redraws its prompt. The OS
-   check runs again immediately before pasting.
+   check runs again immediately before pasting. Query the shell's actual
+   editable buffer through the integration-owned Ctrl-X Ctrl-V binding and
+   require an authenticated empty-buffer acknowledgement for this prompt.
+   The prompt must attest the owned binding and original handler; otherwise
+   refuse without sending the query. Bash also verifies the active standard
+   emacs keymap and reinstalls this reserved key before attesting it, because
+   its command-binding registry can retain an entry after a keymap file
+   replaces the actual key. A replaced handler or same-name alias is refused.
 5. Paste the line between bracketed-paste markers, without Enter.
 6. Wait until the line editor's echo of its edit line (wrapping removed) is
-   exactly the approved line, with no key from the user since the prompt. Only
-   then press Enter. Otherwise write Ctrl-C to clear the line and refuse
-   (`edit-line-mismatch`).
+   exactly the approved line, then query the actual editable buffer again.
+   Enter requires a fresh authenticated acknowledgement containing exactly
+   the approved line, unchanged prompt and user-input generation, and another
+   OS check. A query widget can repaint the display without changing the
+   buffer: the exact echo is checked before querying, and the fresh actual
+   buffer acknowledgement supplies the final content check. Its generation
+   and content must remain unchanged through the final OS check.
+   The private acknowledgement is removed from display and
+   scrollback. Otherwise clear the line with Ctrl-C only while the same
+   untouched shell remains safe, and refuse (`edit-line-mismatch`).
 
 Inside a paste, the line editor inserts the text and does not read it as
 keys. Raw typing after a pending ESC ran `[200~echo hi there~` in place of
@@ -1066,10 +1586,45 @@ Only the builtin shell wrapper receives that root through
 floor still protects sessions from confined plugin, MCP and terminal processes.
 The builtin projection retains other sensitive paths, nested exclusions and
 trusted custom read denies; a conflicting protected ancestor suppresses the
-session grant. `getBuiltinShellReadPolicy` composes invocation reads for both
-shell dialects. It omits redundant read grants strictly above HOME, which
-otherwise cause the native runtime to reapply the HOME deny after narrower
-grants. Surviving read candidates cannot reopen another protected deny; write
+session grant. `getBuiltinShellReadPolicy` composes broad invocation reads for
+both shell dialects without denying the real home as a whole. The protected
+floor that stands in for a whole-home deny is the anchored row set of
+`SENSITIVE_PATH_ENTRIES` in
+[sensitive-paths.ts](../../src/permissions/sensitive-paths.ts); the host guard
+and every OS sandbox wrap project the same rows, so each one is denied on macOS,
+Linux and Windows. Besides SSH, cloud, git and package-manager credentials and
+shell histories, the floor covers keychains and keyrings
+(`~/Library/Keychains`, `~/.local/share/keyrings`, `~/.local/share/kwalletd`),
+password managers (`~/.password-store`, `~/.config/op`, and the 1Password 7/8
+group containers `~/Library/Group Containers/2BUA8C4S2C.com.{agilebits,1password}`),
+the macOS cookie jar (`~/Library/Cookies`), the Safari container
+(`~/Library/Containers/com.apple.Safari`), Thunderbird profiles
+(`~/Library/Thunderbird`, `~/.thunderbird`, `%APPDATA%\Thunderbird`) and whole
+browser profile roots. On macOS these are the `Google` vendor parent under
+`~/Library/Application Support` (every Chrome channel, so a new channel is
+covered too), Edge and its Beta/Dev/Canary channels, Brave, Chromium, Arc,
+Vivaldi, Opera, Opera GX and Firefox. On Linux they are `~/.mozilla`,
+`~/.config/<browser>` including the `google-chrome-beta`/`-unstable` and
+`microsoft-edge-beta`/`-dev` channels, the snap homes
+`~/snap/{firefox,chromium,brave,thunderbird}` and the Flatpak homes under
+`~/.var/app` for Firefox, Chromium, Chrome, Brave, Edge and Thunderbird. On
+Windows they are `%LOCALAPPDATA%\<vendor>\User Data` including Chrome
+Beta/Dev/SxS and Edge Beta/Dev/SxS, `%APPDATA%\Opera Software` and
+`%APPDATA%\Mozilla\Firefox\Profiles`, beside the Windows Credential
+Manager, DPAPI, Crypto and Vault rows. Firefox and Linux Chromium profiles keep
+their decrypting key (`key4.db`, the `Local State` key) beside the store. The
+macOS keychain databases are encrypted under the login password instead; they
+are rows for parity with main, whose builtin shell denies the whole real HOME.
+The earlier Keychains/Cookies exclusion was written under that whole-home deny,
+and keeping it without the deny would leave them more exposed than on main.
+As on main, keychain-backed credential helpers fail inside the sandboxed shell:
+git `osxkeychain`, `security`, docker credential helpers, the 1Password `op`
+CLI, `pass`, and keychain-based `codesign`. They still work in an approved
+unsandboxed run. The `Google` parent also hides the other Google app data
+there (for example Android Studio settings and GoogleUpdater) from sandboxed
+commands.
+A floored read fails visibly with the native permission error. Read candidates
+cannot reopen another protected deny; write
 grants and the sensitive write-deny floor remain intact.
 Removing a read-deny pattern alone
 does not establish this contract: both the file gates and actual sandboxed reads
@@ -1088,7 +1643,7 @@ The [structured transfer contract](architecture.md#structured-file-transfers) de
 
 | Mode | Behavior |
 | --- | --- |
-| Default | Allows low-risk workspace reads; asks for mutation, network, shell, and out-of-scope access. |
+| Default | Allows low-risk workspace reads; asks for mutation, network, shell, and out-of-scope access. A configured active judge chain may decide eligible calls left undecided after rules and mandatory gates. |
 | Strict | Asks for reads as well as mutation. Useful for high-control sessions. |
 | Auto-review | Uses the reviewer for eligible write/network/shell calls and host-built-in `meta` calls declared with `decisionOverride: "ask"`. The same configured enabled threshold (low or medium) applies to every eligible call; higher verdicts ask or defer, while `off` keeps the explicit foreground approval path. |
 | Allow | Allows after hard gates and audit. Sensitive paths, invalid manifests and sandbox rules remain enforced. An ordinary shell reason still asks without an applicable allow rule or saved grant. |
@@ -1342,6 +1897,116 @@ records `cleanup_completed` and `broker_stopped`, and then removes remaining
 Compose resources. These receipts validate lifecycle ownership; they do not
 claim a benchmark score or task correctness.
 
+## Automated Judge Chain
+
+[`PermissionJudge`](../../src/permissions/judge/judge-contract.ts) is the shared
+automated-decision seam. The existing auto-review dispatch remains the source of
+truth for builtin risk classification, caching, approval provenance and failure
+outcomes. The `builtin-llm` adapter maps those outcomes without changing legacy
+auto-mode decisions, including its eligible host-built-in `meta` lane. Absent
+judge settings or a valid empty `permissions.judge.chain` turn only the configured
+chain off; legacy auto-review remains intact.
+
+The [judge settings contract](../design/permissions-always-allow-and-judge.md#p2-judge-slot)
+defines the persisted ordered chain, transports and model syntax. A configured
+chain defaults to `shadow`: stages run and are audited, but their results do not
+replace the existing permission result or create deferred entries. An existing
+auto-review allow therefore remains an allow; an undecided foreground request
+still goes to the user, including when the breaker is already open. Shadow
+creates no judge-induced deferred entries and does not change breaker counters.
+Selecting `active` applies the chain result to eligible calls. Shell and write
+categories default on; network defaults off.
+
+The host dispatches only after earlier permission layers leave a request
+undecided. Explicit deny, ask and allow rules, mandatory per-call floors, saved
+grants and mode decisions keep their authority. Strict mode, capability grants
+and remote-controller requests never enter the chain. Existing trust-based
+requirements for explicit approval cannot be lowered by a judge.
+
+Stages execute in configured order. A final `allow` or `deny` ends the chain;
+`ask`, insufficient confidence or a stage failure advances to the next stage.
+When an external stage has `escalateBelow`, missing confidence also escalates.
+Builtin stages report risk rather than confidence and reject that threshold.
+The last ambiguous stage asks the user. A builtin foreground `ask` also advances
+to the next stage, while builtin headless MEDIUM/HIGH becomes a final `deny`.
+An exhausted chain deadline or failed last stage uses the failure path, never an
+allow. The [settings parser](../../src/permissions/judge/judge-settings.ts),
+[shared contract](../../src/permissions/judge/judge-contract.ts) and
+[engine](../../src/permissions/judge/judge-engine.ts) own complete fields/defaults,
+request/verdict types and chain semantics respectively.
+
+The model picker offers configured providers and their model options using the
+same source as chat selection. `permissions.judge.model` selects the permission
+reviewer model with the chat model chooser; stored `null` (unset) resolves at
+each reviewer re-wire to the active chat model, so the reviewer follows chat.
+The `permissions.reviewer` block no longer stores a provider or model: the
+`provider`/`model` keys older builds wrote are dropped on load and leave the
+file on the next save, and a reviewer patch that names them is rejected.
+A builtin stage without `model` follows the permission reviewer model. An
+explicit `<provider>/<model>` selection uses that exact model; an unavailable
+selection fails rather than switching providers or models, and an unavailable
+reviewer model fails each review as `unavailable` rather than degrading to rule. Settings read issues are visible. A rejected chain retains typed
+`chainRejected` metadata and uses the existing unavailable fallback, without
+becoming explicit off or an implicit builtin provider. With normalized active
+mode it asks with forced approval in the foreground and denies plus defers
+headless. Shadow rejection only records the observation and preserves the
+authoritative auto/headless baseline without a judge-induced queue entry.
+Warnings for non-chain fields keep their normalizer defaults and do not block an
+otherwise valid chain.
+
+A fatal settings-file read, JSON parse, root-object or permissions-structure
+failure leaves no trustworthy mode. The host carries `settingsUnreadable` and
+conservatively applies the existing unavailable fallback to judgeable categories:
+forced foreground approval or headless deny plus defer, without legacy/provider
+fallback. Persisted mode and normalizer defaults remain unchanged. A missing file
+or block is valid off; a parsed rejected shadow chain keeps the baseline above.
+
+Invalid writes fail before changing the file, and valid writes preserve unrelated
+settings. If runtime refresh fails, the write receipt restores the original raw
+judge subtree, including absence, only if it still equals the just-written
+subtree. This compare-and-swap preserves a later manual change and reports the
+conflict instead of overwriting it. The [settings store](../../src/permissions/permission-settings-store.ts)
+owns persistence and rollback.
+
+The `permissions.judge` subtree is a user-only write floor. The Settings UI and
+manual user edits may change it; agent settings tools, rules, saved approvals
+and judge decisions cannot. The dedicated settings transport retains the normal
+renderer sender guards. Configuration-path protections apply independently to
+file and shell writes.
+
+The host supplies user messages and the normalized invocation with cwd, project
+root, effective sandbox state, rule verdict and policy. No tool results enter
+the request. External transport and audit use the canonical DLP-redacted
+projection. External commands use absolute executable argv without a shell and
+a minimal environment allow-list; URLs use HTTPS or loopback HTTP. Diagnostics
+are bounded, redacted and audited rather than treated as decisions.
+
+An active foreground `deny` blocks execution; `ask` requests approval. An
+unavailable or failed final stage asks through the forced approval surface.
+In headless execution, an active non-allow denies the current invocation and
+appends to the existing `DeferredQueue`. An open breaker asks in the active
+foreground lane or denies and defers in the active headless lane; shadow keeps
+the pre-judge path. Caller cancellation is terminal, and internal
+contract or active-audit failures propagate.
+
+The circuit breaker counts final judge denials across the whole chain: by
+default 3 consecutive or 20 total denials pause automation. An `allow` resets the
+consecutive count; `ask`, timeouts and other failures neither increment nor reset
+it. Intermediate verdicts do not count, and shadow does not change counters.
+An open breaker remains open until the conversation ends; there is no Settings
+reset control. The host resolves a child session to its root conversation before
+judge dispatch, so parent and subagents share breaker and judge audit identity.
+Settings rewiring retains the counter. Deferred entries keep the requesting
+session's identity to route later approval correctly.
+
+The existing audit writer records each stage's provider/version, resolved model,
+verdict and latency alongside the root session, argument hash, redacted request,
+final decision, rationale and fallback. Active decisions require a successful
+write to the HMAC-protected permission audit. Shadow records use the shadow
+channel. A judge may suggest a rule but cannot persist it. Hooks may redact or
+short-circuit to ask/deny before judging and may only retain or downgrade the
+result afterward.
+
 ## Reviewer Failure
 
 Reviewer input separates host-computed policy facts from OS isolation. The host
@@ -1428,3 +2093,9 @@ The permission scenario board and unit tests under `src/permissions/__tests__`
 encode the expected behavior for default, strict, auto-review, reviewer
 failures, invalid plugin manifests, MCP tools, overlay prompt imports, and
 headless deferred queue behavior.
+
+Judge coverage must include the real foreground and headless dispatch lanes,
+unchanged legacy auto-mode tests, chain escalation, settings/model validation,
+the settings write floor, root-session breaker sharing and deferred routing.
+Module or mocked-classifier tests alone do not prove dispatch parity, Settings
+interaction or live-provider behavior; those require their own observed checks.

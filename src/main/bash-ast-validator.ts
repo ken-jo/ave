@@ -21,7 +21,7 @@ class StructuralShellError extends Error {
   constructor(readonly patternId: string, message: string, readonly operand?: string) { super(message); }
 }
 
-/** Structural rules consume the same executed-command and word facts as paths. */
+// Structural rules consume the same executed-command and word facts as paths.
 export class BashAstValidator {
   constructor(private readonly opts: BashAstValidatorOptions = {}) {}
 

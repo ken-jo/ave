@@ -174,6 +174,15 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "binary-file": "formatIpcError.binaryFile",
   "too-large": "formatIpcError.contentTooLarge",
   "read-failed": "formatIpcError.notFound",
+  // Table-document preview (preview.ts readDocument / table-document-reader.ts).
+  "unsupported-format": "formatIpcError.unsupportedFormat",
+  "sheet-not-found": "formatIpcError.sheetNotFound",
+  "archive-too-large": "formatIpcError.archiveTooLarge",
+  "corrupt-document": "formatIpcError.corruptDocument",
+  "parse-limit": "chatPreviewRail.tableErrorParseLimit",
+  "busy": "chatPreviewRail.tableErrorBusy",
+  "encrypted": "formatIpcError.encryptedDocument",
+  "unsupported-encoding": "formatIpcError.unsupportedEncoding",
   // Workspace pick-root acknowledgement token (workspace.ts): the one-time ack
   // token was never issued / already consumed / past its TTL.
   "ack-unknown": "formatIpcError.ackUnknown",
@@ -215,11 +224,31 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "high-is-one-shot": "formatIpcError.highIsOneShot",
   "deny-requires-persistent-scope": "formatIpcError.denyRequiresPersistentScope",
   "verdict-mismatch": "formatIpcError.verdictMismatch",
+  "invalid-rule": "formatIpcError.invalidRule",
+  "command-rule-required": "formatIpcError.commandRuleRequired",
+  "missing-session": "formatIpcError.missingSession",
+  "rule-save-failed": "formatIpcError.ruleSaveFailed",
   "add-failed": "formatIpcError.addFailed",
   "remove-failed": "formatIpcError.removeFailed",
 
   // ── Deferred queue lifecycle ──
   "not-found": "formatIpcError.notFound",
+  // ── Shell egress grants (ave:permissions:egress-grant*) ──
+  "egress-grant-store-unreadable": "formatIpcError.egressGrantStoreUnreadable",
+  "invalid-egress-grant-scope": "formatIpcError.invalidEgressGrantScope",
+  "invalid-egress-grant-destination": "formatIpcError.invalidEgressGrantDestination",
+  "invalid-egress-grant-workspace": "formatIpcError.invalidEgressGrantWorkspace",
+  "invalid-egress-grant-conversation": "formatIpcError.invalidEgressGrantConversation",
+  "invalid-egress-grant-tab": "formatIpcError.invalidEgressGrantTab",
+  "invalid-egress-grant-origin": "formatIpcError.invalidEgressGrantOrigin",
+  // ── Upstream proxy (ave:permissions:upstream-proxy-*, settings:update) ──
+  "invalid-upstream-proxy-mode": "formatIpcError.invalidUpstreamProxyMode",
+  "invalid-upstream-proxy-resolves-names": "formatIpcError.invalidUpstreamProxyResolvesNames",
+  "invalid-upstream-proxy-bypass": "formatIpcError.invalidUpstreamProxyBypass",
+  "invalid-upstream-proxy-url": "formatIpcError.invalidUpstreamProxyUrl",
+  "upstream-proxy-socks-unsupported": "formatIpcError.upstreamProxySocksUnsupported",
+  "upstream-proxy-url-required": "formatIpcError.upstreamProxyUrlRequired",
+  "upstream-proxy-settings-main-owned": "formatIpcError.upstreamProxySettingsMainOwned",
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
   "stale-terminal-session": "formatIpcError.staleTerminalSession",
@@ -322,6 +351,11 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "provider-not-installed": "formatIpcError.providerNotInstalled",
   "unknown-provider": "formatIpcError.unknownProvider",
   "reviewer-rewire-failed": "formatIpcError.reviewerRewireFailed",
+  // Judge settings save (ave:permissions:judge-set); same text as the Settings section.
+  "invalid-judge-settings": "permissionJudge.invalidSettings",
+  "judge-save-failed": "permissionJudge.saveFailed",
+  "judge-rewire-failed": "permissionJudge.rewireFailed",
+  "judge-rollback-failed": "permissionJudge.rollbackFailed",
   // The preset change is saved; the provider refresh that applies it failed.
   "provider-preset-refresh-failed": "formatIpcError.providerPresetRefreshFailed",
   // ── Tutorial-C — tour:{start,mark-complete,dismiss} validation ──

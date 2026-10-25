@@ -1,40 +1,15 @@
 import { randomBytes } from "node:crypto";
 
-/**
- * Working-directory probe for one foreground shell command.
- *
- * Each foreground `bash` process is fresh, so a `cd` would otherwise be lost
- * when the call returns. The host prefixes the command with a fixed EXIT trap
- * that reports the shell's final `$PWD` on stderr between two delimiters that
- * carry a per-invocation random nonce. The trap runs on normal completion,
- * `exit`, and `set -e` failures, preserves the command's exit status, and is
- * placed on the same line as the command so line numbers in shell diagnostics
- * stay unchanged. When the shell never reaches the trap (it was replaced with
- * `exec`, killed, or the command installed its own EXIT trap) no report
- * arrives and the caller keeps its previous directory.
- *
- * Commands that cannot change directory run unwrapped (see
- * {@link createShellCwdProbe}).
- *
- * The prefix is host-authored text: only the nonce varies, and it is hex. The
- * command text that permission, path, and approval checks bind to is not
- * changed; only the argv handed to the shell interpreter carries the prefix.
- */
+// A nonce-tagged EXIT trap reports final cwd while preserving exit status and diagnostic line numbers.
+// Only spawned argv gains the host prefix; policy binds original command text, and missing reports retain the prior cwd.
 export interface ShellCwdProbe {
-  /** Prefix-wrapped script for the interpreter's `-c` argument. */
   readonly script: string;
   readonly start: string;
   readonly end: string;
 }
 
-/**
- * A shell's directory changes only through `cd`, `pushd`, or `popd`; path
- * policy refuses sourcing and dynamic command names before spawn. A command
- * whose text never names one of them keeps its unwrapped argv, so the shell
- * may still replace itself with a final simple command and report a child's
- * own signal directly. A false match (for example `echo cd`) only adds the
- * probe.
- */
+// Probe only cd/pushd/popd candidates; unwrapped commands retain direct exec and child-signal behavior.
+// Path policy already refuses sourcing and dynamic command names; false matches only add a probe.
 const DIRECTORY_BUILTIN = /(?:^|[^A-Za-z0-9_.\/-])(?:cd|pushd|popd)(?:$|[^A-Za-z0-9_.\/-])/;
 
 export function createShellCwdProbe(command: string): ShellCwdProbe | undefined {
@@ -50,16 +25,8 @@ export function createShellCwdProbe(command: string): ShellCwdProbe | undefined 
 /** Longest marker body accepted before the report is treated as ordinary output. */
 const MAX_REPORTED_PATH_BYTES = 16 * 1024;
 
-/**
- * Removes probe reports from a stderr byte stream before the bytes reach the
- * bounded display buffer, the output artifact, or live progress. Bytes that
- * might begin a report are held until they can be classified.
- *
- * Every complete report is removed, and the last one is adopted: the EXIT
- * trap runs after the command, so a report the command printed itself (it can
- * read the nonce with `trap -p`) comes earlier and is superseded. Whatever is
- * adopted is still clamped to the allowed scope by the caller.
- */
+// Remove reports before display, artifacts, or progress; buffer possible prefixes until classified.
+// Adopt the last complete report so EXIT supersedes command-forged reports; callers still clamp cwd to allowed scope.
 export class ShellCwdProbeFilter {
   private readonly start: Buffer;
   private readonly end: Buffer;
@@ -72,7 +39,6 @@ export class ShellCwdProbeFilter {
     this.end = Buffer.from(probe.end, "utf8");
   }
 
-  /** The `$PWD` of the last complete report, or undefined when none arrived. */
   get reportedCwd(): string | undefined {
     return this.reported;
   }
@@ -94,7 +60,6 @@ export class ShellCwdProbeFilter {
       const endIndex = data.indexOf(this.end, bodyIndex);
       if (endIndex === -1) {
         if (data.length - bodyIndex > MAX_REPORTED_PATH_BYTES) {
-          // Too long to be a report: ordinary output from here on.
           out.push(data.subarray(0, bodyIndex));
           data = data.subarray(bodyIndex);
           continue;
@@ -110,7 +75,6 @@ export class ShellCwdProbeFilter {
     return out.length === 1 ? out[0]! : Buffer.concat(out);
   }
 
-  /** Release held bytes that never became a complete report. */
   flush(): Buffer {
     const held = this.pending;
     this.pending = Buffer.alloc(0);

@@ -1,13 +1,4 @@
-/**
- * #885 b3 — McpManager `onServerDisconnected` emission.
- *
- * The sink must fire EXACTLY on the 3 *teardown* (permanent-retirement) paths —
- * killSwitch, removeConfig, disconnectAll — and NEVER on the 2 *reconnect*
- * paths (setApiKey, connectServer's error re-establish), which re-create the
- * same server id and would otherwise disable a card about to become valid again
- * with no reverse re-enable (MINOR-1). Uses http transport so connectServer
- * never mkdir's a stdio sandbox root.
- */
+/** Permanent retirement emits disconnect events; reconnecting the same id must not disable its cards. */
 import { describe, it, expect, vi, beforeEach, afterAll } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,8 +38,7 @@ import { McpManager } from "../mcp-manager.js";
 import type { McpServerConfig } from "../types.js";
 import { unusedNetworkFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
-// Unique random temp dir (mkdtempSync) — not a predictable tmpdir()+pid path, so
-// no symlink/race on a shared temp dir (CodeQL js/insecure-temporary-file).
+// Random temporary directories prevent predictable-path link races.
 const testDir = mkdtempSync(join(tmpdir(), "ave-mcp-disc-"));
 const testConfigPath = join(testDir, "mcp-servers.json");
 
@@ -126,19 +116,17 @@ describe("reconnect/replace paths EMIT ZERO (MINOR-1 regression)", () => {
     const mgr = await makeManager(sink);
     await mgr.connectServer(servers[0]);
     await mgr.setApiKey("key-srv", "sk-new");
-    expect(mockDisconnect).toHaveBeenCalled(); // it DID disconnect...
-    expect(sink).not.toHaveBeenCalled(); // ...but MUST NOT emit a retirement
+    expect(mockDisconnect).toHaveBeenCalled();
+    expect(sink).not.toHaveBeenCalled();
   });
 
   it("connectServer's error-reconnect path does NOT emit", async () => {
     const sink = vi.fn();
     const mgr = await makeManager(sink);
     await mgr.connectServer(httpServer("recon-srv"));
-    // The existing client is now in an error/disconnected state → connectServer
-    // disconnects + deletes it before re-connecting the same id (a reconnect).
     mockGetState.mockReturnValue({ id: "recon-srv", status: "error" as const, registeredTools: [] });
     await mgr.connectServer(httpServer("recon-srv"));
-    expect(mockDisconnect).toHaveBeenCalled(); // the stale client was disconnected...
-    expect(sink).not.toHaveBeenCalled(); // ...but that is NOT a retirement
+    expect(mockDisconnect).toHaveBeenCalled();
+    expect(sink).not.toHaveBeenCalled();
   });
 });

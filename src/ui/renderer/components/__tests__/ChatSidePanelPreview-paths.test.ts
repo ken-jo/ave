@@ -1,11 +1,4 @@
-/**
- * Renderer-side path containment for the side-panel file list.
- *
- * The renderer cannot import the host's `isPathWithin` — that module reaches
- * for `node:path` — so this predicate is a deliberate restatement rather than a
- * copy that drifted. These tests pin the two things the restatement has to get
- * right, both of which the host copy already carries a guard for.
- */
+/** Renderer path containment cannot import the host helper because it depends on node:path. */
 import { describe, it, expect } from "vitest";
 import { isPathWithinRoot, toRelativePath } from "../ChatSidePanelPreview.js";
 

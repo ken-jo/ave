@@ -1,43 +1,5 @@
-/**
- * A folder source read in place (design §18.4.2, §18.4.5): the snapshot
- * builder reads it like a commit, and an install plan captures one package's
- * bytes from it into its staging directory.
- *
- * Every call goes through {@link FolderFs}, fenced (`fenceFolderFs`): without
- * the `network-folder` confirmation a path on another computer stops the
- * read before it is touched. Beneath the canonical root (stage 4's result)
- * the rules are:
- *
- *   - directories are walked and regular files read; a device, socket or
- *     FIFO fails the package (`special-file`);
- *   - a link (a junction too) is never followed by the OS. Its text is read
- *     and judged before anything touches its target: text naming a network
- *     location, or resolving lexically against the link's directory to one,
- *     is `link-to-network`; text leaving the root is `link-outside-folder`;
- *     inside, the walk continues at the target, with the same rule for
- *     every link it meets. A directory reached twice, or more than 40 links
- *     in one resolution, is a loop. The installed copy holds the target's
- *     bytes as a regular file;
- *   - every component a path names is matched to its entry in the parent's
- *     listing, the one with its identity when the spelling differs (case,
- *     a Windows 8.3 or trailing-dot alias). A skipped entry (below) is
- *     never reached: a path naming one is absent, and a link whose target
- *     passes through one is `link-to-skipped`;
- *   - a file is opened without following its last component where the OS
- *     can, and `fstat` must report the identity the walk's `lstat` saw;
- *   - each directory's identity is recorded when it is first reached, and
- *     after every file the directory chain from the root to that file is
- *     `lstat`ed again and compared, so a swap still in place when the file
- *     has been read fails the read (`changed-during-read`);
- *   - `.git/`, `.DS_Store`, `._*`, `Thumbs.db` and `desktop.ini` are skipped
- *     at any depth; names are NFC; names equal after NFC or ignoring case
- *     fail the package; the execute bit comes from `lstat` (none on Windows).
- *
- * The residual §18.4.5 states holds here too: a concurrent writer that swaps
- * an intermediate directory and restores it between the checks can redirect
- * one read, since Node offers no traversal anchored to held directory
- * handles.
- */
+/** Fence every path, reject escaping/network links and verify file and ancestor identities after reads.
+ * A writer restoring an intermediate directory between checks can still redirect one read. */
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -61,46 +23,39 @@ import { treeDigest } from "../resolve/tree-digest.js";
 import type { FolderFs, FolderStat } from "./folder-fs.js";
 import { packageInstalls, type SourceTree } from "./source-tree.js";
 
-/** Never read, digested or installed, at any depth (§18.4.5); on-disk names, compared ignoring case as a case-insensitive volume would. */
+/** Skip metadata at every depth, case-insensitively; never read, digest or install it. */
 function isSkippedFolderEntry(name: string): boolean {
   const lower = name.toLowerCase();
   return lower === ".git" || lower === ".ds_store" || name.startsWith("._") || lower === "thumbs.db" || lower === "desktop.ini";
 }
 
-/** NFC and case folded: a typed name's candidates in a listing. */
 function folded(name: string): string {
   return name.normalize("NFC").toLowerCase();
 }
 
-/** Top-level files a package's readers open beside what it installs: the descriptor and the files a direct source is detected from. */
-/** The package's descriptor: read by the marketplace, never part of what a plugin installs, and not listed as left out. */
+/** Descriptors are read separately and excluded from payload and left-out lists. */
 const PACKAGE_READ_FILES = [MARKETPLACE_DESCRIPTOR_FILE, "plugin.json", "SKILL.md", "AGENTS.md", "server.json"] as const;
 const PACKAGE_READ_LIMIT = 1024 * 1024;
 
 export interface FolderFile {
-  /** Package-relative, `/`-separated, NFC. */
   path: string;
   data: Buffer;
   executable: boolean;
 }
 
 export interface FolderPackage {
-  /** The tree digest (§6.4) of the files the package installs. */
   treeSha256: string;
   files: FolderFile[];
-  /** A plugin's top-level entries that are not installed (`src/`, `package.json`), sorted. */
   notInstalled: string[];
 }
 
 export interface FolderCapture {
   treeSha256: string;
   notInstalled: string[];
-  /** Captured paths, relative to the folder root, whose execute bit is set. */
   executable: Set<string>;
 }
 
 interface Resolved {
-  /** Canonical components beneath the root: no link among them. */
   segments: string[];
   stat: FolderStat;
 }
@@ -109,11 +64,9 @@ export interface FolderTreeOptions {
   fs: FolderFs;
   platform: NodeJS.Platform;
   root: FolderRoot;
-  /** When this read began: the revision's time. */
   readAt: string;
-  /** The ceiling on one package's files and bytes while reading it (§5.4). */
   limits: ExportLimits;
-  /** The source holds `network-folder`: without it, any path on another computer stops the read (§18.4.1). */
+  /** Network paths require network-folder consent before access. */
   networkConsented: boolean;
 }
 
@@ -122,15 +75,12 @@ function identity(stat: FolderStat): string {
 }
 
 export class FolderTree implements SourceTree {
-  /** sha256 of every file the snapshot read through {@link readFile}, by path: the revision's file lines (§18.4.3). */
   readonly reads = new Map<string, string>();
   private readonly packages = new Map<string, Promise<FolderPackage>>();
-  /** The identity of every directory this read reached, by canonical path beneath the root ("" is the root). */
   private readonly dirs = new Map<string, FolderStat>();
   private readonly rootSplit: { root: string; segments: string[] };
-  /** Every call this read makes, fenced against paths on another computer. */
   private readonly fs: FolderFs;
-  /** Directory listings by absolute path, kept for the read: they only spell what a path names. */
+  /** Cache listings for spelling only, not filesystem authority. */
   private readonly listings = new Map<string, Promise<string[]>>();
 
   constructor(private readonly options: FolderTreeOptions) {
@@ -147,7 +97,6 @@ export class FolderTree implements SourceTree {
     return joinFolderPath({ root: this.rootSplit.root, segments: [...this.rootSplit.segments, ...segments] }, this.options.platform);
   }
 
-  /** The components beneath the root that `path` names, or null when it lies outside (compared byte for byte). */
   private inside(path: string): string[] | null {
     const split = splitFolderPath(path, this.options.platform);
     if (split.root !== this.rootSplit.root) return null;
@@ -171,7 +120,7 @@ export class FolderTree implements SourceTree {
     return unreadable("changed-during-read", this.abs(segments), why);
   }
 
-  /** Record a directory's identity when first reached; reaching it again with another identity is a change. */
+  /** A previously recorded directory identity must not change during the read. */
   private recordDir(segments: readonly string[], stat: FolderStat): void {
     const key = segments.join("/");
     const seen = this.dirs.get(key);
@@ -182,7 +131,7 @@ export class FolderTree implements SourceTree {
     if (seen.dev !== stat.dev || seen.ino !== stat.ino) throw this.changed(segments, `${key} was replaced during the read`);
   }
 
-  /** The directory's names, listed once per read unless `fresh` asks again (a name not yet listed, an enumeration). */
+  /** Refresh cached listings when resolving an unlisted name or enumerating. */
   private list(segments: readonly string[], fresh = false): Promise<string[]> {
     const at = this.abs(segments);
     let listing = fresh ? undefined : this.listings.get(at);
@@ -195,14 +144,7 @@ export class FolderTree implements SourceTree {
     return listing;
   }
 
-  /**
-   * The entry of directory `parent` that `name` reached as `stat`: `name`
-   * itself when listed, else the listed entry with the same identity
-   * (a case variant on a case-insensitive volume, an 8.3 or trailing-dot
-   * alias on Windows), case variants tried first. Null when no listed entry
-   * is it, or identities cannot tell (zero) and more or fewer than one entry
-   * matches ignoring case: the name is then treated as absent.
-   */
+  /** Resolve aliases by listed identity, preferring case variants; ambiguous or unidentifiable entries are absent. */
   private async onDisk(parent: readonly string[], name: string, stat: FolderStat): Promise<string | null> {
     let names = await this.list(parent);
     if (names.includes(name)) return name;
@@ -218,18 +160,9 @@ export class FolderTree implements SourceTree {
     return null;
   }
 
-  /**
-   * Follow `path` (beneath the root, `/`-separated) component by component,
-   * each one spelled as its parent lists it. Links are judged by their text
-   * and the target it resolves to: network → `link-to-network`, outside
-   * the root → `link-outside-folder`, neither touching the target; inside,
-   * the walk continues at the target. A skipped entry is never reached:
-   * `path` naming one is absent (null), a link's target through one is
-   * `link-to-skipped`. Null when nothing is there.
-   */
+  /** Resolve links lexically before access; reject network, escaping and skipped targets without touching them. */
   private async resolve(path: string): Promise<Resolved | null> {
     let stack: string[] = [];
-    // `linked`: the component came from a link's text, not from `path`.
     let queue = path.split("/").filter((segment) => segment !== "").map((name) => ({ name, linked: null as string | null }));
     let links = 0;
     let stat: FolderStat = this.dirs.get("")!;
@@ -298,11 +231,7 @@ export class FolderTree implements SourceTree {
     }
   }
 
-  /**
-   * Read a regular file the walk found with `seen`: open it, check that
-   * `fstat` is the file `lstat` saw, read at most `maxBytes`, then check the
-   * directory chain from the root again (§18.4.5).
-   */
+  /** Match opened file identity to the walk, then recheck every ancestor after the bounded read. */
   private async readRegular(segments: readonly string[], seen: FolderStat, maxBytes: number, shown: string, limit = `${maxBytes} bytes per file`): Promise<Buffer> {
     const at = this.abs(segments);
     const fs = this.fs;
@@ -310,7 +239,6 @@ export class FolderTree implements SourceTree {
     try {
       handle = await fs.open(at);
     } catch (error) {
-      // O_NOFOLLOW refuses a final component that became a link after the walk saw a file.
       if ((error as NodeJS.ErrnoException).code === "ELOOP") throw this.changed(segments, `${shown} became a link during the read`);
       throw folderUnreadable(at, error);
     }
@@ -350,11 +278,8 @@ export class FolderTree implements SourceTree {
     }
   }
 
-  // ─── SourceTree ───────────────────────────────────────────────────────────
-
   async ensure(): Promise<void> {}
 
-  /** One file the snapshot reads (the index, a descriptor, a revocations file); its digest joins the revision. */
   async readFile(path: string, maxBytes: number): Promise<Buffer | null> {
     const bytes = await this.readOnce(path, maxBytes);
     if (bytes !== null) this.reads.set(path, sha256Hex(bytes));
@@ -389,9 +314,6 @@ export class FolderTree implements SourceTree {
     return `0.0.0+t${(await this.packageAt(path, kind)).treeSha256.slice(0, 12)}`;
   }
 
-  // ─── packages ─────────────────────────────────────────────────────────────
-
-  /** The files package `path` of `kind` installs and their tree digest, read once per read (§18.4.3). */
   packageAt(path: string, kind: PackageKind): Promise<FolderPackage> {
     const key = `${kind}\u0000${path}`;
     let read = this.packages.get(key);
@@ -402,22 +324,13 @@ export class FolderTree implements SourceTree {
     return read;
   }
 
-  /** The digest of every package the snapshot listed, by package path: the revision's package lines. */
   async packageDigests(packages: ReadonlyArray<{ path: string; kind: PackageKind }>): Promise<Map<string, string>> {
     const digests = new Map<string, string>();
     for (const item of packages) digests.set(item.path, (await this.packageAt(item.path, item.kind)).treeSha256);
     return digests;
   }
 
-  /**
-   * Copy package `path` into `dest` (under the same relative path) for an
-   * install plan (§18.4.2): what it installs, read again now, and the
-   * top-level files its readers open (the descriptor, the detected file).
-   * A read file whose bytes differ from what this read's snapshot saw fails
-   * as `changed-during-read`, and the caller compares `treeSha256` with the
-   * snapshot's, so a package that changed since the snapshot was read is
-   * never captured.
-   */
+  /** Capture fresh package bytes and compare them with snapshot digests; concurrent changes fail the plan. */
   async capture(path: string, kind: PackageKind, dest: string): Promise<FolderCapture> {
     const { files, notInstalled } = await this.walk(path, kind, this.options.limits);
     const executable = new Set<string>();
@@ -441,11 +354,7 @@ export class FolderTree implements SourceTree {
     return { treeSha256: treeDigest(files), notInstalled, executable };
   }
 
-  /**
-   * Every file under `path`, read under the rules above: all of them
-   * (`kind` null, an export) or the ones a package of `kind` installs.
-   * Stops at the first limit exceeded.
-   */
+  /** Read only installed payload when kind is specified; abort at the first resource limit. */
   private async walk(path: string, kind: PackageKind | null, limits: ExportLimits): Promise<{ files: FolderFile[]; notInstalled: string[] }> {
     const files: FolderFile[] = [];
     const notInstalled: string[] = [];
@@ -485,7 +394,7 @@ export class FolderTree implements SourceTree {
 
     const walkDir = async (segments: readonly string[], stat: FolderStat, relative: readonly string[]): Promise<void> => {
       const key = identity(stat);
-      // A directory reached twice through links is a loop (§18.4.5 rule 4); zero identities cannot tell, so they are not compared.
+      // Repeated directory identities through links are loops; zero identities cannot prove equality.
       if (stat.ino !== 0n && visited.has(key)) {
         throw new MarketplaceError("CONTENT_RULE_VIOLATION", `${shown(relative)} is reached twice: a link loop`, {
           detail: { reason: "limit", path: shown(relative) || ".", limit: "each directory once (a link loop)" },
@@ -498,7 +407,6 @@ export class FolderTree implements SourceTree {
         const childSegments = [...segments, name];
         const childRelative = [...relative, name];
         let entry = await this.lstat(childSegments);
-        // Gone between readdir and lstat: the folder changed under the read.
         if (!entry) throw this.changed(childSegments, `${shown(childRelative)} disappeared during the read`);
         let at = childSegments;
         if (entry.kind === "link") {

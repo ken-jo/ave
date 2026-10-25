@@ -1,7 +1,3 @@
-
-
-
-
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { app, shell } from "electron";
@@ -24,45 +20,29 @@ const log = createLogger("auto-updater");
 const _require = createRequire(import.meta.url);
 
 export interface AutoUpdaterDeps {
-  /**
-   * Every open main window, read on each broadcast. Update state is app-wide,
-   * and several main windows may be open; the window open at boot may be
-   * closed while others stay, so no window is captured.
-   */
+  // Read all live main windows per broadcast; the boot window may close while others remain.
   getWindows: () => BrowserWindow[];
-  /** The window the install confirmation is parented to — the one in use — or null. */
+  // The window the install confirmation is parented to — the one in use — or null.
   getDialogParent: () => BrowserWindow | null;
   auditLogger: AuditLogger;
-  /** Settings accessor — re-read on every tick so user can toggle at runtime. */
+  // Settings accessor — re-read on every tick so user can toggle at runtime.
   isEnabled: () => boolean;
-  /**
-   * Injectable updater (test seam). In production we dynamically require
-   * `electron-updater` so unit tests don't need the native dep.
-   */
+  // Injectable updater (test seam). In production we dynamically require `electron-updater` so unit tests don't need the native dep.
   updaterFactory?: () => UpdaterLike;
-  /** Test seam for the native destructive-action confirmation dialog. */
+  // Test seam for the native destructive-action confirmation dialog.
   confirmInstallForTest?: () => Promise<boolean>;
-  /**
-   * Test seam for the macOS self-install capability check. Production resolves
-   * it via a `codesign` probe (Developer ID present?); tests inject a boolean
-   * so the install path is deterministic across CI platforms.
-   */
+  // Production self-install capability requires a signing probe; tests inject the result across unsigned platforms.
   canSelfInstall?: () => boolean;
-  /** Test seam for opening the manual-update guide. Defaults to shell.openExternal. */
+  // Test seam for opening the manual-update guide. Defaults to shell.openExternal.
   openExternal?: (url: string) => void;
-  /** Persisted app-update skip state. Exact-version only; a newer version surfaces again. */
+  // Persisted app-update skip state. Exact-version only; a newer version surfaces again.
   getSkippedVersion?: () => string | undefined;
   setSkippedVersion?: (version: string) => Promise<void> | void;
-  /**
-   * Test seam for the version of the app that is RUNNING. Production resolves
-   * it from the same SoT every other version-gated decision uses
-   * ({@link getAveAppVersion}); a test injects one so the feed can be made to
-   * offer something older than the running build.
-   */
+  // Use the shared running-version source; injection lets tests offer an older feed version.
   getRunningVersion?: () => string;
 }
 
-/** Minimal surface of electron-updater.autoUpdater we rely on. */
+// Minimal surface of electron-updater.autoUpdater we rely on.
 export interface UpdaterLike {
   on(event: "update-available", cb: (info: { version: string }) => void): void;
   on(event: "update-not-available", cb: (info: { version: string }) => void): void;
@@ -72,37 +52,19 @@ export interface UpdaterLike {
   checkForUpdates(): Promise<unknown>;
   downloadUpdate(): Promise<unknown>;
   quitAndInstall(): void;
-  // Hardening: explicit anti-downgrade + channel pin + manual-download flag.
-  // Optional on the type so tests can pass minimal fakes.
+  // Hardening: explicit anti-downgrade + channel pin + manual-download flag. Optional on the type so tests can pass minimal fakes.
   allowDowngrade?: boolean;
   channel?: string;
-  /** When false (our choice), `checkForUpdates` only detects — caller must
-   *  invoke `downloadUpdate()` explicitly. Default in electron-updater is
-   *  `true`, which would silently fetch ~100MB on every app start. */
+  // When false (our choice), `checkForUpdates` only detects — caller must invoke `downloadUpdate()` explicitly. Default in electron-updater is `true`,
+  // which would silently fetch ~100MB on every app start.
   autoDownload?: boolean;
 }
 
-// UpdateState type now lives in src/shared/update-state.ts and is
-// re-exported above for callers that traditionally imported from this
-// module (test harness, settings UI). Transient feed/download errors are
-// logged but not surfaced to the renderer — we keep the last good state
-// rather than introducing a fifth variant whose badge UX is unclear.
+// Keep the last good state on transient feed or download errors; log failures without inventing a renderer state.
 
 export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
-/**
- * macOS Squirrel.Mac can only swap a running app bundle in place when that
- * bundle is signed with a Developer ID — the staged update's signature must
- * chain to the same identity as the running app. Ad-hoc / unsigned builds
- * (Ave ships these whenever a release runs without CSC_LINK) make
- * quitAndInstall a silent no-op: the update downloads but never applies, so
- * "apply update" looks like a dead button. We detect that up front so the
- * install action can fall back to a manual download instead.
- *
- * Linux (AppImage) and Windows (NSIS) self-update without a Developer-ID
- * signature, so this gate is darwin-only. Cached — a running process can't
- * change its own signature.
- */
+// macOS self-install requires matching developer signing; unsigned builds need manual installation. Cache the immutable running signature.
 let _canSelfInstall: boolean | null = null;
 function canSelfInstall(): boolean {
   if (_canSelfInstall !== null) return _canSelfInstall;
@@ -111,8 +73,7 @@ function canSelfInstall(): boolean {
     return _canSelfInstall;
   }
   try {
-    // `codesign -dv` writes its report to stderr; the Developer ID authority
-    // line is present only for a properly signed bundle (absent for adhoc).
+    // `codesign -dv` writes its report to stderr; the Developer ID authority line is present only for a properly signed bundle (absent for adhoc).
     const r = spawnSync("/usr/bin/codesign", ["-dv", "--verbose=2", app.getPath("exe")], {
       encoding: "utf8",
     });
@@ -124,23 +85,15 @@ function canSelfInstall(): boolean {
   return _canSelfInstall;
 }
 
-/**
- * Ave homepage — hosts the manual update guide (download + replace steps).
- * Opening it is the unsigned-build fallback for "apply update": the user
- * finishes their work, quits, and follows the guide there since the app can't
- * self-install an unsigned macOS build.
- */
+// Ave homepage — hosts the manual update guide (download + replace steps). Opening it is the unsigned-build fallback for "apply update": the user
+// finishes their work, quits, and follows the guide there since the app can't self-install an unsigned macOS build.
 const UPDATE_GUIDE_URL = "https://ave.agent-connector.ai";
 
 export function createAutoUpdater(deps: AutoUpdaterDeps): {
   start: () => void;
   stop: () => void;
   triggerCheck: () => Promise<void>;
-  /** Test seam — exposes closure-private updater operations plus the
-   *  production IPC wrappers so release-prep tests can cover both
-   *  state-machine negative paths and IPC sender/confirmation gates without
-   *  spinning up a real Electron ipcMain. NOT used by production callers; the
-   *  registered ipcMain handlers are the SoT for runtime. */
+  // Expose private updater operations and IPC wrappers only for gate tests; registered handlers remain runtime authority.
   _testOnly: {
     downloadNow: () => Promise<{ ok: boolean; reason?: string }>;
     installNow: () => Promise<{ ok: boolean; reason?: string }>;
@@ -192,21 +145,8 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
 
   const runningVersion = (): string => deps.getRunningVersion?.() ?? getAveAppVersion();
 
-  /**
-   * Is the offered version strictly newer than the build that is running?
-   *
-   * The feed decides what it calls "latest"; only the host knows what is
-   * actually installed. `allowDowngrade = false` reads like it settles this and
-   * does not: a v0.9.0 install was observed being offered v0.8.0 from a feed
-   * whose "latest" had moved backwards. So the host asks the question itself,
-   * once, against its own version SoT — the same one the plugin minAppVersion
-   * gate uses, not `app.getVersion()`, which reports the Electron binary in an
-   * unpackaged run.
-   *
-   * Unparseable running version (the `"unknown"` sentinel a broken install
-   * resolves to) refuses the offer: an update that cannot be shown to be newer
-   * is not one to put in front of the user.
-   */
+  // Require a provably newer version against the app’s version authority; feed labels and allowDowngrade alone do not prevent stale offers.
+  // An unparseable running version refuses the offer.
   const isNewerThanRunning = (version: string): boolean => {
     const running = runningVersion();
     if (!SEMVER_CORE_PATTERN.test(running)) {
@@ -243,16 +183,10 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
   const wire = (u: UpdaterLike) => {
     if (wired) return;
     wired = true;
-    // Defend against downgrade attacks: Linux AppImage integrity rests
-    // solely on the SHA512 in latest-linux.yml, so a release-feed
-    // compromise + a forged older version YAML would otherwise be
-    // accepted. Pin the channel to "latest" as well so a malicious
-    // pre-release tag cannot redirect end users.
+    // Reject downgrades and pin the stable channel: feed integrity alone cannot prevent forged older metadata or channel redirection.
     u.allowDowngrade = false;
     u.channel = "latest";
-    // 사용자 명시 클릭 전엔 다운로드 금지 — electron-updater의 default
-    // (autoDownload=true) 를 끄지 않으면 checkForUpdates 가 새 버전을
-    // 감지한 즉시 ~100MB 를 백그라운드로 받아버린다.
+    // 사용자 명시 클릭 전엔 다운로드 금지 — electron-updater의 default (autoDownload=true) 를 끄지 않으면 checkForUpdates 가 새 버전을 감지한 즉시 ~100MB 를 백그라운드로 받아버린다.
     u.autoDownload = false;
     u.on("update-available", (info) => {
       log.info("update-available: v%s", info.version);
@@ -260,16 +194,10 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     });
     u.on("update-not-available", (info) => {
       log.info("update-not-available: at v%s", info.version);
-      // No state change — keep whatever the user last saw (e.g. a
-      // previously-detected available update across reconnects).
+      // No state change — keep whatever the user last saw (e.g. a previously-detected available update across reconnects).
     });
     u.on("download-progress", (p) => {
-      // Only emit progress when we actually expect a user-gated download
-      // to be in flight. If `lastState` is something else, electron-updater
-      // is generating a spurious event (e.g., delta probe, blockmap fetch)
-      // and we MUST NOT broadcast — otherwise the badge tooltip would
-      // render "v 다운로드 중 — N%" with an empty version string (the
-      // empty version string).
+      // Broadcast progress only during a user-gated download; updater probe events otherwise have no version to display.
       if (lastState.kind !== "downloading" && lastState.kind !== "available") {
         return;
       }
@@ -299,11 +227,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     }
   };
 
-  // Renderer-initiated commands. Registered once at start(); removed at
-  // stop() so a re-start (e.g. settings toggle on→off→on) doesn't double-
-  // register. Both commands are no-ops when the updater module is
-  // unavailable (dev mode, packaging gap) so the renderer can safely
-  // fire-and-forget.
+  // Remove IPC handlers on stop to avoid duplicate registration after restart; commands are inert when the updater is unavailable.
   const rejectUnauthorizedIpc = (
     channel: "ave:update:download-now" | "ave:update:install-now" | "ave:update:skip-version",
     event: IpcMainInvokeEvent,
@@ -329,8 +253,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
       return { ok: false, reason: "update-skipped" };
     }
     log.info("user-initiated download for v%s", lastState.version);
-    // Promote state immediately so the badge flips to "다운로드 중…" even
-    // before electron-updater emits the first progress event.
+    // Promote state immediately so the badge flips to "다운로드 중…" even before electron-updater emits the first progress event.
     const version = lastState.version;
     broadcast({ kind: "downloading", version, percent: 0 });
     try {
@@ -338,8 +261,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
       return { ok: true };
     } catch (err) {
       log.warn("downloadUpdate failed: %s", (err as Error).message);
-      // Revert badge to "available" so the user can retry instead of being
-      // stuck on a spinning "downloading…" state with no progress events.
+      // Revert badge to "available" so the user can retry instead of being stuck on a spinning "downloading…" state with no progress events.
       broadcast({ kind: "available", version });
       return { ok: false, reason: (err as Error).message };
     }
@@ -363,8 +285,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     }
     const version = lastState.version;
     log.info("user-initiated install for v%s", version);
-    // Open the Ave homepage update guide (test-seamed). Wrapped so a missing
-    // shell binding can never turn the fallback into an unhandled throw.
+    // Open the Ave homepage update guide (test-seamed). Wrapped so a missing shell binding can never turn the fallback into an unhandled throw.
     const openUpdateGuide = (): void => {
       try {
         (deps.openExternal ?? ((url: string) => void shell.openExternal(url)))(UPDATE_GUIDE_URL);
@@ -372,11 +293,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
         log.warn("failed to open update guide: %s", (err as Error).message);
       }
     };
-    // Unsigned/ad-hoc macOS builds physically cannot self-install (Squirrel.Mac
-    // requires a Developer ID). Rather than call quitAndInstall() and leave a
-    // dead button, open the homepage update guide and tell the renderer to
-    // surface that path. `reason: "manual-install-required"` is the signal the
-    // badge uses (see use-app-update.ts).
+    // Unsigned macOS builds cannot self-install; return manual-install-required and open the update guide.
     const selfInstallable = deps.canSelfInstall ? deps.canSelfInstall() : canSelfInstall();
     if (!selfInstallable) {
       log.info("self-install unsupported (unsigned build) — opening update guide for v%s", version);
@@ -384,11 +301,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
       return { ok: false, reason: "manual-install-required" };
     }
     try {
-      // Main-owned confirmation runs before this function is called from IPC,
-      // so by the time we get here the user has already accepted. The first
-      // quitAndInstall call is allowed to close BrowserWindows; Ave
-      // intercepts the resulting before-quit event,
-      // runs its bounded cleanup, then lets the prepared app quit continue.
+      // After native confirmation, let the updater close windows, intercept its first quit for bounded cleanup, then resume the prepared quit.
       installInProgress = true;
       beginAppUpdateInstallRequest();
       u.quitAndInstall();
@@ -396,9 +309,8 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     } catch (err) {
       installInProgress = false;
       clearAppUpdateInstallRequested();
-      // Reactive safety net: if quitAndInstall throws despite the signature
-      // check passing (e.g. a partially-signed bundle), still hand the user a
-      // working install path instead of swallowing the failure silently.
+      // Reactive safety net: if quitAndInstall throws despite the signature check passing (e.g. a partially-signed bundle), still hand the user a working
+      // install path instead of swallowing the failure silently.
       log.warn("quitAndInstall failed: %s — opening update guide", (err as Error).message);
       openUpdateGuide();
       return { ok: false, reason: "manual-install-required" };
@@ -414,16 +326,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     return downloadAvailableUpdate();
   };
 
-  /**
-   * Native confirmation dialog shown via the main process, rather than a
-   * renderer `window.confirm()`: that call blocks the renderer JS thread while
-   * the question is open, and its Chromium-style alert does not respect window
-   * focus on macOS. This is the only confirmation the app asks for; every other
-   * irreversible-looking action either acts at once or refuses outright.
-   *
-   * Returns `{ confirmed: true }` only when the user clicks 재시작.
-   * Cancel / Esc / window close → `{ confirmed: false }`.
-   */
+  // Use a main-process native dialog to avoid renderer blocking and focus problems; only an explicit restart click confirms.
   const onConfirmInstall = async (): Promise<{ confirmed: boolean }> => {
     if (lastState.kind !== "downloaded") {
       return { confirmed: false };
@@ -500,10 +403,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
 
   const onGetState = (): UpdateState => lastState;
 
-  // Defensive lazy-load of ipcMain — unit tests run outside Electron and
-  // `import { ipcMain } from "electron"` resolves to a stub without `.handle`.
-  // We load it only at start() time and skip registration entirely when the
-  // API surface isn't available, so tests can call start() without crashing.
+  // Load IPC at start and skip absent APIs so unit tests can use the updater outside the desktop runtime.
   let ipcRegistered = false;
   const loadIpcMain = (): IpcMain | null => {
     try {
@@ -524,9 +424,7 @@ export function createAutoUpdater(deps: AutoUpdaterDeps): {
     ipc.handle("ave:update:get-state", onGetState);
   };
   const unregisterIpc = () => {
-    // Always clear the flag, even if loadIpcMain returns null — otherwise
-    // a future start() would skip re-registration because the gate would
-    // stay stuck on `true`.
+    // Always clear the flag, even if loadIpcMain returns null — otherwise a future start() would skip re-registration because the gate would stay stuck on `true`.
     if (!ipcRegistered) return;
     ipcRegistered = false;
     const ipc = loadIpcMain();

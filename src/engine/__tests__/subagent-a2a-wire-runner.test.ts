@@ -62,8 +62,7 @@ function buildLoopDeps(
       setToolScope: () => undefined,
       setOriginSource: () => undefined,
       setActiveSessionId: () => undefined,
-      // The runner never shares the parent builder with a child, so the double
-      // hands back a separate one of the same shape.
+      // Child runs require a separate prompt builder rather than sharing parent state.
       createIsolated: () => ({
         build: () => "system",
         setToolScope: () => undefined,
@@ -392,8 +391,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     );
     await initialSaveEntered;
 
-    // Bypass the runner-level live cancellation to isolate the authoritative
-    // post-save revalidation. The root tombstone transforms the pending write.
+    // Disable live cancellation here to isolate tombstone revalidation after persistence.
     await expect(
       store.detachSessionsFromProject(binding.project.root),
     ).resolves.toBe(0);
@@ -458,7 +456,7 @@ describe("SubAgentRunner A2A wire security contract", () => {
     );
     await workingSaveEntered;
 
-    // As above, isolate the post-WORKING-save reload from runner-level abort.
+    // Isolate post-save revalidation from runner-level abort.
     await expect(
       store.detachSessionsFromProject(binding.project.root),
     ).resolves.toBe(1);
@@ -1213,11 +1211,9 @@ describe("SubAgentRunner A2A wire security contract", () => {
     const shell = new ChildProcess();
     shell.stdout = new PassThrough();
     shell.stderr = new PassThrough();
-    // No process is spawned: only the child's signal boundary is replaced.
     const kill = vi.spyOn(shell, "kill").mockReturnValue(true);
     let shellId = "";
     vi.spyOn(ConversationLoop.prototype, "runTurn").mockImplementation(async () => {
-      // What the child's own bash calls would leave behind under its session id.
       shellId = backgroundShellManager.register({
         sessionId: childSessionId,
         command: "child watcher",

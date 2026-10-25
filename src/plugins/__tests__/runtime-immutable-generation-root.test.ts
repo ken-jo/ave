@@ -278,7 +278,6 @@ export default async function createPlugin(ctx) {
     });
     expect(active?.generationId).toBe(incumbentGenerationId);
     expect(await runtime.call("refused_restart_which")).toBe("incumbent");
-    // The replacement's materialized runtime root is not published, so it is removed.
     expect(await readdir(generationsRoot)).toEqual(generationsBefore);
 
     await writeGeneration(servedAgentPluginsDocument(manifest), "fixed", 3);

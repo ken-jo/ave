@@ -1,11 +1,3 @@
-/**
- * Contract test — verify the suggested-replies instruction is always
- * included in the assembled system prompt.
- *
- * If a future refactor reorders or gates the source, the renderer will
- * silently stop receiving suggestions. This test catches that regression
- * before it ships.
- */
 import { describe, it, expect } from "vitest";
 import { SUGGESTED_REPLIES_OPEN, SUGGESTED_REPLIES_CLOSE } from "../../engine/suggested-replies.js";
 import { SystemPromptBuilder } from "../system-prompt-builder.js";
@@ -35,14 +27,12 @@ describe("system prompt — suggested replies contract", () => {
 
   it("instructs the model to omit the block when no follow-up is natural", () => {
     const prompt = buildMinimalPrompt();
-    // The renderer counts on the model NOT padding every turn with junk
-    // suggestions. The prompt must preserve the explicit "생략한다" guidance.
+    // Preserve explicit permission to omit suggestions rather than padding every turn.
     expect(prompt).toMatch(/생략한다/);
   });
 
   it("asks for exactly one candidate and keeps the #980 command-prefix policy explicit", () => {
-    // The composer renders a single ghost suggestion; asking for more would
-    // spend output tokens on candidates the parser discards.
+    // Request one suggestion because the composer discards all other candidates.
     const prompt = buildMinimalPrompt();
     expect(prompt).toContain("정확히 1개");
     expect(prompt).not.toContain("최대 5개");

@@ -1,98 +1,9 @@
-/**
- * Tool execution timeout policy — single source of truth.
- *
- * All values are milliseconds for direct comparison without unit conversion.
- * Only `shellDefaultMs` and the two `terminalRunWait*Ms` keys are
- * model-facing: the bash/powershell Zod schema does `/ 1000` at the boundary
- * to expose `timeoutSeconds` to the model, and `terminal_run` does the same
- * for `waitSeconds`. Every other key is host-internal and consumed as ms
- * directly — no other surface should do the `/ 1000` conversion.
- *
- * The module-level invariant block at the bottom of this file enforces
- * `shellDefaultMs % 1000 === 0` at load time so a non-divisible value would
- * crash the host at startup rather than yield a fractional model-facing
- * default that the `.int()` schema then rejects.
- *
- * Shell timeout semantics: a timeout ALWAYS exists (the field is optional but
- * defaulted, and non-positive / non-finite values are rejected), so no call
- * can wait forever. Local execution deliberately has no upper bound: expiry
- * is a clean, retryable tool error, and the retry's whole point is to name a
- * LARGER budget. Brokered execution advertises its protocol maximum in the
- * tool description because the signed workload capability has a bounded
- * lifetime.
- *
- * Surfaces:
- *  - Built-in shell tools (bash/powershell) — `shellDefaultMs` is exposed to
- *    the model (as `timeoutSeconds` after `/ 1000`) as the value it gets when
- *    it says nothing.
- *  - The executor caps every `tool.execute()` with an AbortController linked
- *    to a ceiling timer so the underlying work actually stops (tools that
- *    participate in `executionContext.abortSignal` propagate the
- *    cancellation), not just gets ignored. A builtin shell invocation whose
- *    own `timeoutSeconds` exceeds that ceiling raises it for that invocation
- *    (`resolveEffectiveCeilingMs`), so the tool's own retryable timeout — not
- *    an opaque ceiling abort — is what the model sees.
- *  - Canonical file tools use `resolveWorkloadBrokerExecutorCeilingMs` so an
- *    active broker route can complete identity admission, its semantic file
- *    effect, and terminal receipt. `view_image` additionally reserves its
- *    bounded decoder phase. Local execution inherits the longer last-resort
- *    timer, while its own filesystem/image limits remain unchanged.
- *  - Plugin-owned UI and MCP tool execution routes through the same executor
- *    and inherits `globalCeilingMs` — there is no separate plugin timeout
- *    key (single SoT).
- *  - MCP requests have their own default + max ceiling with an absolute
- *    wall-clock deadline so streaming activity reset cannot extend a request
- *    beyond `mcpRequestMaxMs`.
- *  - Plugin `instance.start()` falls back to `pluginStartupDefaultMs` when
- *    the manifest doesn't declare `startupTimeoutMs`, and any declared value
- *    is clamped to `pluginStartupMaxMs`.
- *  - Plugin module import is capped by `pluginImportMs`. Since JavaScript ESM
- *    evaluation cannot be cancelled in-process, an import timeout also
- *    quarantines that plugin id for the remainder of the host process.
- *  - Plugin factory execution is capped by `pluginFactoryMs`; a late factory
- *    result is never committed and is stopped by the runtime cleanup callback.
- *  - `PluginRuntime.readUiResource` (the plugin hook that serves a declared
- *    `ui://` MCP App card) is capped by `pluginUiResourceReadMs` — a render-path
- *    call, not a tool execution.
- *  - `agent_spawn` carries its own sub-agent execution loop and is capped by
- *    `resolveSubAgentCeilingMs(configured round budget)` instead of
- *    `globalCeilingMs`. The round budget is user-configurable and has no
- *    maximum (see shared/subagent-policy.ts), so a fixed wall clock would
- *    silently re-impose the cap the round setting exists to remove: at 600s
- *    and a 600-round budget the agent dies of the clock long before its
- *    rounds. The ceiling therefore scales with the budget.
- *  - User-input gates (e.g. ApprovalGate) are exempt from the tool execution
- *    cap — they have their own `approvalGateUserWaitMs` because the user is
- *    actively present, not the runtime hanging.
- *
- * The user-facing principle: never let the user wait indefinitely, and never
- * kill work the model explicitly budgeted for. An unspecified call gets
- * `shellDefaultMs`; a model that times out escalates by retrying with a
- * larger `timeoutSeconds`.
- */
+/** Timeouts are milliseconds internally; convert only model-facing shell and terminal waits to whole seconds. Local shell budgets may grow on retry, broker budgets remain capability-bounded, and executor cancellation must stop underlying work. */
 import { SUBAGENT_MAX_ROUNDS_DEFAULT } from "./subagent-policy.js";
 
-/**
- * Largest delay a Node `setTimeout` can actually hold.
- *
- * Node stores the delay as a SIGNED 32-BIT integer. A delay above this
- * overflows, and Node's documented response is to warn and substitute `1` —
- * so a ceiling of 2_147_483_648ms does not mean "a very long deadline", it
- * means the timer fires ~immediately and aborts the call it was armed to
- * protect. Both scaled ceilings can cross the bound from ordinary settings:
- * `resolveSubAgentCeilingMs` at a `subAgentMaxRounds` of 214_749, and a shell
- * `timeoutSeconds` of 2_147_474 — neither of which the round budget nor the
- * shell timeout caps, both deliberately (see the notes above).
- *
- * The resolution is therefore a CLAMP, not a rejection: every resolved ceiling
- * passes through `Math.min` against this bound in `resolveEffectiveCeilingMs`
- * (the one place all executor timer arms are computed), so an oversized budget
- * degrades to "the longest deadline Node can arm" — ~24.9 days — instead of to
- * no deadline at all.
- */
+/** Clamp timer delays to signed 32-bit range; larger setTimeout delays overflow to approximately immediate expiry instead of a longer deadline. */
 export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
-/** Convert a validated shell budget to a timer delay without integer overflow. */
 export function resolveShellTimeoutMs(timeoutSeconds: number): number {
   if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
     throw new Error("Shell timeout must be a positive finite number");
@@ -102,141 +13,73 @@ export function resolveShellTimeoutMs(timeoutSeconds: number): number {
 
 export const TOOL_TIMEOUT_POLICY = {
   shellDefaultMs: 120_000,
-  // A brokered shell spends this headroom outside the command's semantic
-  // timeout: exact-identity handshake, terminal/cleanup receipt delivery, and
-  // one small outer-timer guard. Local shells inherit the same host-owned
-  // margin so the executor policy remains route-independent.
+  // Reserve host-owned handshake, receipt, cleanup, and outer-timer headroom beyond semantic shell time on every route.
   shellCeilingGraceMs: 31_000,
   globalCeilingMs: 120_000,
-  // Native location fixtures allow 15 s per check: cold host startup takes
-  // over 1 s. Bound each serial ACL request to that budget so a stalled host
-  // releases queued admissions well before the global ceiling.
+  // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.
   windowsAclRequestMs: 15_000,
-  // Pre-effect exact workload/Docker identity proof. This is also the
-  // protocol handshake timeout; keep it here so the protocol and executor do
-  // not maintain independent copies of the same phase budget.
+  // Share the exact workload-identity handshake budget with the protocol.
   workloadBrokerPreEffectHandshakeMs: 15_000,
-  // Extra transport-only time for a workload broker response to carry the
-  // operation's terminal receipt after its host-owned deadline fires. This
-  // does not extend the tool operation itself.
+  // Receipt transport grace does not extend the operation deadline.
   workloadBrokerTransportGraceMs: 15_000,
-  // Semantic/effect time for canonical file operations. Protocol handshake
-  // and terminal-receipt phases are additive and the canonical tool's
-  // resolveHostCeilingMs derives the complete executor ceiling below.
+  // Canonical-file semantic time excludes additive handshake and receipt phases.
   workloadBrokerFileOperationMs: 105_000,
-  // Broker-owned SIGKILL/descendant drain window for a background execution.
-  // The complete cleanup request also includes handshake and receipt phases;
-  // derive that total with resolveWorkloadBrokerInvocationBudgetMs.
+  // Background cleanup adds handshake and receipt phases to descendant-drain time.
   workloadBrokerBackgroundCleanupEffectMs: 5_000,
-  // Ensures the executor timer is strictly later than the complete broker
-  // phase budget instead of racing a response at the same millisecond.
+  // The executor timer must strictly outlast the complete broker phase budget.
   workloadBrokerOuterGuardMs: 1_000,
   // Includes admission, source reading and decoder process lifetime.
   imagePreparationMs: 30_000,
-  // How long `terminal_run` waits for the command it typed to finish before
-  // returning the block as still running (the agent reads the rest later with
-  // terminal_read). The command keeps running in the terminal either way. The
-  // maximum stays below `globalCeilingMs` so the wait, not the executor
-  // ceiling, is what ends a long call. Model-facing in whole seconds.
+  // terminal_run wait expiry returns a running block without stopping the command; keep the wait below executor ceiling and expose whole seconds.
   terminalRunWaitDefaultMs: 15_000,
   terminalRunWaitMaxMs: 100_000,
   pluginImportMs: 10_000,
   pluginFactoryMs: 10_000,
   pluginStartupDefaultMs: 10_000,
   pluginStartupMaxMs: 60_000,
-  // Each plugin `onShutdown` handler, at app quit. Slow handlers are logged and
-  // do not block quit. An out-of-process plugin's `ave/instance/shutdown`
-  // request is given this bound plus `pluginShutdownKillGraceMs`, past which
-  // the child is killed.
+  // Shutdown handlers may time out without blocking quit; worker transport gets kill grace beyond that timeout.
   pluginShutdownHandlerMs: 5_000,
-  // Keeps the child's kill strictly after the shutdown runner's timeout, so the
-  // runner's is always the timeout reported, not a transport deadline racing it
-  // at the same millisecond.
+  // Kill grace ensures the shutdown runner timeout wins over the transport deadline.
   pluginShutdownKillGraceMs: 1_000,
-  // Ceiling for `RuntimePlugin.readUiResource` — the plugin hook that serves one
-  // of its manifest-declared `ui://` MCP App cards. It sits on the RENDER path
-  // (the user is waiting on a card, not on work a tool was asked to do), so it is
-  // bounded far tighter than `globalCeilingMs`. Fail-closed on expiry: no card.
+  // UI-resource hooks run on the render path with a tighter deadline than tools; expiry yields no card.
   pluginUiResourceReadMs: 10_000,
-  // FLOOR for the `agent_spawn` wall clock — see `resolveSubAgentCeilingMs`.
-  // A sub-agent whose configured round budget is small still gets this much
-  // wall clock, so shrinking the budget never shrinks the deadline below the
-  // value every release before the scaling change shipped with.
+  // A small subagent round budget still receives the wall-clock floor.
   subAgentCeilingFloorMs: 600_000,
-  // Wall clock granted per configured sub-agent round. Derived from the pair
-  // this policy already shipped: the 600s ceiling was chosen against the 60-
-  // round default budget (SUBAGENT_MAX_ROUNDS_DEFAULT), i.e. 10s per round.
-  // Keeping that ratio is what makes the scaled ceiling a generalization of
-  // the old constant rather than a new number: at the default budget the two
-  // agree exactly.
+  // Scale subagent wall clock by the per-round allowance, preserving the floor at the default budget.
   subAgentPerRoundAllowanceMs: 10_000,
-  // How long ONE hop of a plugin's `hostFetch` may take to produce response
-  // HEADERS. The plugin lane had no deadline at all: a plugin that passes no
-  // `signal` — and most pass none — waited forever on a host that accepted
-  // the connection and never answered. Every other egress path in this app
-  // carries a deadline; this is the one that did not.
-  //
-  // Headers, not the whole body: the body belongs to whoever is reading it,
-  // and a large download is not a hang. Matched to `mcpRequestDefaultMs`
-  // because both bound the same thing — a first-party integration's request
-  // to a server the user configured, not a page fetch.
+  // hostFetch bounds each hop to response headers; the caller owns body consumption so large downloads are not mistaken for hangs.
   pluginFetchResponseCeilingMs: 60_000,
   mcpRequestDefaultMs: 60_000,
   mcpRequestMaxMs: 120_000,
   networkFetchDefaultMs: 15_000,
-  // How long the host waits on the MARKETPLACE. One fact with two readers —
-  // the settings-page health ping and the catalogue fetcher — which had the
-  // same number written down twice and no way to notice if they drifted.
+  // Marketplace health checks and catalog fetches share this deadline.
   marketplaceHttpTimeoutMs: 15_000,
-  // The reviewer adapters' own HTTP deadline. Its neighbours below bound the
-  // reviewer's LLM WORK; this bounds the request that carries it, which is a
-  // different thing and so has a name of its own rather than borrowing one.
+  // Reviewer HTTP transport deadlines are separate from model-work budgets.
   reviewerHttpTimeoutMs: 15_000,
-  // How long a model provider may stay silent. Two waits share this one
-  // number: the provider fetch's transport deadline (the response headers)
-  // and the adapter's idle re-arm (each delta once the body is streaming).
-  // Model responses are not web fetches: a self-hosted gateway that answers
-  // only when generation is complete legitimately stays silent for well over
-  // `networkFetchDefaultMs` while it prefills and reasons.
+  // Provider header and streaming-idle waits share this budget; generation-only gateways may legitimately stay silent beyond page-fetch deadlines.
   modelStreamIdleCeilingMs: 300_000,
-  // Host-owned LLM boundaries for the permission-rationale path. These are
-  // separate from ordinary tool execution and the interactive user wait.
+  // Permission-rationale model work is separate from normal tool execution and interactive user waits.
   rationaleGenerationMs: 15_000,
   rationaleScopeReviewMs: 15_000,
   approvalGateUserWaitMs: 5 * 60 * 1000,
-  // Hard ceiling for the Electron `before-quit` cleanup chain
-  // (runShutdownRoutines → svc.shutdown → pluginRuntime.stopAll →
-  //  windowManager.persistAll). On expiry the host force-kills tracked
-  //  child processes and calls `app.exit(0)`. Override via env
-  //  `AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS`.
-  // Must be longer than a complete background broker cleanup request. The
-  // app-wide signal is threaded into that request; if earlier shutdown stages
-  // consume the reserve, it aborts as cleanup-unproven and external workload
-  // release remains authoritative.
+  // On shutdown-cleanup expiry, kill tracked children and exit; AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS may override.
+  // Shutdown must outlast background broker cleanup; an exhausted reserve leaves cleanup unproven and external workload release authoritative.
   shutdownCleanupMs: 60_000,
   // Bounded POSIX child-list lookup during process tree termination.
   processTreeKillMs: 1_000,
-  // Loaded Windows hosts can take several seconds to enumerate and kill a tree.
+  // Allow loaded Windows hosts enough time to enumerate and terminate process trees.
   windowsProcessTreeKillMs: 10_000,
-  // The whole emergency sweep shares one budget, sized for a single slow
-  // tree pass on a loaded host (1 s is what taskkill lost to under load).
+  // Emergency sweeps share one budget sized for a slow tree pass.
   windowsEmergencyProcessSweepMs: 10_000,
   // Give an ACP prompt cancellation time to acknowledge before closing transport.
   acpAbortGraceMs: 1_000,
   // Unreferenced polling retains detached groups until absence is observed.
   processGroupPollMs: 1_000,
-  // Warn once if an owned group survives this long after root settlement or
-  // a termination request. This never expires cancellation/shutdown ownership.
+  // Warn on surviving groups without expiring cancellation or shutdown ownership.
   processGroupRetentionWarningMs: 5 * 60 * 1000,
 } as const;
 
-/**
- * Complete wall-clock budget for one brokered effect as observed by the tool.
- *
- * The effect timeout is model/operation semantic time. The handshake and
- * terminal receipt phases are host protocol work and therefore add to it;
- * postEffectMs accounts for host work after the receipt (image decoding).
- */
+/** Broker wall clock adds handshake, terminal receipt, and post-effect host work to semantic effect time. */
 export function resolveWorkloadBrokerInvocationBudgetMs(
   effectMs: number,
   postEffectMs = 0,
@@ -263,25 +106,7 @@ export function resolveWorkloadBrokerExecutorCeilingMs(
   );
 }
 
-/**
- * The one rule for what counts as a usable shutdown cleanup window.
- *
- * Three surfaces ask it — the `system.shutdownCleanupTimeoutMs` setting as it
- * is read off disk, the same setting as it arrives in an update patch, and
- * `AVE_SHUTDOWN_CLEANUP_TIMEOUT_MS` (registered in ENV_BACKED_SETTINGS, which
- * calls this as its `forcedValue`) — so it is written once rather than three
- * times that could disagree about, say, whether `"0"` is a value.
- *
- * `undefined` means "not usable", which every caller reads as "fall through to
- * the next source", never as "no timeout": a shutdown with no deadline is the
- * hang this policy exists to prevent.
- *
- * The upper clamp is not cosmetic. The resolved value is handed to
- * `setTimeout`, and a delay above {@link MAX_TIMER_DELAY_MS} overflows Node's
- * signed 32-bit store — Node warns and substitutes `1`, so an operator asking
- * for a month-long grace period would get a cleanup killed after one
- * millisecond. Clamping degrades that to the longest window Node can arm.
- */
+/** Unusable shutdown values fall through to the next source, never disable deadlines; clamp oversized values to the timer range. */
 export function normalizeShutdownCleanupTimeoutMs(value: unknown): number | undefined {
   const parsed =
     typeof value === "number"
@@ -293,16 +118,7 @@ export function normalizeShutdownCleanupTimeoutMs(value: unknown): number | unde
   return Math.min(Math.floor(parsed), MAX_TIMER_DELAY_MS);
 }
 
-/**
- * Wall-clock ceiling for ONE `agent_spawn` invocation, scaled to the round
- * budget that invocation may actually run.
- *
- * `max(floor, rounds × allowance)` — never below the shipped 600s, so this is
- * a widening of the previous constant and can only turn a killed-by-the-clock
- * run into a completed one. A deadline still always exists and is still
- * finite: the budget is a bounded host setting, not model input, so a tool
- * call cannot buy itself unbounded wall clock by asking for it.
- */
+/** Scale subagent ceiling with its actual host-assigned round budget and enforce a finite floor. */
 export function resolveSubAgentCeilingMs(configuredRounds: number): number {
   const rounds = Number.isFinite(configuredRounds) ? Math.floor(configuredRounds) : 0;
   return Math.max(
@@ -311,11 +127,7 @@ export function resolveSubAgentCeilingMs(configuredRounds: number): number {
   );
 }
 
-// Load-time invariant — fail loudly if the shell default drifts to a
-// non-divisible value. The bash/powershell Zod schema does
-// `.default(shellDefaultMs / 1000)`; if `shellDefaultMs` were e.g. 120_500,
-// that default is 120.5 and the `.int()` schema rejects its OWN default at
-// parse time. Crashing at module load makes the drift visible immediately.
+// Whole-second shell defaults must remain divisible by 1000 or the integer schema rejects its own default.
 for (const key of ["shellDefaultMs", "terminalRunWaitDefaultMs", "terminalRunWaitMaxMs"] as const) {
   if (TOOL_TIMEOUT_POLICY[key] % 1000 !== 0) {
     throw new Error(
@@ -329,11 +141,7 @@ if (TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs >= TOOL_TIMEOUT_POLICY.globalCeilin
   throw new Error("TOOL_TIMEOUT_POLICY.terminalRunWaitMaxMs must stay below globalCeilingMs");
 }
 
-// Load-time invariant — the per-round allowance is DERIVED from the shipped
-// pair (600s ceiling for the 60-round default budget), not independently
-// chosen. If either side is retuned without the other, `resolveSubAgentCeilingMs`
-// silently stops agreeing with the constant it generalizes at the default
-// budget, so pin the derivation here rather than in a comment alone.
+// Pin the per-round allowance to the default budget/ceiling ratio so retuning cannot silently break their agreement.
 if (
   TOOL_TIMEOUT_POLICY.subAgentPerRoundAllowanceMs * SUBAGENT_MAX_ROUNDS_DEFAULT
   !== TOOL_TIMEOUT_POLICY.subAgentCeilingFloorMs

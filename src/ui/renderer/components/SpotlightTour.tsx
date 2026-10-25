@@ -1,6 +1,3 @@
-
-
-
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import {
@@ -18,11 +15,8 @@ import {
   PopoverContent,
 } from "../../../components/ui/popover.js";
 
-/**
- * Narrow API surface this component needs. Declared structurally so the
- * tests can hand-roll a minimal mock without faking the entire
- * `window.aveApi`. Mirrors `AveApi.tour` in `renderer/types.ts`.
- */
+/** Narrow API surface this component needs. Declared structurally so the tests can hand-roll a minimal mock without faking
+ * the entire `window.aveApi`. Mirrors `AveApi.tour` in `renderer/types.ts`. */
 export interface SpotlightTourApi {
   tour: {
     getState: () => Promise<
@@ -48,17 +42,10 @@ export interface SpotlightTourApi {
 
 export interface SpotlightTourProps {
   api: SpotlightTourApi;
-  /**
-   * Override the scenario registry — used by tests to inject a fixture
-   * without depending on the production default. Defaults to
-   * `DEFAULT_TOUR_SCENARIOS`.
-   */
+  /** Override the scenario registry — used by tests to inject a fixture without depending on the production default. Defaults
+   * to `DEFAULT_TOUR_SCENARIOS`. */
   scenarios?: Readonly<Record<string, TourScenario>>;
-  /**
-   * Open the component immediately for a given scenario instead of
-   * waiting for an IPC `tour.onStart` event. Used by tests + Storybook;
-   * production renders pass `undefined`.
-   */
+  /** Tests can open a scenario immediately without waiting for tour.onStart; production leaves the override undefined. */
   initialScenarioId?: string;
   /**
    * Fired right after the user reaches the last step of a scenario and the
@@ -67,8 +54,6 @@ export interface SpotlightTourProps {
    * instead of a dead-end UX transition.
    */
   onComplete?: (scenarioId: string) => void;
-
-
 
   onDismiss?: (scenarioId: string) => void;
 }
@@ -82,28 +67,11 @@ export interface SpotlightTourProps {
  */
 const TOUR_HIGHLIGHT_ATTR = "data-tour-highlight";
 
-/**
- * How far outside the anchor's own box the ring is drawn. The ring is its own
- * layer, so without this gap it would trace the anchor's edge exactly and read
- * as a border on the control rather than a highlight around it.
- */
+/** How far outside the anchor's own box the ring is drawn. The ring is its own layer, so without this gap it would trace
+ * the anchor's edge exactly and read as a border on the control rather than a highlight around it. */
 const RING_INSET_PX = 3;
 
-/**
- * The element a step's selector means.
- *
- * `data-tour-anchor` is per-surface chrome and the main area holds up to four
- * tiles, so a step selector matches once per open tile — and document order is
- * not screen order, so `querySelector`'s first hit can be a tile the user
- * cannot see. The step is about the one that is on screen.
- *
- * A zero-area rect is the test that carries the weight: it covers
- * `display: none`, a collapsed container, and a detached node alike.
- * `visibility: hidden` keeps its box, so it needs asking about separately.
- * `offsetParent` is deliberately not consulted — it is null for every
- * `position: fixed` element, which would misread the window-level chrome some
- * steps point at as hidden.
- */
+/** Resolve visible tour anchors by nonzero rect and visibility; offsetParent is null for fixed-position controls too. */
 function firstVisibleMatch(selector: string): HTMLElement | null {
   if (typeof document === "undefined") return null;
   for (const el of document.querySelectorAll<HTMLElement>(selector)) {
@@ -159,30 +127,8 @@ export function SpotlightTour({
 
   const currentStep: TourStep | null = scenario?.steps[stepIndex] ?? null;
 
-  // Subscribe to the host broadcast.
-  //
-  // Test harnesses sometimes mock `window.aveApi` with a partial shape
-  // that omits `tour` — App-level renderer tests like ChatView mount the
-  // whole App tree with a hand-rolled api, so a missing `tour.onStart`
-  // must not crash the ErrorBoundary. Production preload always exposes
-  // the full tour API.
-  //
-  // U6 — modal precondition: if any Radix Dialog / AlertDialog is open
-  // when the tour.start broadcast arrives, queue the scenario and wait
-  // for the dialog to close before mounting. Without this guard the
-  // SpotlightTour would paint its backdrop + ring on top of the still-
-  // open dialog, leaving the violet ring floating over an unrelated
-  // anchor that the user can't see (the 2026-05-19 screenshot bug).
-  //
-  // Double-broadcast guard (2026-05-19): if the SAME scenario is already
-  // mounted, ignore the incoming broadcast instead of calling
-  // `setActiveScenarioId` again. The downstream `useEffect [activeScenarioId]`
-  // resets `stepIndex` to 0 and clears `dismissedRef`, so re-setting the
-
-
-  // carries an idempotency ref; this is defense-in-depth so external
-
-  // re-mount the active tour.
+  // Queue tours behind open modals and ignore duplicate active scenarios so progress is not reset; partial harness APIs may
+  // omit tour subscriptions.
   const activeScenarioIdRef = useRef<string | null>(null);
   useEffect(() => {
     activeScenarioIdRef.current = activeScenarioId;
@@ -198,8 +144,7 @@ export function SpotlightTour({
         return;
       }
       if (anyBlockingSurfaceOpen()) {
-        // Queue the scenario; the MutationObserver below will pick it up
-        // when the offending dialog unmounts.
+        // Queue the scenario; the MutationObserver below will pick it up when the offending dialog unmounts.
         pendingScenarioRef.current = scenarioId;
         return;
       }
@@ -208,16 +153,7 @@ export function SpotlightTour({
     return off;
   }, [api]);
 
-  // U6 — observer that flushes the queued scenario when every modal
-  // dialog has closed. We watch `document.body` for the data-state
-  // attribute mutations Radix emits on close.
-  //
-  // It also carries the anchor's liveness: the ring and the card are portaled
-  // layers positioned against the anchor node, so a node that leaves the DOM
-  // would leave both painting where nothing is any more. Bumping the epoch
-  // re-runs the resolution effect below, which re-anchors to whatever the
-  // selector means now — the replacement node after a re-render, or nothing,
-  // in which case the card falls back to centring itself.
+  // Watch modal closure and anchor liveness; re-resolve detached anchors so portaled rings cannot remain over empty space.
   const anchorElRef = useRef<HTMLElement | null>(null);
   const [anchorEpoch, setAnchorEpoch] = useState(0);
   useEffect(() => {
@@ -247,17 +183,8 @@ export function SpotlightTour({
     return () => observer.disconnect();
   }, []);
 
-  // Resolve the element this step is about, and mark it. Everything visual
-  // then hangs off that element: both the ring and the card are Radix popovers
-  // anchored to it. Because the anchor is a live node rather than a copied
-  // rect, an in-app layout shift — a notice strip opening, the composer
-  // growing, a list re-rendering — moves the ring and the card with it, with
-  // nothing to re-measure.
-  //
-  // The cleanup unmarks the node this effect actually marked rather than
-  // whatever the selector resolves to later, so a step that swaps the target
-  // cannot leave the previous element ringed. A node that leaves the DOM
-  // mid-step takes its own mark with it.
+  // Anchor the ring and card to the live node so layout shifts track automatically; cleanup must unmark the original node,
+  // not a newly resolved target.
   const anchorSelector = currentStep?.anchorSelector ?? null;
   const [anchorEl, setAnchorEl] = useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -309,11 +236,8 @@ export function SpotlightTour({
         });
       }
       setActiveScenarioId(null);
-      // Notify the host the scenario completed so the onboarding proposal
-      // gate can open. Wrapped in try/catch
-      // because consumer code lives outside this component's
-      // reliability envelope; a thrown callback must not block tour
-      // close-out.
+      // Notify the host the scenario completed so the onboarding proposal gate can open. Wrapped in try/catch because consumer
+      // code lives outside this component's reliability envelope; a thrown callback must not block tour close-out.
       try {
         onComplete?.(id);
       } catch {
@@ -334,8 +258,7 @@ export function SpotlightTour({
         });
       }
       setActiveScenarioId(null);
-      // Z onboarding chain — notify the host so dismissing the tour
-      // can still complete the first-run flow.
+      // Z onboarding chain — notify the host so dismissing the tour can still complete the first-run flow.
 
       try {
         onDismiss?.(id);
@@ -379,9 +302,8 @@ export function SpotlightTour({
         handlePrev();
         return;
       }
-      // Numeric jump 1..9 — keyboard-only power-user shortcut. Out-of-range
-      // keystrokes (e.g. "5" on a 3-step scenario) are ignored rather than
-      // clamped so the tour can't desync from the visible dots.
+      // Numeric jump 1..9 — keyboard-only power-user shortcut. Out-of-range keystrokes (e.g. "5" on a 3-step scenario) are
+      // ignored rather than clamped so the tour can't desync from the visible dots.
       if (/^[1-9]$/.test(e.key)) {
         const target = Number.parseInt(e.key, 10) - 1;
         if (target >= 0 && target < scenario.steps.length) {
@@ -394,10 +316,8 @@ export function SpotlightTour({
     return () => window.removeEventListener("keydown", onKey);
   }, [scenario, handleNext, handlePrev, closeAfterDismissal]);
 
-  // U8 — Interactive auto-advance. When the current step declares a
-  // `completionTrigger`, attach a listener that fires `handleNext` the
-  // moment the user performs the matching action. This is what makes
-
+  // U8 — Interactive auto-advance. When the current step declares a `completionTrigger`, attach a listener that fires
+  // `handleNext` the moment the user performs the matching action. This is what makes
 
   const triggerForStep: CompletionTrigger | undefined =
     scenario?.steps[stepIndex]?.completionTrigger;
@@ -428,9 +348,8 @@ export function SpotlightTour({
       window.addEventListener("keydown", onKey);
       cleanup = () => window.removeEventListener("keydown", onKey);
     } else if (triggerForStep.kind === "input") {
-      // Same resolver as the anchor: a trigger selector and an anchor selector
-      // name the same control, so two resolvers disagreeing about which tile
-      // it lives in would ring one composer and wait on another.
+      // Same resolver as the anchor: a trigger selector and an anchor selector name the same control, so two resolvers
+      // disagreeing about which tile it lives in would ring one composer and wait on another.
       const selector = triggerForStep.selector;
       const target = firstVisibleMatch(selector);
       if (!target) return;
@@ -661,27 +580,14 @@ export function SpotlightTour({
         }}
       />
       {ringTarget ? (
-        /* The ring. It is its own portaled layer rather than a box-shadow on
-           the anchor because the anchor cannot carry one: every ancestor from
-           the composer's input bar out to the route canvas is `overflow:
-           hidden`, which clips a shadow drawn outside the border box, and the
-           route canvas is `isolation: isolate`, which traps any z-index put on
-           the anchor below this tour's own backdrop.
-
-           Placed by the same popper as the card, against the same live node,
-           so it tracks the anchor without anything re-measuring coordinates —
-           only the anchor's size crosses over, and a ResizeObserver keeps that
-           fresh. `side="bottom"` with a negative side offset lands the layer's
-           top edge on the anchor's, `align="start"` its left edge, and
-           collisions stay off so nothing nudges the ring off its target. */
+        /** Portal the ring past overflow and stacking isolation; anchor it to the live target and observe target size without
+         * collision nudging. */
         <Popover open>
           <PopoverAnchor virtualRef={{ current: ringTarget.el }} />
           <PopoverContent
             data-testid="spotlight-tour:ring"
-            // Decorative: it is the mark made visible, and the marked element
-            // is already in the accessibility tree in its own right. `dialog`
-            // is what Radix would give it, which would put a phantom blocking
-            // surface on screen for the whole tour.
+            // Decorative: it is the mark made visible, and the marked element is already in the accessibility tree in its own right.
+            // `dialog` is what Radix would give it, which would put a phantom blocking surface on screen for the whole tour.
             role="presentation"
             aria-hidden
             key={`ring-${scenario.id}-${stepIndex}`}
@@ -707,10 +613,8 @@ export function SpotlightTour({
               e.stopPropagation();
               ringTarget.el.focus();
             }}
-            // The layer takes no focus of its own and dismisses nothing:
-            // Escape and presses outside the anchor belong to the tour's own
-            // handlers and to the backdrop, so it declines all four rather
-            // than competing for them.
+            // The layer takes no focus of its own and dismisses nothing: Escape and presses outside the anchor belong to the tour's
+            // own handlers and to the backdrop, so it declines all four rather than competing for them.
             onOpenAutoFocus={(e) => e.preventDefault()}
             onCloseAutoFocus={(e) => e.preventDefault()}
             onEscapeKeyDown={(e) => e.preventDefault()}
@@ -735,17 +639,15 @@ export function SpotlightTour({
             // utility collapses to opacity-only fade under
             // prefers-reduced-motion (styles.css §290).
             className="ave-tour-card ave-anim-slide-up w-auto max-w-[480px]"
-            // Step transitions inside the same scenario also benefit from a
-            // light re-mount fade — keying the card on the step index gives
-            // React a unique key so the animation re-runs on advance.
+            // Step transitions inside the same scenario also benefit from a light re-mount fade — keying the card on the step index
+            // gives React a unique key so the animation re-runs on advance.
             key={`${scenario.id}-${stepIndex}`}
             side="bottom"
             align="center"
             sideOffset={12}
             collisionPadding={16}
-            // The tour drives its own focus story: a step may ask the user to
-            // type into the anchor, so the card must neither take focus when
-            // it mounts nor throw focus somewhere on step change.
+            // The tour drives its own focus story: a step may ask the user to type into the anchor, so the card must neither take
+            // focus when it mounts nor throw focus somewhere on step change.
             onOpenAutoFocus={(e) => e.preventDefault()}
             onCloseAutoFocus={(e) => e.preventDefault()}
             style={{
@@ -765,9 +667,8 @@ export function SpotlightTour({
           </PopoverContent>
         </Popover>
       ) : (
-        // No anchor — the selector matched nothing, or the element it names is
-        // not rendered in this build. The card centres itself so the narrative
-        // stays legible and the tour is never stuck.
+        // No anchor — the selector matched nothing, or the element it names is not rendered in this build. The card centres itself
+        // so the narrative stays legible and the tour is never stuck.
         <div
           {...cardAria}
           className="ave-anim-slide-up z-50"

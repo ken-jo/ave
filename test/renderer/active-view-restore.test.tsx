@@ -1,18 +1,4 @@
-/**
- * Restoring the main window's location on launch.
- *
- * The app used to open on `home` every time, no matter where the user was when
- * they closed it. `SystemSettings.activeView` persists the location the same way
- * `sidebarActiveTab` persists its tab; these tests assert the half that matters
- * to a user — **the next launch opens there** — rather than that a write
- * happened.
- *
- * The plugin cases are the reason this needs care. A `plugin:<id>:<viewId>` key
- * stays perfectly well-formed after its plugin is uninstalled, so a restore that
- * only checked the key's shape would open the app on a view that no longer
- * exists. Both directions are covered: present plugin restores, absent plugin
- * falls back to home.
- */
+// Verify restored navigation persists across launches without overwriting invalid or pending locations.
 import "./setup.js";
 import { describe, it, expect, afterEach, vi } from "vitest";
 import { act, waitFor } from "@testing-library/react";
@@ -52,8 +38,7 @@ function sidebarView(pluginId: string, viewId: string) {
 }
 
 
-// The nav rows live in their group's flyout, so reading a row opens and
-// closes it; the group's trigger is what the static DOM reports.
+// Navigation rows exist only in flyouts; static DOM reports the group trigger.
 function groupOf(testId: string): SidebarNavGroup {
   return testId === PLUGIN_NAV_TESTID ? "plugins" : "features";
 }
@@ -71,15 +56,7 @@ async function waitForActive(container: HTMLElement, testId: string): Promise<vo
 }
 
 
-/**
- * Let every pending restore land before concluding that none did.
- *
- * "Still home" is only meaningful once the app has had its chance to navigate:
- * the settings read, the plugin-view load, and the effect that pairs them all
- * resolve asynchronously. Inside `act` so React commits them to the DOM — an
- * unflushed update would leave the old markup in place and make a broken
- * fallback look like a working one.
- */
+// Await settings, plugin views and committed effects before concluding restoration did not happen.
 async function settle(): Promise<void> {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -101,8 +78,6 @@ describe("restoring activeView on launch", () => {
     const first = await renderApp({ hasApiKey: true });
     await waitFor(() => expect(atHome(first.container)).toBe(true));
 
-    // Navigate the way the app itself does, then read back exactly what was
-    // persisted — no hand-written settings blob in between.
     await act(async () => {
       first.emitViewActivate("work-board");
     });
@@ -134,31 +109,20 @@ describe("restoring activeView on launch", () => {
     const { container, api } = await renderApp({
       hasApiKey: true,
       settings: settingsWithActiveView(PLUGIN_VIEW_KEY),
-      // The plugin was uninstalled since the value was written. Its key is
-      // still well-formed, so only a check against the LOADED views can catch
-      // it — otherwise the app opens on a view that cannot render.
+      // A well-formed stored plugin key still needs a loaded view before restoration.
       pluginUiExtensions: [],
     });
 
     await settle();
     expect(atHome(container)).toBe(true);
-    // No plugin row means no Plugins group at all.
     expect(container.querySelector('[data-testid="sidebar-group-plugins"]')).toBeNull();
 
-    // ...and staying home must not COST the user their stored location. The app
-    // already bounces an active-but-missing plugin view home, but that path
-    // runs through `setActiveView`, so navigating there and being bounced would
-    // overwrite `activeView` with "home" — a plugin that merely failed to load
-    // this once would erase where the user was. Never entering it keeps the
-    // stored value intact for the next launch.
+    // Missing plugin views must leave the stored location intact for a later successful load.
     expect(api.updateSettings).not.toHaveBeenCalledWith({ system: { activeView: "home" } });
   });
 
   it("falls back to home for a key a previous build could produce but this one cannot", async () => {
-    // `reminders` shipped as a real view key and was retired from the table
-    // (#1994). That is the shape of the problem this guard exists for: a value
-    // written by an older build outlives the key space it came from, and only
-    // asking the table — not the string's shape — can tell.
+    // Validate stored keys against the current view table; string shape alone admits retired locations.
     const { container } = await renderApp({
       hasApiKey: true,
       settings: settingsWithActiveView("reminders"),
@@ -188,20 +152,8 @@ describe("restoring activeView on launch", () => {
   });
 });
 
-/**
- * The restore and the user, racing.
- *
- * On a fast launch the stored location is in place before anyone can click, so
- * neither half of this is reachable — every test here holds the settings read
- * open on purpose, which is the only way to be inside the window at all.
- *
- * The pair has to be driven together. "The restore lands" passes on its own
- * with the discard missing, and "the user's choice survives" passes on its own
- * with the restore broken outright; only asserting both catches a guard that
- * bought one by giving up the other.
- */
+// Hold settings and plugin-view loads separately to test both user-navigation races.
 describe("a launch whose stored location has not arrived yet", () => {
-  /** A launch whose settings read is held open until `release()`. */
   function heldLaunch(stored: ReturnType<typeof settingsWithActiveView>) {
     const gate = deferred<void>();
     return {
@@ -228,8 +180,6 @@ describe("a launch whose stored location has not arrived yet", () => {
   it("still lands on the stored view when nobody touches the app", async () => {
     const { release, opts } = heldLaunch(settingsWithActiveView("work-board"));
     const { container } = await renderApp(opts);
-    // Rendered, interactive, and NOT yet where it is going — the window the
-    // other half of this pair is about.
     await waitFor(() => expect(atHome(container)).toBe(true));
 
     await act(async () => {
@@ -247,8 +197,7 @@ describe("a launch whose stored location has not arrived yet", () => {
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitForActive(container, "sidebar-routines");
 
-    // The stored location arrives second. Applying it now would take the screen
-    // the user is on away from them, for a value they have already superseded.
+    // A late restore must not replace a newer user navigation.
     await act(async () => {
       release();
     });
@@ -262,10 +211,7 @@ describe("a launch whose stored location has not arrived yet", () => {
     const { release, opts } = heldLaunch(settingsWithActiveView(PLUGIN_VIEW_KEY));
     const { container } = await renderApp({
       ...opts,
-      // The plugin is installed and its view does load — so the only thing
-      // keeping the app off it is the user's own navigation. Without the
-      // discard, this restore lands LATER than the built-in one (it waits for
-      // the view list), which is the longer window, not a safer one.
+      // Delayed plugin views must also respect user navigation after the settings read.
       pluginUiExtensions: [sidebarView(PLUGIN_ID, VIEW_ID)],
     });
     await waitFor(() => expect(atHome(container)).toBe(true));
@@ -283,10 +229,7 @@ describe("a launch whose stored location has not arrived yet", () => {
   });
 
   it("drops a restore ALREADY waiting on its plugin when the list finally loads", async () => {
-    // The other window, and the one the flag on the read cannot reach: here the
-    // settings read has already resolved and been accepted, so the restored key
-    // is parsed and HELD. Nothing about a later navigation goes near that read
-    // again — only discarding what is held can stop it.
+    // Once a stored key is held, user navigation must discard that pending key independently of the read.
     const lateViews: unknown[] = [];
     const { container, emitPluginRuntimeUpdated } = await renderApp({
       hasApiKey: true,
@@ -299,15 +242,12 @@ describe("a launch whose stored location has not arrived yet", () => {
     await clickSidebarNavRow("features", "sidebar-routines");
     await waitForActive(container, "sidebar-routines");
 
-    // The plugin's view turns up late — a slow load, not an uninstall, so the
-    // held key is now perfectly valid and would be entered.
     lateViews.push(sidebarView(PLUGIN_ID, VIEW_ID));
     await act(async () => {
       emitPluginRuntimeUpdated({ pluginId: PLUGIN_ID });
     });
     await settle();
 
-    // The row exists now, which is what makes this assertion mean anything.
     expect((await openSidebarGroup("plugins")).querySelector(`[data-testid="${PLUGIN_NAV_TESTID}"]`)).not.toBeNull();
     await closeSidebarGroup("plugins");
     expect(await isActive(container, "sidebar-routines")).toBe(true);
@@ -315,11 +255,7 @@ describe("a launch whose stored location has not arrived yet", () => {
   });
 
   it("records a pick that changes nothing on screen, since it still supersedes the stored one", async () => {
-    // The shape where the discard and the write disagree about what happened.
-    // Starting a new chat while the window is already on the chat surface moves
-    // nothing, so it reads as a navigation with nothing to record — but it
-    // supersedes the stored location just as any other does, and the app is
-    // left holding a location the user has already overridden.
+    // Starting a new chat supersedes stored location even when the active view key does not change.
     const { release, opts } = heldLaunch(settingsWithActiveView("work-board"));
     const { container, api } = await renderApp(opts);
     await waitFor(() => expect(atHome(container)).toBe(true));
@@ -330,9 +266,7 @@ describe("a launch whose stored location has not arrived yet", () => {
     });
     await settle();
 
-    // Both halves, because either one passes with the other broken: the
-    // discard holds with nothing written at all, and the write holds with the
-    // restore landing on top of it.
+    // Assert both discard and persistence; either can pass while the other is broken.
     expect(atHome(container)).toBe(true);
     expect(await isActive(container, "toolbar-work-board")).toBe(false);
     await waitFor(() =>
@@ -355,9 +289,7 @@ describe("a launch whose stored location has not arrived yet", () => {
     });
     await settle();
 
-    // Surviving the restore for THIS run is not enough. A choice that is never
-    // written is the same lost place one restart later — the app would open on
-    // the value the user just overrode.
+    // Persist the user choice so the overridden restore cannot return on the next launch.
     await waitFor(() =>
       expect(first.api.updateSettings).toHaveBeenCalledWith({
         system: { activeView: "routines" },
@@ -368,8 +300,6 @@ describe("a launch whose stored location has not arrived yet", () => {
     });
     first.unmount();
 
-    // Relaunched from exactly the patch asserted above, through the normal
-    // restore path — no hand-picked value in between.
     const second = await renderApp({
       hasApiKey: true,
       settings: settingsWithActiveView("routines"),

@@ -1,18 +1,4 @@
-/**
- * Issue #664 (PR #860) — `migrateLegacyDisabledMode()` boot-time shim.
- *
- * Pins:
- *   (a) Pre-#664 file (mode:"disabled", no marker) → rewritten to
- *       mode:"strict" with `disabledMigratedAt` stamp; on-disk persists.
- *   (b) Post-#664 file with marker → no rewrite (idempotency).
- *   (c) Post-#664 user-chosen disabled (marker already present) → preserved
- *       as pass-through-LOW. User who later picks "disabled" deliberately
- *       gets the new semantic without re-migration.
- *   (d) Non-disabled modes → never migrated.
- *
- * Defends the migration against silently flipping a fail-closed user to
- * the new pass-through-LOW semantic at upgrade time.
- */
+// Unmarked legacy disabled mode migrates to strict once; marked user choices and other modes remain unchanged. Persist the marker so upgrades cannot silently replace fail-closed semantics with pass-through.
 import { afterEach, describe, it, expect } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -40,8 +26,6 @@ describe("migrateLegacyDisabledMode — issue #664 idempotency", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
         },
@@ -61,8 +45,6 @@ describe("migrateLegacyDisabledMode — issue #664 idempotency", () => {
       permissions: {
         reviewer: {
           mode: "strict",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
           disabledMigratedAt: "2026-05-17T00:00:00.000Z",
@@ -81,8 +63,6 @@ describe("migrateLegacyDisabledMode — issue #664 idempotency", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
           disabledMigratedAt: "2026-05-17T00:00:00.000Z",
@@ -130,8 +110,6 @@ describe("readPermissionSettings — issue #664 migration end-to-end", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
         },
@@ -142,12 +120,11 @@ describe("readPermissionSettings — issue #664 migration end-to-end", () => {
     expect(result.permissions.reviewer.mode).toBe("strict");
     expect(typeof result.permissions.reviewer.disabledMigratedAt).toBe("string");
 
-    // On-disk file converged to the post-#664 shape.
+    // On-disk file converged to the post-shape.
     const persisted = JSON.parse(readFileSync(filePath, "utf-8"));
     expect(persisted.permissions.reviewer.mode).toBe("strict");
     expect(typeof persisted.permissions.reviewer.disabledMigratedAt).toBe("string");
 
-    // Second read is idempotent — no further changes.
     const before = readFileSync(filePath, "utf-8");
     readPermissionSettings(filePath);
     const after = readFileSync(filePath, "utf-8");
@@ -160,8 +137,6 @@ describe("readPermissionSettings — issue #664 migration end-to-end", () => {
       permissions: {
         reviewer: {
           mode: "disabled",
-          provider: "openai",
-          model: "gpt-4o-mini",
           fallbackOnError: "deny",
           interactive: { autoApprove: "off" },
           disabledMigratedAt: "2026-05-17T00:00:00.000Z",

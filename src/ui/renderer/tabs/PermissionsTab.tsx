@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { t } from "../../../i18n/runtime.js";
+import { useSandboxCapability } from "../hooks/use-sandbox-capability.js";
+import { SandboxStatusBadge } from "../components/SandboxStatusBadge.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -31,10 +33,12 @@ import type {
   PermissionReviewerMode,
   PermissionReviewerInteractiveAutoApprove,
   PermissionReviewerSettings,
-  PermissionRule,
+  ScopedPermissionRule,
+  ScopedPermissionRuleError,
 } from "../types.js";
 import type {
   SandboxCapabilityInfo,
+  SandboxMxcUnavailableReason,
   SandboxWindowsStatusInfo,
 } from "../../../shared/sandbox-capability-info.js";
 import {
@@ -47,6 +51,10 @@ import {
 } from "../../../shared/parent-adjudication-bounds.js";
 import { PERMISSION_REVIEWER_FRAMEWORK } from "../../../shared/permission-reviewer-framework.js";
 import { AuditPanel } from "../components/permissions/AuditPanel.js";
+import { PermissionJudgeContent } from "../components/permissions/PermissionJudgeContent.js";
+import { EgressDenialsList } from "../components/permissions/EgressDenialsList.js";
+import { EgressGrantsList } from "../components/permissions/EgressGrantsList.js";
+import { UpstreamProxySettings } from "../components/permissions/UpstreamProxySettings.js";
 import { EnvForcedNotice, useEnvForcedSettings } from "../components/EnvForcedNotice.js";
 import { SettingsPageHeader, SettingsSection } from "../components/PageShell.js";
 import { getApi } from "../api-client.js";
@@ -54,17 +62,13 @@ import { isIpcErrorResult } from "../types.js";
 import { canonicalStringify } from "../../../shared/canonical-json.js";
 import type { ExactDenyDraft } from "../exact-permission-decision.js";
 import { TEST_IDS, execModeTestId, testIdSelector } from "../../../shared/test-ids.js";
-import { formatDateTime } from "../../../shared/format-time.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
 const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
-  provider: "openai",
-  model: "gpt-4o-mini",
   fallbackOnError: "deny",
   interactive: { autoApprove: "off" },
-  // Placeholder for the pre-load render only — the persisted block arrives with
-  // the first `reviewerDispatch("show")` and replaces this wholesale.
+  // Placeholder for the pre-load render only; the persisted block arrives with the first `reviewerDispatch("show")` and replaces this wholesale.
   parentAdjudication: {
     maxVerdict: "medium",
     timeoutMs: 30_000,
@@ -87,16 +91,15 @@ interface WindowsInstallOutcomeView {
   errorCode?: string;
 }
 
-/**
- * Localized copy per stable failure code. Only the code crosses IPC: ASRT's
- * message holds srt-win output and local paths, so it stays in the main log.
- */
+/** Localized copy per stable failure code. Only the code crosses IPC: ASRT's message holds srt-win output and local paths, so it stays in the main log. */
 const WINDOWS_INSTALL_FAILURE_COPY: Record<string, () => string> = {
   install_wfp_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedWfp"),
   install_user_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedUser"),
   install_config_conflict: () => t("permissionsTab.osSandboxWindowsInstallFailedConfigConflict"),
   install_ambient_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedAmbient"),
   srt_win_not_found: () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-not-found": () => t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing"),
+  "srt-win-integrity-mismatch": () => t("permissionsTab.osSandboxWindowsHelperIntegrityError"),
   unexpected: () => t("permissionsTab.osSandboxWindowsInstallFailedUnexpected"),
 };
 
@@ -112,6 +115,13 @@ const WINDOWS_WFP_STATE_LABEL: Record<string, () => string> = {
   "cannot-read": () => t("permissionsTab.osSandboxWindowsWfpStateCannotRead"),
 };
 
+/** Boot degraded because the bundled Windows helper is missing or failed its integrity check. An env opt-in leaves
+ * the toggles off, so the helper status and notice key on this as well as on the toggles, agreeing with the banner. */
+function bootReportsWindowsHelperFailure(boot: SandboxCapabilityInfo["boot"] | undefined): boolean {
+  return (boot?.action === "degrade" || boot?.action === "abort") &&
+    boot.causes.some((cause) => cause === "windows-sandbox-missing" || cause === "windows-sandbox-integrity-failed");
+}
+
 function windowsStateLabel(labels: Record<string, () => string>, value: unknown): string {
   return typeof value === "string" && Object.hasOwn(labels, value)
     ? labels[value]()
@@ -124,12 +134,8 @@ const UNEXPECTED_WINDOWS_INSTALL_VIEW = (): WindowsInstallOutcomeView => ({
   text: t("permissionsTab.osSandboxWindowsInstallUnexpected"),
 });
 
-/**
- * Every value `sandboxWindowsInstall` can resolve to — an outcome, an IPC
- * refusal, an older shape, or something unexpected — becomes a visible state.
- * The click must never end looking like nothing happened (issue #1608). No
- * free text from main reaches the screen; only codes and localized copy do.
- */
+/** Every value `sandboxWindowsInstall` can resolve to; an outcome, an IPC refusal, an older shape, or something unexpected; becomes a visible
+ * state. The click must never end looking like nothing happened (). No free text from main reaches the screen; only codes and localized copy do. */
 function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeView {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return UNEXPECTED_WINDOWS_INSTALL_VIEW();
@@ -182,6 +188,19 @@ function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeVie
   }
 }
 
+/** Settings text for each reason MXC cannot carry agent shells (`mxc-windows.ts`). */
+const MXC_UNAVAILABLE_REASON_KEY = {
+  "not-windows": "permissionsTab.osSandboxWindowsMxcReasonNotWindows",
+  "unsupported-arch": "permissionsTab.osSandboxWindowsMxcReasonUnsupportedArch",
+  "binary-missing": "permissionsTab.osSandboxWindowsMxcReasonBinaryMissing",
+  "probe-failed": "permissionsTab.osSandboxWindowsMxcReasonProbeFailed",
+  "tier-unsupported": "permissionsTab.osSandboxWindowsMxcReasonTierUnsupported",
+  "request-rejected": "permissionsTab.osSandboxWindowsMxcReasonRequestRejected",
+  "launcher-mismatch": "permissionsTab.osSandboxWindowsMxcReasonLauncherMismatch",
+  "powershell-start-failed": "permissionsTab.osSandboxWindowsMxcReasonPowershellStartFailed",
+  "unverified-session": "permissionsTab.osSandboxWindowsMxcReasonUnverifiedSession",
+} as const satisfies Record<SandboxMxcUnavailableReason, string>;
+
 const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], string> = {
   success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
   info: "border-info/(--opacity-medium) bg-info/(--opacity-soft) text-info",
@@ -190,11 +209,7 @@ const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], st
 };
 
 
-/**
- * A thrown IPC failure as this tab shows it. The thrown text can carry paths
- * and internal messages, so it goes to the renderer log, and the screen gets
- * localized copy only.
- */
+/** A thrown IPC failure as this tab shows it. The thrown text can carry paths and internal messages, so it goes to the renderer log, and the screen gets localized copy only. */
 function thrownErrorText(context: string, error: unknown): string {
   console.warn(`[ave] permissions: ${context} failed:`, errorMessage(error));
   return t("formatIpcError.unknownError");
@@ -216,14 +231,8 @@ function sandboxKindText(kind: unknown): string {
   return t("permissionsTab.osSandboxKindUnknown");
 }
 
-/**
- * An `ok: false` IPC result as this tab shows it: a known code in its
- * localized form, otherwise the action's own localized copy with the code. The
- * free-text `message` (English, possibly with paths) is logged, not shown.
- * Some handlers (the slash-backed directory and reviewer dispatch) put free
- * text in `error` itself, such as a "usage: /permission dir …" line; that is
- * logged and replaced by the action's copy, without a code.
- */
+/** An `ok: false` IPC result as this tab shows it: a known code in its localized form, otherwise the action's own localized copy with the code. The free-text `message` (English, possibly with paths) is logged, not
+ * shown. Some handlers (the slash-backed directory and reviewer dispatch) put free text in `error` itself, such as a "usage: /permission dir …" line; that is logged and replaced by the action's copy, without a code. */
 function ipcFailureText(
   context: string,
   result: { readonly error?: unknown; readonly message?: unknown },
@@ -237,8 +246,7 @@ function ipcFailureText(
     typeof result.message === "string" ? result.message : "",
   );
   if (code && resolveIpcErrorKey(code)) return formatIpcError(code, undefined);
-  // A template that places the code itself gets it (or "-"); a plain sentence
-  // gets the code appended.
+  // A template that places the code itself gets it (or "-"); a plain sentence gets the code appended.
   if (typeof fallback === "function") return fallback(code);
   return code ? `${fallback} (${code})` : fallback;
 }
@@ -259,8 +267,7 @@ function formatReviewerDispatchError(error: string): string {
     ].join(" ");
   }
   if (error === "user-keyboard-required") return t("permissionsTab.errorUserKeyboardRequired");
-  // A slash-parse failure arrives here as English free text; ipcFailureText
-  // logs it and shows the localized reviewer-error copy instead.
+  // A slash-parse failure arrives here as English free text; ipcFailureText logs it and shows the localized reviewer-error copy instead.
   return ipcFailureText("reviewer dispatch", { error }, t("permissionsTab.errorReviewerFallbackContext"));
 }
 
@@ -275,22 +282,12 @@ function preserveSettingsScrollPosition(): () => void {
   };
 }
 
-/**
- * This tab's fields are 11px, and a popup that opens from an 11px control must
- * be 11px too — `SelectContent` carries the size so its items inherit it,
- * rather than each item pinning `text-sm` and the menu reading a size larger
- * than the field it belongs to.
- */
+/** This tab's fields are 11px, and a popup that opens from an 11px control must be 11px too; `SelectContent` carries the size so
+ * its items inherit it, rather than each item pinning `text-sm` and the menu reading a size larger than the field it belongs to. */
 const DENSE_SELECT_POPUP = "text-[11px]";
 
-/**
- * The reviewer settings that follow an execution mode. `auto` is the only mode
- * whose verdicts a reviewer produces, so choosing it turns the LLM reviewer on
- * and lets it auto-approve interactive low/medium risk; every other mode turns
- * both off. This tab and the composer's permission picker send the same two
- * `reviewerDispatch` verbs after a successful `setMode`, derived from here, so
- * the two surfaces cannot leave the reviewer in different states for one mode.
- */
+/** The reviewer settings that follow an execution mode. `auto` is the only mode whose verdicts a reviewer produces, so choosing it turns the LLM reviewer on and lets it auto-approve interactive low/medium risk; every other mode
+ * turns both off. This tab and the composer's permission picker send the same two `reviewerDispatch` verbs after a successful `setMode`, derived from here, so the two surfaces cannot leave the reviewer in different states for one mode. */
 export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMode {
   return m === "auto" ? "llm" : "disabled";
 }
@@ -330,9 +327,7 @@ export function PermissionsTab({
     bannerTimerRef.current = setTimeout(() => setBanner(null), LONG_TOAST_TTL_MS);
   }, []);
 
-  // ── Execution Mode ────────────────────────────────
-  // "unknown" until the first host read lands, and whenever the host reports a
-  // mode this tab cannot name: no radio is selected rather than a wrong one.
+  // "unknown" until the first host read lands, and whenever the host reports a mode this tab cannot name: no radio is selected rather than a wrong one.
   const [mode, setMode] = useState<ExecutionModeDisplay>("unknown");
   const [modeBusy, setModeBusy] = useState(false);
 
@@ -344,9 +339,11 @@ export function PermissionsTab({
   const [policyAdminPath, setPolicyAdminPath] = useState<string | undefined>(undefined);
 
   // ── Rule Editor ───────────────────────────────────
-  const [rules, setRules] = useState<PermissionRule[]>([]);
+  const [rules, setRules] = useState<ScopedPermissionRule[]>([]);
   const [newPattern, setNewPattern] = useState("");
   const [newAction, setNewAction] = useState<"allow" | "deny">("allow");
+  const [ruleLoadErrors, setRuleLoadErrors] = useState<ScopedPermissionRuleError[]>([]);
+  const [approvalLoadError, setApprovalLoadError] = useState(false);
   const [rulesBusy, setRulesBusy] = useState(false);
   const [directories, setDirectories] = useState<string[]>([]);
   const [newDirectory, setNewDirectory] = useState("");
@@ -368,6 +365,8 @@ export function PermissionsTab({
     toolName?: string;
     source?: string;
     args?: string;
+    projectCwd?: string;
+    sessionId?: string;
   }>>([]);
   const [approvalsBusy, setApprovalsBusy] = useState(false);
   const [exactDenyBusy, setExactDenyBusy] = useState(false);
@@ -375,45 +374,34 @@ export function PermissionsTab({
   const [reviewer, setReviewer] = useState<PermissionReviewerSettings>(DEFAULT_REVIEWER_SETTINGS);
 
   // ── OS Tool Sandbox ───────────────────────────────
-  const [sandboxCapability, setSandboxCapability] = useState<SandboxCapabilityInfo | null>(null);
+  const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxCapability } =
+    useSandboxCapability(window.ave?.permission, getApi().onSettingsUpdated);
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
-  // `AVE_SANDBOX_ENABLED=1` is OR-ed with this setting at boot, so with the
-  // variable set the toggle cannot turn the sandbox off for this run. The
-  // stored value still decides the next run without it, so the control stays
-  // usable — what was missing was saying so.
+  // `AVE_SANDBOX_ENABLED=1` is OR-ed with this setting at boot, so with the variable set the toggle cannot turn the sandbox off for
+  // this run. The stored value still decides the next run without it, so the control stays usable; what was missing was saying so.
   const envForcedPaths = useEnvForcedSettings();
   const [sandboxBusy, setSandboxBusy] = useState(false);
-  // Windows srt-win repair flow (the OS sandbox is normally provisioned at
-  // app-install time; this panel is the re-provision/repair fallback).
-  // `windowsStatus` holds the latest readiness snapshot once the user opts in on
-  // win32; the panel renders off it. `windowsInstallPhase` is where a click is:
-  // "installing" (main checks status, then may raise the UAC prompt) or
-  // "refreshing" (re-reading status afterwards); while it is set the
-  // "Re-provision" button is disabled.
-  // `windowsInstallOutcome` is what the last click led to, shown until the next.
+  // Plugin-worker confinement: its own setting, so the shell toggle above never confines workers
+  // and this one never confines shells. `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
+  const [workerConfinementEnabled, setWorkerConfinementEnabled] = useState(false);
+  const [workerConfinementBusy, setWorkerConfinementBusy] = useState(false);
+  // Windows srt-win repair flow (the OS sandbox is normally provisioned at app-install time; this panel is the re-provision/repair fallback). `windowsStatus` holds the latest readiness snapshot once the user opts in on win32; the panel renders off it.
+  // `windowsInstallPhase` is where a click is: "installing" (main checks status, then may raise the UAC prompt) or "refreshing" (re-reading status afterwards); while it is set the "Re-provision" button is disabled. `windowsInstallOutcome` is what the last click led to, shown until the next.
   const [windowsStatus, setWindowsStatus] = useState<SandboxWindowsStatusInfo | null>(null);
   const [windowsInstallPhase, setWindowsInstallPhase] = useState<"installing" | "refreshing" | null>(null);
   const windowsInstallBusy = windowsInstallPhase !== null;
   const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
-  // ── Sub-agent parent adjudication ─────────────────
-  // The master switch is a feature flag in app settings; the ceilings below it
-  // live in the permission settings file and travel over the reviewer slash
-  // dispatcher, so the two have separate busy flags and separate write paths.
+  // The master switch is a feature flag in app settings; the ceilings below it live in the permission settings
+  // file and travel over the reviewer slash dispatcher, so the two have separate busy flags and separate write paths.
   const [adjudicationEnabled, setAdjudicationEnabled] = useState(true);
   const [adjudicationBusy, setAdjudicationBusy] = useState(false);
-  // Bumped whenever a write is refused. The numeric fields are uncontrolled and
-  // keyed on the persisted value, so a rejection — which by definition leaves
-  // that value unchanged — would otherwise leave the refused number on screen
-  // as if it had been stored.
+  // Bumped whenever a write is refused. The numeric fields are uncontrolled and keyed on the persisted value, so a rejection;
+  // which by definition leaves that value unchanged; would otherwise leave the refused number on screen as if it had been stored.
   const [adjudicationRevision, setAdjudicationRevision] = useState(0);
 
-  // True once the panel has content on screen. After that, a refresh must not
-  // reach for the blank/error surface: `loading` replaces the WHOLE panel with
-  // one line, the scroll container collapses from ~4000px to one viewport, and
-  // the browser clamps scrollTop to the new maximum. When the content comes
-  // back the scroll position is gone — which is why removing a rule at the
-  // bottom of the page threw the user back to the top.
+  // True once the panel has content on screen. After that, a refresh must not reach for the blank/error surface: `loading` replaces the WHOLE panel with one line, the scroll container collapses from ~4000px to
+  // one viewport, and the browser clamps scrollTop to the new maximum. When the content comes back the scroll position is gone; which is why removing a rule at the bottom of the page threw the user back to the top.
   const hasLoadedRef = useRef(false);
 
   const fetchAll = useCallback(async () => {
@@ -422,15 +410,14 @@ export function PermissionsTab({
       setError(null);
     }
     try {
-      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, sandboxRes, settingsRes] =
+      const [modeRes, policyRes, rulesRes, hookTrustRes, dirRes, reviewerRes, settingsRes] =
         await Promise.all([
           window.ave.permission.getMode(),
           window.ave.policy.get(),
-          window.ave.permission.listRules(),
+          window.ave.permission.listScopedRules(),
           window.ave.permission.hookTrustList(),
           window.ave.permission.dirDispatch("list"),
           window.ave.permission.reviewerDispatch("show"),
-          window.ave.permission.sandboxCapability(),
           getApi().getSettings(),
         ]);
       if (!reviewerRes.ok) {
@@ -438,39 +425,26 @@ export function PermissionsTab({
       }
       setMode(normalizeExecutionMode(modeRes.mode));
       setRequireExplicit(policyRes.requireExplicitApproval);
-      // Host-derived: `managed` alone misses an admin-dir file that does not
-      // set managed:true, which savePolicy still refuses to overwrite.
+      // Host-derived: `managed` alone misses an admin-dir file that does not set managed:true, which savePolicy still refuses to overwrite.
       setPolicyManaged(!policyRes.editable);
       setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
       setPolicyAdminPath(policyRes.adminPath as string | undefined);
-      setRules(rulesRes);
+      setRules(rulesRes.rules);
+      setRuleLoadErrors(rulesRes.errors);
       setQuarantinedHooks(hookTrustRes.ok ? hookTrustRes.disabled : []);
       setDirectories(dirRes.ok && dirRes.verb === "list" ? dirRes.userAdditions : []);
       setReviewer(reviewerRes.settings);
-      setSandboxCapability(sandboxRes);
-      console.warn("[ave] permissions: sandbox diagnostics:",
-        sandboxRes.potentialReason ?? sandboxRes.reason, sandboxRes.runtime?.reason,
-        sandboxRes.boot?.dependencyErrors);
       const osSandboxOn = settingsRes.features?.osToolSandbox ?? false;
       setSandboxEnabled(osSandboxOn);
-      // Mirrors the store default (ON) for a settings file written before the
-      // flag existed — normalization stamps it on the next write.
+      const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
+      setWorkerConfinementEnabled(workerConfinementOn);
+      // Mirrors the store default (ON) for a settings file written before the flag existed; normalization stamps it on the next write.
       setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
-      // On win32 with the setting already ON, surface the consent/setup state
-      // on tab entry so the panel persists across navigations until ready.
-      if (sandboxRes.platform === "win32" && osSandboxOn) {
-        const status = await window.ave.permission.sandboxWindowsStatus();
-        if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
-        setWindowsStatus(status);
-      } else {
-        setWindowsStatus(null);
-      }
     } catch (e) {
       console.warn("[ave] permissions: load failed:", errorMessage(e));
       const message = t("permissionsTab.errorLoadFailed");
-      // Same rule for the failure surface. A refresh that fails still has the
-      // last-known state on screen, so it reports through the banner instead of
-      // replacing what the user is reading with an error page.
+      // Same rule for the failure surface. A refresh that fails still has the last-known state on screen,
+      // so it reports through the banner instead of replacing what the user is reading with an error page.
       if (hasLoadedRef.current) showBanner("error", message);
       else setError(message);
     } finally {
@@ -481,13 +455,38 @@ export function PermissionsTab({
 
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
+  useEffect(() => {
+    // On win32 with either setting ON (or a reported home-privacy / helper failure), surface the consent/setup state so
+    // the panel persists across navigations until ready. Extension provisioning is separate from MXC shell readiness.
+    const windowsSetupRelevant = sandboxEnabled || workerConfinementEnabled ||
+      sandboxCapability?.homePrivacyError !== undefined || bootReportsWindowsHelperFailure(sandboxCapability?.boot);
+    if (sandboxCapability?.platform !== "win32" || !windowsSetupRelevant) {
+      setWindowsStatus(null);
+      return;
+    }
+    let cancelled = false;
+    void window.ave.permission.sandboxWindowsStatus().then((status) => {
+      if (status.instructions) console.warn("[ave] permissions: Windows setup diagnostics:", status.instructions);
+      if (!cancelled) setWindowsStatus(status);
+    }).catch(() => { /* The explicit setup action reports repair errors. */ });
+    return () => { cancelled = true; };
+  }, [sandboxCapability?.platform, sandboxCapability?.homePrivacyError, sandboxCapability?.boot, sandboxEnabled, workerConfinementEnabled]);
+
   const fetchApprovals = useCallback(async () => {
     if (!window.ave?.userApproval) return;
     try {
       const list = await window.ave.userApproval.list();
       setUserApprovals(list.filter((a) => !a.revokedAt));
+      setApprovalLoadError(false);
     } catch {
-      // non-fatal
+      setApprovalLoadError(true);
+      try {
+        const sessionEntries = await window.ave.userApproval.listSession();
+        setUserApprovals(sessionEntries.filter((entry) => !entry.revokedAt));
+      } catch {
+        // Keep the corruption notice and the last known session rows.
+        setUserApprovals((entries) => entries.filter((entry) => entry.scope === "session"));
+      }
     }
   }, []);
 
@@ -550,13 +549,8 @@ export function PermissionsTab({
     }
   }, [exactDenyDraft, fetchApprovals, onExactDenySaved, showBanner]);
 
-  // Auto-refresh on cross-window directory/rule/user-approval config changes
-  // (persistent directory grants from the out-of-allowed-dir approval card, addRule/removeRule
-  // through PermissionManager SOT, userApprovalRecord/Revoke in another
-  // window). Refresh BOTH `fetchAll` (rules + directories + mode) AND
-  // `fetchApprovals` (active approvals) so every PermissionsTab section
-  // stays in sync — the broadcast is a single hint event covering all
-  // permission-state mutations.
+  // Auto-refresh on cross-window directory/rule/user-approval config changes (persistent directory grants from the out-of-allowed-dir approval card, addRule/removeRule through PermissionManager SOT, userApprovalRecord/Revoke in
+  // another window). Refresh BOTH `fetchAll` (rules + directories + mode) AND `fetchApprovals` (active approvals) so every PermissionsTab section stays in sync; the broadcast is a single hint event covering all permission-state mutations.
   useEffect(() => {
     const unsubscribe = window.ave?.permission?.onConfigChanged?.(() => {
       void fetchAll();
@@ -577,10 +571,8 @@ export function PermissionsTab({
     };
   }, [fetchAll]);
 
-  // Revoked at once for every scope, persistent included. Removing a stored
-  // decision destroys nothing and grants nothing: the next matching call simply
-  // follows the current policy and may ask again, which is the same position the
-  // user was in before they ever answered.
+  // Revoked at once for every scope, persistent included. Removing a stored decision destroys nothing and grants nothing: the next
+  // matching call simply follows the current policy and may ask again, which is the same position the user was in before they ever answered.
   const handleRevokeApproval = async (key: string, toolName: string) => {
     if (!window.ave?.userApproval) return;
     setApprovalsBusy(true);
@@ -709,12 +701,8 @@ export function PermissionsTab({
     }
   };
 
-  /**
-   * Write one ceiling of the parent-adjudication block. Every field goes
-   * through the reviewer slash dispatcher, which is the single writer for the
-   * permission settings file and rejects an out-of-range value rather than
-   * clamping it — so the form offers only values the store accepts.
-   */
+  /** Write one ceiling of the parent-adjudication block. Every field goes through the reviewer slash dispatcher, which is the single writer for
+   * the permission settings file and rejects an out-of-range value rather than clamping it; so the form offers only values the store accepts. */
   const handleAdjudicationChange = async (
     field:
       | "maxVerdict"
@@ -766,56 +754,69 @@ export function PermissionsTab({
     }
   };
 
-  const handleSandboxToggle = async () => {
-    if (sandboxBusy) return;
-    const next = !sandboxEnabled;
-    setSandboxBusy(true);
-    setSandboxEnabled(next);
-    // Clear any stale install outcome whenever the toggle moves.
+  // One write path for both confinement scopes. Each scope writes ONLY its own setting: the shell toggle writes `osToolSandbox`, the worker toggle
+  // writes `pluginWorkerConfinement`, and neither reads or changes the other's value beyond deciding whether the Windows setup panel stays open.
+  const toggleConfinementScope = async (scope: "shell" | "pluginWorkers") => {
+    const isShell = scope === "shell";
+    if (isShell ? sandboxBusy : workerConfinementBusy) return;
+    const setEnabled = isShell ? setSandboxEnabled : setWorkerConfinementEnabled;
+    const setBusy = isShell ? setSandboxBusy : setWorkerConfinementBusy;
+    const next = !(isShell ? sandboxEnabled : workerConfinementEnabled);
+    const label = isShell ? "OS sandbox toggle" : "plugin-worker confinement toggle";
+    setBusy(true);
+    setEnabled(next);
+    // Clear any stale install outcome whenever a toggle moves.
     setWindowsInstallOutcome(null);
     try {
-      const res = await getApi().updateSettings({ features: { osToolSandbox: next } });
+      const res = await getApi().updateSettings({
+        features: isShell ? { osToolSandbox: next } : { pluginWorkerConfinement: next },
+      });
       if (isIpcErrorResult(res)) {
-        setSandboxEnabled(!next);
-        showBanner("error", ipcFailureText("OS sandbox toggle", res, t("permissionsTab.osSandboxToggleFailed")));
+        setEnabled(!next);
+        showBanner("error", ipcFailureText(label, res, t(isShell
+          ? "permissionsTab.osSandboxToggleFailed"
+          : "permissionsTab.workerConfinementToggleFailed")));
         return;
       }
       // Re-read capability so the activation note reflects the new state.
-      const capability = await window.ave.permission.sandboxCapability();
-      setSandboxCapability(capability);
-      // Windows: enabling the setting alone does NOT confine anything — srt-win
-      // must be provisioned (normally at app-install time via NSIS customInstall).
-      // When the user flips the toggle ON on win32, fetch the readiness snapshot;
-      // if provisioning did not complete, the panel guides the (explicit,
-      // non-auto) re-provision/repair. Turning OFF clears the panel.
-      if (capability.platform === "win32") {
-        if (next) {
-          const status = await window.ave.permission.sandboxWindowsStatus();
-          setWindowsStatus(status);
-        } else {
-          setWindowsStatus(null);
-        }
-      }
+      await refreshSandboxCapability();
     } catch (e) {
-      setSandboxEnabled(!next);
-      showBanner("error", t("permissionsTab.osSandboxToggleError", { message: thrownErrorText("OS sandbox toggle", e) }));
+      setEnabled(!next);
+      showBanner("error", t(isShell
+        ? "permissionsTab.osSandboxToggleError"
+        : "permissionsTab.workerConfinementToggleError", { message: thrownErrorText(label, e) }));
     } finally {
-      setSandboxBusy(false);
+      setBusy(false);
+    }
+  };
+  const handleSandboxToggle = () => toggleConfinementScope("shell");
+  const handleWorkerConfinementToggle = () => toggleConfinementScope("pluginWorkers");
+  const [privacyApprovalBusy, setPrivacyApprovalBusy] = useState(false);
+  const handlePrivacyApproval = async () => {
+    if (privacyApprovalBusy) return;
+    setPrivacyApprovalBusy(true);
+    try {
+      const result = await window.ave.permission.approveExtensionsWithoutIsolation();
+      if (!result.ok) {
+        showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
+        return;
+      }
+      setWindowsStatus(await window.ave.permission.sandboxWindowsStatus());
+    } catch (error) {
+      showBanner("error", t("permissionsTab.homePrivacyApprovalFailed"));
+      console.warn("[ave] extension isolation session approval failed:", errorMessage(error));
+    } finally {
+      setPrivacyApprovalBusy(false);
     }
   };
 
-  // The ONLY user-consented privilege-escalation trigger. The OS sandbox is
-  // normally provisioned at app-install time (NSIS customInstall), so this is
-  // the manual REPAIR / re-provision path — invoked from an explicit
-  // "Re-provision" click inside the win32 panel, never automatically. Triggers
-  // ASRT's single self-elevating UAC prompt.
+  // The ONLY user-consented privilege-escalation trigger. The OS sandbox is normally provisioned at app-install time (NSIS customInstall), so this is the manual REPAIR
+  // / re-provision path; invoked from an explicit "Re-provision" click inside the win32 panel, never automatically. Triggers ASRT's single self-elevating UAC prompt.
   const handleWindowsInstall = async () => {
     if (windowsInstallBusy) return;
     setWindowsInstallOutcome(null);
-    // The install is invoked straight from the click: preload stamps the
-    // click's transient user activation onto the call, and that lapses after
-    // ~5 s. Main validates it at entry, then reads status (up to ~45 s) and
-    // raises the UAC prompt only when setup is needed (issue #1608).
+    // The install is invoked straight from the click: preload stamps the click's transient user activation onto the call, and that
+    // lapses after ~5 s. Main validates it at entry, then reads status (up to ~45 s) and raises the UAC prompt only when setup is needed ().
     setWindowsInstallPhase("installing");
     try {
       let view: WindowsInstallOutcomeView;
@@ -829,9 +830,8 @@ export function PermissionsTab({
       if (view.outcome === "refused") {
         console.warn("[ave] sandboxWindowsInstall refused:", view.errorCode ?? "rejected");
       }
-      // Shown whatever the status re-read says: an unchanged panel is exactly
-      // what made the click look like a no-op. The user's opt-in stays ON in
-      // every case, so the panel remains the place to retry.
+      // Shown whatever the status re-read says: an unchanged panel is exactly what made the click look
+      // like a no-op. The user's opt-in stays ON in every case, so the panel remains the place to retry.
       setWindowsInstallOutcome(view);
       setWindowsInstallPhase("refreshing");
       try {
@@ -846,8 +846,9 @@ export function PermissionsTab({
   };
 
   const refreshRules = async () => {
-    const r = await window.ave.permission.listRules();
-    setRules(r);
+    const r = await window.ave.permission.listScopedRules();
+    setRules(r.rules);
+    setRuleLoadErrors(r.errors);
   };
 
   const handleAddRule = async () => {
@@ -869,10 +870,10 @@ export function PermissionsTab({
     }
   };
 
-  const handleRemoveRule = async (pattern: string, action: "allow" | "deny" | "ask") => {
+  const handleRemoveRule = async (rule: ScopedPermissionRule) => {
     setRulesBusy(true);
     try {
-      const res = await window.ave.permission.removeRule(pattern, action);
+      const res = await window.ave.permission.removeScopedRule(rule);
       if (res.ok) {
         await refreshRules();
       } else {
@@ -953,13 +954,18 @@ export function PermissionsTab({
 
   const sandboxPotentialReason = sandboxCapability?.potentialReason ?? sandboxCapability?.reason ?? "";
   const sandboxRuntimeReason = sandboxCapability?.runtime?.reason ?? "";
-  // The setting is on and the gate did not activate it this session. Distinct
-  // from the toggle being off — the user chose this and it did not take — and
-  // distinct from "restart to apply", which is what an unchanged gate would
-  // mean. A gate that never ran (`null`) is NOT reported as either.
+  // The setting is on and the gate did not activate it this session. Distinct from the toggle being off; the user chose this and it did not take;
+  // and distinct from "restart to apply", which is what an unchanged gate would mean. A gate that never ran (`null`) is NOT reported as either.
   const sandboxBoot = sandboxCapability?.boot ?? null;
+  // The host could not reconcile its own shell sandbox observations. Only the shell row reports it; the rest of
+  // the panel still renders the snapshot. The toggle stays usable: turning the setting off is what clears it.
+  const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
+  const windowsHelperRequested =
+    sandboxEnabled || workerConfinementEnabled || bootReportsWindowsHelperFailure(sandboxBoot);
+  // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
+  const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
   return (
     <div className="pr-1">
@@ -1128,6 +1134,8 @@ export function PermissionsTab({
           </div>
         </SettingsSection>
 
+        <PermissionJudgeContent />
+
         {/* ── Section A: Permission Policy Preset ── */}
         <SettingsSection
           data-settings-section="permissions-policy"
@@ -1258,24 +1266,60 @@ export function PermissionsTab({
           title={t("permissionsTab.osSandboxTitle")}
           description={t("permissionsTab.osSandboxDescription")}
         >
-          <div className="flex items-center gap-3">
+          <SandboxStatusBadge capability={sandboxCapability} statusQueryFailed={sandboxStatusQueryFailed} onRetry={() => { void refreshSandboxCapability(); }} />
+          <div className="flex items-start gap-3">
             <Checkbox
               checked={sandboxEnabled}
               data-testid="os-sandbox-toggle"
               aria-label={t("permissionsTab.osSandboxCheckboxAriaLabel")}
               disabled={sandboxBusy || !(sandboxCapability?.available ?? false)}
-              className="size-5"
+              className="mt-0.5 size-5"
               onCheckedChange={() => void handleSandboxToggle()}
             />
-            <span className="text-sm">
-              {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
-            </span>
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.osSandboxShellLabel")}
+                {" — "}
+                {sandboxEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.osSandboxShellHint")}</p>
+              {shellStatusError ? (
+                <p role="alert" data-testid="os-sandbox-shell-status-error" className="text-[11px] text-destructive">
+                  {t("permissionsTab.osSandboxShellStatusError")}
+                </p>
+              ) : null}
+            </div>
           </div>
           <EnvForcedNotice
             settingsPath="features.osToolSandbox"
             forcedPaths={envForcedPaths}
             messageKey="permissionsTab.osSandboxEnvForced"
             testId="os-sandbox-forced"
+            className="mt-2"
+          />
+          <div className="mt-3 flex items-start gap-3">
+            <Checkbox
+              checked={workerConfinementEnabled}
+              data-testid="worker-confinement-toggle"
+              aria-label={t("permissionsTab.workerConfinementCheckboxAriaLabel")}
+              disabled={workerConfinementBusy || !(sandboxCapability?.available ?? false)}
+              className="mt-0.5 size-5"
+              onCheckedChange={() => void handleWorkerConfinementToggle()}
+            />
+            <div className="min-w-0 space-y-0.5">
+              <p className="text-sm">
+                {t("permissionsTab.workerConfinementLabel")}
+                {" — "}
+                {workerConfinementEnabled ? t("permissionsTab.osSandboxEnabled") : t("permissionsTab.osSandboxDisabled")}
+              </p>
+              <p className="text-[11px] text-muted-foreground">{t("permissionsTab.workerConfinementHint")}</p>
+            </div>
+          </div>
+          <EnvForcedNotice
+            settingsPath="features.pluginWorkerConfinement"
+            forcedPaths={envForcedPaths}
+            messageKey="permissionsTab.workerConfinementEnvForced"
+            testId="worker-confinement-forced"
             className="mt-2"
           />
           {sandboxCapability && !sandboxCapability.available ? (
@@ -1309,6 +1353,11 @@ export function PermissionsTab({
                   {t("permissionsTab.osSandboxRuntimeReason", { reason: sandboxKindText(sandboxCapability.runtime?.kind) })}
                 </p>
               ) : null}
+              {sandboxCapability.workerRuntime ? (
+                <p data-testid="worker-confinement-runtime-reason">
+                  {t("permissionsTab.workerConfinementRuntimeReason", { reason: sandboxKindText(sandboxCapability.workerRuntime.kind) })}
+                </p>
+              ) : null}
             </div>
           ) : null}
           {sandboxDegraded && sandboxBoot ? (
@@ -1318,17 +1367,66 @@ export function PermissionsTab({
             >
               <p className="font-medium">{t("permissionsTab.osSandboxBootDegradedHeading")}</p>
               <p>{t("permissionsTab.osSandboxBootDegradedBody")}</p>
-              {sandboxBoot.dependencyErrors.length > 0 ? (
+              {sandboxBoot.causes.length > 0 ? (
                 <p
                   data-testid="os-sandbox-boot-degraded-detail"
                   className="whitespace-pre-line font-mono text-foreground"
                 >
-                  {t("permissionsTab.osSandboxDiagnosticHint")}
+                  {sandboxBoot.causes.includes("windows-sandbox-integrity-failed")
+                    ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                    : sandboxBoot.causes.includes("windows-sandbox-missing")
+                    ? t("inputActionBar.sandboxCauseWindowsSandboxMissing")
+                    : sandboxBoot.reason === "degrade-windows-init-failed"
+                    ? t("permissionsTab.osSandboxInitFailedHint")
+                    : t("permissionsTab.osSandboxDiagnosticHint")}
                 </p>
               ) : null}
               <p className="italic">
                 {t("permissionsTab.osSandboxBootDegradedReason", { reason: ipcErrorCode(sandboxBoot.reason) ?? "unknown" })}
               </p>
+            </div>
+          ) : null}
+          {windowsSubstrate ? (
+            <div
+              data-testid="os-sandbox-windows-substrate"
+              data-shells={windowsSubstrate.shells}
+              data-extensions={windowsSubstrate.extensions}
+              data-mxc={windowsSubstrate.mxc.state}
+              className="space-y-1 rounded-md border bg-muted/(--opacity-light) px-3 py-2 text-[11px] text-muted-foreground"
+            >
+              <p className="font-medium text-foreground">{t("permissionsTab.osSandboxWindowsSubstrateHeading")}</p>
+              <p data-testid="os-sandbox-windows-substrate-shells">
+                {windowsSubstrate.shells === "mxc"
+                  ? t("permissionsTab.osSandboxWindowsShellsMxc")
+                  : windowsSubstrate.mxc.state === "checking" && windowsSubstrate.shells === "approved-host"
+                    ? t("permissionsTab.osSandboxWindowsShellsChecking")
+                    : windowsSubstrate.shells === "approved-host"
+                      ? t("permissionsTab.osSandboxWindowsShellsApprovedHost")
+                      : t("permissionsTab.osSandboxWindowsShellsNone")}
+              </p>
+              {windowsSubstrate.shells === "mxc" ? (
+                <p data-testid="os-sandbox-windows-bash-note">{t("permissionsTab.osSandboxWindowsBashNote")}</p>
+              ) : null}
+              {windowsSubstrate.mxc.state === "unavailable" ? (
+                <p data-testid="os-sandbox-windows-mxc-reason" data-reason={windowsSubstrate.mxc.reason}>
+                  {t("permissionsTab.osSandboxWindowsMxcUnavailable", {
+                    reason: t(MXC_UNAVAILABLE_REASON_KEY[windowsSubstrate.mxc.reason]),
+                    build: windowsSubstrate.windowsBuild ?? "?",
+                  })}
+                </p>
+              ) : windowsSubstrate.mxc.state === "available" && windowsSubstrate.shells === "none" ? (
+                <p data-testid="os-sandbox-windows-mxc-unused">
+                  {t("permissionsTab.osSandboxWindowsMxcUnused", { build: windowsSubstrate.windowsBuild ?? "?" })}
+                </p>
+              ) : null}
+              <p data-testid="os-sandbox-windows-substrate-extensions">
+                {windowsSubstrate.extensions === "srt-win"
+                  ? t("permissionsTab.osSandboxWindowsExtensionsSrtWin")
+                  : t("permissionsTab.osSandboxWindowsExtensionsNone")}
+              </p>
+              {windowsSubstrate.extensionEgressIdentity === "shared" && windowsSubstrate.extensions === "srt-win" ? (
+                <p data-testid="os-sandbox-windows-shared-identity">{t("permissionsTab.osSandboxWindowsSharedIdentity")}</p>
+              ) : null}
             </div>
           ) : null}
           {/* ── Windows srt-win consent flow ── */}
@@ -1355,12 +1453,52 @@ export function PermissionsTab({
                 : t("permissionsTab.osSandboxWindowsInstallRefreshing")}
             </p>
           ) : null}
-          {sandboxEnabled && windowsStatus?.applicable && !windowsStatus.ready ? (
-            windowsStatus.userState !== "absent" ||
+          {(windowsHelperRequested || windowsStatus?.homePrivacyError) && windowsStatus?.applicable && !windowsStatus.ready ? (
+            windowsStatus.homePrivacyError ? (
+              <div
+                data-testid="os-sandbox-windows-home-privacy-error"
+                role="alert"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {t("permissionsTab.osSandboxWindowsHomePrivacyError", {
+                  path: windowsStatus.homePrivacyError.path,
+                  reason: {
+                    "directory-failed": t("permissionsTab.homePrivacyDirectoryFailed"),
+                    "system-root-missing": t("permissionsTab.homePrivacySystemRootMissing"),
+                    "identity-failed": t("permissionsTab.homePrivacyIdentityFailed"),
+                    "icacls-failed": t("permissionsTab.homePrivacyIcaclsFailed"),
+                    "read-back-failed": t("permissionsTab.homePrivacyReadBackFailed"),
+                    "not-protected": t("permissionsTab.homePrivacyNotProtected"),
+                    "invalid-owner-grant": t("permissionsTab.homePrivacyInvalidOwnerGrant"),
+                    "reparse-point": t("permissionsTab.homePrivacyReparsePoint"),
+                    "extra-principals": t("permissionsTab.homePrivacyExtraPrincipals", {
+                      principals: (windowsStatus.homePrivacyError.extraPrincipals ?? []).map(({ sid, account }) => account ? `${sid} (${account})` : sid).join(", "),
+                    }),
+                  }[windowsStatus.homePrivacyError.category],
+                })}
+                {windowsStatus.homePrivacyError.approvedForSession ? (
+                  <p>{t("permissionsTab.homePrivacyApprovedForSession")}</p>
+                ) : (
+                  <Button type="button" size="sm" variant="default" disabled={privacyApprovalBusy}
+                    onClick={() => void handlePrivacyApproval()}>
+                    {t("permissionsTab.homePrivacyApproveForSession")}
+                  </Button>
+                )}
+              </div>
+            ) : windowsStatus.helperError ? (
+              <p
+                data-testid="os-sandbox-windows-helper-unavailable"
+                data-error-code={windowsStatus.helperError}
+                role="status"
+                className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
+              >
+                {windowsStatus.helperError === "srt-win-integrity-mismatch"
+                  ? t("permissionsTab.osSandboxWindowsHelperIntegrityError")
+                  : t("permissionsTab.osSandboxWindowsInstallFailedHelperMissing")}
+              </p>
+            ) : windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
-              // Install partially ran or status cannot be fully read. Show the
-              // localized setup guidance and keep the explicit retry action
-              // available. Setup does not require signing out.
+              // Install partially ran or status cannot be fully read. Show the localized setup guidance and keep the explicit retry action available. Setup does not require signing out.
               <div
                 data-testid="os-sandbox-windows-setup-status"
                 className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-[11px] text-info"
@@ -1381,10 +1519,8 @@ export function PermissionsTab({
                 </Button>
               </div>
             ) : (
-              // Sandbox not ready (install-time provisioning was cancelled/failed
-              // or the app was not installed via the NSIS installer). REPAIR
-              // fallback: warning card + a "Re-provision" button. No auto-UAC —
-              // the user must click.
+              // Sandbox not ready (install-time provisioning was cancelled/failed or the app was not installed via the
+              // NSIS installer). REPAIR fallback: warning card + a "Re-provision" button. No auto-UAC; the user must click.
               <div
                 data-testid="os-sandbox-windows-consent"
                 className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"
@@ -1407,6 +1543,17 @@ export function PermissionsTab({
               </div>
             )
           ) : null}
+          <UpstreamProxySettings />
+        </SettingsSection>
+
+        {/* ── Network: what the sandbox proxy refused ── */}
+        <SettingsSection
+          data-settings-section="permissions-network"
+          title={t("permissionsTab.networkTitle")}
+          description={t("permissionsTab.networkDescription")}
+        >
+          <EgressGrantsList />
+          <EgressDenialsList />
         </SettingsSection>
 
         {/* ── Sub-agent parent adjudication (tier 2 of the approval chain) ── */}
@@ -1638,56 +1785,73 @@ export function PermissionsTab({
         {/* ── Section C: Rule Editor ── */}
         <SettingsSection
           data-settings-section="permissions-rules"
-          title={t("permissionsTab.rulesTitle")}
-          description={<>{t("permissionsTab.rulesDescriptionBefore")}<code className="text-[10px]">mcp_*</code>{t("permissionsTab.rulesDescriptionAfter")}</>}
+          title={t("permissionsTab.unifiedRulesTitle")}
+          description={t("permissionsTab.unifiedRulesDescription")}
         >
-          {rules.length === 0 ? (
+          {ruleLoadErrors.length > 0 || approvalLoadError ? (
+            <div role="alert" data-testid="permissions-rule-load-error" className="text-xs text-destructive">
+              {t("permissionsTab.unifiedRulesLoadError")}
+              {ruleLoadErrors.map((failure, index) => <p key={`${failure.filePath}:${index}`} className="break-all">{failure.filePath}</p>)}
+              {approvalLoadError ? <p>{t("permissionsTab.savedApprovalsFile")}</p> : null}
+            </div>
+          ) : null}
+          {rules.length === 0 && userApprovals.length === 0 ? (
             <p className="text-[11px] text-muted-foreground italic">{t("permissionsTab.rulesEmpty")}</p>
           ) : (
             <div className="min-w-0 overflow-x-auto rounded-md border">
-              <table data-testid="permissions-rules-table" className="min-w-[560px] w-full table-fixed text-xs">
-                <colgroup>
-                  <col className="w-[44%]" />
-                  <col className="w-[20%]" />
-                  <col className="w-[26%]" />
-                  <col className="w-[10%]" />
-                </colgroup>
-                <thead>
-                  <tr className="border-b bg-muted/(--opacity-medium)">
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColPattern")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColAction")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.rulesColSource")}</th>
-                    <th className="px-3 py-2" />
-                  </tr>
-                </thead>
+              <table data-testid="permissions-rules-table" className="min-w-[560px] w-full text-xs">
+                <thead><tr className="border-b bg-muted/(--opacity-medium)">
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColPattern")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColAction")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.approvalsColScope")}</th>
+                  <th className="px-3 py-2 text-left">{t("permissionsTab.rulesColSource")}</th>
+                  <th className="px-3 py-2" />
+                </tr></thead>
                 <tbody>
-                  {rules.map((r, i) => (
-                    <tr key={`${r.pattern}:${r.action}:${i}`} className="border-b last:border-0 hover:bg-muted/(--opacity-light)">
-                      <td className="px-3 py-1.5 font-mono">
-                        <span className="block truncate" title={r.pattern}>{r.pattern}</span>
+                  {rules.map((rule, index) => (
+                    <tr key={`rule:${rule.scope}:${rule.projectCwd ?? ""}:${rule.pattern}:${rule.action}:${index}`} className="border-b last:border-0" data-rule-store="scoped">
+                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">
+                        {rule.pattern}
+                        {rule.invalidReason === "wildcard-not-allowlisted" ? (
+                          <p data-testid="permissions-rule-invalid" className="break-normal whitespace-normal font-sans text-[10px] text-destructive">
+                            {t("permissionsTab.ruleInvalidWildcardNotAllowlisted")}
+                          </p>
+                        ) : rule.action === "allow" && rule.pattern.startsWith("Bash(") ? (
+                          <p data-testid="permissions-shell-outside-sandbox" className="break-normal whitespace-normal font-sans text-[10px] text-muted-foreground">{t("permissionsTab.shellOutsideSandbox")}</p>
+                        ) : null}
                       </td>
-                      <td className="px-3 py-1.5">
-                        <Badge variant={r.action === "allow" ? "default" : "secondary"} className={`shrink-0 whitespace-nowrap text-[10px] ${r.action === "deny" ? "text-destructive" : ""}`}>
-                          {r.action === "allow" ? t("permissionsTab.actionAllow") : t("permissionsTab.actionDeny")}
-                        </Badge>
+                      <td className="px-3 py-2"><Badge variant={rule.action === "allow" ? "default" : "secondary"}>
+                        {rule.action === "allow" ? t("permissionsTab.actionAllow") : rule.action === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAsk")}
+                      </Badge></td>
+                      <td className="max-w-[180px] break-all px-3 py-2">
+                        {rule.scope === "project" ? t("permissionsTab.scopeProject") : t("permissionsTab.scopeUser")}
+                        {rule.projectCwd ? <p className="text-[10px] text-muted-foreground">{rule.projectCwd}</p> : null}
                       </td>
-                      <td className="px-3 py-1.5 text-muted-foreground">
-                        <span className="block truncate" title={r.source ?? t("permissionsTab.sourceAll")}>
-                          {r.source ?? t("permissionsTab.sourceAll")}
-                        </span>
+                      <td className="px-3 py-2 text-muted-foreground">{rule.source ?? t("permissionsTab.sourceAll")}</td>
+                      <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={rulesBusy}
+                        onClick={() => void handleRemoveRule(rule)} aria-label={t("permissionsTab.revokeNamedRule", { pattern: rule.pattern })}>
+                        {t("permissionsTab.revokeButton")}
+                      </Button></td>
+                    </tr>
+                  ))}
+                  {userApprovals.map((approval) => (
+                    <tr key={`exact:${approval.key}`} className="border-b last:border-0" data-rule-store="exact">
+                      <td className="max-w-[220px] break-all px-3 py-2 font-mono">
+                        {approval.toolName ?? approval.key.slice(0, 12)}
+                        <p className="text-[10px] text-muted-foreground">{t("permissionsTab.exactApprovalLabel")}</p>
                       </td>
-                      <td className="px-3 py-1.5 text-right">
-                        <Button
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-6 px-2 text-[10px] text-muted-foreground hover:text-destructive"
-                          disabled={rulesBusy}
-                          onClick={() => void handleRemoveRule(r.pattern, r.action)}
-                        >
-                          ✕
-                        </Button>
+                      <td className="px-3 py-2"><Badge variant={approval.decision === "deny" ? "secondary" : "default"}>
+                        {approval.decision === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
+                      </Badge></td>
+                      <td className="max-w-[180px] break-all px-3 py-2">
+                        {approval.scope === "session" ? t("permissionsTab.scopeSession") : t("permissionsTab.scopePersistent")}
+                        <p className="text-[10px] text-muted-foreground">{approval.scope === "session" ? approval.sessionId : approval.projectCwd}</p>
                       </td>
+                      <td className="px-3 py-2 text-muted-foreground">{approval.source ?? t("permissionsTab.sourceAll")}</td>
+                      <td className="px-3 py-2"><Button type="button" variant="ghost" size="sm" disabled={approvalsBusy}
+                        onClick={() => void handleRevokeApproval(approval.key, approval.toolName ?? approval.key.slice(0, 12))}>
+                        {t("permissionsTab.revokeButton")}
+                      </Button></td>
                     </tr>
                   ))}
                 </tbody>
@@ -1814,85 +1978,6 @@ export function PermissionsTab({
                   {t("permissionsTab.cancelButton")}
                 </Button>
               </div>
-            </div>
-          )}
-        </SettingsSection>
-
-        {/* ── 사용자 승인 기록 ── */}
-        <SettingsSection
-          data-settings-section="permissions-approvals"
-          title={t("permissionsTab.approvalsTitle", { count: userApprovals.length })}
-          description={t("permissionsTab.approvalsDescription")}
-          actions={
-            <Button
-              size="sm"
-              variant="outline"
-              className="h-8 px-3 text-[12px]"
-              onClick={() => void fetchApprovals()}
-              disabled={approvalsBusy}
-            >
-              {t("permissionsTab.refreshButton")}
-            </Button>
-          }
-        >
-          {userApprovals.length === 0 ? (
-            <p className="text-[11px] text-muted-foreground">{t("permissionsTab.approvalsEmpty")}</p>
-          ) : (
-            <div className="min-w-0 overflow-x-auto rounded-md border">
-              <table data-testid="permissions-approvals-table" className="min-w-[780px] w-full text-xs">
-                <thead className="border-b bg-muted/(--opacity-medium)">
-                  <tr>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColTool")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColDecision")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColScope")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColRisk")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColApprovedAt")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColReason")}</th>
-                    <th className="px-3 py-2 text-left whitespace-nowrap font-medium">{t("permissionsTab.approvalsColAction")}</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {userApprovals.map((a) => (
-                    <tr key={a.key} className="border-b last:border-0">
-                      <td className="max-w-[120px] truncate px-3 py-2 font-mono">
-                        {a.toolName ?? a.key.slice(0, 12)}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Badge
-                          variant={(a.decision ?? "allow") === "deny" ? "secondary" : "default"}
-                          className={`text-[10px] ${(a.decision ?? "allow") === "deny" ? "text-destructive" : ""}`}
-                        >
-                          {(a.decision ?? "allow") === "deny" ? t("permissionsTab.actionDeny") : t("permissionsTab.actionAllow")}
-                        </Badge>
-                      </td>
-                      <td className="px-3 py-2">
-                        <span className={`inline-flex h-5 items-center whitespace-nowrap rounded px-1.5 text-[10px] font-medium ${a.scope === "persistent" ? "bg-warning/(--opacity-soft) text-warning" : "bg-muted text-muted-foreground"}`}>
-                          {a.scope === "persistent" ? t("permissionsTab.scopePersistent") : t("permissionsTab.scopeSession")}
-                        </span>
-                      </td>
-                      <td className="whitespace-nowrap px-3 py-2">{a.verdictAtApproval.toUpperCase()}{a.verdictAtApproval === "high" ? t("permissionsTab.verdictHighFixed") : ""}</td>
-                      <td className="whitespace-nowrap px-3 py-2 text-muted-foreground">
-                        {formatDateTime(a.approvedAt)}
-                      </td>
-                      <td className="max-w-[180px] truncate px-3 py-2 text-muted-foreground"
-                          title={a.nlJustification ?? undefined}>
-                        {a.nlJustification ?? "—"}
-                      </td>
-                      <td className="px-3 py-2">
-                        <Button
-                          variant="destructive"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                          disabled={approvalsBusy}
-                          onClick={() => void handleRevokeApproval(a.key, a.toolName ?? a.key.slice(0, 12))}
-                        >
-                          {t("permissionsTab.revokeButton")}
-                        </Button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
             </div>
           )}
         </SettingsSection>

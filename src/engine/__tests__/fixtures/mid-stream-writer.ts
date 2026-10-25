@@ -1,19 +1,5 @@
-/**
- * A real conversation turn in its own process, for the kill test
- * (`conversation-loop-kill-durability.test.ts`): the parent SIGKILLs this
- * process mid-turn and then reads what it left on disk.
- *
- * argv: <aveDir> <sessionId> <toolRounds> <mode>
- *   mode "stream":    after the tool rounds, stream text forever, one chunk
- *                     every 25 ms, printing `STREAMED <n>` after each chunk
- *                     and `CHUNK_SNAPSHOT_SAVED` each time a snapshot of
- *                     that text has reached the disk.
- *   mode "tool-hang": the last tool round's tool never returns; prints
- *                     `TOOL_RUNNING` once it has started.
- * Prints `ROUND <i>` as each provider round starts.
- */
-// The same process setup the test runner gives a test file: the bundled model
-// catalog the turn resolves its model against.
+// Kill-test child: argv <aveDir> <sessionId> <toolRounds> <mode>.
+// Reports stream snapshots only after persistence; tool-hang mode waits inside a tool.
 import "../../../__tests__/vitest-model-catalog.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { InputClassifier } from "../../../core/input-classifier.js";
@@ -80,9 +66,7 @@ toolRegistry.register(createDynamicTool({
 }));
 
 const memoryManager = new MemoryManager({ aveDir });
-// Announce each snapshot of the chunk stream only after it is on disk, so the
-// parent can kill at a point where recovery is guaranteed to find one instead
-// of guessing a delay. The tool rounds' own text snapshots are not announced.
+// Announce only persisted chunk snapshots so the parent can kill without guessing a delay.
 const writeTurnPartial = memoryManager.writeTurnPartial.bind(memoryManager);
 memoryManager.writeTurnPartial = async (...args) => {
   await writeTurnPartial(...args);

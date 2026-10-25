@@ -52,14 +52,7 @@ export interface PreparedPluginRuntimeRemovalPublication {
 
 export interface PreparedPluginRuntimeGenerationPublication {
   readonly pluginId: string;
-  /**
-   * The generation coordinator has committed this candidate: its pointer now
-   * names it. The lifecycle calls this first in the coordinator's publication
-   * turn, before any projection publishes, because from that moment the
-   * committed generation — not the load attempt that built the projection —
-   * owns its instance, HostApi incarnation and root, even if a later
-   * publication step fails. Idempotent; `publish()` implies it.
-   */
+  /** Pointer commit transfers candidate resources before any fallible publication; handover is idempotent. */
   handOver(): void;
   publish(): void;
 }
@@ -106,11 +99,7 @@ export interface PluginRuntimeGenerationAccess {
 }
 
 export interface PluginRuntimeGenerationLifecycle extends PluginRuntimeGenerationAccess {
-  /**
-   * Serialize a complete plugin lifecycle operation with generation
-   * transitions for the same plugin. Nested lifecycle calls for `pluginId`
-   * reuse the current queue slot.
-   */
+  /** Serialize same-plugin transitions; nested lifecycle calls reuse their current slot. */
   runInLifecycleQueue<T>(pluginId: string, operation: () => Promise<T>): Promise<T>;
   replaceRuntime(runtime: PluginRuntimeGenerationProjection): Promise<void>;
   replaceRuntimeWithCommit<T>(
@@ -125,10 +114,7 @@ export interface PluginRuntimeGenerationLifecycle extends PluginRuntimeGeneratio
   ): Promise<CommittedPluginGeneration<T>>;
   recoverRetirements(): Promise<void>;
   waitForRetirements(): Promise<void>;
-  /**
-   * Close generation admission for good (host shutdown): queued and later
-   * acquisitions reject with `reason(pluginId)`, and no candidate publishes.
-   */
+  /** Closing admission permanently rejects queued and future acquisitions and prevents publication. */
   closeAdmission(reason: (pluginId: string) => Error): void;
   /** Generations whose retirement has begun and not yet finished. */
   listRetiringGenerations(): readonly RetiringPluginRuntimeGeneration[];

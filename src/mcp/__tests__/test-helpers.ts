@@ -4,23 +4,13 @@ import { EventEmitter } from "node:events";
 import { McpGovernance } from "../mcp-governance.js";
 import type { McpGovernancePolicy } from "../types.js";
 
-/**
- * Build a governance instance whose internal policy is swapped out to the
- * in-memory one we provide. Avoids needing a real policy FILE on disk —
- * `McpGovernance` still probes the path (existsSync/readFileSync) but falls
- * back to the default policy when it is missing (see below).
- *
- * Constructing with a path that does not exist → default policy is loaded;
- * then we override via the untyped `policy` field. This mirrors how the
- * governance layer behaves when IT Admin updates the file in place.
- */
+/** Inject in-memory governance after loading default policy from a missing isolated path. */
 export function governanceWithPolicy(policy: McpGovernancePolicy): McpGovernance {
   const gov = new McpGovernance("/nonexistent/mcp-policy.json");
   (gov as unknown as { policy: McpGovernancePolicy }).policy = policy;
   return gov;
 }
 
-/** Build an `approved` stdio server governance approval for the given command. */
 export function stdioApproval(
   id: string,
   command: string,
@@ -44,7 +34,6 @@ export function stdioApproval(
   };
 }
 
-/** Wrap a list of server approvals in a deny-by-default governance policy. */
 export function buildPolicy(
   approvals: McpGovernancePolicy["servers"],
 ): McpGovernancePolicy {
@@ -61,12 +50,7 @@ export function buildPolicy(
   };
 }
 
-/**
- * A newline-delimited JSON-RPC stdio child stub (MCP stdio transport). Walks
- * `stdinBuffer`, takes every complete line, and writes a one-line response back on stdout
- * using the matching builder from `responses`. Notifications (no id) get no
- * reply. Shared between the stdio transport regression + sandbox-wrap tests.
- */
+/** Respond to complete newline-delimited requests; notifications receive no reply. */
 export class FakeChildProcess extends EventEmitter {
   stdout = new PassThrough();
   stderr = new PassThrough();
@@ -85,7 +69,6 @@ export class FakeChildProcess extends EventEmitter {
   signalCode: NodeJS.Signals | null = null;
   private stdinBuffer = "";
 
-  /** Prepared responses keyed by method name. */
   responses: Record<string, (id: number) => unknown> = {};
 
   kill(_signal?: string): boolean {
@@ -104,33 +87,24 @@ export class FakeChildProcess extends EventEmitter {
       if (body.trim().length === 0) continue;
       try {
         const req = JSON.parse(body) as { method: string; id?: number };
-        // Notifications have no id → do not reply.
         if (req.id === undefined) continue;
         const builder = this.responses[req.method];
         if (!builder) continue;
         const result = builder(req.id);
         const payload = JSON.stringify({ jsonrpc: "2.0", id: req.id, result });
         const frame = `${payload}\n`;
-        // Defer slightly so the client's Promise has time to register.
+        // Deliver after the client registers its pending request.
         queueMicrotask(() => this.stdout.write(frame));
       } catch {
-        /* ignore malformed */
       }
     }
   }
 }
 
-/**
- * The next framed message off `stream`, as a promise.
- *
- * The decoder is per-call and the listener detaches once a frame completes, so
- * the caller reads one reply at a time in the order the server wrote them —
- * which is what a request/response assertion over a real pipe needs.
- */
+/** A per-call decoder detaches after one frame so sequential reads preserve pipe order. */
 export function nextFramedMessage(
   stream: PassThrough,
 ): Promise<Record<string, unknown>> {
-  // Bounded far above any reply a test frames; the bound has its own cases.
   const decoder = new StdioFrameDecoder(1024 * 1024);
   return new Promise((resolve) => {
     const onData = (chunk: Buffer) => {

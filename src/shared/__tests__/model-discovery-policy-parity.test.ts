@@ -1,17 +1,4 @@
-/**
- * Model-discovery policy — one authority, two independent columns.
- *
- * `allowsFetch` ("may the host fetch the model list") and `usesSeededOptions`
- * ("does the preset ship its own list") used to be three hand-written
- * predicates in three modules: a POSITIVE list in the engine and two
- * byte-identical NEGATIVE lists in main and the renderer. They agreed on
- * today's four values only because those values happen to occupy the diagonal.
- *
- * These tests drive the REAL consumers — the engine's fetch gate and main's
- * settings normalization — over EVERY member of the union, read from the union
- * itself rather than a hardcoded list, so a fifth member cannot be added
- * without this failing.
- */
+/** Fetching model lists and using seeded options are independent policy columns; test every declared mode. */
 import { describe, expect, it, vi } from "vitest";
 import {
   MARKETPLACE_PROVIDER_MODEL_DISCOVERY_POLICIES,
@@ -23,11 +10,7 @@ import { mergeLlmPatch } from "../../data/settings-normalization.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { llmModelListCacheKey } from "../llm-model-list.js";
 
-/**
- * Independently written expected behaviour. Asserting the consumers against
- * the table alone would be self-referential — a wrong table would pass. This
- * column is what makes a wrong table fail.
- */
+/** Use independent expectations so a wrong policy table cannot validate itself. */
 const EXPECTED: Record<
   MarketplaceProviderModelDiscoveryPolicy,
   { allowsFetch: boolean; usesSeededOptions: boolean }
@@ -139,8 +122,7 @@ describe("settings normalization drops seeded-policy model-list caches for every
       );
 
       const retained = Object.keys(merged.modelListCache ?? {}).length > 0;
-      // A preset that ships its own list can never refresh this entry, so a
-      // stale credential-scoped cache must not survive normalization.
+      // Seeded-only presets cannot refresh credential-scoped caches, so discard stale entries.
       expect(retained).toBe(!EXPECTED[policy].usesSeededOptions);
     },
   );

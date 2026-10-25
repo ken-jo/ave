@@ -1,18 +1,4 @@
-/**
- * Render an MCP `prompts/get` result into ONE block of turn text.
- *
- * Trust: the messages are SERVER-authored. The user chose to run the prompt, but
- * not its content, so the rendered text is untrusted data — it enters the turn
- * under a dedicated provenance origin and never as user-typed input.
- *
- * Only `text` blocks are rendered. `image` / `audio` / `resource` blocks are
- * replaced with an explicit placeholder rather than dropped silently: a server
- * must not be able to make the host quietly omit part of what it returned, and
- * unrendered bytes must not reach the model as if they were text.
- *
- * Pure — no filesystem, no IPC, no logging. The BOUNDS it enforces live in
- * `shared/mcp-prompt-bounds.ts`, because main and the renderer must agree on them.
- */
+/** Render bounded server-authored prompt data with placeholders for non-text blocks and dedicated provenance. */
 
 import {
   MCP_PROMPT_MAX_BLOCKS,
@@ -27,20 +13,12 @@ export interface McpPromptBlock {
 
 export interface RenderedMcpPrompt {
   text: string;
-  /** True when the block list or character budget clipped the render. */
   truncated: boolean;
-  /** Count of non-text blocks that became placeholders. */
   omittedBlocks: number;
 }
 
 function safeRole(role: string): string {
-  // Roles are annotations inside the rendered text, so keep them inert: a
-  // server-supplied role must not smuggle markup or line breaks.
-  //
-  // These annotations are NOT a trust signal. A text block may itself contain a
-  // line reading `[system] …`, and nothing here can tell the two apart. What
-  // carries provenance is the envelope around the whole render plus the
-  // model-facing guidance for this origin — never a `[role]` prefix.
+  // Role labels are inert annotations, never trust signals; the outer envelope carries provenance.
   const cleaned = role.replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 32);
   return cleaned.length > 0 ? cleaned : "unknown";
 }

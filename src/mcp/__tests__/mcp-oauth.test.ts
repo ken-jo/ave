@@ -43,40 +43,24 @@ interface Fixture {
   tokenScope?: string;
   challengeScope: string;
   allowAnonymous?: boolean;
-  /** Path the MCP endpoint is served at ("/" for an origin-only resource). */
   endpointPath: string;
-  /** Overrides the `resource` the protected resource metadata declares. */
   declaredResource?: string;
-  /** Scope a resource request needs beyond the grant (answered with 403 insufficient_scope). */
   requiredScope?: string;
-  /** Scopes the authorization server never grants. */
   deniedScopes: string[];
-  /** Registered clients and their redirect URIs; authorize and token requests are checked against them. */
   clients: Map<string, string[]>;
   authorizedRedirects: string[];
   tokenScopes: Map<string, string>;
-  /** Advertise `client_id_metadata_document_supported`. */
   cimd: boolean;
   tokenAuthMethods: string[];
-  /** Metadata documents the fake server fetched, and an optional replacement document. */
   cimdFetches: string[];
   cimdDocument?: Record<string, unknown>;
-  /** Refuse Ave's metadata document at the authorization callback or the token endpoint. */
   rejectMetadataDocument?: "callback" | "token";
-  /** Clients the operator registered out of band, with their registered redirect URIs. */
   preregistered: Map<string, string[]>;
 }
 
-/** The document the web site publishes; the fake server "fetches" it from the repository. */
 const PUBLISHED_CLIENT_DOCUMENT = join(__dirname, "..", "..", "..", "web", "public", "oauth", "mcp-client.json");
 
-/**
- * An authorization server's checks on a URL client_id (Client ID Metadata
- * Document draft §4, MCP client-registration): the document's client_id must
- * equal the URL, required fields must be present, and the request's
- * redirect_uri must match a listed one — ignoring only the port, and only for
- * a loopback IP literal (RFC 8252 §7.3).
- */
+/** Client metadata binds the client id and registered redirect; loopback literals may vary only by port. */
 function validateClientDocument(clientId: string, redirectUri: string, document: Record<string, unknown>): boolean {
   if (document.client_id !== clientId || typeof document.client_name !== "string" ||
     !Array.isArray(document.redirect_uris) || document.redirect_uris.length === 0) return false;
@@ -163,7 +147,6 @@ async function fixture(): Promise<Fixture> {
       state.authorizations.push(url);
       const requestedClient = url.searchParams.get("client_id") ?? "";
       if (state.cimd && requestedClient.startsWith("https://")) {
-        // A URL client_id: fetch its metadata document (only Ave's is reachable here) and validate it.
         state.cimdFetches.push(requestedClient);
         const document = state.cimdDocument ?? (requestedClient === MCP_CLIENT_METADATA_DOCUMENT_URL
           ? JSON.parse(readFileSync(PUBLISHED_CLIENT_DOCUMENT, "utf8")) as Record<string, unknown> : undefined);
@@ -185,7 +168,6 @@ async function fixture(): Promise<Fixture> {
         if (!redirectMatches(preregistered, redirectUri)) { json({ error: "invalid_request" }, 400); return; }
         state.clients.set(requestedClient, [redirectUri]);
       }
-      // Strict: the redirect URI must be one the client registered, compared exactly.
       const registered = state.clients.get(requestedClient);
       if (!registered?.includes(url.searchParams.get("redirect_uri") ?? "")) { json({ error: "invalid_request" }, 400); return; }
       state.authorizedRedirects.push(url.searchParams.get("redirect_uri") ?? "");
@@ -403,8 +385,7 @@ describe("remote authorization", () => {
     if (kind === "registration") state.dcr = false;
     if (kind === "redirect") state.redirectMetadata = true;
     const { session, openAuthorizationUrl } = createSession(state, { config: { url: `${state.base}/mcp` } });
-    // No usable registration and a different resource are their own, renderer-visible outcomes;
-    // every other case is a generic failure.
+    // Registration and resource mismatches are distinct outcomes; other failures remain generic.
     await expect(session.authenticate()).rejects.toThrow(kind === "registration"
       ? /^MCP client registration mode is not supported$/u
       : kind === "resource" ? /^MCP authorization metadata names a different resource$/u : /^MCP authentication failed$/u);
@@ -695,7 +676,6 @@ describe("remote authorization", () => {
     expect(state.authorizations[0].searchParams.get("redirect_uri")).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
     expect(state.grants[0].get("client_id")).toBe(MCP_CLIENT_METADATA_DOCUMENT_URL);
     expect((await session.fetch(state.resource)).ok).toBe(true);
-    // A later flow binds a new port; the document covers it without registration.
     state.rejectAccess = true;
     state.refreshRevoked = true;
     await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
@@ -880,7 +860,6 @@ describe("remote authorization", () => {
     expect(state.registrations).toHaveLength(1);
     expect(session.getStatus()).toBe("authenticated");
     expect((await session.fetch(state.resource)).ok).toBe(true);
-    // The refusal is remembered: a later flow registers directly instead of trying the document again.
     state.rejectAccess = true;
     state.refreshRevoked = true;
     await expect(session.fetch(state.resource)).rejects.toThrow(/^MCP authentication required$/u);
@@ -938,7 +917,6 @@ describe("remote authorization", () => {
     release();
     await inFlight;
     expect((await successor.fetch(state.resource)).ok).toBe(true);
-    // The successor used the token the predecessor rotated, without spending the old refresh token again.
     expect(state.grants.map((grant) => grant.get("grant_type"))).toEqual(["authorization_code", "refresh_token"]);
     expect(state.bearer.at(-1)).toBe("Bearer access-secret-2");
     expect(JSON.parse([...first.store.values()][0]).tokens.refresh_token).toBe("refresh-secret-2");
@@ -996,7 +974,6 @@ describe("remote authorization", () => {
       message: "MCP authorization metadata names a different resource" });
     expect(challenged.session.getStatus()).toBe("error");
     expect(state.registrations).toHaveLength(0);
-    // Found at the well-known location instead, a containing resource remains acceptable.
     const discovered = createSession(state);
     await discovered.session.authenticate();
     expect(state.authorizations[0].searchParams.get("resource")).toBe(state.base);

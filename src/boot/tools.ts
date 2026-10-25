@@ -1,7 +1,5 @@
 
 
-
-
 import type { ToolRegistry } from "../tools/registry.js";
 import type { SettingsService } from "../data/settings-store.js";
 import { type Tool } from "../tools/base.js";
@@ -61,17 +59,7 @@ export function registerToolSearchMetaTool(toolRegistry: ToolRegistry): void {
   toolRegistry.register(createToolSearchTool());
 }
 
-/**
- * §6.1 idle scheduler — the idle/throttle state machine the shared idle
- * consumers subscribe to (preference refresh, memory consolidation, post-turn
- * signalling, conversation loop). It takes only `powerMonitor`: indexing does
- * not defer through it, because the local-indexer plugin's FolderAutoIndexer
- * indexes eagerly in its own background worker process.
- *
- * Constructed unconditionally. Every consumer guards on the scheduler being
- * present and does nothing at all without it, so anything that can leave it
- * unbuilt disables idle work outright rather than degrading it.
- */
+/** Construct the idle scheduler unconditionally; missing it disables every shared idle consumer. */
 export async function wireIdleScheduler(powerMonitor?: PowerMonitorLike): Promise<IdleSchedulerService | undefined> {
   try {
     const idleScheduler = new IdleSchedulerService({
@@ -101,52 +89,25 @@ export interface WorkflowToolDeps {
   skillStore?: SkillStore;
   agentProfileStore?: AgentProfileStore;
   personaPromptStore?: PersonaPromptStore;
-  /** C2(c): per-session skill overlay registry. */
+  /** Per-session skill overlay registry. */
   skillOverlay?: SkillOverlay;
-  /** C2(d): persistent skill-approval allowlist. */
+  /** Persistent first-use skill approval allow-list. */
   skillApprovalsStore?: SkillApprovalsStore;
-  /** C2(d): ApprovalGate for the first-use skill approval dock. */
   approvalGate?: ApprovalGate;
-  /**
-   * Electron network-stack fetch (`net.fetch`) — routes builtin tool traffic
-   * through Chromium's network stack (system proxy/PAC, OS certificate store)
-   * rather than Node's global `fetch`.
-   */
+  /** Use OS proxy and certificate-store routing for built-in network tools. */
   networkFetch: typeof fetch;
-  /**
-   * The same Chromium stack, but stopping at each redirect and handing the hop
-   * back as an ordinary Response. `net.fetch` has no such mode -- `manual` and
-   * `error` both throw -- so a caller that wants to inspect the next URL before
-   * following it has to be given this one. `fetchPublicHttpResponse` is exactly
-   * that caller: it re-runs its SSRF gate per hop, which it can only do if the
-   * transport lets the hop come back.
-   */
+  /** Return each redirect for SSRF validation; the plain desktop fetch API throws instead. */
   singleHopNetworkFetch: typeof fetch;
   emitAgentSpawn?: (event: AgentSpawnEvent) => void;
-  /**
-   * Register `terminal_read` with the scope resolvers it reads through. Only
-   * a host with the workspace terminal has blocks to read; elsewhere the tool
-   * would be a schema with nothing behind it, so this stays unset.
-   */
+  /** Register terminal reading only on hosts with workspace-terminal scope resolvers. */
   terminalRead?: TerminalReadToolDeps;
-  /**
-   * Register `terminal_run`: type an approved command into a workspace
-   * terminal. Desktop-only, like `terminalRead`.
-   */
+  /** Desktop-only command entry into approved workspace terminals. */
   terminalRun?: TerminalRunToolDeps;
-  /**
-   * Register the agent browser tools with the tab registry and the page
-   * actions they drive. Only a host with app windows has browser tabs; unset
-   * elsewhere, like `terminalRead`.
-   */
+  /** Register browser tools only on hosts with app windows. */
   browser?: BrowserToolDeps<WebContents>;
   emitSkillLoad?: (event: SkillLoadEvent) => void;
   acquirePluginSkillGeneration?: NonNullable<SkillLoadToolDeps["acquirePluginGeneration"]>;
-  /**
-   * Lazy-resolved MCP resource access. Lazy because the MCP manager is built in a
-   * LATER boot step than the builtin tools, and narrow (list + read only) so this
-   * surface cannot reach `callTool`.
-   */
+  /** Resolve MCP lazily after setup; expose list and read without callTool authority. */
   getMcpResourceAccess?: McpResourceAccessResolver;
   getStudioMcpConfigs?: () => Promise<McpServerConfigDto[]>;
   getStudioConnectorSummary?: (serverId: string) => Promise<{ digest: string; argsCount: number; envCount: number }>;
@@ -163,16 +124,10 @@ export function registerBuiltinTools(
       agentProfileStore: workflowDeps.agentProfileStore, personaPromptStore: workflowDeps.personaPromptStore,
       routinesStore: workflowDeps.routinesStore, getMcpConfigs: workflowDeps.getStudioMcpConfigs }),
     createWebSearchTool(settingsService, networkFetch),
-    // web_fetch guards every hop of a redirect chain, so it needs the transport
-    // that returns a hop instead of throwing on it. Handed `net.fetch`, the
-    // guard's `redirect: "manual"` came back as "Redirect was cancelled" and
-    // any redirecting URL was simply unreachable.
     createWebFetchTool(singleHopNetworkFetch),
     createRenderHtmlTool(),
   ];
 
-  // Workflow system tools. Each is gated on its dependency being
-  // wired so unit tests that boot a minimal registry stay green.
   if (workflowDeps?.getAskUserQuestionGate) {
     builtins.push(
       createAskUserQuestionTool({
@@ -205,8 +160,6 @@ export function registerBuiltinTools(
       createAgentInterruptTool({
         getRunner: workflowDeps.getSubAgentRunner,
       }),
-      // The other half of the same relationship: `agent_interrupt` ends a run,
-      // `agent_guide` redirects one that should keep going.
       createAgentGuideTool({
         getRunner: workflowDeps.getSubAgentRunner,
       }),
@@ -215,8 +168,6 @@ export function registerBuiltinTools(
   if (workflowDeps?.agentProfileStore) {
     builtins.push(createAgentListTool({
       store: workflowDeps.agentProfileStore,
-      // Same runner accessor agent_spawn uses, so the list can name THIS
-      // conversation's resumable sub-agents next to the profile definitions.
       getRunner: workflowDeps.getSubAgentRunner,
     }));
   }
@@ -252,9 +203,7 @@ export function registerBuiltinTools(
       }),
     );
     builtins.push(createSkillListTool(workflowDeps.skillStore));
-    // Stage-3 companion: reads one bundled resource of an ALREADY-LOADED skill.
-    // Registered beside skill_load because it reuses the same overlay as its
-    // access-control surface (loaded ⇒ approved) and the same generation lease.
+    // Resource reads require an already-loaded skill, sharing its approval overlay and generation lease.
     builtins.push(
       createSkillReadTool({
         store: workflowDeps.skillStore,
@@ -264,15 +213,7 @@ export function registerBuiltinTools(
     );
   }
 
-  // MCP resources — the MODEL's path to server-declared documents/schemas. The
-  // user's path (a composer mention) is a separate surface; reference hosts expose
-  // both.
-  //
-  // The resolver is passed through, not called: `ctx.mcpManager` is assigned by a
-  // LATER boot step, so anything captured here would be the registration-time
-  // `undefined` forever. Callers that supply no resolver at all (the minimal test
-  // registry) get no tools; production always supplies one, and the tools report
-  // "not ready" themselves during the window before MCP setup runs.
+  // Pass the resolver without calling it; early capture would retain undefined before MCP setup.
   const mcpResourceAccess = workflowDeps?.getMcpResourceAccess;
   if (mcpResourceAccess) {
     builtins.push(createMcpResourceListTool(mcpResourceAccess));

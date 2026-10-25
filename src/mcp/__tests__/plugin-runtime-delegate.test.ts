@@ -1,12 +1,4 @@
-/**
- * `pluginRuntimeToolDelegate` parity (mcp-alignment-design.md §5 plugin-loopback-server).
- *
- * The loopback delegate is the authoritative plugin execution gate:
- * inactive / integrity-disabled fail closed, ManifestIntegrityError records
- * + fails closed, and the structured return value survives as
- * _meta["ave/rawResult"]. A host-level test asserts that raw value reaches
- * the registered Tool's metadata.rawResult (the executor.ts / boot.ts contract).
- */
+/** Loopback execution enforces runtime admission and integrity checks while preserving structured result data. */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   pluginRuntimeToolDelegate,
@@ -38,13 +30,7 @@ async function publishTestHost(
   host.publishPrepared(tools);
 }
 
-// fakeRuntime builds a minimal PluginRuntime stub. isSessionActivated now takes
-// (sessionId, pluginId) matching the per-session Map API; the mock can ignore
-// sessionId and return a test-controlled value.
-//
-// Gate 4 itself is NOT stubbed: the delegate runs the real
-// `checkRuntimeAdmission` over the state below, so these assertions still
-// exercise the production predicate.
+// Keep runtime admission real; only the activation state is controlled by the fixture.
 function fakeRuntime(over: Partial<Pick<PluginRuntime, "isPluginEnabled" | "isSessionActivated" | "call">>): PluginRuntime {
   const call = over.call ?? vi.fn(async () => "ok");
   return {
@@ -145,10 +131,6 @@ const MANIFEST: PluginManifest = {
 };
 
 describe("pluginRuntimeToolDelegate — Gate 4: session-scoped on-demand activation", () => {
-  // *** THIS is the mutation-detecting test ***
-  // If Gate 4 is reverted to `!isPluginEnabled` only (removing the
-  // isSessionActivated check), this test fails because the delegate would
-  // return isError:true even though isSessionActivated returns true.
   it("registry-disabled + session-activated → tool call SUCCEEDS (load-bearing mutation detector)", async () => {
     const call = vi.fn(async () => ({ scanned: 42 }));
     const delegate = pluginRuntimeToolDelegate(
@@ -159,8 +141,7 @@ describe("pluginRuntimeToolDelegate — Gate 4: session-scoped on-demand activat
       }),
       PLUGIN_ID,
     );
-    // Must run within ALS session context: the delegate reads
-    // sessionContext.getStore()?.sessionId to look up the activation map.
+    // Activation lookup requires the current async-local session id.
     const out = await sessionContext.run({ sessionId: "routine-session-A" }, () =>
       delegate("index_scan", { q: "test" }),
     );
@@ -170,8 +151,6 @@ describe("pluginRuntimeToolDelegate — Gate 4: session-scoped on-demand activat
   });
 
   it("disabled + NOT session-activated → REFUSED (original fail-closed behavior preserved)", async () => {
-    // Also the mutation verifier: if Gate 4 removed the isSessionActivated branch
-    // this test would still pass (gate refuses), but test above would fail.
     const call = vi.fn(async () => "unreachable");
     const delegate = pluginRuntimeToolDelegate(
       fakeRuntime({
@@ -190,18 +169,17 @@ describe("pluginRuntimeToolDelegate — Gate 4: session-scoped on-demand activat
   });
 
   it("fail-closed when no ALS session context (e.g. out-of-band call): disabled plugin → REFUSED", async () => {
-    // No sessionContext.run() wrapper — sessionId is undefined → gate refuses.
     const call = vi.fn(async () => "unreachable");
     const delegate = pluginRuntimeToolDelegate(
       fakeRuntime({
         isPluginEnabled: () => false,
-        isSessionActivated: (_sid, _pid) => true, // even if runtime says yes…
+        isSessionActivated: (_sid, _pid) => true,
         call,
       }),
       PLUGIN_ID,
     );
     const out = await delegate("index_scan", {});
-    expect(out.isError).toBe(true); // …no ALS sessionId → refused
+    expect(out.isError).toBe(true);
     expect(call).not.toHaveBeenCalled();
   });
 
@@ -217,8 +195,6 @@ describe("pluginRuntimeToolDelegate — Gate 4: session-scoped on-demand activat
   });
 
   it("main chat: disabled plugin (no session activation) → REFUSED (behavior unchanged)", async () => {
-    // In main chat allowedPluginIds is undefined so no session activation occurs;
-    // isSessionActivated always returns false → gate closes identically to before.
     const call = vi.fn(async () => "unreachable");
     const delegate = pluginRuntimeToolDelegate(
       fakeRuntime({ isPluginEnabled: () => false, isSessionActivated: (_s, _p) => false, call }),
@@ -244,16 +220,8 @@ describe("pluginRuntimeToolDelegate — Gate 4: session-scoped on-demand activat
 
 describe("pluginRuntimeToolDelegate — Gate 4: per-session isolation (clear-race regression)", () => {
   it("clearing session B's scope does NOT wipe session A's on-demand activation", async () => {
-    // Regression test for the cross-session clear race:
-    // SCENARIO: routine fires at 22:00 (session A) → activates local-indexer →
-    //   user starts a new main-chat conversation (session B) →
-    //   ConversationLoop.resetSession() calls clearSessionActivated("session-B") →
-    //   session A's activation MUST survive → next index_scan SUCCEEDS.
-    //
-    // This test FAILS with the old global flat-Set approach (clearSessionActivated()
-    // wiped ALL activations) and PASSES with the per-session Map approach.
+    // Clearing another session must preserve the routine session activation.
 
-    // Simulate the Map-keyed activation state (mirrors PluginRuntime internals)
     const activations = new Map<string, Set<string>>();
     const sessionAId = "routine-session-22h00";
     const sessionBId = "main-chat-22h00-user";
@@ -267,18 +235,13 @@ describe("pluginRuntimeToolDelegate — Gate 4: per-session isolation (clear-rac
       PLUGIN_ID,
     );
 
-    // Session A: routine activates the plugin
     if (!activations.has(sessionAId)) activations.set(sessionAId, new Set());
     activations.get(sessionAId)!.add(PLUGIN_ID);
 
-    // Session B: user starts new conversation → per-session clear of B ONLY
-    // (per-session Map: delete(sessionBId) — does NOT touch sessionAId)
     activations.delete(sessionBId);
 
-    // Session A's activation must still be present
     expect(sessionAwareIsActivated(sessionAId, PLUGIN_ID)).toBe(true);
 
-    // Tool call from session A's ALS context must SUCCEED
     const out = await sessionContext.run({ sessionId: sessionAId }, () =>
       delegate("index_scan", {}),
     );
@@ -288,15 +251,9 @@ describe("pluginRuntimeToolDelegate — Gate 4: per-session isolation (clear-rac
   });
 
   it("[OLD-APPROACH REGRESSION] global flat-Set clear would wipe session A → refused", async () => {
-    // Demonstrates the bug that a global flat-Set had: clearSessionActivated()
-    // with no sessionId argument wiped ALL activations regardless of session.
-    // This test passes with the OLD (broken) approach to prove the regression
-    // is real, then asserts the outcome was an isError (the failure mode).
-    //
-    // The new per-session Map approach makes the test above pass instead.
+    // A global activation set is the negative control: clearing one session destroys another activation.
 
     const globalSet = new Set<string>();
-    // OLD behavior: isSessionActivated ignores sessionId, checks global set
     const oldIsActivated = (_sid: string, pid: string) => globalSet.has(pid);
 
     const call = vi.fn(async () => "result");
@@ -305,20 +262,16 @@ describe("pluginRuntimeToolDelegate — Gate 4: per-session isolation (clear-rac
       PLUGIN_ID,
     );
 
-    // Session A activates
     globalSet.add(PLUGIN_ID);
 
-    // Session B clears (OLD global clear — wipes EVERYTHING)
-    globalSet.clear(); // ← old `clearSessionActivated()` did this
+    globalSet.clear();
 
-    // Session A's activation is now GONE (the bug)
     expect(oldIsActivated("routine-session-A", PLUGIN_ID)).toBe(false);
 
-    // Tool call from session A now fails because activation was wiped
     const out = await sessionContext.run({ sessionId: "routine-session-A" }, () =>
       delegate("index_scan", {}),
     );
-    expect(out.isError).toBe(true); // proves the old flat-Set approach was broken
+    expect(out.isError).toBe(true);
     expect(call).not.toHaveBeenCalled();
   });
 });
@@ -339,13 +292,7 @@ describe("end-to-end: raw plugin value survives manifest → server → host →
   });
 });
 
-/**
- * The MCP App TRIGGER. A plugin's tool handler declares "render this card with my
- * result" with the STANDARD MCP Apps tool-result extension — the same
- * `_meta.ui.resourceUri` an external MCP server puts on its CallToolResult — and the
- * delegate lifts it onto the wire. Before this, `_meta.ui` was never populated on the
- * plugin arm, so no first-party plugin could make a card render at all.
- */
+/** Lift declared tool-result UI metadata onto the wire so plugin tools can render their own cards. */
 const CARD_URI = `ui://${PLUGIN_ID}/note.html`;
 const DECLARED = new Set([CARD_URI]);
 
@@ -379,7 +326,7 @@ describe("pluginRuntimeToolDelegate — MCP App card trigger (_meta.ui)", () => 
       DECLARED,
     );
     const out = await delegate("notes_read", {});
-    // The `_meta` envelope never leaks into what the model reads or into rawResult.
+    // UI metadata stays outside model-facing text and raw result data.
     expect(out.content[0].text).toBe(JSON.stringify({ note: "hello" }, null, 2));
     expect(out._meta?.[RAW_RESULT_META]).toEqual({ note: "hello" });
   });
@@ -405,8 +352,6 @@ describe("pluginRuntimeToolDelegate — MCP App card trigger (_meta.ui)", () => 
     const delegate = pluginRuntimeToolDelegate(
       fakeRuntime({ call: vi.fn(async () => ({ _meta: { ui: { resourceUri: CARD_URI } } })) }),
       PLUGIN_ID,
-      // no declared set passed — the loopback manager passes none for a plugin
-      // whose manifest declares no uiResources[]
     );
     const out = await delegate("notes_read", {});
     expect(out._meta?.ui).toBeUndefined();
@@ -421,7 +366,7 @@ describe("pluginRuntimeToolDelegate — MCP App card trigger (_meta.ui)", () => 
     );
     const out = await delegate("notes_read", {});
     expect(out._meta?.ui).toBeUndefined();
-    expect(out._meta?.[RAW_RESULT_META]).toBe(value); // same reference, not a copy
+    expect(out._meta?.[RAW_RESULT_META]).toBe(value);
   });
 
   it("a malformed _meta.ui (no resourceUri) yields no card and leaves the value alone", () => {
@@ -452,13 +397,12 @@ describe("end-to-end: a plugin tool result renders a card (delegate → server �
 
     const result = await registry.findByName("notes_read")!.execute({ q: "x" }, {} as never);
     expect(result.isError).toBe(false);
-    // serverId is stamped by the host from the plugin's own id — a plugin can never
-    // point a card at another server's namespace.
+    // Host-derived server ids prevent plugins from selecting another card namespace.
     expect(result.metadata?.uiPayload).toEqual({
       serverId: PLUGIN_ID,
       generationId: "test-generation",
       resourceUri: CARD_URI,
-      slot: "chat", // default when the plugin declares no slot
+      slot: "chat",
       height: undefined,
       title: undefined,
     });

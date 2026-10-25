@@ -1,14 +1,4 @@
-/**
- * Phase 5 hook tests — use-chat-state + sibling hooks.
- *
- * Unit tests for the domain hooks extracted from App.tsx.
- * Focuses on the pieces most at risk of regressing:
- *   - use-chat-state subscribes on mount, unsubs on unmount, no double-subscribe
- *   - use-context-budget arithmetic is deterministic
- *   - use-cost-estimate memo invariants
- *   - use-sessions streaming guard on load
- *   - use-starred toggle semantics
- */
+// Cover hook subscription lifetimes, context arithmetic and cost estimation independently of the app shell.
 import "../setup.js";
 import { describe, it, expect, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
@@ -200,7 +190,6 @@ describe("useChatState", () => {
     });
     expect(result.current.entries.some((entry) => entry.kind === "permission_review")).toBe(true);
 
-    // An explicit session swap replaces the whole transcript.
     act(() => {
       result.current.applyLoadedSession([{ kind: "user", text: "loaded session" }]);
     });
@@ -224,7 +213,7 @@ describe("useChatState", () => {
       });
     });
 
-    // A late initial-session hydration loses to live entries — including the verdict.
+    // Live entries and verdicts outrank late initial-session hydration.
     act(() => {
       result.current.applyInitialSession([{ kind: "user", text: "ignored initial session" }]);
     });
@@ -249,7 +238,6 @@ describe("useChatState", () => {
       });
     });
 
-    // Rewind keeps whatever survives the cut — nothing is erased out of band.
     act(() => {
       result.current.truncateToEntry(0);
     });
@@ -380,8 +368,7 @@ describe("useChatState", () => {
       });
     });
 
-    // The intent of this test is the checkpoint payload; context usage is
-    // updated only when the engine includes `estimatedAfter`.
+    // Context usage changes only when checkpoint payloads include estimatedAfter.
     await waitFor(() => {
       const checkpoint = result.current.entries.findLast((e) => e.kind === "checkpoint");
       expect(checkpoint).toMatchObject({
@@ -423,7 +410,6 @@ describe("useChatState", () => {
     const { unmount } = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
 
     unmount();
-    // Emit after unmount — aliveRef should swallow it with no setState.
     act(() => {
       emitChatStream({ type: "text_delta", text: "late" });
       emitChatStream({ type: "reasoning_delta", text: "late" });
@@ -438,9 +424,7 @@ describe("useChatState", () => {
   });
 
   it("guidance_injected appends a user bubble with injectHint='queue' without disturbing streaming assistant", async () => {
-    // 사용자 피드백 (2026-05-15): system entry ("방향 지시 적용:") 대신 일반
-    // user bubble + injectHint="queue" 배지. mid-turn brake-point 의 큐 인입은
-    // 사용자 입력 누적의 자동 발화이므로 user kind 가 mental model 정합.
+    // Queued user input renders as a user bubble with a queue hint, not a system entry.
     const { api, emitChatStream } = makeMockAveApi();
     const { result } = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
 
@@ -455,7 +439,6 @@ describe("useChatState", () => {
       const userEntries = result.current.entries.filter((e) => e.kind === "user") as Array<{ text: string; injectHint?: "queue" | "interrupt" }>;
       expect(userEntries.some((e) => e.text === "더 짧게" && e.injectHint === "queue")).toBe(true);
     });
-    // Streaming assistant entry is preserved — guide is non-interrupting.
     const assistants = result.current.entries.filter((e) => e.kind === "assistant") as Array<{ text: string; streaming?: boolean }>;
     expect(assistants).toHaveLength(1);
     expect(assistants[0].text).toBe("hello");
@@ -463,9 +446,7 @@ describe("useChatState", () => {
   });
 
   it("guidance_injected carries the host row id onto the bubble it draws", async () => {
-    // The bubble a live injection draws must name the same row a reloaded
-    // transcript names, otherwise the actions that address a row work on a
-    // queued message only after a restart.
+    // Live injection and hydrated history must name the same row for actions to work before restart.
     const { api, emitChatStream } = makeMockAveApi();
     const { result } = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
 
@@ -514,16 +495,11 @@ describe("useChatState", () => {
     const { rerender } = renderHook(() => useChatState(api as unknown as AveApi, () => {}));
     rerender();
     rerender();
-    // Same api reference → effect deps unchanged → subscription stays the same one.
     expect(api.onChatStream).toHaveBeenCalledTimes(1);
   });
 });
 
-/**
- * The window the route would resolve to when nothing is declared and the
- * provider reported nothing — read from the one resolver rather than pinned
- * here, so these fixtures cannot drift from the catalog.
- */
+// Use the shared resolver for undeclared provider window defaults.
 const catalogWindow = (model: string): number =>
   resolveModelContextWindow({ vendor: "openai", model }).contextWindow;
 
@@ -541,12 +517,7 @@ describe("useContextBudget (deterministic math)", () => {
   });
 
   it("usedTokens reflects the latest turn_summary's tokensIn", () => {
-    // 2026-05-07 Phase 3: usedTokens 는 더 이상 entries 의 chars/4 누적이
-    // 아니라 *마지막 turn_summary entry 의 tokensIn* (provider report). 같은
-    // turn 안에서 모델 호출 후 turn_summary 가 emit 되면 그 값으로 ring 이
-    // 갱신, compact 후 다음 turn 에는 작은 값이 들어와 자동 감소. 이전
-    // monotonic-growth contract 는 더 이상 보장되지 않으며 (compact 가
-    // 의도적으로 줄임), 이 테스트가 새 contract 를 명시적으로 검증.
+    // Use the latest provider-reported input usage; compaction may legitimately lower it.
     const after10k: ChatEntry[] = [
       { kind: "user", text: "hi" },
       { kind: "assistant", text: "answer" },
@@ -591,7 +562,7 @@ describe("useContextBudget (deterministic math)", () => {
       }),
     ).result.current.usedTokens;
     expect(a).toBe(10_000);
-    expect(b).toBe(5_000); // compact 후 감소가 정상 — Phase 3 의 핵심 동작.
+    expect(b).toBe(5_000); // Compaction may reduce token usage.
   });
 
   it("usedTokens reflects compact context carriers until a live turn summary arrives", () => {
@@ -636,10 +607,7 @@ describe("useContextBudget (deterministic math)", () => {
     expect(b).toBe(6_789);
   });
 
-  // Issue #900 #1 — TPM hint fields (tpmLimit / tpmPct / isTpmOverflow).
-  // Hook 의 새 3 field 가 (a) host TPM default 가 있는 모델 (nano) 에서 노출되고,
-  // (b) 미등록 모델에서는 undefined 로 silent, (c) usedTokens >= tpmLimit
-  // 시 isTpmOverflow 가 true 가 되는지 contract pin.
+  // Per-minute hints exist only with a known limit and become overflowed when usage reaches it.
   it("tpmLimit/tpmPct/isTpmOverflow — gpt-5.4-nano returns numeric values", () => {
     const entries: ChatEntry[] = [
       {
@@ -734,11 +702,7 @@ describe("useCostEstimate (memo invariants)", () => {
 
 describe("useCurrentSession (streaming guard)", () => {
   it("leaves the mid-turn refusal to main and shows nothing when it comes back", async () => {
-    // The hook no longer decides this: the loop it would swap out from under
-    // lives in main, and `chatSessionResume` refuses while that loop is
-    // mid-turn. What must hold here is that a refusal draws NOTHING — an
-    // applied history would be the incoming conversation's messages rendered
-    // over a transcript that is still being written.
+    // A mid-turn resume refusal must leave the active transcript untouched.
     const { api } = makeMockAveApi();
     api.chatSessionResume.mockResolvedValue({ ok: false, error: "streaming-active" });
     const { result } = renderHook(() => useCurrentSession(api as unknown as AveApi));
@@ -917,9 +881,7 @@ describe("useCurrentSession (streaming guard)", () => {
     expect(result.current.currentSessionTitle).toBe("Manual");
     api.chatGetHistory.mockClear();
 
-    // The list is a SEPARATE hook now, so this is structural rather than a
-    // promise: useSessionList holds no session metadata and never reads the
-    // current session, which is why four tiles can share one list.
+    // Shared session lists contain no active-session metadata, allowing multiple tiles to reuse them.
     const list = renderHook(() => useSessionList(api as unknown as AveApi));
     await act(async () => {
       await list.result.current.refreshSessions();
@@ -957,8 +919,6 @@ describe("useCurrentSession (streaming guard)", () => {
 
     await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith("persisted-sess"));
     await waitFor(() => {
-      // Rebuilt rows carry the identity main serialized for them; the claim
-      // here is about which entries were hydrated, not about that identity.
       expect(applyInitial.mock.lastCall?.[0]).toMatchObject([
         { kind: "user", text: "이전 질문" },
         { kind: "assistant", text: "이전 답변", streaming: false, route: undefined, restored: true },
@@ -997,10 +957,7 @@ describe("useCurrentSession (streaming guard)", () => {
     });
   });
 
-  // Routines run on their own loops (routine-engine createConversationLoop),
-  // so the primary loop holds a routine conversation only because the user
-  // opened it there. What a loop holds is what its tile shows; the window's
-  // main-active pointer — which never names a routine — is for an empty loop.
+  // A tile shows its loop's conversation; the primary pointer is only a fallback for an empty loop.
   it("shows the routine conversation the loop already holds instead of the window's main-active session", async () => {
     const { api } = makeMockAveApi({
       currentSession: "routine-sess",
@@ -1157,13 +1114,11 @@ describe("useStarred (toggle semantics)", () => {
       { kind: "user", text: "hi" },
       { kind: "user", text: "next" },
     ];
-    // entry 0 is already starred → remove path.
     await act(async () => {
       await result.current.handleToggleStar(0, entries, "sess-a");
     });
     expect(api.starredRemove).toHaveBeenCalledWith({ id: "star-1" });
 
-    // entry 1 is not starred → add path.
     await act(async () => {
       await result.current.handleToggleStar(1, entries, "sess-a");
     });
@@ -1218,7 +1173,6 @@ describe("useChatState — a turn interrupted by the next send", () => {
     dispatch({ type: "text_delta", streamId: 1, text: "partial answer" });
     act(() => result.current.markLastAssistantInterrupted());
     act(() => result.current.appendUserEntry("second"));
-    // The first turn rejected instead of settling: no done, no error — only the new stream arrives.
     dispatch({ type: "text_delta", streamId: 2, text: "fresh" });
     dispatch({ type: "done", streamId: 2 });
 
@@ -1226,7 +1180,6 @@ describe("useChatState — a turn interrupted by the next send", () => {
     expect(result.current.entries[1]).toMatchObject({ text: "partial answer", interrupted: true, streaming: false });
     expect(result.current.entries[3]).toMatchObject({ text: "fresh", streaming: false });
     expect(result.current.entries[3]).not.toHaveProperty("interrupted");
-    // A straggler from the old stream is dropped, not adopted.
     dispatch({ type: "text_delta", streamId: 1, text: " late" });
     expect(result.current.entries[1]).toMatchObject({ text: "partial answer" });
     expect(result.current.entries).toHaveLength(4);
@@ -1275,7 +1228,6 @@ describe("useChatState — a turn interrupted by the next send", () => {
     expect(result.current.entries.map((e) => e.kind)).toEqual(["user", "tool_group", "user", "assistant"]);
     expect(result.current.entries[3]).toMatchObject({ text: "fresh", streaming: true });
 
-    // The old stream's tool result still arrives — the card must not stay "running".
     dispatch({ type: "tool_end", streamId: 1, name: "slow_tool", groupId: "g1", toolUseId: "t1", result: "aborted" });
     const group = result.current.entries[1] as Extract<typeof result.current.entries[number], { kind: "tool_group" }>;
     expect(group.tools[0]).toMatchObject({ toolUseId: "t1", status: "done" });
@@ -1329,13 +1281,11 @@ describe("useChatState — a turn interrupted by the next send", () => {
     act(() => result.current.appendUserEntry("second"));
     dispatch({ type: "text_delta", streamId: 2, text: "current" });
     act(() => result.current.markLastAssistantInterrupted());
-    // A late frame of stream 1 is not the successor of stream 2.
     dispatch({ type: "text_delta", streamId: 1, text: " late" });
     expect(result.current.entries.map((e) => e.kind)).toEqual(["user", "assistant", "user", "assistant"]);
     expect(result.current.entries[3]).toMatchObject({ text: "current", interrupted: true, streaming: true });
     dispatch({ type: "done", streamId: 2 });
     expect(result.current.entries[3]).toMatchObject({ text: "current", interrupted: true, streaming: false });
-    // The next real turn still renders.
     act(() => result.current.appendUserEntry("third"));
     dispatch({ type: "text_delta", streamId: 3, text: "next" });
     expect(result.current.entries[5]).toMatchObject({ text: "next", streaming: true });
@@ -1347,8 +1297,7 @@ describe("useChatState — a turn interrupted by the next send", () => {
     dispatch({ type: "text_delta", streamId: 1, text: "first answer" });
     dispatch({ type: "done", streamId: 1 });
 
-    // handleAsk uses this reset immediately before it appends and sends a new
-    // question. The previous stream can still have a late frame in flight.
+    // Reset ownership before appending the new question; late prior-stream frames may still arrive.
     act(() => result.current.resetStreamAccumulators());
     act(() => result.current.appendUserEntry("second"));
     dispatch({ type: "text_delta", streamId: 1, text: " late" });

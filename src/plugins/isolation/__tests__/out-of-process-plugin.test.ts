@@ -1,54 +1,24 @@
-/**
- * The isolated arm, end to end.
- *
- * The child here is the REAL child — `servePluginChild`, the real
- * `startPluginChildRuntime`, the real `PluginMcpServer`, the real
- * `importPluginFactory` importing a real module off disk — driven over
- * in-memory paired streams instead of a pipe. That is the same substitution
- * `stdio-server-loop`'s own tests make, and it is the only one: everything
- * above the two `PassThrough`s is production code, including the dispatch table
- * assembled from the four group factories.
- *
- * The protocol cases open the session the factory opens once its child
- * exists — `openPluginProtocolSession` over the paired link, with a table
- * bound to a literal envelope — so no spawn is involved. The two refusals the
- * factory makes BEFORE any spawn are exercised on the factory itself, with the
- * module where confinement begins recording its calls.
- *
- * What the confinement half is worth is NOT provable here, and is deliberately
- * not claimed here — `confined-plugin-child.test.ts` spawns a real process for
- * that, because a test that asserts "we called `spawnConfinedChild`" proves
- * wiring and calls it protection.
- */
+/** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
 import { describe, expect, it, vi } from "vitest";
 
-/** Every spawn the factory asked for; the refusal cases expect none. */
 const spawnConfinedChild = vi.hoisted(() => vi.fn());
 vi.mock("../../../permissions/confined-child.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/confined-child.js")>()),
   spawnConfinedChild,
 }));
 
-/**
- * Whether the OS sandbox reads as live. Off, as in every test process, unless a
- * case turns it on; while it is on, ASRT's shared-config registrations are
- * no-ops here, because the spawn they precede is recorded rather than run.
- */
+/** Sandbox liveness is controlled here; shared-config registration is inert because spawns are recorded. */
 const sandbox = vi.hoisted(() => ({ active: false }));
 vi.mock("../../../permissions/asrt-sandbox.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../../permissions/asrt-sandbox.js")>()),
   isAsrtSandboxActive: () => sandbox.active,
+  isPluginWorkerConfinementActive: () => sandbox.active,
   registerWorkerUnixSocketDir: async () => undefined,
   unregisterWorkerUnixSocketDir: async () => undefined,
   cleanupAsrtSandboxAfterCommand: async () => undefined,
 }));
 
-/**
- * The Windows holder grant, recorded rather than made: what was asked for, in
- * what order against the spawn, and a way to report the holder lost. Nothing
- * here touches an ACL; `windows-acl-grant-holder.test.ts` and the my-window
- * measurement own that.
- */
+/** Record grant order and holder loss without changing real access lists. */
 const windowsGrant = vi.hoisted(() => ({
   calls: [] as Array<{ label: string; allowRead: readonly string[]; allowWrite: readonly string[] }>,
   events: [] as string[],
@@ -64,7 +34,7 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", () => ({
         if (!windowsGrant.alive) throw new Error("holder gone");
       },
       onLost: (listener: (reason: Error) => void) => void windowsGrant.lost.push(listener),
-      // Idempotent, as the real one is: every way the child ends calls it.
+      // Grant release must be idempotent across every child termination path.
       release: () => {
         if (windowsGrant.events.at(-1) !== "release") windowsGrant.events.push("release");
       },
@@ -72,11 +42,7 @@ vi.mock("../../../permissions/windows-acl-grant-holder.js", () => ({
   },
 }));
 
-/**
- * A POSIX-shaped throwaway HOME for the cases that pretend to be Windows: the
- * real one would build a `win32` path off a POSIX temp dir and create it
- * relative to the cwd.
- */
+/** Use a synthetic POSIX home when emulating Windows to avoid cwd-relative drive paths. */
 const fakeSandboxHome = vi.hoisted(() => ({ on: false }));
 vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../permissions/sandbox-process-home.js")>();
@@ -93,7 +59,6 @@ vi.mock("../../../permissions/sandbox-process-home.js", async (importOriginal) =
   };
 });
 
-/** What the host transport warned, for the cases that assert a notification was dropped. */
 const transportWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
@@ -123,6 +88,9 @@ import type {
 } from "../../types.js";
 import { servePluginChild } from "../plugin-child-main.js";
 import { createOutOfProcessPluginFactory, PluginSandboxGrantError } from "../out-of-process-plugin.js";
+import { setAveHomePrivacyAtBoot, approveExtensionsWithoutIsolation, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
+import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { createBoundHostApiDispatchTable } from "../bound-host-api-table.js";
 import {
   acceptHostOverLoopback,
@@ -173,13 +141,7 @@ const MANIFEST: PluginManifest = {
   ],
 };
 
-/**
- * A plugin module written to disk, because the child imports one for real.
- *
- * A fake `loadFactory` would skip the exact thing the child had to be changed
- * to make possible: reaching `importPluginFactory` without dragging Electron
- * in. Importing a module off disk is the assertion.
- */
+/** Import a real on-disk plugin module; replacing the loader would bypass the boundary under test. */
 function writePluginModule(): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), "oop-plugin-"));
   const entryPath = join(dir, "plugin.mjs");
@@ -210,20 +172,15 @@ function writePluginModule(): { dir: string; entryPath: string } {
   return { dir, entryPath };
 }
 
-/** Every hostApi member the pilot reaches, plus the ones the harness asserts on. */
 function fakeHostApi(): PluginHostApi & {
   emitted: Array<[string, unknown]>;
   logged: Array<[string, string]>;
-  /** Write a config key and fire the bus, as the real `config.set` path does. */
   setHostConfig: (key: string, value: unknown) => void;
 } {
   const emitted: Array<[string, unknown]> = [];
   const logged: Array<[string, string]> = [];
   const eventHandlers = new Map<string, Set<(data: unknown) => void>>();
-  // The plugin's resolved config, and the every-key wildcard the real change
-  // bus publishes. The host's own snapshot watcher subscribes to `"*"`, so a
-  // fake whose `onChange` ignored its callback would make that watcher
-  // untestable — and a watcher nothing drives is a watcher nothing proves.
+  // The fixture bus must notify wildcard snapshot watchers as the real change bus does.
   const configValues = new Map<string, unknown>([["domains", ["portal.example.com"]]]);
   const configListeners = new Map<string, Set<(value: unknown) => void>>();
   const hostApi = {
@@ -301,7 +258,6 @@ function fakeHostApi(): PluginHostApi & {
   return hostApi;
 }
 
-/** A child served over paired streams, with the host's end of the link. */
 function pairedChild(): {
   child: { link: ChildLink };
   kill: (reason: string) => void;
@@ -316,7 +272,6 @@ function pairedChild(): {
     output: hostToChild,
     terminate: () => service.hostGone(),
     onGone: (handler) => goneHandlers.push(handler),
-    // No process, so nothing can fault.
     onFault: () => undefined,
   };
   return {
@@ -348,18 +303,13 @@ function hostContext(
   };
 }
 
-/** The child's own filesystem envelope, as the production factory derives it. */
+/** Derive the envelope through the production factory. */
 const CONFINEMENT = {
   read: ["/plugins/sampleassistant", "/plugins/sampleassistant/data"],
   write: ["/plugins/sampleassistant/data"],
 };
 
-/**
- * What the factory does once its child exists: open the protocol session over
- * the child's link, with a table bound to the context's hostApi and to
- * {@link CONFINEMENT}. Shaped like a `RuntimePluginFactory` so a case reads
- * the same as the factory case it replaces.
- */
+/** Open the real session bound to this context and envelope after child creation. */
 function sessionFactory(spec: {
   readonly manifest: PluginManifest;
   readonly entryPath: string;
@@ -450,8 +400,7 @@ describe("the pilot, out of process", () => {
       });
       const instance = await factory(hostContext(hostApi));
 
-      // Only the declared tools the plugin actually implements become handlers,
-      // which is the same set `buildMethodMap` derives in-process.
+      // Only declared tools with actual runtime handlers may be published.
       expect(Object.keys(instance.handlers).sort()).toEqual([
         "pilot_echo",
         "pilot_reach_host",
@@ -459,8 +408,7 @@ describe("the pilot, out of process", () => {
       ]);
 
       const echoed = await instance.handlers.pilot_echo!({ text: "hi" });
-      // A STRUCTURED value, not its JSON text: the boundary carries the raw
-      // result, so an object stays an object and a string stays a string.
+      // Preserve structured raw results rather than replace them with JSON text.
       expect(echoed).toEqual({
         payload: { text: "hi" },
         payloadWasAbsent: false,
@@ -468,13 +416,10 @@ describe("the pilot, out of process", () => {
         pluginDataDir: "/plugins/sampleassistant/data",
         configuredDomains: ["portal.example.com"],
       });
-      // An absent payload stays absent across the boundary. MCP carries an
-      // object, so `{}` would arrive where the plugin expects nothing — and
-      // several plugins branch on exactly that difference.
+      // Preserve absent payloads; empty objects can trigger different plugin behavior.
       const bare = (await instance.handlers.pilot_echo!()) as { payloadWasAbsent: boolean };
       expect(bare.payloadWasAbsent).toBe(true);
 
-      // A payload that cannot be an arguments object is refused, not coerced.
       await expect(instance.handlers.pilot_echo!("not-an-object")).rejects.toThrow(
         /payload must be an object or absent/,
       );
@@ -498,12 +443,7 @@ describe("the pilot, out of process", () => {
       await expect(instance.handlers.pilot_reach_host!()).resolves.toBe(
         "the host answered",
       );
-      // The bound instance, not a fresh one: the effect recorder and the effect
-      // gate wrap THIS object in production, so a boundary bound to any other
-      // would record nothing.
-      // An options object and not `undefined`: `callLlm`'s handler always
-      // rebuilds one host-side from the declared fields, and it always carries
-      // the request's own cancellation signal, which the wire never does.
+      // Bind the exact wrapped context.hostApi so effects, permission gates and cancellation stay attached.
       expect(hostApi.callLlm).toHaveBeenCalledWith("say hello", {
         signal: expect.any(AbortSignal),
       });
@@ -552,8 +492,7 @@ describe("the pilot, out of process", () => {
       expect(instance.start).toBeUndefined();
       expect(instance.onPublished).toBeUndefined();
       expect(instance.readUiResource).toBeUndefined();
-      // stop is the host's only hand on the child's lifetime, so it is present
-      // even when the plugin implements none.
+      // Host stop must exist even when the plugin exposes no stop hook.
       expect(typeof instance.stop).toBe("function");
       await instance.stop?.();
     } finally {
@@ -630,9 +569,7 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
 
   it("fails the factory when the child dies before it answers construct", async () => {
     const { child, kill } = pairedChild();
-    // Dies the instant `construct` is written, which is the shape a spawn that
-    // fails on exec takes: the host has sent its first request and there is
-    // nobody left to answer it.
+    // An exec failure can end the child immediately after construct is written.
     const output = new PassThrough();
     output.once("data", () => kill("child exited during startup"));
     const factory = sessionFactory({
@@ -660,15 +597,13 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
         link: child.link,
       });
       const instance = await factory(hostContext(hostApi));
-      // The plugin subscribed in its factory body; the round trip that opens
-      // the host half is not awaited by the contract, so settle it first.
+      // Wait for factory-time subscriptions because their synchronous contract cannot await the round trip.
       await instance.handlers.pilot_echo!({});
       expect(hostApi.onEvent).toHaveBeenCalledWith("host:ping", expect.any(Function));
       expect(unsubscribe).not.toHaveBeenCalled();
 
       kill("child crashed");
-      // The host-side registration is undone even though the child never sent
-      // a release — case 2 of the four ways a two-sided lifetime ends.
+      // Child exit must release host subscriptions without waiting for a child release.
       expect(unsubscribe).toHaveBeenCalledTimes(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });
@@ -678,11 +613,7 @@ describe("a child that dies is a failed plugin, never a hung host", () => {
 
 describe("the host keeps the child's config snapshot current", () => {
   it("re-pushes after a change, so config.get stops answering with the construction value", async () => {
-    // `config.get` is answered in the child from a pushed snapshot. Without a
-    // re-push it answers with whatever the key held when the plugin started —
-    // for the life of the process, with nothing reporting the divergence. The
-    // plugin below subscribes to NOTHING: the member has to be current whether
-    // or not it ever called `config.onChange`.
+    // Repush config even when the plugin never registers a change listener.
     const { dir, entryPath } = writePluginModule();
     try {
       const hostApi = fakeHostApi();
@@ -714,9 +645,7 @@ describe("the host keeps the child's config snapshot current", () => {
   });
 
   it("stops watching when the incarnation ends", async () => {
-    // The watcher is the host's own subscription, not one the plugin opened, so
-    // nothing else releases it. A watcher outliving the incarnation would write
-    // into a closed transport on the next settings edit.
+    // The host-owned snapshot watcher must die with the incarnation.
     const { dir, entryPath } = writePluginModule();
     try {
       const hostApi = fakeHostApi();
@@ -737,9 +666,7 @@ describe("the host keeps the child's config snapshot current", () => {
 });
 
 describe("a message too large to frame fails its call, not the channel", () => {
-  // Past `FRAME_BYTES_MAX` (about 44 MB) but plain JSON, which no byte-payload
-  // limit reaches. Before the writer checked the bound, each of these ended the
-  // channel at the other end's reader and took every pending call with it.
+  // Oversized plain JSON must fail locally without destroying unrelated pending calls.
   const MiB = 1024 * 1024;
   const TOOLS = ["big_result", "read_big_file", "write_big_json", "echo", "events_seen", "log_big"];
   const MODULE = `export const createPlugin = async (context) => {
@@ -802,7 +729,7 @@ describe("a message too large to frame fails its call, not the channel", () => {
       await vi.waitFor(() => expect(hostApi.onEvent).toHaveBeenCalledWith("board.changed", expect.any(Function)));
       const deliver = vi.mocked(hostApi.onEvent).mock.calls.find(([type]) => type === "board.changed")![1];
       transportWarnings.length = 0;
-      // The host's event bus calls this like any listener; it must not throw.
+      // Host bus listeners must not throw into the event emitter.
       expect(() => deliver({ blob: "x".repeat(46 * MiB) })).not.toThrow();
       deliver({ small: true });
       await vi.waitFor(async () =>
@@ -911,7 +838,6 @@ describe("a message too large to frame fails its call, not the channel", () => {
   });
 });
 
-/** Write `source` as a plugin module and return where it is. */
 function writeModule(prefix: string, source: string): { dir: string; entryPath: string } {
   const dir = mkdtempSync(join(tmpdir(), prefix));
   const entryPath = join(dir, "plugin.mjs");
@@ -919,7 +845,6 @@ function writeModule(prefix: string, source: string): { dir: string; entryPath: 
   return { dir, entryPath };
 }
 
-/** Every frame the host writes to `link`, decoded as the child decodes it. */
 function hostFrames(link: ChildLink): Array<Record<string, unknown>> {
   const frames: Array<Record<string, unknown>> = [];
   const decoder = new StdioFrameDecoder(FRAME_BYTES_MAX);
@@ -927,10 +852,7 @@ function hostFrames(link: ChildLink): Array<Record<string, unknown>> {
   return frames;
 }
 
-/**
- * A child written by hand: it answers `construct` with `result` and nothing
- * else, which is how a plugin that speaks the protocol itself would answer.
- */
+/** Answer only construct to model a plugin implementing the protocol itself. */
 function scriptedChild(result: Record<string, unknown>): {
   child: { link: ChildLink };
   terminated: () => string | undefined;
@@ -968,11 +890,7 @@ const CONSTRUCTED = {
   lifecycleHooks: [],
 } as const;
 
-/**
- * Real, writable roots for the refusal cases, so a factory that skipped its
- * protocol check would get as far as the spawn — and be recorded there —
- * instead of failing earlier on a root it cannot create.
- */
+/** Use writable roots so skipping protocol validation would reach and record a spawn. */
 function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () => void } {
   const root = mkdtempSync(join(tmpdir(), "oop-plugin-refusal-"));
   return {
@@ -982,6 +900,31 @@ function spawnableRoots(): { context: Partial<PluginRuntimeContext>; remove: () 
 }
 
 describe("construct negotiates the host protocol", () => {
+  it("refuses a factory start before home privacy approval and reaches the child spawn after approval", async () => {
+    const roots = spawnableRoots();
+    const originalPlatform = process.platform;
+    spawnConfinedChild.mockReset();
+    setProcessPlatform("win32");
+    setPluginWorkerConfinementRequestedAtBoot(true);
+    setAveHomePrivacyAtBoot({ enforcement: "none", home: roots.context.pluginRoot!, category: "read-back-failed", reason: "fixture" });
+    const factory = createOutOfProcessPluginFactory({ manifest: MANIFEST,
+      launch: { kind: "entry", entryPath: join(roots.context.pluginRoot!, "never-imported.mjs") } });
+    try {
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("Settings > Permissions");
+      expect(spawnConfinedChild).not.toHaveBeenCalled();
+      approveExtensionsWithoutIsolation();
+      spawnConfinedChild.mockRejectedValueOnce(new Error("fixture spawn reached"));
+      await expect(factory(hostContext(fakeHostApi(), roots.context))).rejects.toThrow("fixture spawn reached");
+      expect(spawnConfinedChild).toHaveBeenCalledTimes(1);
+    } finally {
+      _resetAveHomePrivacyForTest();
+      __resetSandboxRequestedAtBootForTest();
+      setProcessPlatform(originalPlatform);
+      spawnConfinedChild.mockReset();
+      roots.remove();
+    }
+  });
+
   it("refuses an undeclared protocol before spawning a child", async () => {
     const roots = spawnableRoots();
     spawnConfinedChild.mockClear();
@@ -1020,7 +963,6 @@ describe("construct negotiates the host protocol", () => {
     const { dir, entryPath } = writePluginModule();
     const { child } = pairedChild();
     const sent = hostFrames(child.link);
-    // A host build without the optional `hostFetch` member.
     const hostApi = fakeHostApi();
     delete (hostApi as { hostFetch?: unknown }).hostFetch;
     try {
@@ -1035,11 +977,10 @@ describe("construct negotiates the host protocol", () => {
         hostProtocol: { version: string; capabilities: string[] };
       };
       expect(hostProtocol.version).toBe("3");
-      // Read off the table the dispatcher serves: advertised is answered, and
-      // a member this build lacks is not advertised.
+      // Advertise capabilities from the actual bound table.
       expect(hostProtocol.capabilities).toContain("ave/host/callLlm");
       expect(hostProtocol.capabilities).not.toContain("ave/host/hostFetch");
-      // Child-local members never cross, so they are not capabilities.
+      // Child-local members are not wire capabilities.
       expect(hostProtocol.capabilities).not.toContain("ave/host/config/get");
       expect(hostProtocol.capabilities).toEqual([...hostProtocol.capabilities].sort());
       await instance.stop?.();
@@ -1097,11 +1038,7 @@ describe("construct negotiates the host protocol", () => {
   });
 });
 
-/**
- * The two launches, as the spawn receives them (docs/design/plugin-hostapi-protocol.md
- * §9.7 P3, decision 36). Recorded, not run: what a real wrap does with them is
- * `confined-plugin-child.test.ts`'s.
- */
+/** Record both launch forms as received by spawn; live confinement is measured separately. */
 describe("the factory's launch reaches the spawn as decided", () => {
   const PROCESS_MANIFEST: PluginManifest = {
     id: "process-kit",
@@ -1135,10 +1072,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
     return Promise.resolve(factory(hostContext(fakeHostApi(), roots.context))).then(() => undefined, (error: unknown) => error);
   }
 
-  // The two POSIX launch cases below do not run on Windows: there a process
-  // launch is refused before any of this, which is asserted on every platform,
-  // Windows included, by "refuses a process launch on Windows even with the
-  // sandbox on" below.
+  // POSIX process launches are not measured on Windows; every platform still checks the Windows refusal.
   it.skipIf(process.platform === "win32")(
     "spawns /usr/bin/env inside the wrap with the declared pairs, then the host-owned pair, then the command",
     async () => {
@@ -1171,12 +1105,10 @@ describe("the factory's launch reaches the spawn as decided", () => {
           join(root, "bin", "plugin"),
           "--x=1",
         ]);
-        // No manifest byte reaches the wrapper's environment: the outer shell
-        // reads its own environment before the sandbox command runs.
+        // Keep manifest bytes out of wrapper environment because the outer shell reads it before confinement.
         expect(spec.baseEnv).toEqual(buildSafeChildEnv());
         expect(Object.keys(spec.extraEnv).sort()).toEqual(sandboxHomeKeys);
-        // Every other plugin's directories are refused, and the child's own —
-        // its root and data directory — are the re-allows inside that deny.
+        // Deny sibling plugin directories while reallowing only this child root and data.
         const reach = spawnConfinedChild.mock.calls[0]![0] as {
           grantMode: string;
           denyPluginsRoot?: boolean;
@@ -1260,15 +1192,7 @@ describe("the factory's launch reaches the spawn as decided", () => {
   });
 });
 
-/**
- * Windows: `srt-win exec` takes denies only, so the child's own directories
- * are an ACL grant to the shared `srt-sandbox` account, held against a holder
- * process for exactly the child's lifetime (§9.8 A2, decision 64). These cases
- * pin the wiring — what is granted, that it precedes the spawn, that every way
- * the child ends releases it, that a lost holder stops the child, and that a
- * grant reaching a neighbour is refused. Whether the ACL then admits the child
- * is the my-window measurement's question, not this file's.
- */
+/** Hold Windows grants against the holder process and record ordering; this suite does not measure effective ACLs. */
 describe("on Windows a confined child holds a grant on its own directories for exactly its lifetime", () => {
   type FakeChild = EventEmitter & {
     pid: number | undefined;
@@ -1306,11 +1230,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     child.emit("close", code, signal);
   }
 
-  /**
-   * An `<AVE_HOME>` laid out as production lays it out: the child runs from
-   * its generation under `plugins/.cache/<id>/` and keeps its data, sockets and
-   * worker run dir under `plugins/<id>/`.
-   */
+  /** Match production layout: immutable generation roots are separate from writable runtime roots. */
   function aveLayout(pluginRootFor: (pluginsRoot: string) => string = (p) => join(p, ".cache", PLUGIN_ID, "g1")) {
     const home = mkdtempSync(join(tmpdir(), "oop-win-grant-"));
     const pluginsRoot = join(home, "plugins");
@@ -1383,19 +1303,14 @@ describe("on Windows a confined child holds a grant on its own directories for e
       const home = grant.allowRead.at(-1)!;
       expect(home).toContain("oop-fake-sandbox-home-");
       expect([...grant.allowRead].sort()).toEqual([pluginRoot, pluginDataDir, sockets, run, home].sort());
-      // Write is the envelope's write and the HOME: never the generation, and
-      // never the worker run dir the host binds into.
+      // Write grants cover the envelope and home, never generation or host worker roots.
       expect([...grant.allowWrite].sort()).toEqual([pluginDataDir, sockets, home].sort());
       expect(windowsGrant.events).toEqual(["grant", "spawn", "release"]);
     });
   });
 
   it("grants only the outermost envelope roots: a root nested in another is never named to the ACL", async () => {
-    // A runtime root that holds `data/`, `sockets/` and `run/` makes those three
-    // nested read roots. Each is a path below a root the grant already covers by
-    // inheritance, and naming one would stamp the ACE on whatever that path
-    // resolves to at grant time — which, for anything below a root a previous
-    // child could write, need not be the directory the host made.
+    // Inherited root grants must not be restamped on child-writable descendants that may have been replaced.
     const layout = aveLayout((pluginsRoot) => join(pluginsRoot, PLUGIN_ID));
     await asWindows(layout, async () => {
       spawnConfinedChild.mockImplementation(async () => {
@@ -1495,13 +1410,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     );
   });
 
-  /**
-   * The sandboxed Windows channel (`child-loopback-link.ts`): the fake child
-   * runs the REAL child half — `acceptHostOverLoopback` announcing on the
-   * fake's stdout, then `servePluginChild` over the accepted socket — so the
-   * host's half is exercised against what the child actually does. Whether
-   * srt-win admits the connection is the my-window measurement's question.
-   */
+  /** Use the real child loopback implementation to exercise the host handshake; this test does not prove OS sandbox admission. */
   function loopbackChild(opts: { readonly onAnnounce?: (port: number) => void } = {}) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
@@ -1551,8 +1460,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
       expect(spec.args[3]).toBe(CHILD_LOOPBACK_TRANSPORT_ARG);
       const mode = parseChildLaunchArgs(spec.args.slice(3));
       if (mode.transport !== "loopback") throw new Error("expected the loopback launch");
-      // The throwaway HOME the wrap could not deliver travels in the argument;
-      // what srt-win sets itself, or only the command line can carry, does not.
+      // Pass the intended temporary home through the child argument because the wrapper does not inherit it.
       expect(mode.env.HOME).toBe(spec.extraEnv.HOME);
       for (const name of ["PATH", "PATHEXT", "TMPDIR", "ELECTRON_RUN_AS_NODE"]) {
         expect(mode.env).not.toHaveProperty(name);
@@ -1607,14 +1515,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     });
   });
 
-  /**
-   * A child that runs the real child half and serves the plugin, but whose
-   * process is dead — `when` says how far its death got: `"before-return"`
-   * exits and emits `exit` before the launch hands it back; `"at-accept"` has
-   * its exit code set the moment it accepts the host, its `exit` not yet
-   * delivered. Either way its listener and channel stay up, as a process tree
-   * that outlives the one the host watches would leave them.
-   */
+  /** Simulate process death before return or at acceptance while descendant listener and channel remain alive. */
   function deadLoopbackChild(when: "before-return" | "at-accept", served: { count: number }) {
     return async (spec: { args: string[] }) => {
       windowsGrant.events.push("spawn");
@@ -1677,9 +1578,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
   });
 
   it("runs the real child entry over loopback: the argument's environment applies, stdin's end is not the host leaving, and the channel's end is", async () => {
-    // The production child, as a real process from the same binary, launched
-    // the way the sandboxed Windows spawn launches it — minus srt-win, which
-    // this host does not have. Its stdin ends at once, as srt-win's does.
+    // Use a real child with ended stdin to reproduce the Windows wrapper transport without requiring that wrapper.
     const dir = mkdtempSync(join(tmpdir(), "oop-loopback-real-"));
     const entryPath = join(dir, "plugin.mjs");
     writeFileSync(
@@ -1698,8 +1597,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
     const exited = new Promise<string>((resolve) => child.once("exit", (code) => resolve(`code=${String(code)}`)));
     try {
       const socket = await connectToAnnouncedChild({ stdout: child.stdout!, exited, timeoutMs: 20_000 });
-      // Windows resets a loopback connection whose peer exits; the production
-      // link logs that, and so must this one rather than throw it.
+      // Windows resets loopback when the peer exits; observe the error instead of throwing it.
       socket.on("error", () => undefined);
       const link: ChildLink = {
         input: socket,
@@ -1748,15 +1646,7 @@ describe("on Windows a confined child holds a grant on its own directories for e
   });
 });
 
-/**
- * The way out for a `userChosenDirectory` value stored as `~/…` (§9.8 A1, "The
- * resolver's guidance"; decision 54). The host expands `~` nowhere, so the
- * grant is refused at spawn and the plugin does not load; the refusal names
- * the one action that helps, and both ways out load. A restart invokes the
- * factory again with the incarnation's config, which is what the second and
- * third invocations below are. The spawn is the real one, unwrapped as the
- * sandbox reads off here, so "loads" means a child answered a tool call.
- */
+/** Stored ~/ paths are refused at spawn; clearing the value or approving an absolute directory permits a fresh incarnation. */
 describe("a stored '~/…' directory value: refused with guidance, and both ways out load", () => {
   it("fails construction with no child, then loads from an approved absolute path, then with the value cleared", async () => {
     const actual = await vi.importActual<typeof import("../../../permissions/confined-child.js")>(
@@ -1799,9 +1689,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
       onChildSpawned: (confinement) => confinements.push(confinement),
     });
     const hostApi = fakeHostApi();
-    // The stored value as both halves of an incarnation hold it: the host's
-    // `config.get`, which the envelope derivation reads, and the construction
-    // snapshot the child is given.
+    // Keep host config and child construction snapshots aligned for the same incarnation.
     const storeAndContext = (dataDirectory: string): PluginRuntimeContext => {
       hostApi.setHostConfig("dataDirectory", dataDirectory);
       return hostContext(hostApi, {
@@ -1839,8 +1727,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
       loaded.push(cleared);
       await expect(cleared.handlers.cache_where!()).resolves.toBe("");
       expect(spawnConfinedChild).toHaveBeenCalledTimes(2);
-      // The approved value was granted to its child; with the value cleared no
-      // grant was asked for, so the approved directory is not writable.
+      // Clearing config removes the requested grant; only the approved-value child may write the directory.
       const writes = spawnConfinedChild.mock.calls.map(([spec]) => (spec as { allowWrite?: readonly string[] }).allowWrite ?? []);
       expect(writes[0]).toContain(approved);
       expect(writes[1]).not.toContain(approved);
@@ -1972,9 +1859,7 @@ describe("onShutdown runs through ave/instance/shutdown", () => {
       const outcome = expect(shutdown).rejects.toThrow(
         `exceeded ${String(pluginShutdownHandlerMs + pluginShutdownKillGraceMs)}ms`,
       );
-      // The host's shutdown runner times the handler out at this bound. The
-      // child must still be alive and the request still open here, or the
-      // transport's error would race the runner's for the report.
+      // Keep child and request alive beyond the handler deadline so transport failure cannot replace the timeout diagnostic.
       await vi.advanceTimersByTimeAsync(pluginShutdownHandlerMs);
       expect(settled).toBe(false);
       expect(terminate).not.toHaveBeenCalled();

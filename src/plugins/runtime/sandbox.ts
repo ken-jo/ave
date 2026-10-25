@@ -1,7 +1,3 @@
-/**
- * Sandbox — plugin entry-path resolution, data-dir provisioning, noop HostApi.
- */
-
 import { mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, relative, resolve } from "node:path";
@@ -21,25 +17,9 @@ import {
 import { resolvePluginDataRoot } from "../plugin-storage-containment.js";
 const log = createLogger("sandbox");
 
-/**
- * App-visible tool safety model.
- *
- * The app-visible tool allowlist is a structural renderer allowlist, not a risk
- * classifier: mutating-looking names are accepted at manifest load, but renderer
- * calls are re-checked against the owning manifest at runtime. App-only actions
- * other than auth status polling require a fresh browser user activation before
- * the host invokes the handler, and model-visible tools still use the normal
- * executor permission/audit path.
- */
+/** App visibility is an allowlist, not risk classification; model tools still require executor permission and audit. */
 
-/**
- * Resolve a plugin's manifest `entry` path relative to the plugin root.
- *
- * Security: rejects absolute paths and any relative path that escapes the
- * plugin directory via `..` traversal.
- *
- * Exported for unit testing.
- */
+/** Reject absolute and traversing entry paths before loading plugin code. */
 export function resolvePluginEntryPath(pluginRoot: string, entry: string,
 ): string {
   if (isAbsolute(entry)) {
@@ -60,15 +40,7 @@ export function resolvePluginEntryPath(pluginRoot: string, entry: string,
   return resolved;
 }
 
-/**
- * Resolve a plugin entry path.
- *
- * Always strict containment — every plugin install (admin / user /
- * local-dev) lives physically inside `pluginRoot`. The pre-2026-05
- * `AVE_DEV=1` sibling-repo escape (used by the now-removed `dev:link`
- * script) is gone. `hostRoot` is retained as a parameter for API
- * symmetry with the caller in `runtime/index.ts` but is no longer used.
- */
+/** Every install source requires containment; installSource does not relax the path boundary. */
 export function resolveEntryPath(
   pluginRoot: string,
   entry: string,
@@ -77,10 +49,7 @@ export function resolveEntryPath(
   return resolvePluginEntryPath(pluginRoot, entry);
 }
 
-/**
- * Resolve symlinks / 8.3 short-names before constructing a file:// URL.
- * Falls back to the original path if realpathSync throws.
- */
+/** Canonicalize symlinks and Windows short names before forming import URLs; retain the original on resolution failure. */
 export function resolveRealEntryPath(entryPath: string): string {
   try {
     return realpathSync(entryPath);
@@ -89,20 +58,7 @@ export function resolveRealEntryPath(entryPath: string): string {
   }
 }
 
-
-/**
- * Where the plugin's writable data directory IS: `<pluginsRoot>/<pluginId>/data/`,
- * or `<pluginRoot>/data` when `pluginsRoot` is not configured (test harnesses,
- * isolated installs).
- *
- * Pure. Separate from {@link ensurePluginDataDir} because most callers only
- * need to know the path, and the ones that CREATE it are a closed set: plugin
- * load and prepared-artifact activation, both of which run inside the
- * generation lifecycle. Creating it anywhere else — notably per storage
- * request — puts a `mkdir` in the window where an install swap has the plugin
- * root renamed aside, which is how an empty `data/` used to appear at a
- * promoted root and wedge the carry.
- */
+/** Resolve without creating on per-request paths; mkdir during a swap can invent conflicting state. */
 export function resolvePluginDataDir(
   pluginId: string,
   pluginRoot: string,
@@ -112,16 +68,7 @@ export function resolvePluginDataDir(
   return resolve(baseRoot, pluginId, PLUGIN_DATA_DIR_NAME);
 }
 
-/**
- * The plugin's host-only storage directory beside `dataDir`
- * (`PLUGIN_HOST_STORAGE_DIR_NAME`), created here only for a plugin with no
- * state yet. A plugin whose `data/` already holds state and that has no
- * `storage/` predates it: its storage view is in `data/`, and only the boot
- * migration (`migratePluginHostStorage`, before any confined process runs)
- * may build it. Creating an empty one here would make every later boot treat
- * the plugin as migrated and the stored values as gone, so this refuses
- * instead, and the next boot migrates.
- */
+/** Create storage only for fresh state; existing data without storage requires boot migration rather than empty replacement. */
 function ensurePluginHostStorageDir(pluginId: string, dataDir: string, dataCreated: boolean): void {
   const storageDir = resolvePluginHostStorageDir(dataDir);
   try {
@@ -143,20 +90,14 @@ function ensurePluginHostStorageDir(pluginId: string, dataDir: string, dataCreat
   mkdirSync(storageDir, { mode: 0o700 });
 }
 
-/**
- * Compute and ensure the plugin's writable data directory, and beside it the
- * plugin's socket directory and its host-only storage directory.
- */
+/** Provision data, socket and host-only storage directories together at load. */
 export function ensurePluginDataDir(
   pluginId: string,
   pluginRoot: string,
   pluginsRoot: string | undefined,
 ): string {
   const dataDir = resolvePluginDataDir(pluginId, pluginRoot, pluginsRoot);
-  // Created when missing, and otherwise held to the one data-root check: a
-  // root a confined plugin replaced with a link is refused here, at load,
-  // rather than handed to the next spawn as a write grant on the link's target.
-  // `mkdirSync` cannot be the check — `recursive` accepts a link to a directory.
+  // Verify an existing root itself; recursive mkdir accepts symlinks and cannot establish identity.
   let dataCreated = false;
   try {
     resolvePluginDataRoot(`plugin '${pluginId}'`, dataDir);
@@ -166,29 +107,12 @@ export function ensurePluginDataDir(
     dataCreated = true;
   }
   ensurePluginHostStorageDir(pluginId, dataDir, dataCreated);
-  // The socket directory beside it, made HERE because this is the one function
-  // that owns "bring this plugin's directories into existence" — and because
-  // the alternative, making it where the context is built, would put a `mkdir`
-  // in a pure builder and fail a caller that only wanted the paths.
-  //
-  // `0o700`: a socket in a directory others can write can be replaced between
-  // the plugin's `unlink` and its `listen`, and whatever connects afterwards
-  // would be talking to whoever won that race.
-  //
-  // A confined child does not depend on this call — its spawn materialises
-  // every directory in the envelope, this one included. It is what an
-  // IN-PROCESS plugin gets, so both kinds find the same layout.
+  // Provision sockets at load so all execution arms receive the same layout.
   mkdirSync(resolvePluginSocketDir(dataDir), { recursive: true, mode: 0o700 });
   return dataDir;
 }
 
-
-
-/**
- * Noop HostApi — test harnesses must inject this explicitly.
- * `storage` is real so plugins can read/write their own data even in
- * test/noop contexts.
- */
+/** Tests must inject the inert HostApi explicitly; storage still uses real guarded operations. */
 export function createNoopHostApi(
   pluginId: string,
   pluginDataDir: string,
@@ -216,8 +140,7 @@ export function createNoopHostApi(
     openExternalUrl: async () => {
       throw new Error("openExternalUrl not available in noop context");
     },
-    // Fail-safe to false (no corp network) — a probe should never throw the
-    // caller's flow; matches hasRoutineBySource's graceful noop default.
+    // The inert private-network probe returns false without disrupting caller flow.
     probePrivateHost: async () => false,
     authRedirect: {
       open: async () => {
@@ -263,16 +186,10 @@ export function createNoopHostApi(
       reason: "loop_unavailable",
       source: typeof spec?.source === "string" ? spec.source : "",
     }),
-    // No routines SOT in a noop context — no routine can match any source.
     hasRoutineBySource: async () => false,
-    // A noop host has no board to post to. Refusing with the ordinary
-    // `kind_not_granted` envelope (rather than throwing) keeps a plugin's
-    // proposal path identical in a test harness and in the app: it branches on
-    // `status` either way.
+    // Without a board, return the ordinary proposal refusal status rather than throw.
     proposeWork: async (input) => ({ status: "kind_not_granted", kind: input.kind }),
     withdrawWorkProposal: async () => false,
-    // Nor an alert pipeline: the same envelope a plugin sees for a kind it did
-    // not declare.
     raiseAlert: async (input) => ({ status: "kind_not_granted", kind: input.kind }),
     withdrawAlert: async () => false,
     agentApproval: {
@@ -282,7 +199,6 @@ export function createNoopHostApi(
   };
 }
 
-/** Explicit factory adapter for isolated runtime test harnesses. */
 export function createNoopHostApiForTests(
   pluginId: string,
   _manifest: PluginManifest,
@@ -291,15 +207,11 @@ export function createNoopHostApiForTests(
   return createNoopHostApi(pluginId, pluginDataDir, createNodeSecretEncryption());
 }
 
-/**
- * Build the plugin context object passed to createPlugin().
- */
 export function buildPluginContext(opts: {
   pluginId: string;
   pluginRoot: string;
   hostRoot: string;
   pluginDataDir: string;
-  // #885 v6 — reads only `config`/`configSchema` (shared by legacy + normalized).
   manifest: Pick<PluginManifest, "config" | "configSchema">;
   configOverrides: Record<string, Record<string, unknown>>;
   hostApi: PluginHostApi;
@@ -309,25 +221,12 @@ export function buildPluginContext(opts: {
     pluginRoot: opts.pluginRoot,
     hostRoot: opts.hostRoot,
     pluginDataDir: opts.pluginDataDir,
-    // RESOLVED, not created — `ensurePluginDataDir` makes it, and the confined
-    // spawn makes it again from the envelope. Creating it here instead would
-    // put a `mkdir` inside a pure context builder, and a caller that wanted
-    // only the shape of a context would fail on a filesystem it never touched.
+    // Build context paths without creating them; only load provisioning owns filesystem mutation.
     pluginSocketDir: resolvePluginSocketDir(opts.pluginDataDir),
-    // READ HERE rather than passed in, and read with the same two functions
-    // every other host reader uses. This builder runs in the main process, so
-    // both answer with the real values; the out-of-process path carries what
-    // this produced rather than recomputing it in the child, where `homedir()`
-    // would answer with the sandbox's throwaway.
+    // Read real user/home paths in the host; a confined child would derive throwaway values.
     userHome: homedir(),
     aveHome: aveHome(),
-    // configSchema defaults backfill keys missing from `manifest.config`
-    // and the override layers — without this, plugins that document a
-    // `default` for a config key would
-    // see `undefined` whenever the user hasn't explicitly set the key,
-    // forcing every plugin to reimplement default-handling. Override
-    // precedence is preserved: plugin-specific > wildcard > manifest.config
-    // > schema defaults.
+    // Apply precedence: saved plugin values, host wildcard, manifest config, schema defaults.
     config: applyConfigDefaults(opts.manifest.configSchema, {
       ...(opts.manifest.config ?? {}),
       ...(opts.configOverrides["*"] ?? {}),

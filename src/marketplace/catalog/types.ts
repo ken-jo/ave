@@ -1,27 +1,11 @@
-/**
- * Marketplace file formats (design §4, §5, §10.4).
- *
- * These are the shapes after validation (validate.ts). The JSON Schemas in
- * `schemas/marketplace/` describe the same files for authors and CI; the
- * plugin authority fields are the manifest's own subschemas, referenced
- * rather than restated, so one definition covers `plugin.json` and the
- * descriptor that copies it.
- */
+/** Validated catalog shapes share plugin authority schemas with manifests. */
 import type { RetirementSuccessors } from "../../shared/alerts-types.js";
 import type { PluginSandboxDeclaration } from "../../plugins/public-contract.js";
 import type { BundledMcpAuth, StaticBundledMcpServer } from "../../mcp/portable-mcp.js";
 import type { RoutineSchedule } from "../../shared/routines-types.js";
 
-/**
- * The one index file of a marketplace repository or folder (design §4). Its
- * format version is inside it as `schemaVersion`; there is no second name.
- */
 export const MARKETPLACE_INDEX_FILE = "marketplace.json";
 
-/**
- * The descriptor file in every package directory (design §4): the package's
- * kind, name and version, read by the marketplace and never installed.
- */
 export const MARKETPLACE_DESCRIPTOR_FILE = "ave-package.json";
 
 export const PACKAGE_KINDS = [
@@ -41,7 +25,6 @@ export type PackageKind = (typeof PACKAGE_KINDS)[number];
 
 const PACKAGE_NAME_RE = /^(?!.*--)[a-z][a-z0-9-]*[a-z0-9]$/u;
 
-/** A package name as the descriptor schema defines it (`definitions.packageName`). */
 export function isPackageName(value: unknown): value is string {
   return typeof value === "string" && value.length >= 3 && value.length <= 64 && PACKAGE_NAME_RE.test(value);
 }
@@ -89,15 +72,9 @@ export interface IndexVersion {
   publishedAt: string;
 }
 
-/**
- * The all-zero object id. A version listed at it is a legacy grant pin
- * (design §16.3): digest evidence that keeps an existing install's host-secret
- * grant, with a release sha256 and no git tree. It is not a commit, so it must
- * never reach git (`git ls-tree 000…0` fails with "not a tree object").
- */
+/** Zero object ids retain legacy grant evidence only; they are not trees and must never reach git. */
 export const NULL_OBJECT_ID = "0".repeat(40);
 
-/** Whether `version` names a git tree; false for a legacy grant pin. */
 export function hasVersionTree(version: Pick<IndexVersion, "commit">): boolean {
   return version.commit !== NULL_OBJECT_ID;
 }
@@ -115,10 +92,7 @@ export interface AgentPluginComponents {
   hooks: Array<{ event: string; matcher?: string; command: string[]; env?: Record<string, string>; timeoutMs: number; digest: string }>;
 }
 
-/**
- * The fields of `extensions["ai.agent-connector.ave"]` that decide what a plugin may do,
- * copied verbatim from its `plugin.json`. Shapes are the manifest's own.
- */
+/** Plugin authority fields are copied verbatim from the manifest schema. */
 export interface PluginAuthority {
   capabilities: string[];
   networkAccess?: unknown;
@@ -136,7 +110,7 @@ export interface PluginArtifactPins {
     tag?: string;
     asset?: string;
     url?: string;
-    /** Without a pin the rung is skipped (ARTIFACT_NOT_PINNED, design §6.2). */
+    /** Skip artifact rungs without a pin. */
     sha256?: string;
   };
   archive?: { url: string; sha256?: string };
@@ -157,19 +131,16 @@ export interface PackageDescriptor {
   homepage?: string;
   icon?: string;
   platforms?: Platform[];
-  /** Kind-specific fields as they appear in the file (the `kind` tag is not repeated there). */
   payload: Record<string, unknown>;
 }
 
 export interface Revocation {
   kind: PackageKind;
   name: string;
-  /** Semver range the revocation covers. */
   versions: string;
   reason: string;
   at: string;
   action: "disable" | "uninstall";
-  /** Present only on an app-conditional retirement entry. */
   successors?: RetirementSuccessors;
 }
 

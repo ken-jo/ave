@@ -1,11 +1,5 @@
-/**
- * SkillApprovalsStore — R2-CR-3 hash-binding regression coverage.
- *
- * The pre-fix store keyed approvals by NAME ONLY. A user could approve a
- * benign body once, the file could be swapped after, and the next
- * `skill_load` would short-circuit without re-prompting. After R2-CR-3,
- * approvals are bound to sha256(body) — a body swap forces re-approval.
- */
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
+// Approval is bound to the body hash; replacing an approved file must require approval again.
 import { describe, it, expect } from "vitest";
 import {
   writeFileSync,
@@ -101,13 +95,8 @@ describe("SkillApprovalsStore — R2-CR-3 hash-binding", () => {
 });
 
 describe("SkillApprovalsStore — atomic-write convergence (feature-namespace authority)", () => {
-  it("does not write through a symlink planted at the predictable ${file}.tmp staging path", async () => {
-    // Pre-convergence, writeAtomic staged into a FIXED `${filePath}.tmp`. An
-    // attacker who can create that sibling plants a symlink there; the old
-    // `writeFile` follows it, so the approval JSON lands at the attacker's
-    // destination and the live path is left a symlink. The authority stages
-    // into a random name opened with O_CREAT|O_EXCL, so the planted path is
-    // never touched.
+  it.skipIf(!canCreateSymlinks())("does not write through a symlink planted at the predictable ${file}.tmp staging path", async () => {
+    // Random O_EXCL staging must ignore an attacker-planted fixed .tmp symlink.
     const file = tmpFile();
     const outside = join(join(file, ".."), "attacker-owned.json");
     writeFileSync(outside, "");
@@ -116,16 +105,7 @@ describe("SkillApprovalsStore — atomic-write convergence (feature-namespace au
     const store = new SkillApprovalsStore(file);
     await store.approve("report-writing", "body-v1");
 
-    // Both outcomes below fail if the write had followed the planted symlink:
-    // a redirected write leaves `outside` holding the approval JSON (so the
-    // first assertion catches it) and `file` a symlink to that now-populated
-    // `outside`; a redirected write to the ORIGINAL empty `outside` instead
-    // leaves `file` a symlink to an empty target, so reading `file` yields "" and
-    // the JSON.parse throws. Only a safe write — staged into a random O_EXCL name
-    // and renamed onto `file` — leaves `outside` empty AND `file` a real regular
-    // file with the record. (No lstat-then-read on `file`: that check-then-use
-    // pair is a file-system-race pattern, and the two reads already pin the
-    // guarantee without it.)
+    // Assert the outside target stays empty and the live file contains the record; these reads detect redirected writes without lstat/read races.
     expect(readFileSync(outside, "utf-8")).toBe("");
     const onDisk = JSON.parse(readFileSync(file, "utf-8")) as {
       approvedSkills: Array<{ name: string; sha256: string }>;
@@ -135,10 +115,7 @@ describe("SkillApprovalsStore — atomic-write convergence (feature-namespace au
   });
 
   it("fsyncs the staged bytes before commit (durability the store's comment claims)", async () => {
-    // Pre-convergence used `writeFile`+`rename` with no fsync, so a crash after
-    // rename could still lose the bytes. The authority opens the staging file
-    // and calls handle.sync() before renaming. Count those sync() calls: 0 with
-    // the old code, >=1 (file + parent dir on POSIX) after convergence.
+    // Assert staging-file sync before rename: rename alone does not make bytes crash-durable.
     const file = tmpFile();
     const observer = observeFileHandleSyncs();
     try {

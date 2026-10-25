@@ -1,24 +1,5 @@
-/**
- * The source registry (design §2.1, §7.2, §7.6, §10.5, §12).
- *
- * Four origins, three homes:
- *   - official: the build constant `OFFICIAL_MARKETPLACE`;
- *   - managed: `marketplaces.additional` in the system policy file;
- *   - custom and direct: `~/.ave/marketplaces/sources.json`.
- * Every origin keeps its pin and switches in `marketplaces/<id>/state.json`.
- *
- * Two transports (§18.4): a git repository (`url`), or a local folder
- * (`path`, its canonical path, §18.4.1 stage 4). A folder's pin is its
- * revision `local-<sha256>` and a git source's a 40-hex commit, never the
- * other way round (§18.4.3).
- *
- * Ids are re-checked on every load: an entry in `sources.json` that uses a
- * reserved id, collides with a managed id, or no longer normalizes is left in
- * the file untouched but not served, with a diagnostic. A `sources.json` that
- * cannot be read at all serves the official and managed sources only, and
- * refuses writes (`SOURCE_LIST_UNREADABLE`) until the user fixes or deletes
- * it, so nothing the user added is overwritten.
- */
+/** Revalidate stored ids on load without rewriting invalid entries.
+ * Unreadable user registries block writes while built-in sources remain available. */
 import { randomBytes } from "node:crypto";
 import { existsSync, type Stats } from "node:fs";
 import { lstat, mkdir, readdir, readFile, rmdir, unlink } from "node:fs/promises";
@@ -61,30 +42,20 @@ export type SourceOrigin = "official" | "managed" | "custom" | "direct";
 interface SourceEntry {
   id: string;
   origin: "custom" | "direct";
-  /** A git source's address, in normalized form (§7.1); exclusive with `path`. */
   url?: string;
-  /** A folder source's canonical path (§18.4.1 stage 4, §18.4.4); exclusive with `url`. */
   path?: string;
   ref?: string;
-  /** Direct sources only: the package path inside the repository. */
   subdir?: string;
   auth: SourceAuth;
   addedAt: string;
   label?: string;
-  /** The confirmations the source holds, for the address they were given at (design §18.5); absent is none. */
+  /** Confirmations are address-bound; absent means no consent. */
   acknowledged?: StoredConfirmations;
 }
 
-/**
- * Confirmations as stored: the warnings, and the normalized identity the user
- * gave them for — a git source's address (scheme, user, host, port and
- * path), a folder source's canonical path. A source whose identity is no
- * longer that one holds none: a managed entry or a hand-edited
- * `sources.json` that points a source elsewhere never carries consent over.
- */
+/** Consent is bound to the complete normalized address or canonical folder path and never follows edits. */
 export type StoredConfirmations = { url: string; warnings: SourceWarning[] } | { path: string; warnings: SourceWarning[] };
 
-/** What a source's confirmations are bound to (§18.5): its normalized address, or its canonical path. */
 export type SourceIdentity = { url: string } | { path: string };
 
 export function sourceIdentity(source: ResolvedSource): SourceIdentity {
@@ -95,38 +66,28 @@ function sameIdentity(stored: StoredConfirmations, identity: SourceIdentity): bo
   return "url" in stored ? "url" in identity && stored.url === identity.url : "path" in identity && stored.path === identity.path;
 }
 
-/** The confirmations `stored` gives a source with `identity`: its warnings when they were given for that identity, else none. */
+/** Return no warnings when the stored consent identity differs. */
 export function confirmationsFor(stored: StoredConfirmations | undefined, identity: SourceIdentity): SourceWarning[] {
   return stored !== undefined && sameIdentity(stored, identity) ? [...stored.warnings] : [];
 }
 
 export interface SourceState {
-  /** A git source's commit, or a folder source's revision `local-<sha256>` (§18.4.3). */
   pinnedCommit: string | null;
-  /** Browsing and installing only; sync continues while installed packages are bound (§7.3). */
+  /** Hiding disables browsing and installs; bound packages keep syncing. */
   enabled: boolean;
-  /** `detail` is why a failed sync failed, when it said (design §18.8). */
   lastSync?: { at: string; result: "ok" | MarketplaceErrorCode; detail?: MarketplaceErrorDetail; candidate?: string };
   pendingRewrite?: { candidate: string; seenAt: string };
-  /** Official and managed sources keep their confirmations here; custom and direct ones in `sources.json` (§18.5). */
+  /** Built-in sources store consent in state; custom and direct sources store it with their entry. */
   acknowledged?: StoredConfirmations;
-  /**
-   * A folder source's directory identity (`dev`, `ino` as decimal text) when
-   * it was last read (§18.4.4): a later walk that ends at another directory
-   * is `moved`. `ancestors` are the directories above it, from the volume
-   * root down, so a folder added later through an alias is known to contain
-   * it. Zero where the filesystem reports none.
-   */
+  /** Stored directory and ancestor identities detect replacement and overlap through aliases. */
   folder?: StoredFolderIdentity & { ancestors: StoredFolderIdentity[] };
 }
 
-/** A directory identity as `state.json` stores it: decimal text. */
 interface StoredFolderIdentity {
   dev: string;
   ino: string;
 }
 
-/** The `folder` state of a root stage 4 found (§18.4.4). */
 export function folderIdentityState(root: FolderIdentity & { ancestors: readonly FolderIdentity[] }): NonNullable<SourceState["folder"]> {
   const stored = ({ dev, ino }: FolderIdentity): StoredFolderIdentity => ({ dev: dev.toString(), ino: ino.toString() });
   return { ...stored(root), ancestors: root.ancestors.map(stored) };
@@ -137,28 +98,22 @@ interface SourceBase {
   origin: SourceOrigin;
   auth: SourceAuth;
   label?: string;
-  /** Custom and direct sources: the confirmations stored with the entry for this identity; official and managed keep theirs in the state. */
+  /** Custom/direct consent lives with the entry; built-in source consent lives in state. */
   acknowledged?: readonly SourceWarning[];
 }
 
 export interface GitSource extends SourceBase {
   transport: "git";
   url: NormalizedSourceUrl;
-  /** Official only; tried in order after `url`. */
   mirrors: readonly NormalizedSourceUrl[];
   ref?: string;
   subdir?: string;
 }
 
-/**
- * A local folder (§18.4): read in place, never through git, with no ref,
- * subdir or sign-in. A managed folder holds `network-folder` through its
- * policy entry (§18.6).
- */
+/** Folders are read in place without git or auth; managed entries confer network-folder consent. */
 export interface FolderSource extends SourceBase {
   transport: "folder";
   origin: "managed" | "custom" | "direct";
-  /** The canonical path (§18.4.1 stage 4). */
   path: string;
   auth: { kind: "none" };
 }
@@ -178,11 +133,9 @@ export interface NewSource {
   subdir?: string;
   auth: SourceAuth;
   label?: string;
-  /** Exactly the confirmations the preview carried (§18.5 step 5). */
   acknowledged?: readonly SourceWarning[];
 }
 
-/** A folder being added: its canonical path and the identities stage 4 found (§18.4.4). */
 export interface NewFolderSource {
   id: string;
   origin: "custom" | "direct";
@@ -234,7 +187,7 @@ function checkAuth(value: unknown, url: NormalizedSourceUrl): SourceAuth {
   return { kind: "token", host };
 }
 
-/** Stored confirmations: a normalized address or a canonical folder path, and known warnings, each once. */
+/** Stored confirmations contain one normalized identity and deduplicated known warnings. */
 function checkAcknowledged(value: unknown, platform: NodeJS.Platform): StoredConfirmations {
   shape(isRecord(value), "acknowledged must be an object");
   const warnings = value.warnings;
@@ -258,10 +211,7 @@ function checkAcknowledged(value: unknown, platform: NodeJS.Platform): StoredCon
   return { url: url.url, warnings: [...(warnings as SourceWarning[])] };
 }
 
-/**
- * A stored folder path: absolute and already in stage 1's normal form for
- * the running platform (§18.4.1) — no `~`, no `file:` URL, no `\\?\` prefix.
- */
+/** Stored folder paths must already be canonical for the platform without input-only aliases. */
 function isStoredFolderPath(path: string, platform: NodeJS.Platform): boolean {
   if (path.startsWith("~") || /^file:/iu.test(path)) return false;
   try {
@@ -286,11 +236,7 @@ function checkSubdir(subdir: unknown): void {
 
 type CheckedEntry = { entry: SourceEntry; url: NormalizedSourceUrl; path?: never } | { entry: SourceEntry; path: string; url?: never };
 
-/**
- * One stored entry, checked as written: a git entry's URL must already be
- * normalized, a folder entry's path canonical for the running platform, with
- * no ref, subdir or sign-in (§18.4.4).
- */
+/** Stored addresses must already be normalized; folder entries cannot carry git fields. */
 function checkEntry(raw: unknown, platform: NodeJS.Platform): CheckedEntry {
   shape(isRecord(raw), "entry must be an object");
   knownKeys(raw, ENTRY_KEYS, "entry");
@@ -327,11 +273,7 @@ function checkEntry(raw: unknown, platform: NodeJS.Platform): CheckedEntry {
   return { entry: { ...(raw as unknown as SourceEntry), auth }, url };
 }
 
-/**
- * A state as written. Either pin form is well formed here; which one a
- * source may hold is checked against its transport where the source is
- * known ({@link SourceRegistry.readState}).
- */
+/** Validate pin syntax here and its transport-specific meaning when the source is known. */
 function checkState(raw: unknown, platform: NodeJS.Platform): SourceState {
   shape(isRecord(raw), "state must be an object");
   knownKeys(raw, STATE_KEYS, "state");
@@ -347,8 +289,7 @@ function checkState(raw: unknown, platform: NodeJS.Platform): SourceState {
     shape(last.result === "ok" || MARKETPLACE_ERROR_CODES.includes(last.result as MarketplaceErrorCode), "lastSync.result is not a result code");
     shape(last.candidate === undefined || (typeof last.candidate === "string" && GIT_COMMIT_RE.test(last.candidate)), "lastSync.candidate must be a commit id");
     if (last.detail !== undefined) {
-      // A detail is display data: one this build does not know for the code
-      // (written by a newer build, or edited) is dropped, and the code stays.
+      // Drop unknown display details but preserve the failure code.
       const detail = last.result === "ok" ? undefined : parseMarketplaceErrorDetail(last.result as MarketplaceErrorCode, last.detail);
       const { detail: _dropped, ...rest } = last;
       state = { ...raw, lastSync: detail ? { ...rest, detail } : rest };
@@ -376,11 +317,7 @@ function checkState(raw: unknown, platform: NodeJS.Platform): SourceState {
   return state as unknown as SourceState;
 }
 
-/**
- * Whether a state fits its source's transport (§18.4.3): a folder source
- * holds a revision and no history rule; a git source a commit and no folder
- * identity. The reason it does not, else null.
- */
+/** Folder state permits revisions only; git state permits commits only and no folder identity. */
 function transportProblem(source: ResolvedSource, state: SourceState): string | null {
   if (source.transport === "folder") {
     if (state.pinnedCommit !== null && !FOLDER_REVISION_RE.test(state.pinnedCommit)) return "a folder source's pin must be a folder revision";
@@ -395,24 +332,15 @@ function transportProblem(source: ResolvedSource, state: SourceState): string | 
 const FRESH_STATE: SourceState = Object.freeze({ pinnedCommit: null, enabled: true });
 
 export interface SourceRegistryOptions {
-  /** `~/.ave/marketplaces`. */
   root: string;
-  /** Read when the sources are listed: a policy change adds or drops managed sources at the next operation (§18.6). */
+  /** Read policy at listing time so managed sources follow the current operation policy. */
   policy: PolicySource;
-  /** The build constant; tests substitute a fixture repository. */
   official?: OfficialMarketplace;
   now?: () => Date;
-  /** The platform folder paths are read for (§18.4.1); the running one unless a test reads another's. */
   platform?: NodeJS.Platform;
 }
 
-/**
- * One source's state under `root`, without opening the registry: boot reads
- * pins before anything else is wired. A missing state is a fresh source
- * unless synced data exists beside it. A state that cannot be used throws
- * SOURCE_LOCAL_DATA_DAMAGED, which Repair clears ({@link SourceRegistry.resetLocalData});
- * its message names files relative to the source, never a home path.
- */
+/** Missing state is fresh only without synced data; unusable state requires repair rather than losing history. */
 export async function readSourceState(root: string, id: string, platform: NodeJS.Platform = process.platform): Promise<SourceState> {
   const dir = join(root, id);
   let text: string;
@@ -420,7 +348,7 @@ export async function readSourceState(root: string, id: string, platform: NodeJS
     text = await readFile(join(dir, "state.json"), "utf8");
   } catch (error) {
     if (isMissingPathError(error)) {
-      // Synced data without a state lost its pin; a fresh state would accept any history (§2.1).
+      // Synced data without state has lost its pin; accepting fresh state would bypass history review.
       if (existsSync(join(dir, "repo.git")) || existsSync(join(dir, "snapshots"))) {
         throw new MarketplaceError("SOURCE_LOCAL_DATA_DAMAGED", `state.json of source ${id} is missing while its synced data remains`, {
           cause: error,
@@ -446,24 +374,16 @@ export async function readSourceState(root: string, id: string, platform: NodeJS
 
 const log = createMarketplaceLogger("marketplace-registry");
 
-/** Where Repair moves a source's copy before walking it: `.trash-<id>-<random>` beside the sources. */
 const TRASH_PREFIX = ".trash-";
 
-/** A file system error's code (else the error's name), which unlike its message names no path under the user's home. */
+/** Error codes reveal no home paths, unlike filesystem error messages. */
 export function fsErrorCode(error: unknown): string {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   if (typeof code === "string") return code;
   return error instanceof Error ? error.name : typeof error;
 }
 
-/**
- * Remove a host-owned tree without following a link inside it. Every entry is
- * `lstat`ed and removed one by one, never by a recursive `rm`: on Windows a
- * recursive removal follows a junction and deletes its target. A link (a
- * junction too) is removed as a link, `rmdir` where Windows refuses `unlink`
- * on a directory link. Nothing else writes under `marketplaces/<id>`, and the
- * callers hold the registry's queue.
- */
+/** Remove entries without traversing links; Windows junctions require unlink or rmdir, never recursive rm. */
 async function removeTreeNoFollow(path: string): Promise<void> {
   let entry: Stats;
   try {
@@ -493,19 +413,14 @@ async function removeTreeNoFollow(path: string): Promise<void> {
 export class SourceRegistry {
   private rawEntries: unknown[] = [];
   private stored: ResolvedSource[] = [];
-  /** The raw entry each served source came from, so a removal touches only that entry. */
+  /** Preserve raw entries so removal touches only the selected served entry. */
   private storedRaw = new Map<string, unknown>();
-  /**
-   * Why `sources.json` cannot be used, when it cannot (§14
-   * `SOURCE_LIST_UNREADABLE`). Its message names the file and an fs error by
-   * its code, never a home path, since it reaches *Copy details*.
-   */
+  /** Registry-read failures expose filesystem codes, never home paths. */
   private fileProblem: { message: string; detail: MarketplaceErrorDetail<"SOURCE_LIST_UNREADABLE"> } | null = null;
   private loadDiagnostics: RegistryDiagnostic[] = [];
   private queue: Promise<unknown> = Promise.resolve();
   private readonly official: GitSource;
   private readonly platform: NodeJS.Platform;
-  /** The built-in sources under the policy digest they were built for. */
   private builtFor: { digest: string; sources: ResolvedSource[] } | null = null;
 
   private constructor(private readonly options: SourceRegistryOptions) {
@@ -526,7 +441,6 @@ export class SourceRegistry {
     return load.ok ? load.policy : EMPTY_MARKETPLACE_POLICY;
   }
 
-  /** Official, then the policy's managed sources, rebuilt when the policy in force changes. */
   private get builtIn(): ResolvedSource[] {
     const digest = this.options.policy.digest;
     if (this.builtFor?.digest !== digest) {
@@ -551,7 +465,6 @@ export class SourceRegistry {
           ...(spec.label !== undefined ? { label: spec.label } : {}),
         });
       this.builtFor = { digest, sources: [this.official, ...managed] };
-      // The ids a stored entry may use depend on the managed ones.
       this.resolveStored();
     }
     return this.builtFor.sources;
@@ -564,17 +477,12 @@ export class SourceRegistry {
     return registry;
   }
 
-  /**
-   * Remove what an interrupted Repair left aside (`.trash-*`; a source id
-   * never starts with a dot). Best effort: a leftover only takes disk space,
-   * and the next open or Repair tries again.
-   */
+  /** Reclaim interrupted repair trash best-effort; leftovers may wait until the next open or repair. */
   private async sweepTrash(): Promise<void> {
     let names: string[];
     try {
       names = await readdir(this.options.root);
     } catch (error) {
-      // Best effort, so it never fails an open or a Repair: a leftover waits for the next sweep.
       if (!isMissingPathError(error)) log.warn({ error: fsErrorCode(error) }, "repair: could not list the marketplaces folder to sweep moved-aside copies");
       return;
     }
@@ -583,7 +491,6 @@ export class SourceRegistry {
     }
   }
 
-  /** Walk a copy moved aside by Repair; a failure is logged and left for the next sweep. */
   private async reclaim(trash: string): Promise<void> {
     try {
       await removeTreeNoFollow(trash);
@@ -592,10 +499,7 @@ export class SourceRegistry {
     }
   }
 
-  /**
-   * One rename (retrying a transient Windows lock), the step an interrupted
-   * Repair can stop between (a seam for tests).
-   */
+  /** Retry transient Windows locks during the single repair rename. */
   protected async moveAside(from: string, to: string): Promise<void> {
     await renameDirectory(from, to);
   }
@@ -701,7 +605,6 @@ export class SourceRegistry {
     this.loadDiagnostics = this.fileProblem ? [{ subject: "sources.json", message: this.fileProblem.message }, ...diagnostics] : diagnostics;
   }
 
-  /** Official first, then managed, then custom and direct in file order. */
   list(): ResolvedSource[] {
     return [...this.builtIn, ...this.stored];
   }
@@ -714,13 +617,11 @@ export class SourceRegistry {
     return this.loadDiagnostics;
   }
 
-  /** The id checks of §7.2 step 6, for either transport. */
   private checkNewId(id: string): void {
     if (!SOURCE_ID_RE.test(id)) {
       throw new MarketplaceError("SOURCE_ID_INVALID", `${id} is not a valid source id (2-63 lowercase letters, digits or -)`);
     }
     if (!isSourceId(id)) {
-      // A reserved prefix is named, so the user learns what to change (§18.8).
       const reserved = reservedPrefixIn(id);
       if (reserved) {
         throw new MarketplaceError("SOURCE_ID_INVALID", `${reserved.prefix} is a reserved prefix: an id using it looks like ${CREDENTIAL_ISSUER_NAMES[reserved.issuer]}; choose a different id`, {
@@ -732,14 +633,13 @@ export class SourceRegistry {
     if (isReservedSourceId(id)) {
       throw new MarketplaceError("SOURCE_NAME_RESERVED", `${id} is a reserved source id`);
     }
-    // An entry that is not served still owns its id: it stays in the file untouched (§2.1).
+    // Unserved entries still reserve their ids and remain untouched in the file.
     const unserved = this.rawEntries.some((raw) => isRecord(raw) && raw.id === id);
     if (unserved || this.list().some((existing) => existing.id === id)) {
       throw new MarketplaceError("SOURCE_ID_TAKEN", `a source named ${id} already exists`);
     }
   }
 
-  /** The id and URL checks of §7.2 step 6, without writing anything. */
   checkNew(source: NewSource): NormalizedSourceUrl {
     this.checkNewId(source.id);
     const url = normalizeSourceUrl(source.url);
@@ -754,16 +654,7 @@ export class SourceRegistry {
     return url;
   }
 
-  /**
-   * The id and identity checks for a folder (§18.4.4), without writing
-   * anything: a folder that is already a source, or that contains or lies
-   * inside one, is SOURCE_ID_TAKEN naming that source. Paths decide first
-   * (the walk's on-disk spelling, no platform-wide case folding); then the
-   * non-zero identities recorded at the source's last read, which see
-   * through an alias (another drive letter, a share, a firmlink): the same
-   * directory, one of the new folder's ancestors, or the new folder among
-   * the source's ancestors.
-   */
+  /** Detect overlapping folders by canonical paths, then nonzero root and ancestor identities across aliases. */
   async checkNewFolder(source: NewFolderSource): Promise<void> {
     this.checkNewId(source.id);
     const known = (identity: { dev: string; ino: string }) => identity.dev !== "0" && identity.ino !== "0";
@@ -782,7 +673,7 @@ export class SourceRegistry {
   }
 
   private assertWritable(): void {
-    // The file is the user's list: it is never rewritten or repaired here, so nothing they added is lost (§14).
+    // Never rewrite unreadable user source lists; doing so could lose entries.
     if (this.fileProblem) {
       throw new MarketplaceError("SOURCE_LIST_UNREADABLE", `${this.fileProblem.message}; no source is changed until it is fixed or deleted`, {
         detail: this.fileProblem.detail,
@@ -825,7 +716,6 @@ export class SourceRegistry {
     });
   }
 
-  /** Add a folder source (§18.4): its canonical path, auth none, and its identity in its state for `moved` (§18.4.4). */
   async addFolder(source: NewFolderSource): Promise<FolderSource> {
     return this.exclusive(async () => {
       this.assertWritable();
@@ -853,11 +743,7 @@ export class SourceRegistry {
     });
   }
 
-  /**
-   * Custom and direct only (§7.6). Installed packages stay; their origin keeps
-   * the source id. Callers go through `SourceSyncer.removeSource`, which lets a
-   * running sync of the source finish first.
-   */
+  /** Wait for any source sync before removal; installed packages retain their origin binding. */
   async remove(id: string): Promise<void> {
     return this.exclusive(async () => {
       const source = this.get(id);
@@ -873,25 +759,15 @@ export class SourceRegistry {
     });
   }
 
-  /**
-   * Repair (design §18.8): move the source's downloaded copy (repository,
-   * snapshots, a damaged state) aside to `.trash-<id>-<random>` and walk it
-   * there with `lstat`, so the next sync starts it over. Only
-   * `marketplaces/<id>` moves; installed packages, tokens, policy and
-   * `sources.json` live elsewhere and stay. `kept` is the readable part of
-   * the old state, its pin and switch, written back so the history rule and
-   * the user's choice survive; without it the source starts unpinned.
-   * Writing the pin fails as `repair-write-failed`, moving the copy aside as
-   * `repair-failed`; neither loses a readable pin.
-   */
+  /** Repair moves only source-local data aside, preserving a readable pin and switches.
+     * Failed moves or pin writes must not lose the readable history boundary. */
   async resetLocalData(id: string, kept: Pick<SourceState, "pinnedCommit" | "enabled" | "folder"> | null): Promise<void> {
     return this.exclusive(async () => {
       if (!this.get(id)) throw new Error(`no source named ${id}`);
       await this.sweepTrash();
       const dir = join(this.options.root, id);
       const trash = join(this.options.root, `${TRASH_PREFIX}${id}-${randomBytes(6).toString("hex")}`);
-      // Messages name the source and an fs error by its code, never a path (the error's own message has one).
-      // A failed move says whether a pin is still there to keep (`repair-failed`) or the state had none (`-unpinned`).
+      // Report filesystem codes without paths, distinguishing failed repairs with and without a preserved pin.
       const moveReason = kept?.pinnedCommit ? "repair-failed" : "repair-failed-unpinned";
       const damaged = (reason: "repair-failed" | "repair-failed-unpinned" | "repair-write-failed", error: unknown) =>
         new MarketplaceError(
@@ -911,17 +787,14 @@ export class SourceRegistry {
       const writeKept = async () => {
         if (!kept) return;
         try {
-          // A folder source keeps its recorded identity too, so a moved folder is still caught (§18.4.4).
+          // Preserve folder identity so repair cannot hide a moved source.
           await this.writeState(id, { pinnedCommit: kept.pinnedCommit, enabled: kept.enabled, ...(kept.folder ? { folder: kept.folder } : {}) });
         } catch (error) {
           throw damaged("repair-write-failed", error);
         }
       };
       if (entry?.isDirectory() && kept) {
-        // The kept pin is written first, atomically and in place; everything
-        // else then goes aside one rename at a time. `state.json` never
-        // leaves, so a failure or crash at any step leaves the pin, and the
-        // next sync fetches what is gone.
+        // Atomically preserve state.json before moving other entries so interruption cannot lose a readable pin.
         await writeKept();
         try {
           await mkdir(trash);
@@ -932,8 +805,7 @@ export class SourceRegistry {
           throw damaged(moveReason, error);
         }
       } else if (entry) {
-        // The pin is already lost (or the copy is a link Ave did not make):
-        // the whole entry goes aside in one rename, a link as a link.
+        // Without a recoverable pin, move the whole entry aside without following links.
         try {
           await this.moveAside(dir, trash);
         } catch (error) {
@@ -948,19 +820,13 @@ export class SourceRegistry {
     });
   }
 
-  /** The confirmations `source` holds: its entry's for custom and direct sources, its state's for official and managed ones (§18.5). */
   async acknowledged(source: ResolvedSource): Promise<ReadonlySet<SourceWarning>> {
-    // A managed folder holds `network-folder` through its policy entry (§18.6).
     if (source.transport === "folder" && source.origin === "managed") return new Set(["network-folder"]);
     if (source.origin === "custom" || source.origin === "direct") return new Set(source.acknowledged ?? []);
     return new Set(confirmationsFor((await this.readState(source.id)).acknowledged, sourceIdentity(source)));
   }
 
-  /**
-   * Add confirmations to a source (*Allow…*, §18.5): the entry of a custom or
-   * direct source, the state of an official or managed one. Confirmations
-   * only grow here; withdrawing one is removing the source.
-   */
+  /** Consent only grows for the same identity; withdrawal requires removing the source. */
   async acknowledge(id: string, warnings: readonly SourceWarning[]): Promise<void> {
     const source = this.get(id);
     if (!source) throw new MarketplaceError("SOURCE_ID_INVALID", `no source named ${id}`);
@@ -983,7 +849,7 @@ export class SourceRegistry {
     });
   }
 
-  /** A source's state; one whose pin does not fit the source's transport is damaged (§18.4.3). */
+  /** Pins inconsistent with the source transport are damaged state. */
   async readState(id: string): Promise<SourceState> {
     const state = await readSourceState(this.options.root, id, this.platform);
     const source = this.get(id);
@@ -1009,7 +875,6 @@ export class SourceRegistry {
     await writeFileAtomicAtPath(this.statePath(id), `${JSON.stringify(state, null, 2)}\n`);
   }
 
-  /** Read-modify-write of one source's state under the registry's lock. */
   async updateState(id: string, update: (state: SourceState) => SourceState): Promise<SourceState> {
     return this.exclusive(async () => {
       const next = update(await this.readState(id));
@@ -1018,13 +883,7 @@ export class SourceRegistry {
     });
   }
 
-  /** Whether a source may be hidden at all (§10.5). */
-  /**
-   * A source whose stored id has a credential's shape (§18.8): one an
-   * earlier build added before ids were checked. The renderer sees it only
-   * masked, so it could never name it back; it is neither synced nor served,
-   * and the Sources view offers Remove through a handle main issues.
-   */
+  /** Legacy credential-shaped ids are neither served nor synced; session handles permit removal only. */
   isQuarantined(source: ResolvedSource): boolean {
     return !isSourceId(source.id);
   }
@@ -1036,7 +895,6 @@ export class SourceRegistry {
     return true;
   }
 
-  /** The stored switch, overridden where policy forbids hiding the source. */
   isEnabled(source: ResolvedSource, state: SourceState): boolean {
     return state.enabled || !this.canDisable(source);
   }
@@ -1051,12 +909,7 @@ export class SourceRegistry {
   }
 }
 
-/**
- * How two canonical folder paths relate (§18.4.4): the same folder, `path`
- * inside `other`, `path` containing `other`, or unrelated (null). Compared
- * component by component, byte for byte: the walk recorded each component's
- * on-disk spelling, so no case folding applies.
- */
+/** Compare canonical path components byte-for-byte; resolution already established on-disk spelling. */
 export function folderRelation(path: string, other: string, platform: NodeJS.Platform): "same" | "inside" | "contains" | null {
   const a = splitFolderPath(path, platform);
   const b = splitFolderPath(other, platform);
@@ -1067,11 +920,7 @@ export function folderRelation(path: string, other: string, platform: NodeJS.Pla
   return a.segments.length > b.segments.length ? "inside" : "contains";
 }
 
-/**
- * SOURCE_ID_TAKEN for a folder that overlaps the folder source `existing`
- * (§18.4.4): its reason names the relation, and its detail the source, so
- * the sentence can say what to do. Another id would not help.
- */
+/** Folder overlap is an identity conflict, so choosing another id cannot resolve it. */
 function folderOverlap(path: string, existing: FolderSource, relation: "same" | "inside" | "contains"): MarketplaceError {
   switch (relation) {
     case "same":

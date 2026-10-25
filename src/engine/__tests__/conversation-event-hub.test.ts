@@ -173,9 +173,7 @@ describe("conversation event hub", () => {
       replay: false,
     });
 
-    // The inactive state is now gone, but its bounded cursor tombstone still
-    // tells a reconnecting surface to obtain a snapshot rather than replaying
-    // a misleading empty tail.
+    // The cursor tombstone forces a snapshot instead of replaying a misleading empty tail.
     expect(hub.read("pinned", { afterCursor: 0 })).toMatchObject({
       latestCursor: 2,
       oldestRetainedCursor: null,
@@ -211,9 +209,7 @@ describe("conversation event hub", () => {
     const resumed = hub.publish({ sessionId: "session-a", channel: "four", payload: null, replay: false });
 
     expect(first).toMatchObject({ cursor: 1, eventId: "conversation-event/v1/session-a/1" });
-    // session-a's exact tombstone was evicted to keep the cap bounded. The
-    // fallback seeds above the process-wide publication floor, so a later
-    // event remains monotonic and cannot collide with its original event ID.
+    // Evicted tombstones seed above the publication floor to prevent event ID collisions.
     expect(resumed).toMatchObject({ cursor: 4, eventId: "conversation-event/v1/session-a/4" });
     expect(resumed.eventId).not.toBe(first.eventId);
   });

@@ -1,13 +1,3 @@
-/**
- * #1176 — `ave:plugins:set-enabled` IPC handler tests.
- *
- * Verifies:
- *   - atomic persist via PluginRuntime.setPluginEnabled
- *   - `plugin.enabled-changed` host event + `ave:plugins:enabled-changed`
- *     window broadcast on success
- *   - kebab-case English error for an unknown plugin id
- *   - validateSender rejection for a disallowed frame
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { PluginDeploymentDeniedError } from "../../../plugins/deployment-guard.js";
@@ -27,15 +17,12 @@ vi.mock("electron", () => ({
   webContents: { fromId: vi.fn() },
 }));
 
-// Spy on the host event bus so we can assert plugin.enabled-changed emits.
 vi.mock("../../../boot/types.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../boot/types.js")>();
   return { ...actual, emitEvent: hostEventMock.emit };
 });
 
-// Shared app-IPC invoker (injects a trusted `ave://app` frame so
-// validateSender passes). The rejection test below calls the handler directly
-// with a hostile frame instead.
+// The shared invoker supplies a trusted host frame; hostile-frame cases invoke the handler directly.
 const invoke = makeAppIpcInvoker(handlers);
 
 function makeWindow() {
@@ -74,13 +61,10 @@ async function setup() {
     return pluginConfig;
   });
   const restartPlugin = vi.fn(async (): Promise<"started" | "failed"> => "started");
-  // The cards channel's producer; a refused restart records its refusal there.
   let pluginCards: Array<{ id: string; lastAttemptRefusal?: unknown }> = [];
   const listPluginCards = vi.fn(() => pluginCards);
   const setSecret = vi.fn(async () => {});
-  // `apiKey` is declared `format: "secret"` so the config:secret:set handler
-  // accepts it. `kept`/`removed` stay non-secret, so stripSecretFields is a
-  // no-op for the existing config:set tests.
+  // Declare apiKey secret so secret-write tests reach the intended handler gate.
   const pluginManifest = {
     id: "plugin-config",
     configSchema: {
@@ -125,7 +109,6 @@ async function setup() {
     setPluginConfig,
     restartPlugin,
     setSecret,
-    /** Seed the cleartext `pluginConfigs` record the handlers read. */
     seedPluginConfig: (next: Record<string, unknown>) => { pluginConfig = { ...next }; },
     readPluginConfig: () => ({ ...pluginConfig }),
     setPluginCards: (next: typeof pluginCards) => { pluginCards = next; },
@@ -134,7 +117,6 @@ async function setup() {
 
 const REFUSAL_MESSAGE = "plugin 'plugin-config' does not declare a host protocol; this app serves 2";
 
-/** A restart the child factory refused: the result is "failed" and the card carries the refusal. */
 function refuseRestart(
   harness: Awaited<ReturnType<typeof setup>>,
   refusal: { attempt: "update" | "restart"; at?: string } = { attempt: "restart" },
@@ -235,7 +217,7 @@ describe("plugin bundled contribution trust IPC", () => {
     expect(pluginBundleLifecycle.approveHook).not.toHaveBeenCalled();
     expect(pluginBundleLifecycle.revokeHook).not.toHaveBeenCalled();
 
-    // An undeterminable closure is still approvable: its approval just never carries forward.
+    // An unknown closure may be approved, but the approval cannot carry forward.
     await invoke("ave:plugins:contribution-trust:set", { ...request, approved: true, generationId: "a".repeat(64), approvalDigest: null });
     expect(pluginBundleLifecycle.approveHook).toHaveBeenCalledWith("com.example.meeting", "policy", { generationId: "a".repeat(64), approvalDigest: null });
     await invoke("ave:plugins:contribution-trust:set", { ...request, approved: false });
@@ -300,7 +282,6 @@ describe("ave:plugins:set-enabled", () => {
 
   it("rejects a disallowed sender frame (validateSender)", async () => {
     const { deps, setPluginEnabled } = await setup();
-    // Call the handler directly with a hostile frame so validateSender denies it.
     const handler = handlers.get("ave:plugins:set-enabled");
     expect(handler).toBeDefined();
     const hostileEvent = { senderFrame: { url: "https://evil.example/" } };
@@ -323,8 +304,6 @@ describe("ave:plugins:set-enabled", () => {
 
   it("maps a deployment-guard denial to disable-not-permitted without broadcasting", async () => {
     const { setPluginEnabled, appWindows } = await setup();
-    // The real error type the runtime guard throws — not a look-alike, so a
-    // rename of the class breaks this test rather than silently passing.
     setPluginEnabled.mockRejectedValueOnce(
       new PluginDeploymentDeniedError(
         "Admin plugin cannot be uninstalled by user: com.example.meeting (registry installSource=\"admin\")",
@@ -334,7 +313,6 @@ describe("ave:plugins:set-enabled", () => {
     const res = await invoke("ave:plugins:set-enabled", "com.example.meeting", false);
 
     expect(res).toMatchObject({ ok: false, error: "disable-not-permitted" });
-    // The guard's internal reason must not leak into the renderer banner.
     expect((res as { message: string }).message).not.toMatch(/installSource/);
     expect(hostEventMock.emit).not.toHaveBeenCalled();
     for (const win of appWindows) {
@@ -497,46 +475,31 @@ describe("config and secret saves whose restart the child factory refused", () =
   });
 });
 
-/**
- * Restart policy for secret writes — see `plugins/config-restart-policy.ts`.
- *
- * The rule is "restart iff the write mutated the CLEARTEXT config record (which
- * is what stales `PluginRuntimeContext.config`) and restarting is safe here".
- * A secret never enters that record, so the common case must NOT restart; but
- * this handler also deletes a stray cleartext copy of the key when one exists,
- * and that branch does stale the snapshot — leaving the plugin using the OLD
- * plaintext secret until something else restarts it.
- */
+// Restart only when cleartext config changed and restarting is safe; see plugins/config-restart-policy.ts.
 describe("ave:plugins:config:secret:set — restart policy", () => {
   it("does NOT restart for a plain secret write (secrets never enter ctx.config)", async () => {
     const { restartPlugin, setPluginConfig, setSecret, seedPluginConfig } = await setup();
-    // No cleartext copy of `apiKey` — the ordinary case.
     seedPluginConfig({ kept: "old" });
 
     const result = await invoke("ave:plugins:config:secret:set", "plugin-config", "apiKey", "sk-live-123");
 
     expect(result).toEqual({ ok: true });
     expect(setSecret).toHaveBeenCalledWith("plugin.plugin-config.apiKey", "sk-live-123");
-    // Nothing cleartext changed, so nothing went stale, so no restart.
     expect(setPluginConfig).not.toHaveBeenCalled();
     expect(restartPlugin).not.toHaveBeenCalled();
   });
 
   it("DOES restart when it deletes a stray cleartext copy of the secret key", async () => {
     const { restartPlugin, setPluginConfig, setSecret, seedPluginConfig, readPluginConfig } = await setup();
-    // Reachable without legacy data: a plugin update that newly marks an
-    // existing plain key `format: "secret"` leaves its plaintext value behind.
+    // An update may reclassify an existing plaintext key as secret, leaving a legacy cleartext copy.
     seedPluginConfig({ kept: "old", apiKey: "sk-OLD-plaintext" });
 
     const result = await invoke("ave:plugins:config:secret:set", "plugin-config", "apiKey", "sk-live-456");
 
     expect(result).toEqual({ ok: true });
     expect(setSecret).toHaveBeenCalledWith("plugin.plugin-config.apiKey", "sk-live-456");
-    // The cleartext copy is gone from the record the plugin's ctx.config is
-    // built from...
     expect(setPluginConfig).toHaveBeenCalledOnce();
     expect(readPluginConfig()).toEqual({ kept: "old" });
-    // ...so the stale snapshot must be rebuilt.
     expect(restartPlugin).toHaveBeenCalledOnce();
     expect(restartPlugin).toHaveBeenCalledWith("plugin-config", { skipPreparation: true });
   });
@@ -557,7 +520,6 @@ describe("ave:plugins:config:secret:set — restart policy", () => {
 
     const secretSet = invoke("ave:plugins:config:secret:set", "plugin-config", "apiKey", "sk-live-789");
     await Promise.resolve();
-    // Blocked behind the lock — neither the persist nor the restart has run.
     expect(setPluginConfig).not.toHaveBeenCalled();
     expect(restartPlugin).not.toHaveBeenCalled();
 
@@ -576,7 +538,6 @@ describe("ave:plugins:config:secret:set — restart policy", () => {
 
     expect(result).toMatchObject({ ok: false, error: "plugin-config-secret-save-failed" });
     expect(result).toMatchObject({ message: expect.stringContaining("runtime reload returned failed") });
-    // The secret itself WAS written — the failure is the reload, not the save.
     expect(setSecret).toHaveBeenCalledOnce();
   });
 
@@ -596,7 +557,7 @@ describe("ave:plugins:config:secret:set — restart policy", () => {
 describe("ave:mcp:import:claude-desktop:apply", () => {
   it("says why each server was not added as a kind the renderer words, with main's reason kept for Copy details", async () => {
     const { deps } = await setup();
-    // Node's shape for a write the OS refused; chmod cannot refuse one on Windows or as root.
+    // Use the OS error shape; chmod cannot reliably deny writes on Windows or as root.
     const denied = Object.assign(new Error("EACCES: permission denied, open '/Users/me/.ave/mcp-servers.json'"), { code: "EACCES", errno: -13, syscall: "open" });
     const addConfig = vi.fn(async (config: { id: string }) => {
       if (config.id === "files") throw denied;

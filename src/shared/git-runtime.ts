@@ -1,8 +1,3 @@
-/**
- * Git runtime status and progress as the renderer sees them (design §9, §13,
- * §15.7): `ave:git:runtime:status`, `ave:git:runtime:install` and the
- * `git-runtime:progress` event.
- */
 import type { MarketplaceErrorCode, MarketplaceErrorDetail } from "../marketplace/errors.js";
 import type { GitRuntimeMode } from "./git-runtime-mode.js";
 import { isRecord } from "./is-record.js";
@@ -14,26 +9,23 @@ export type GitRuntimeProgress =
   | { phase: "extracting" }
   | { phase: "smoke-testing" }
   | { phase: "ready"; version: string }
-  /** `code` is a marketplace error code (design §14). */
+  /** Codes use the marketplace error vocabulary. */
   | { phase: "failed"; code: string; message: string };
 
 export interface GitRuntimeStatus {
   mode: GitRuntimeMode;
   state: "ready" | "missing" | "too-old";
-  /** The git the marketplace runs now. */
   active: { kind: "system" | "managed"; version: string; path: string } | null;
   /** A system git that was found but is older than the minimum. */
   systemTooOld: { path: string; version: string } | null;
   managed: {
-    /** The pinned version this build installs. */
     version: string;
     installed: boolean;
-    /** A build is pinned for this platform and architecture. */
     available: boolean;
-    /** The pinned archive's size in bytes for this platform (design §15.7); null when none is pinned. */
+    /** Pinned archive size in bytes, or null when no build is available. */
     size: number | null;
   };
-  /** The last install attempt's failure in this session, cleared by a success; shown with its sentence (§18.8). */
+  /** Retain the last session install failure until a successful install. */
   lastInstallError: { code: MarketplaceErrorCode; message: string; detail?: MarketplaceErrorDetail } | null;
 }
 
@@ -41,7 +33,6 @@ export type GitRuntimeResult =
   | { ok: true; status: GitRuntimeStatus }
   | { ok: false; error: "git-runtime-unavailable" | "user-keyboard-required" | "unauthorized-frame" };
 
-/** The private `window.aveApi.gitRuntime` namespace. */
 export interface GitRuntimeApi {
   status(): Promise<GitRuntimeResult>;
   /** Download and install the managed copy; requires a live keyboard gesture. */
@@ -51,7 +42,7 @@ export interface GitRuntimeApi {
 
 const PHASES = new Set(["checking", "downloading", "verifying", "extracting", "smoke-testing", "ready", "failed"]);
 
-/** Shape check for what crosses the bridge; anything else is treated as unavailable. */
+/** Malformed bridge status reads as unavailable. */
 export function parseGitRuntimeResult(value: unknown): GitRuntimeResult | null {
   if (!isRecord(value)) return null;
   if (value.ok === false) {

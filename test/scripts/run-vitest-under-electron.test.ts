@@ -215,8 +215,7 @@ describe("Electron Node-mode Vitest runner", () => {
         mkdirSync(join(root, relative, ".."), { recursive: true });
         writeFileSync(join(root, relative), "x");
       };
-      // A fresh worktree: no manifest at all. The generator is the one that
-      // knows the full list, so it must run and its manifest is then trusted.
+      // A missing manifest requires generation because only the generator knows all outputs.
       expect(missingGeneratedAssets({ cwd: root })).toEqual([manifest]);
       const runSync = vi.fn(() => {
         write("build/icon.png");
@@ -240,15 +239,12 @@ describe("Electron Node-mode Vitest runner", () => {
       );
       expect(log).toHaveBeenCalledTimes(1);
 
-      // Complete tree: nothing to do, and the generator is not touched.
       expect(ensureGeneratedAssets({ cwd: root, runSync, log })).toEqual({
         generated: false,
         missing: [],
       });
       expect(runSync).toHaveBeenCalledTimes(1);
 
-      // One listed output gone (e.g. a partial clean): only that one is
-      // reported, and the generator runs again.
       rmSync(join(root, "build/tray-icon.png"));
       expect(missingGeneratedAssets({ cwd: root })).toEqual(["build/tray-icon.png"]);
       ensureGeneratedAssets({ cwd: root, runSync, log });
@@ -271,14 +267,13 @@ describe("Electron Node-mode Vitest runner", () => {
         runSync: () => ({ status: null, error: new Error("ENOENT node") }),
         log: () => {},
       })).toThrow("[electron-vitest-assets-unavailable] ENOENT node");
-      // A "successful" generator that did not actually produce the manifest is
-      // still an absence, not a pass.
+      // A successful generator exit without a manifest is still a failure.
       expect(() => ensureGeneratedAssets({
         cwd: root,
         runSync: () => ({ status: 0, error: undefined }),
         log: () => {},
       })).toThrow("[electron-vitest-assets-unavailable] generator left assets missing");
-      // A corrupt manifest counts as missing rather than as "nothing listed".
+      // Treat corrupt manifests as missing, not as empty output lists.
       mkdirSync(join(root, "build"), { recursive: true });
       writeFileSync(join(root, "build", "generated-assets.json"), "{not json");
       expect(missingGeneratedAssets({ cwd: root })).toEqual([join("build", "generated-assets.json")]);

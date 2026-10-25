@@ -19,9 +19,7 @@ describe("normalizeSettingsTab", () => {
   });
 
   it("resolves retired tab ids to the page that absorbed them", () => {
-    // Each of these is a deep link or a persisted id that a user can still be
-    // holding after an upgrade; landing on the default tab would silently drop
-    // them somewhere unrelated.
+    // Persisted tab ids and deep links must survive upgrades rather than land on unrelated defaults.
     expect(normalizeSettingsTab("privacy")).toBe("chat");
     expect(normalizeSettingsTab("plugin-perf")).toBe("plugin-config");
     expect(normalizeSettingsTab("general")).toBe("llm");
@@ -41,9 +39,7 @@ describe("SETTINGS_SECTIONS", () => {
   });
 
   it("names each section once across the whole panel", () => {
-    // Arrival looks an anchor up by attribute across the mounted panel, so two
-    // tabs sharing an id would make where the user lands depend on which tab
-    // happened to be open.
+    // Anchor ids must be unique across mounted tabs so arrival does not depend on the active tab.
     const ids = Object.values(SETTINGS_SECTIONS).flatMap((sections) => [...sections]);
     expect(new Set(ids).size).toBe(ids.length);
   });
@@ -76,16 +72,11 @@ describe("SETTINGS_PATH_PATTERN", () => {
   })();
 
   it("is the grammar the manifest schema shapes an onboarding path with", () => {
-    // The schema runs before the registry does, on a manifest the host has not
-    // loaded yet. Let the two spellings drift and the looser one decides: a
-    // section id the schema rejects can never be linked to, and nothing in the
-    // registry would say so.
+    // Keep manifest grammar and registry lookup aligned so accepted links can actually resolve.
     expect(schemaPattern).toBe(SETTINGS_PATH_PATTERN);
   });
 
   it("admits every tab and section this build registers", () => {
-    // The other direction of the same pin. `parseSettingsPath` answers from
-    // the registry and would happily resolve an id the schema forbids.
     for (const tab of SETTINGS_TABS) expect(tab).toMatch(pathGrammar);
     for (const sections of Object.values(SETTINGS_SECTIONS)) {
       for (const section of sections) expect(section).toMatch(pathGrammar);
@@ -160,9 +151,7 @@ describe("parseSettingsPath", () => {
   });
 
   it("does not fold a retired tab id the way normalizeSettingsTab does", () => {
-    // The lenient reader has to answer something so the panel can open; this
-    // one has to be able to say no, or a button would point at a page nobody
-    // asked for.
+    // Strict action parsing must reject invalid destinations instead of opening a default page.
     expect(normalizeSettingsTab("tailnet-access")).toBe("remote-surfaces");
     expect(parseSettingsPath("tailnet-access")).toBeNull();
   });

@@ -1,8 +1,3 @@
-/**
- * The plugin half of the first-boot migration (design §16.3), against a real
- * registry file and real install receipts: what binds, what keeps its grant,
- * what is unlocked, and that nothing already migrated or in flight moves.
- */
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +29,6 @@ describe("migrateLegacyPlugins", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  /** A plugin on disk at `version`, with a receipt whose artifact hash is `sha` (none when undefined). */
   async function plugin(id: string, version: string, sha?: string | null): Promise<string> {
     const dir = join(paths.pluginsRoot, id);
     mkdirSync(join(dir, "dist"), { recursive: true });
@@ -52,7 +46,6 @@ describe("migrateLegacyPlugins", () => {
       });
       await writeInstallReceipt(paths.cacheRoot, receipt);
     }
-    // As installers record it: relative to the plugins directory.
     return `${id}/plugin.json`;
   }
 
@@ -65,7 +58,6 @@ describe("migrateLegacyPlugins", () => {
     return JSON.parse(readFileSync(paths.registryPath, "utf8")) as PluginRegistry;
   }
 
-  /** The official snapshot lists `meeting` (pinning SERVED for 0.5.0) and `calendar` (no pins). */
   const official = (name: string): OfficialPlugin | null => {
     if (name === "meeting") return { snapshotCommit: COMMIT, packagePath: "plugins/meeting", pins: (version) => (version === "0.5.0" ? [SERVED] : []) };
     if (name === "calendar") return { snapshotCommit: COMMIT, packagePath: "plugins/calendar", pins: () => [] };
@@ -106,7 +98,6 @@ describe("migrateLegacyPlugins", () => {
   it("names the keys a granted plugin loses when the index pins nothing for its version, or it has no receipt", async () => {
     registry([{ id: "meeting", manifestPath: await plugin("meeting", "0.4.0"), installSource: "user" }]);
     const report = await run();
-    // No receipt: the version comes from plugin.json, and there is no hash to match.
     expect(readRegistry().plugins[0]!.origin).toMatchObject({ version: "0.4.0", installedAt: AT.toISOString() });
     expect(report.lostGrants.map((item) => item.plugin)).toEqual(["meeting"]);
   });
@@ -125,7 +116,6 @@ describe("migrateLegacyPlugins", () => {
     expect(entries.get("calendar")).toMatchObject({ installSource: "user", origin: { sourceId: "ave", rung: "legacy" } });
     expect(entries.get("sampleportal")).toMatchObject({ installSource: "user" });
     expect(entries.get("sampleportal")!.origin).toBeUndefined();
-    // A user install no source lists is named too (it gets no updates now), and left as it was.
     expect(entries.get("notes")).toEqual({ id: "notes", manifestPath: "notes/plugin.json", installSource: "user" });
     expect(applied.list()).toEqual([{ kind: "plugin", name: "calendar", source: "ave", result: "migrated", at: AT.toISOString() }]);
   });

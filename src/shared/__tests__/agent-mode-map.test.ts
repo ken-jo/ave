@@ -6,9 +6,7 @@ import {
   resolveAgentMode,
 } from "../agent-mode-map.js";
 
-// The seeded builtin skill names (resources/skills/*.md). autoSkills must
-// only reference these — a typo would surface a recommendation the user
-// can never satisfy.
+// Recommend only bundled skill names so every suggestion can be satisfied.
 const SEEDED_BUILTIN_SKILLS = new Set([
   "report-writing",
   "meeting-minutes",
@@ -42,9 +40,7 @@ describe("agent-mode-map", () => {
     });
 
     it("no mode declares a round budget", () => {
-      // The per-mode budget hint was retired: a single user-configured budget
-      // replaced it, and the runner resolves it without consulting the mode.
-      // A mode that reintroduced one would be inert config that reads as live.
+      // Mode-specific budgets are inert; the runner uses the single user-configured budget.
       for (const mode of AGENT_MODES) {
         expect(
           Object.keys(AGENT_MODE_MAP[mode]),
@@ -72,7 +68,7 @@ describe("agent-mode-map", () => {
     });
 
     it("rejects unknown / non-string values", () => {
-      expect(isAgentMode("executor")).toBe(false); // agent name, not a mode
+      expect(isAgentMode("executor")).toBe(false);
       expect(isAgentMode("planning")).toBe(false);
       expect(isAgentMode("")).toBe(false);
       expect(isAgentMode(undefined)).toBe(false);
@@ -93,7 +89,7 @@ describe("agent-mode-map", () => {
       for (const input of [undefined, null, "", "   "]) {
         const r = resolveAgentMode(input);
         expect(r.config).toBe(AGENT_MODE_MAP.default);
-        expect(r.matched).toBe(true); // absence is expected, not an error
+        expect(r.matched).toBe(true);
         expect(r.requested).toBeNull();
       }
     });
@@ -101,7 +97,7 @@ describe("agent-mode-map", () => {
     it("falls back to default for an unknown mode and flags it (matched=false)", () => {
       const r = resolveAgentMode("supervise");
       expect(r.config).toBe(AGENT_MODE_MAP.default);
-      expect(r.matched).toBe(false); // caller logs "unknown mode"
+      expect(r.matched).toBe(false);
       expect(r.requested).toBe("supervise");
     });
 

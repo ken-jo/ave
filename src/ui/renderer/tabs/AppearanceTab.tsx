@@ -1,18 +1,4 @@
-/**
- * AppearanceTab — theme bundle picker (v2 single-bundle redesign).
- *
- * Single section: a card grid with the compiled bundles (Moonstone, Gallery)
- * and every installed theme package; the marketplace button opens the theme
- * packages. The language picker lists the built-in and installed languages.
- *
- * Clicking a card calls `setBundle(bundle.id)` and applies the bundle to
- * `<html data-theme-bundle>` immediately via ThemeProvider.
- *
- * When the selected theme declares a pair of the other shell, a `followSystem`
- * toggle is shown. For all other themes it is hidden.
- *
- * The external URL section (§B1 webView policy) is preserved verbatim.
- */
+/** Offer system-following only for themes with an installed opposite-shell pair; apply chosen bundles immediately. */
 import { useEffect, useRef, useState } from "react";
 import { Store } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
@@ -38,10 +24,8 @@ type AppearanceMarketplaceFilter = "theme" | "language";
 
 /* ─── Bundle card mini-mock helpers ─────────────────────────────────────── */
 
-/**
- * Derive the two dominant colors for a bundle mini-mock from its tokens.
- * `bg` is the card background; `accent` is the primary color pill.
- */
+/** Derive the two dominant colors for a bundle mini-mock from its tokens. `bg` is the card background; `accent` is the
+ * primary color pill. */
 function bundleMockColors(bundle: ThemeBundle): { bg: string; accent: string; text: string } {
   const t = bundle.tokens;
   return {
@@ -51,18 +35,15 @@ function bundleMockColors(bundle: ThemeBundle): { bg: string; accent: string; te
   };
 }
 
-/**
- * Mini chat-shell mock for a bundle card. Shows background, a user bubble
- * (accent color) and an assistant bubble (muted tone).
- */
+/** Mini chat-shell mock for a bundle card. Shows background, a user bubble (accent color) and an assistant bubble (muted
+ * tone). */
 function BundleMock({ bundle }: { bundle: ThemeBundle }) {
   const { bg, accent, text } = bundleMockColors(bundle);
   const userBubble = `hsl(${bundle.tokens["message-user-bg"]})`;
   const mutedBubble = `hsl(${bundle.tokens.muted})`;
 
-  // All mock geometry lives in the `.ave-theme-card-mock-*` classes in
-  // styles.css. The only thing that varies per bundle is the color set, so
-  // those flow in as `--mock-*` custom properties the classes consume.
+  // All mock geometry lives in the `.ave-theme-card-mock-*` classes in styles.css. The only thing that varies per bundle is
+  // the color set, so those flow in as `--mock-*` custom properties the classes consume.
   const previewVars = {
     "--mock-bg": bg,
     "--mock-text": text,
@@ -206,9 +187,8 @@ function useFontPreferences() {
   const [family, setFamilyState] = useState<string>("system");
   const [sizeScale, setSizeScaleState] = useState<FontSizeScale>(FONT_SIZE_SCALE_DEFAULT);
 
-  // Initial load + cross-window broadcast subscription. Without the subscription
-  // the radio buttons drift from the canonical state when the user changes the
-  // font in another window (native settings BrowserWindow or sibling).
+  // Initial load + cross-window broadcast subscription. Without the subscription the radio buttons drift from the canonical
+  // state when the user changes the font in another window (native settings BrowserWindow or sibling).
   useEffect(() => {
     let cancelled = false;
     let unsub: (() => void) | undefined;
@@ -268,18 +248,7 @@ function useFontPreferences() {
   return { family, sizeScale, setFamily, setSizeScale };
 }
 
-
-
-/**
- * Free-form CSS font-family input with commit-on-blur semantics.
- *
- * `initial` syncs the React state when the upstream value changes (other window,
- * preset click). Local state is the raw typed text (no per-keystroke trim — that
- * would strip trailing whitespace as the user types, sabotaging cursor stability
- * and turning `"Arial, Helvetica"` into `"Arial,Helvetica"`). Commit happens on
- * blur or Enter — trim once, send the validated string to settings, broadcast
- * once. Empty input commits as `"system"` (revert to default).
- */
+/** Keep raw font input while typing; trim only on blur/Enter, and map empty input to system. */
 function FontFamilyCustomInput({
   initial,
   onCommit,
@@ -305,9 +274,8 @@ function FontFamilyCustomInput({
     setRaw(initial);
   }, [initial]);
 
-  // Dedupe against `initial.trim()` so a self-echo from cross-window broadcast
-  // (the user committed "Foo" here, the broadcast arrived, parent re-rendered
-  // with `initial = "Foo"`, an unfocused blur is a no-op anyway) stays silent.
+  // Dedupe against `initial.trim()` so a self-echo from cross-window broadcast (the user committed "Foo" here, the broadcast
+  // arrived, parent re-rendered with `initial = "Foo"`, an unfocused blur is a no-op anyway) stays silent.
   const commit = () => {
     const value = raw.trim();
     if (value === initial.trim()) return;
@@ -325,8 +293,8 @@ function FontFamilyCustomInput({
         maxLength={256}
         onChange={(e) => setRaw(e.target.value)}
         onBlur={() => {
-          // Escape sets this flag and then calls blur(); skip the cascaded
-          // commit so the typed-but-cancelled value never reaches onCommit.
+          // Escape sets this flag and then calls blur(); skip the cascaded commit so the typed-but-cancelled value never reaches
+          // onCommit.
           if (escapingRef.current) { escapingRef.current = false; return; }
           commit();
         }}

@@ -1,15 +1,3 @@
-/**
- * `ave:mcp:attach-resource` — the user path's IPC.
- *
- * What this channel must guarantee:
- *   - an unauthorized sender frame is rejected BEFORE anything reaches a server
- *   - the HOST builds the fence; the renderer receives a ready-to-attach part and
- *     assembles nothing, because server text lands beside the user's own words
- *   - it never starts a turn: the outcome is an attachment the renderer must send
- *   - a URI shape the host would not catalogue is refused before the request
- *   - failures fail closed with a sanitized code (no server message, no host path)
- *   - per-server rate limiting applies (it reaches a server on the user's behalf)
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { USER_PROMPT_RATE_LIMIT_MAX_CALLS } from "../../../boot/steps/plugin-runtime/trigger-gate.js";
@@ -40,7 +28,7 @@ async function setup(
 ) {
   handlers.clear();
   vi.clearAllMocks();
-  // Fresh serverId per test — the rate limiter is a module singleton.
+  // Unique server ids isolate the module-wide rate limiter.
   const serverId = `hr-mcp-${Math.random().toString(36).slice(2, 10)}`;
   const readMock =
     readDeclaredResource ??
@@ -49,8 +37,6 @@ async function setup(
       droppedBlocks: 0,
       truncated: false,
     }));
-  // The template read returns the URI MAIN produced — the manager's contract, and what
-  // the fence header and the audit row are keyed on.
   const templateReadMock =
     readDeclaredResourceTemplate ??
     vi.fn(async () => ({
@@ -120,8 +106,6 @@ describe("ave:mcp:attach-resource — outcome", () => {
     };
     expect(result.ok).toBe(true);
     expect(result.attachment.type).toBe("text");
-    // The renderer assembles nothing: the fence, the untrusted framing, and the
-    // provenance are all in the string the host returned.
     expect(result.attachment.text.startsWith('<mcp-resource trust="untrusted-server-data"')).toBe(true);
     expect(result.attachment.text).toContain(`server="${serverId}"`);
     expect(result.attachment.text).toContain("POLICY BODY");
@@ -144,9 +128,7 @@ describe("ave:mcp:attach-resource — outcome", () => {
     expect(readMock).not.toHaveBeenCalled();
   });
 
-  // Shape-checked BEFORE the rate bucket and the audit line, as `getPrompt` does: an
-  // unbounded serverId becomes a permanent key in a shared limiter map and lands
-  // un-sliced in audit rows.
+  // Validate serverId bounds before rate-key allocation or audit storage.
   it("refuses a serverId that cannot be a server id", async () => {
     const { readMock } = await setup();
     for (const bad of ["bad id with spaces", "s".repeat(500), "-leading-dash", ""]) {
@@ -170,7 +152,6 @@ describe("ave:mcp:attach-resource — outcome", () => {
     );
     const failed = (await invoke(CHANNEL, boom.serverId, "file:///x")) as { ok: boolean; error: string };
     expect(failed).toEqual({ ok: false, error: "resource-failed" });
-    // The server's message never reaches the renderer.
     expect(JSON.stringify(failed)).not.toContain("secret");
   });
 
@@ -190,11 +171,7 @@ describe("ave:mcp:attach-resource — outcome", () => {
     expect(result.omittedBlocks).toBe(1);
   });
 
-  // Two properties in one, because a single-key fixture proves only that SOME limit
-  // exists — not that it is keyed by server, which is the whole point of the bucket.
-  // The second half pins the deliberate sharing with `getPrompt`: both are round-trips
-  // the user asked for against one server, and what the budget protects is that server
-  // from a renderer looping on the user's behalf.
+  // Resource and prompt requests share one budget per server; other servers retain independent budgets.
   it("rate limits per server, and shares the budget with prompts/get", async () => {
     const { deps, serverId } = await setup();
     const other = `${serverId}-other`;
@@ -209,11 +186,8 @@ describe("ave:mcp:attach-resource — outcome", () => {
     }
     expect(limited).toBe(true);
 
-    // A different server is untouched — one chatty surface cannot starve another.
     expect(await invoke(CHANNEL, other, "file:///x")).toMatchObject({ ok: true });
 
-    // …and the prompt surface on the SPENT server is limited by the same bucket,
-    // without ever reaching the server.
     const promptResult = await invoke("ave:mcp:get-prompt", serverId, "summarize", {});
     expect(promptResult).toMatchObject({ ok: false, error: "rate-limited" });
     expect(deps.mcpManager.getPrompt).not.toHaveBeenCalled();
@@ -230,8 +204,6 @@ describe("ave:mcp:list-resources — the picker's catalogue", () => {
 
     const result = await invoke("ave:mcp:list-resources");
 
-    // Verbatim from `listDeclaredResources`, which is what stops the picker offering a
-    // URI the read path would then refuse as undeclared.
     expect(result).toEqual({ ok: true, servers: catalogue });
     expect(deps.mcpManager.listDeclaredResources).toHaveBeenCalled();
   });
@@ -296,13 +268,11 @@ describe("ave:mcp:attach-resource-template — filling an offer", () => {
     })) as { ok: boolean; uri: string; attachment: { text: string } };
 
     expect(result.ok).toBe(true);
-    // A `Map`, never a `Record` — the property the prompt-arguments dialog states, held
-    // on the main side too, because this one is built from renderer input.
+    // Use a Map for renderer-supplied variable names so __proto__ stays an ordinary key.
     const [, template, values] = templateReadMock.mock.calls[0] as [string, string, unknown];
     expect(template).toBe("file:///project/{path}");
     expect(values).toBeInstanceOf(Map);
     expect((values as Map<string, string>).get("path")).toBe("a.md");
-    // Keyed on the URI MAIN produced, not on anything the renderer sent.
     expect(result.uri).toBe("file:///project/a.md");
     expect(result.attachment.text).toContain('uri="file:///project/a.md"');
     expect(result.attachment.text).toContain("TEMPLATE BODY");
@@ -337,24 +307,13 @@ describe("ave:mcp:attach-resource-template — filling an offer", () => {
     expect(templateReadMock).not.toHaveBeenCalled();
   });
 
-  // A variable named `__proto__` is a name the form would happily render and the user
-  // would happily fill. In a `Record` it reaches the prototype setter; in the `Map` main
-  // builds it is an ordinary key — and the value survives to the expansion either way,
-  // which is the part a "we filtered it out" implementation would silently lose.
   it("carries a prototype-shaped variable name as an ordinary key", async () => {
     const { serverId, templateReadMock } = await setup();
-    // Built with `JSON.parse`, not an object literal: `{ __proto__: … }` is the
-    // prototype-setter SYNTAX and defines no own property, so a literal fixture here
-    // would assert nothing while looking like it asserted the whole point. What arrives
-    // over IPC is a structured clone of renderer data, which does carry `__proto__` as
-    // an ordinary own key — this is that.
+    // Build __proto__ as an own JSON property; object-literal syntax would only set the prototype.
     const values = JSON.parse('{"__proto__":"PAYLOAD","toString":"SECOND"}') as
       Record<string, string>;
     await invoke(TEMPLATE_CHANNEL, serverId, "file:///project/{__proto__}/{toString}", values);
     const carried = (templateReadMock.mock.calls[0] as [string, string, Map<string, string>])[2];
-    // A plain `{}` accumulator swallows the first one (it reaches the prototype setter)
-    // and shadows an inherited method with the second. The Map has neither problem, and
-    // the user's value survives to the expansion — which is what they filled in.
     expect(carried.get("__proto__")).toBe("PAYLOAD");
     expect(carried.get("toString")).toBe("SECOND");
     expect(Object.getPrototypeOf(carried)).toBe(Map.prototype);
@@ -373,10 +332,7 @@ describe("ave:mcp:attach-resource-template — filling an offer", () => {
     expect(values.get("path")).toBe("notes.md");
   });
 
-  // The one place the prompt path's rule deliberately does NOT carry over. A clipped
-  // prompt argument is a shorter question; a clipped path segment is a DIFFERENT
-  // resource, read without anyone being told — and clipping here is exactly what would
-  // stop `expandResourceUriTemplate`'s own over-long refusal from ever firing.
+  // Reject overlong path variables instead of clipping them into a different resource.
   it("refuses an over-long value rather than clipping it into another resource", async () => {
     const { serverId, templateReadMock } = await setup();
     const overLong = "v".repeat(MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS + 1);
@@ -385,17 +341,13 @@ describe("ave:mcp:attach-resource-template — filling an offer", () => {
       .toEqual({ ok: false, error: "invalid-request" });
     expect(templateReadMock).not.toHaveBeenCalled();
 
-    // …and the value at the limit is carried WHOLE, so the refusal is a boundary and
-    // not a quiet ceiling one character lower.
     const atLimit = "v".repeat(MCP_RESOURCE_TEMPLATE_VALUE_MAX_CHARS);
     await invoke(TEMPLATE_CHANNEL, serverId, "file:///project/{path}", { path: atLimit });
     const values = (templateReadMock.mock.calls[0] as [string, string, Map<string, string>])[2];
     expect(values.get("path")).toBe(atLimit);
   });
 
-  // The bucket protects the SERVER from round-trips made on the user's behalf. A request
-  // refused before any of them never reaches one, so charging the user's per-server
-  // budget for it would let a renderer bug spend the budget the user needs.
+  // Requests rejected before a server round-trip must not consume the server's request budget.
   it("does not spend the rate budget on a request it refuses", async () => {
     const { serverId, templateReadMock } = await setup();
     for (let i = 0; i <= USER_PROMPT_RATE_LIMIT_MAX_CALLS + 5; i += 1) {
@@ -404,7 +356,6 @@ describe("ave:mcp:attach-resource-template — filling an offer", () => {
       });
       expect(result).toEqual({ ok: false, error: "invalid-request" });
     }
-    // …and a well-formed request afterwards still goes through.
     expect(await invoke(TEMPLATE_CHANNEL, serverId, "file:///project/{path}", { path: "a.md" }))
       .toMatchObject({ ok: true });
     expect(templateReadMock).toHaveBeenCalledTimes(1);
@@ -447,9 +398,6 @@ describe("ave:mcp:attach-resource-template — filling an offer", () => {
     expect(JSON.stringify(failed)).not.toContain("secret");
   });
 
-  // The same bucket as the plain attach and `prompts/get`: one server, one budget for
-  // round-trips the user asked for. A separate bucket here would be a second budget a
-  // renderer could spend against the same server.
   it("shares the user-initiated rate bucket with the plain attach", async () => {
     const { serverId, templateReadMock } = await setup();
     let limited = false;

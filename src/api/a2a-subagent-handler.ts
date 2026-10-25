@@ -49,10 +49,7 @@ import { hasOnlyKeys, isRecord } from "../shared/is-record.js";
 import { MAX_TIMER_DELAY_MS } from "../shared/tool-timeout-policy.js";
 
 const TEXT_MODE = "text/plain";
-/**
- * Upper bound on remembered disclosure grants. The receiver is long-lived, so
- * the ledger evicts oldest-first rather than growing with the task store.
- */
+// Bound the disclosure-grant ledger; its lifetime exceeds individual tasks.
 const DISCLOSURE_CONSENT_CAPACITY = 256;
 const SEND_KEYS = new Set(["tenant", "message", "configuration", "metadata"]);
 const SEND_CONFIGURATION_KEYS = new Set([
@@ -88,7 +85,6 @@ function isSafeChildSessionId(value: unknown): value is string {
     && isSafeStructuralId(value);
 }
 
-/** Canonical UUID context key admitted by the structural identifier validator. */
 export function createA2AContextId(): string {
   return createDlpSafeUuid();
 }
@@ -364,18 +360,11 @@ export interface A2ATaskLifecycleAuditEvent {
 
 type A2AMutationOperation = "send-message" | "cancel-task";
 
-/**
- * Wire operations that disclose stored task content — full message history and
- * sub-agent artifacts — without changing anything. The payload is exactly what
- * a user would refuse to hand to an untrusted peer, so disclosure carries the
- * same consent obligation as a mutation.
- */
+// Reads disclose task history and artifacts, so they require the same consent as mutations.
 type A2AReadOperation = "get-task" | "list-tasks";
 
-/** Every wire operation that needs explicit user authority before it runs. */
 export type A2AWireOperation = A2AMutationOperation | A2AReadOperation;
 
-/** Host-owned, redacted description of a requested wire operation. */
 export interface A2AWireAuthorizationDescriptor {
   operation: A2AWireOperation;
   handlerId: string;
@@ -440,13 +429,7 @@ export class A2ASubAgentHandler implements A2ARequestHandler {
   private readonly pendingTaskMutations = new Map<string, PendingTaskMutation>();
   private readonly taskQueues = new Map<string, Promise<void>>();
   private readonly expiryRetries = new Map<string, ExpiryRetryState>();
-  /**
-   * Task ids the user has already consented to disclose on this wire, newest
-   * last. Consent is established by approving a mutation on the task or by
-   * approving an explicit `tasks/get`; it lets the caller poll the task it was
-   * granted without re-prompting on every poll. Deliberately process-local:
-   * a restart drops every grant and the next read prompts again.
-   */
+  // Task-specific disclosure grants allow polling without repeated prompts and expire on process restart.
   private readonly disclosureConsent = new Set<string>();
   private expiryTimer: ReturnType<typeof setTimeout> | undefined;
   private expiryQueue: Promise<void> = Promise.resolve();
@@ -692,7 +675,6 @@ export class A2ASubAgentHandler implements A2ARequestHandler {
     }
   }
 
-  /** Start the handler-owned, restart-safe INPUT_REQUIRED age-out lifecycle. */
   async startInputRequiredExpiry(): Promise<void> {
     if (this.expiryDisposed || this.expiryStarted) return;
     this.expiryStarted = true;
@@ -795,11 +777,7 @@ export class A2ASubAgentHandler implements A2ARequestHandler {
     throw new A2AHandlerError(A2AHostJsonRpcErrorDefinition.OPERATION_REJECTED);
   }
 
-  /**
-   * Record that the user has consented to disclose one task to this wire.
-   * Called only where an approval actually happened (or where the caller's own
-   * `message/send` produced the task), never as a side effect of a read.
-   */
+  // Grant disclosure only after approval or a caller-owned send, never as a side effect of reading.
   private grantDisclosure(taskId: string): void {
     this.disclosureConsent.delete(taskId);
     this.disclosureConsent.add(taskId);
@@ -810,11 +788,7 @@ export class A2ASubAgentHandler implements A2ARequestHandler {
     }
   }
 
-  /**
-   * Gate one task's content behind consent already granted for that exact task,
-   * or behind a fresh prompt. Callers must resolve task availability first so a
-   * caller guessing ids cannot turn unknown ids into user-visible prompts.
-   */
+  // Resolve availability before prompting so guessed task ids cannot trigger consent dialogs.
   private async authorizeDisclosure(taskId: string): Promise<void> {
     if (this.disclosureConsent.has(taskId)) return;
     await this.authorizeOperation({ operation: "get-task", taskId });
@@ -1349,9 +1323,7 @@ export class A2ASubAgentHandler implements A2ARequestHandler {
 
   private async listTasks(params: A2AJsonObject): Promise<A2ADirectJsonRpcResult> {
     const parsed = parseList(params);
-    // Enumeration is never covered by a per-task grant: it is the primitive
-    // that turns "holds the bearer" into "reads every stored transcript", so
-    // every call is authorized on its own.
+    // Authorize enumeration on every call; per-task consent must not expose every stored transcript.
     await this.authorizeOperation({ operation: "list-tasks" });
     const records = await this.options.store.list(this.id, {
       ...(parsed.contextId ? { contextId: parsed.contextId } : {}),

@@ -1,38 +1,4 @@
-/**
- * Admission's adversarial fixture (`docs/design/plugin-hostapi-protocol.md`
- * §9.8, "The four escapes, stated as assertions"; decision 53).
- *
- * One plugin, four tools, each attempting one escape a plugin had in process:
- *
- *  1. `escape_secrets` — read `<AVE_HOME>/secrets/` and another plugin's data
- *     directory, and ask the host for another plugin's secret beside its own;
- *     its own data directory is written and read back first, the in-sandbox
- *     control that the paths and the probe work;
- *     `escape_worker` asks the host for a delegated worker that reads the
- *     other plugin's data, after one that reads its own;
- *  2. `escape_network` — a raw socket and a global `fetch` to a loopback
- *     listener, and a `hostFetch` to a host outside `allowedDomains`;
- *  3. `escape_electron` — every module form that could hand back Electron's
- *     main-process API, then the uses that would prove it usable;
- *  4. `escape_patch` — patch `globalThis.fetch` and `process.stdout.write`,
- *     then write to the protocol channel directly — fd 1, or on a sandboxed
- *     Windows child the loopback socket it finds among the process's own
- *     handles: a forged `ave/host/getSecret` frame naming another plugin,
- *     and, when asked, a line that is not JSON.
- *
- * A tool THROWS only when an escape succeeds where the harness claims it
- * cannot — `expectConfined: true`, which the real-wrap suite passes — and
- * otherwise returns `{ attempt, outcome, … }` with every probe's answer, so the
- * validate CLI (which never confines, decision 30) and the wrap suite run the
- * same code. `escape_electron` is the exception that proves the rule: no
- * harness runs a plugin as Electron's main process, so "no usable main-process
- * API" is claimed under both and asserted under both.
- *
- * `patch()` and `probeElectron()` are exported for the callers outside a
- * plugin child: the wrap suite's control imports `patch()` into the test
- * process, and the packaged gate runs `probeElectron()` under the packaged
- * executable.
- */
+/** Adversarial plugin fixture; run controls before interpreting filesystem, network or process denials. */
 import { once } from "node:events";
 import { readdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -42,12 +8,10 @@ import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROBE_TIMEOUT_MS = 5_000;
-/** The id the forged frame carries: a string, so it can never meet the runtime's numeric ids. */
+/** Use a string forged ID so it cannot match runtime-allocated numeric IDs. */
 const FORGED_REQUEST_ID = "adversarial-forged-getSecret";
-/** What the controls write into the plugin's own data directory and read back. */
 const OWN_BYTES = "the adversarial plugin's own bytes";
 
-/** A synchronous probe's answer: its value, or the error's code. */
 function attempt(probe) {
   try {
     return { ok: true, value: probe() };
@@ -56,7 +20,6 @@ function attempt(probe) {
   }
 }
 
-/** An asynchronous probe's answer, in the same shape. */
 async function attemptAsync(probe) {
   try {
     return { ok: true, value: await probe() };
@@ -65,7 +28,6 @@ async function attemptAsync(probe) {
   }
 }
 
-/** The most specific code an error carries: its own, its cause's, or its name. */
 function errorCode(error) {
   return error?.code ?? error?.cause?.code ?? error?.name ?? typeof error;
 }
@@ -74,17 +36,12 @@ function escaped(name, what) {
   return new Error(`[adversarial] ${name}: ${what} succeeded where the harness claims confinement`);
 }
 
-// ── 1. the host's secrets ────────────────────────────────────────────────────
-
 async function escapeSecrets(context, args) {
   const otherPluginId = args.otherPluginId ?? "neighbour";
   const sentinelName = args.sentinelName ?? "sentinel.txt";
   const secretsDir = args.secretsDir ?? join(context.aveHome, "secrets");
   const otherDataDir = args.otherDataDir ?? join(context.aveHome, "plugins", otherPluginId, "data");
-  // The control inside the sandbox: the child writes and re-reads its own data
-  // directory. A denial that looked like a missing path (bubblewrap answers
-  // ENOENT) would otherwise pass for a wrong path, and a data directory the
-  // wrap left read-only would go unseen.
+  // Prove own-data read/write succeeds before interpreting neighbour failures as confinement.
   const ownFile = join(context.pluginDataDir, sentinelName);
   const own = {
     write: attempt(() => writeFileSync(ownFile, OWN_BYTES, "utf-8")),
@@ -103,9 +60,7 @@ async function escapeSecrets(context, args) {
     ownKey: `plugin.${context.pluginId}.key`,
     own: await attemptAsync(() => hostApi.getSecret(`plugin.${context.pluginId}.key`)),
   };
-  // A listing reaches something only when it names an entry: bubblewrap denies
-  // a directory by mounting an empty tmpfs over it, so there the listing
-  // succeeds, empty, and the read beside it is what fails.
+  // An empty mounted directory can list successfully; the sibling read establishes denial.
   const reached = [
     ...Object.entries(filesystem)
       .filter(([, probe]) => probe.ok && (!Array.isArray(probe.value) || probe.value.length > 0))
@@ -122,10 +77,7 @@ async function escapeSecrets(context, args) {
   };
 }
 
-/**
- * One delegated worker that prints a file: its stdout, stderr and exit, or
- * `timeout` when it has not exited within `waitMs`.
- */
+/** Capture worker output and exit, or report timeout without claiming denial. */
 async function workerReads(context, workerId, command, file, allowReadPaths, waitMs) {
   return attemptAsync(async () => {
     const worker = await context.hostApi.spawnWorker({ workerId, command, args: [file], allowReadPaths, allowWritePaths: [] });
@@ -151,22 +103,16 @@ async function escapeWorker(context, args) {
   const otherDataDir = args.otherDataDir ?? join(context.aveHome, "plugins", otherPluginId, "data");
   const command = args.command ?? "/bin/cat";
   const waitMs = args.waitMs ?? PROBE_TIMEOUT_MS;
-  // The control: the same command, granted the plugin's own data directory,
-  // prints what the child wrote there. A worker that cannot print it proves
-  // nothing by failing to print the neighbour's.
+  // The worker must read granted own data before a neighbour failure proves confinement.
   const ownFile = join(context.pluginDataDir, sentinelName);
   writeFileSync(ownFile, OWN_BYTES, "utf-8");
   const own = await workerReads(context, "adversarial-own", command, ownFile, [context.pluginDataDir], waitMs);
-  // The escape: no grant at all, so only what the wrap leaves readable is read.
   const other = await workerReads(context, "adversarial-other", command, join(otherDataDir, sentinelName), [], waitMs);
   const reached = other.ok && other.value.exit === 0 && other.value.stdout.length > 0 ? ["worker(otherData)"] : [];
   if (args.expectConfined === true && reached.length > 0) throw escaped("escape_worker", reached.join(", "));
   return { attempt: "escape_worker", outcome: reached.length === 0 ? "confined" : "unconfined", own, other };
 }
 
-// ── 2. direct egress ─────────────────────────────────────────────────────────
-
-/** A raw TCP connect: `connected`, or the error the platform answered with. */
 function rawConnect(host, port) {
   return new Promise((resolve) => {
     const socket = connect({ host, port });
@@ -211,9 +157,6 @@ async function escapeNetwork(context, args) {
   return { attempt: "escape_network", outcome: reached.length === 0 ? "confined" : "unconfined", raw, hostFetch };
 }
 
-// ── 3. Electron ──────────────────────────────────────────────────────────────
-
-/** What `typeof` says about the four members a main-process plugin would reach for. */
 function describeModule(value) {
   if (value === null || (typeof value !== "object" && typeof value !== "function")) {
     return { kind: typeof value, BrowserWindow: "undefined", session: "undefined", ipcMain: "undefined", app: "undefined" };
@@ -227,7 +170,6 @@ function describeModule(value) {
   };
 }
 
-/** Whether a resolved module carries any of the API, as a value a plugin could use. */
 function carriesApi(described) {
   return described.BrowserWindow === "function"
     || described.session === "object"
@@ -235,7 +177,7 @@ function carriesApi(described) {
     || described.app === "object";
 }
 
-/** The three uses, each attempted on its own: a guard on one does not protect the next. */
+/** Probe APIs independently; guarding one does not protect the others. */
 function useApi(module) {
   return {
     newBrowserWindow: attempt(() => typeof new module.BrowserWindow({ show: false })),
@@ -247,15 +189,11 @@ function useApi(module) {
   };
 }
 
-/**
- * Every form, separately (blueprint `plugin-process-isolation.md:949`): they do
- * not fail in the same place, and an author who hits one reaches for the next.
- * `requireFrom` is the module whose location the bare specifier resolves from.
- */
+/** Probe each module-resolution form independently; requireFrom anchors bare-specifier resolution. */
 export async function probeElectron(requireFrom = import.meta.url, vendoredDir = join(HERE, "vendored-electron")) {
   const require = createRequire(requireFrom);
   const forms = {
-    // The trap: the process IS Electron, so a version check says yes.
+    // Process version identifies the binary, not whether main-process APIs are usable.
     version: process.versions.electron ?? null,
     runAsNode: process.env.ELECTRON_RUN_AS_NODE ?? null,
     requireBare: attempt(() => require("electron")),
@@ -297,20 +235,12 @@ export async function probeElectron(requireFrom = import.meta.url, vendoredDir =
 
 async function escapeElectron() {
   const report = await probeElectron();
-  // Claimed under every harness: neither the validator nor the wrap runs a
-  // plugin as Electron's main process.
+  // Neither validation nor confinement may run a plugin as a main-process module.
   if (report.usable.length > 0) throw escaped("escape_electron", `main-process API through ${report.usable.join(", ")}`);
   return report;
 }
 
-// ── 4. a host internal ───────────────────────────────────────────────────────
-
-/**
- * Replace `globalThis.fetch` and `process.stdout.write` in whatever process
- * imports this, and hand back the restore. In a plugin child that is the
- * child's own copy; the control runs it in the test process to show the
- * replacement is real where it lands.
- */
+/** Patch process-local globals and return a restore function; the harness control proves the patch actually landed. */
 export function patch() {
   const originalFetch = globalThis.fetch;
   const originalWrite = process.stdout.write;
@@ -326,19 +256,13 @@ export function patch() {
   };
 }
 
-/** Bytes straight to fd 1, after whatever the framer has queued has left. */
+/** Write directly only after queued framed output drains. */
 async function writeFd1(text) {
   if (process.stdout.writableLength > 0) await once(process.stdout, "drain");
   writeSync(1, text);
 }
 
-/**
- * The channel the runtime speaks to the host over, reached around it: fd 1 and
- * stdin for a stdio child; for a sandboxed Windows child, whose channel is a
- * loopback connection (`child-loopback-link.ts`), the one connected TCP socket
- * among the process's own handles — what a plugin that wanted to speak for
- * the runtime would go looking for.
- */
+/** Find the actual runtime channel in active handles, for both stdio and Windows loopback. */
 function protocolChannel() {
   const handles = typeof process._getActiveHandles === "function" ? process._getActiveHandles() : [];
   const sockets = handles.filter((handle) =>
@@ -355,12 +279,7 @@ function protocolChannel() {
   return { readable: process.stdin, write: writeFd1 };
 }
 
-/**
- * A `ave/host/getSecret` request for another plugin's key, carrying the
- * identity fields a plugin would forge. The reply arrives on the channel like
- * every other: the runtime's own table holds no entry for this id and drops
- * it, and this listener reads it beside the runtime.
- */
+/** Forge identity fields in a raw secret request; the runtime drops its unmatched string ID while this listener reads it. */
 async function forgeGetSecret(otherPluginId) {
   const channel = protocolChannel();
   const reply = new Promise((resolve) => {

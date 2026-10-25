@@ -278,8 +278,7 @@ describe("AcpSubscriptionSessionClient", () => {
       handleNotification(method: string, params: unknown): void;
     };
 
-    // Drive the parsed-notification boundary synchronously so all 256 accepted
-    // deltas occupy the queue before the corresponding JSON-RPC completion.
+    // Drive the parsed-notification boundary synchronously so all 256 accepted deltas occupy the queue before the corresponding JSON-RPC completion.
     for (let index = 0; index < 256; index += 1) {
       notificationClient.handleNotification("session/update", {
         sessionId: "session-123",

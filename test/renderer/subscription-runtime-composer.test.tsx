@@ -74,14 +74,10 @@ describe("subscription runtime composer readiness", () => {
     });
 
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
-    // The initial renderer defaults are API settings, but the persisted active
-    // runtime is unknown until this promise resolves. Do not briefly present
-    // those default pricing/context values as subscription usage.
+    // Until hydration resolves, do not present API defaults as subscription pricing or context.
     expect(container.querySelector('[data-testid="token-progress-ring"]')).toBeNull();
     expect(container.querySelector(testIdSelector(TEST_IDS.tokenCostBadge))).toBeNull();
-    // The persisted runtime might be a subscription, whose effort setting is
-    // provider-owned. Do not briefly expose the API-only control before the
-    // authoritative selection has loaded.
+    // Hide API-only effort controls until the persisted runtime is known.
     expect(container.querySelector('[data-testid="iab-status-reasoning"]')).toBeNull();
 
     resolveSettings(settings);
@@ -288,8 +284,7 @@ describe("subscription runtime composer readiness", () => {
 
   it("does not revive an unavailable subscription selection with a stored API key", async () => {
     const { container, api } = await renderApp({
-      // This is deliberately true: it belongs to the inactive legacy OpenAI
-      // configuration and must not make the Codex selection sendable.
+      // Inactive legacy API configuration must not make the selected subscription sendable.
       hasApiKey: true,
       subscriptionRuntimeStatus: SUBSCRIPTION_UNAVAILABLE,
       settings: {
@@ -305,7 +300,6 @@ describe("subscription runtime composer readiness", () => {
     await waitFor(() => {
       expect(container.querySelector('[data-testid="composer-api-key-chip"]')).toBeNull();
       expect(container.querySelector('[data-testid="composer-subscription-runtime-chip"]')).toBeTruthy();
-      // Preserve the draft, but make every send path visibly unavailable.
       expect((container.querySelector("textarea") as HTMLTextAreaElement | null)?.disabled).toBe(false);
       expect((container.querySelector('[data-testid="composer-send-button"]') as HTMLButtonElement | null)?.disabled).toBe(true);
       expect(container.querySelector('[data-testid="sidebar-settings"]')?.textContent).not.toContain("API");
@@ -316,8 +310,7 @@ describe("subscription runtime composer readiness", () => {
     "does not expose stale API billing or context UI for a ready %s subscription",
     async (provider) => {
       const { container, api } = await renderApp({
-        // This configuration is deliberately stale: it belongs to inactive
-        // API-key OpenAI settings, not the selected subscription runtime.
+        // This stale configuration belongs to an inactive API runtime.
         hasApiKey: true,
         subscriptionRuntimeStatus: subscriptionChatReady(provider),
         settings: {
@@ -362,8 +355,6 @@ describe("subscription runtime composer readiness", () => {
       await waitFor(() => {
         const modelCell = container.querySelector('[data-testid="iab-status-model"]');
         expect(modelCell?.getAttribute("title")).toBe(expectedLabel);
-        // A selected subscription runtime counts as a configured model, so
-        // the sidebar's Settings entry carries no "no model" alert.
         expect(container.querySelector('[data-testid="sidebar-settings"]')).toBeTruthy();
         expect(container.querySelector('[data-testid="sidebar-settings-alert"]')).toBeNull();
       });
@@ -376,8 +367,7 @@ describe("subscription runtime composer readiness", () => {
       resolveStatus = resolve;
     });
     const { container, api } = await renderApp({
-      // A legacy key must not revive a subscription selection before its login
-      // status has been verified.
+      // Verify subscription login before an unrelated legacy key can affect readiness.
       hasApiKey: true,
       subscriptionRuntimeStatus: pendingStatus,
       settings: {
@@ -391,7 +381,6 @@ describe("subscription runtime composer readiness", () => {
 
     await waitFor(() => expect(api.subscriptionRuntimeStatus).toHaveBeenCalledWith("codex"));
     await waitFor(() => {
-      // A pending probe is non-sendable without destroying an in-progress draft.
       expect((container.querySelector("textarea") as HTMLTextAreaElement | null)?.disabled).toBe(false);
       expect((container.querySelector('[data-testid="composer-send-button"]') as HTMLButtonElement | null)?.disabled).toBe(true);
       const attach = container.querySelector('[data-testid="iab-attach-button"]') as HTMLButtonElement | null;
@@ -402,7 +391,6 @@ describe("subscription runtime composer readiness", () => {
       expect(container.querySelector('[data-testid="sidebar-settings"]')?.textContent).not.toContain("API");
     });
 
-    // Resolve so the intentionally deferred mock cannot retain test state.
     resolveStatus(CODEX_CHAT_READY);
   });
 });

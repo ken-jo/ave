@@ -13,11 +13,8 @@ import type { RemoteA2AActionStatus } from "../types.js";
 type Target = { targetAgentId: number; label: string };
 type Translate = ReturnType<typeof useTranslation>["t"];
 
-/**
- * An action that may have reached the remote agent and whose result is not
- * known here. It is never retried on its own, so the owner is told to check the
- * remote rather than shown a "not sent" they could act on twice.
- */
+/** An action that may have reached the remote agent and whose result is not known here. It is never retried on its own, so
+ * the owner is told to check the remote rather than shown a "not sent" they could act on twice. */
 function isUnknownDelivery(outcome: string | undefined): boolean {
   return outcome !== undefined
     && (outcome === "unknown-manual-reconciliation-required"
@@ -82,8 +79,8 @@ export function RemoteA2AActionButton() {
   const [recent, setRecent] = useState<RemoteA2AActionStatus[]>([]);
   const pollStep = useRef(0);
   const pollKey = useRef<string | null>(null);
-  // The Task the popover shows now, and the GetTask poll in flight: a poll
-  // answer for another Task is dropped, and an owner action waits it out.
+  // The Task the popover shows now, and the GetTask poll in flight: a poll answer for another Task is dropped, and an owner
+  // action waits it out.
   const shownTask = useRef<string | undefined>(undefined);
   const pollInFlight = useRef<Promise<unknown> | null>(null);
 
@@ -142,8 +139,7 @@ export function RemoteA2AActionButton() {
     return () => window.clearTimeout(timer);
   }, [pollable, taskHandle, status]);
 
-  // Each recent Task keeps its own status in main; read them when the
-  // popover opens so the owner can go back to one.
+  // Each recent Task keeps its own status in main; read them when the popover opens so the owner can go back to one.
   useEffect(() => {
     if (!open) return;
     let live = true;
@@ -178,8 +174,8 @@ export function RemoteA2AActionButton() {
 
   const runTaskAction = async (action: "get" | "resume" | "cancel" | "replay") => {
     if (!taskHandle || sending || (action === "resume" && !canSend)) return;
-    // A refusal at the IPC boundary says nothing about the Task itself: keep
-    // what the host last reported about it so its actions stay reachable.
+    // A refusal at the IPC boundary says nothing about the Task itself: keep what the host last reported about it so its
+    // actions stay reachable.
     const known = {
       taskHandle,
       ...(status?.taskAvailable !== undefined ? { taskAvailable: status.taskAvailable } : {}),
@@ -189,8 +185,7 @@ export function RemoteA2AActionButton() {
     };
     setSending(true);
     try {
-      // A background GetTask holds the controller's single slot; wait for it
-      // instead of reporting the owner's click as busy.
+      // A background GetTask holds the controller's single slot; wait for it instead of reporting the owner's click as busy.
       if (pollInFlight.current) await pollInFlight.current;
       const result = action === "get"
         ? await window.aveApi.remoteA2a.task(taskHandle)

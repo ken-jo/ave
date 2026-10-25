@@ -1,23 +1,11 @@
 /**
- * The model capability catalog: one typed record of what each provider's
- * model can do, generated from external metadata (issue #2501,
- * `docs/design/model-capability-catalog.md`).
- *
- * A fact the source does not state is ABSENT, never a stand-in value: no
- * `0` for an unknown price, no `false` for an unknown capability, no empty
- * list for unknown modalities. A present `0` price means the source lists the
- * price as zero; it is not a claim that the model is free to use.
- *
- * These are public, theoretical limits of a model as a provider publishes it.
- * What a particular endpoint reports about itself, what the user configured,
- * and what the host defaults to are separate answers with their own sources;
- * this file only describes the catalog's.
+ * Model capability catalog (`docs/design/model-capability-catalog.md`).
+ * Unstated facts stay absent; a listed zero price does not mean free use.
  */
 
 /** Bumped when the normalized shape below changes. Recorded in provenance. */
 export const MODEL_CATALOG_SCHEMA_VERSION = 1;
 
-/** Effort values the source schema admits for a qualitative reasoning control. */
 export const REASONING_EFFORT_VALUES = [
   "none",
   "minimal",
@@ -44,14 +32,9 @@ interface CatalogModelModalities {
   output: string[];
 }
 
-/**
- * How a model's reasoning is controlled. A numeric budget and a qualitative
- * effort are different contracts; a model may offer either, both, or only a
- * toggle.
- */
+/** Numeric budget, qualitative effort, and toggle controls are independent model contracts. */
 export interface CatalogModelReasoning {
   supported: boolean;
-  /** Reasoning can be switched on and off. */
   toggle?: true;
   /** The qualitative levels the model accepts, in the source's order. */
   effort?: ReasoningEffortValue[];
@@ -87,7 +70,6 @@ export interface CatalogModel {
   canonicalId?: string;
   limits: CatalogModelLimits;
   modalities?: CatalogModelModalities;
-  /** Accepts file attachments. */
   attachment?: boolean;
   toolCall?: boolean;
   structuredOutput?: boolean;
@@ -104,10 +86,8 @@ export interface CatalogProvider {
   models: Record<string, CatalogModel>;
 }
 
-/** Where a catalog came from, enough to reproduce it and to name it in a run record. */
 export interface ModelCatalogProvenance {
   source: "models.dev";
-  /** The document the input was read from. */
   url: string;
   /** When the input was fetched (ISO-8601). */
   fetchedAt: string;
@@ -115,11 +95,7 @@ export interface ModelCatalogProvenance {
   etag?: string;
   /** sha256 of the full response body as downloaded. */
   rawSha256: string;
-  /**
-   * The source repository's default-branch head when the input was fetched.
-   * The deployed document is built from that repository but is not stamped
-   * with a commit, so this is the closest revision, not a proven one.
-   */
+  /** Fetched repository head is approximate provenance; deployed documents are not stamped with that revision. */
   upstreamHeadAtFetch?: string;
   /** Git blob id of the source's schema definition at that head. */
   upstreamSchemaBlob?: string;
@@ -137,28 +113,16 @@ export interface ModelCatalogLicense {
   text: string;
 }
 
-/** The normalized catalog document: the bundled snapshot and every refreshed copy. */
 export interface ModelCatalogDocument {
   schemaVersion: number;
   provenance: ModelCatalogProvenance;
   license: ModelCatalogLicense;
   providers: Record<string, CatalogProvider>;
-  /**
-   * sha256 over the canonical JSON of `schemaVersion`, `license` and
-   * `providers` — the catalog's content, not its provenance. Names the facts a
-   * run used in its record and lets a reader reject a damaged copy; two
-   * downloads of unchanged data share it.
-   */
+  /** Hash canonical content without provenance so unchanged downloads retain identity and damaged copies can be rejected. */
   sha256: string;
 }
 
-/**
- * `ave:llm:get-model-catalog`: the catalog main resolves against, or the
- * frame refusal. `refreshPolicy` is the managed policy's say over the refresh
- * (design §7): `"off"` when the policy file turns it off or cannot be read,
- * null when the policy leaves it to the user — so the settings switch can say
- * when it is not the one deciding.
- */
+/** Managed refresh policy off includes unreadable policy; null leaves the user in control. */
 export type ModelCatalogIpcResult =
   | { ok: true; catalog: ModelCatalogDocument; refreshPolicy: "off" | null }
   | { ok: false; error: "unauthorized-frame" | "catalog-unavailable" };

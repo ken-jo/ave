@@ -1,10 +1,4 @@
-/**
- * Installing from a folder (design §18.4.2): the plan reads the folder again
- * and captures the package; execution installs that capture, so a file edited
- * between the review and the install changes nothing that was reviewed. A
- * plugin installs through the folder rung only — nothing is downloaded, a
- * process entry is refused, and what is not built is listed, not installed.
- */
+/** Folder installs consume the reviewed capture even if source files change afterward. */
 import AdmZip from "adm-zip";
 import { chmodSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +22,6 @@ const index = `${JSON.stringify({
   packages: [{ kind: "plugin", name: "alpha", path: "plugins/alpha" }, { kind: "skill", name: "notes", path: "skills/notes" }],
 })}\n`;
 const SKILL = "---\nname: notes\ndescription: Notes\n---\nPlanned body.\n";
-// A release is declared: the folder rung never tries it.
 const RELEASE = { release: { repo: "acme/alpha", sha256: sha("never fetched") } };
 
 let root: string;
@@ -76,7 +69,6 @@ describe("folder plans install what was captured", () => {
     const [staged] = harness.plugins;
     expect(staged).toMatchObject({ rung: "folder", notInstalled: ["package.json", "src/"] });
     expect(zipText(staged!.zipBuffer)).toEqual({ "dist/index.js": ENTRY_JS, "plugin.json": pluginJson() });
-    // Nothing was downloaded, no git command ran, and the capture is gone.
     expect(harness.fetches).toEqual([]);
     expect(harness.gitCalls).toEqual([]);
     expect(captures()).toEqual([]);
@@ -110,7 +102,7 @@ describe("folder plans install what was captured", () => {
 
 describe("the folder rung refuses", () => {
   it("a process entry: it requires a pinned artifact", async () => {
-    // The folder rung refuses before the manifest rules run (a process entry also needs declared platforms).
+    // Folder admission rejects process entries before manifest validation.
     writeFolderFiles(folder, { "plugins/alpha/plugin.json": pluginJson({ process: { command: "./dist/plugin" }, tools: [] }) });
     const plan = await harness.service.planInstall({ sourceId: "team", kind: "plugin", name: "alpha" });
     await expect(harness.service.executeInstall(plan.planId)).rejects.toMatchObject({ code: "process-entry-requires-pinned-artifact" });

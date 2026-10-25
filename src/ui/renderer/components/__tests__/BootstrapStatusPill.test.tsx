@@ -32,9 +32,8 @@ describe("BootstrapStatusPill", () => {
     renderPill({ phase: "start" }, { onRetry });
     const pill = screen.getByTestId("bootstrap-status-pill");
 
-    // A native `disabled` button takes `pointer-events: none` from the button
-    // base and leaves the tab order, so neither pointer nor keyboard could
-    // reach what the pill only says in its tooltip.
+    // A native `disabled` button takes `pointer-events: none` from the button base and leaves the tab order, so neither
+    // pointer nor keyboard could reach what the pill only says in its tooltip.
     expect((pill as HTMLButtonElement).disabled).toBe(false);
 
     fireEvent.focus(pill);
@@ -71,9 +70,8 @@ describe("BootstrapStatusPill", () => {
   });
 
   it("translates the skip code into its own sentence, with no marketplace claim on the isolated skip", () => {
-    // The old surface interpolated one English reason string into one Korean
-    // sentence that began "마켓플레이스 부트스트랩 건너뜀" — so an E2E-isolated run,
-    // which has nothing to do with the marketplace, was reported as one.
+    // The old surface interpolated one English reason string into one Korean sentence that began "마켓플레이스 부트스트랩 건너뜀" — so an
+    // E2E-isolated run, which has nothing to do with the marketplace, was reported as one.
     renderPill({
       phase: "complete",
       installed: [],

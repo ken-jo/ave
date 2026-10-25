@@ -32,19 +32,8 @@ function isRepositoryRead(args: readonly string[]): boolean {
   }
 }
 
-/**
- * Read real, prebuilt fixture repositories through an in-process transport.
- * Their complete object stores and requested HEAD refs are copied to clients.
- * Immutable object reads share results; ref resolution and missing-object
- * reads include the inventory. Sources must be complete, idle FixtureRepo
- * publications, and clients own ordinary refs/ave/* refs exclusively.
- *
- * This is for service orchestration tests: transport and process lifecycle
- * cases must use the underlying runner. Errors and unknown commands are never
- * replayed. Every client still owns its repository and all installed files.
- * This transport installs objects and a target ref; filtering, FETCH_HEAD,
- * negotiation and process cancellation remain on the real runner.
- */
+/** Cached reads require complete, idle fixture repositories; clients own their refs and files.
+ * Transport negotiation and cancellation tests must use the real runner. */
 export function cachedFixtureGit(runner: GitRunner, servedRoot: string, origin: string, cacheRoot: string): Pick<GitRunner, "run" | "preflight"> {
   mkdirSync(cacheRoot, { recursive: true });
   const reads = new Map<string, GitResult>();
@@ -123,8 +112,7 @@ export function cachedFixtureGit(runner: GitRunner, servedRoot: string, origin: 
           fetches.set(key, entry);
         }
         options.signal?.throwIfAborted();
-        // Fetch adds objects and updates only the requested refs. Replaying an
-        // entire client tree would overwrite unrelated refs from an older call.
+        // Copy only requested refs; replaying a client tree would overwrite unrelated refs.
         cpSync(join(entry.dir, "objects"), join(options.gitDir, "objects"), { recursive: true, force: false });
         for (const refspec of args.slice(args.indexOf("--") + 2)) {
           const target = refspec.match(/^\+[^:]+:(refs\/[a-zA-Z0-9/_-]+)$/u)?.[1];
@@ -135,8 +123,7 @@ export function cachedFixtureGit(runner: GitRunner, servedRoot: string, origin: 
         }
         return deliver({ stdout: Buffer.alloc(0), stderr: "" }, options);
       }
-      // Only the read forms emitted by BareRepo are replayable. In particular,
-      // path-reporting rev-parse and archive --output must still execute.
+      // Path-reporting rev-parse and archive --output must execute rather than replay.
       if (!options.remote && options.gitDir && existsSync(join(options.gitDir, "objects")) && isRepositoryRead(args)) {
         const immutable = ["ls-tree", "cat-file", "log", "merge-base", "archive"].includes(args[0]!);
         const oids = args.flatMap((arg) => arg.match(/^[0-9a-f]{40}(?=$|:|\^)/u) ?? []);

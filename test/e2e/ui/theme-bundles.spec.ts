@@ -1,23 +1,7 @@
 import { test, expect } from './fixtures';
 import { BUNDLE_IDS } from '../../../src/shared/theme-bundles.js';
 
-/**
- * Theme bundle smoke — for each declared BundleId, set `data-theme-bundle`
- * on <html> and verify:
- *   1. The attribute round-trips (resolver contract).
- *   2. `getComputedStyle(body).backgroundColor` becomes non-empty / non-
- *      transparent — i.e. every bundle defines `--background` and the body's
- *      `bg-background` Tailwind utility resolves to a real color.
- *   3. The renderer keeps painting (no white-on-white / black-on-black
- *      catastrophic failure) — we sample `<body>` text color and assert it
- *      differs from the bg by at least 50 in summed RGB luminance.
- *   4. Switching to a known-different bundle produces a different bg color
- *      (smoke that the CSS variable swap actually happens).
- *
- * Direct DOM attribute injection bypasses the React theme provider — this is
- * the actual contract that `resolveTheme` writes to. Provider-level testing is
- * covered by vitest snapshots.
- */
+// Verify computed backgrounds and geometry for every shipped theme, beyond attribute round-trips.
 
 function parseRgb(rgb: string): [number, number, number] | null {
   const m = rgb.match(/rgba?\((\d+),\s*(\d+),\s*(\d+)/);
@@ -61,7 +45,6 @@ test('every theme bundle resolves to a paintable surface', async ({ mainWindow }
     bgs.set(id, result.bg);
   }
 
-  /* Smoke that the CSS variable swap actually happens: the two compiled
-     bundles paint different body backgrounds. */
+  // Different bundles must produce different computed backgrounds.
   expect(bgs.get('gallery'), 'gallery should paint a bg different from moonstone').not.toBe(bgs.get('moonstone'));
 });

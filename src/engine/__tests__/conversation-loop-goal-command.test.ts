@@ -1,11 +1,4 @@
-/**
- * `/goal` — the user's way into the same upsert the `session_goal` tool
- * performs, dispatched from the main-process slash switch.
- *
- * The command is keyboard-origin only, like every other command in that
- * switch; and it registers a goal on the session the loop is holding, which
- * is what makes the next settled turn revive.
- */
+// Only keyboard-origin commands may register a session goal that revives settled turns.
 import { describe, expect, it } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import { makeConversationLoopDeps } from "./conversation-loop-test-helpers.js";
@@ -20,7 +13,6 @@ function makeLoop(sessionGoalStore?: SessionGoalStore): ConversationLoop {
   loop.initializeConversation("main");
   return loop;
 }
-
 
 describe("/goal", () => {
   it("registers the goal on the session the loop is holding", async () => {

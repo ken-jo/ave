@@ -1,9 +1,3 @@
-/**
- * Usage domain IPC handler tests.
- *
- * Verifies that registerUsageHandlers registers expected channels and that
- * sender validation works on guarded handlers.
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   untrustedEvent,
@@ -15,8 +9,6 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-
-// ─── Mock electron ────────────────────────────────────────────────────────────
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
@@ -34,26 +26,18 @@ vi.mock("electron", () => ({
   },
 }));
 
-// ─── Mock usage-stats ─────────────────────────────────────────────────────────
-
 vi.mock("../../engine/usage-stats.js", () => ({
   getUsageSummary: vi.fn(async (days: number) => ({ days, total: 0 })),
   getUsageRange: vi.fn(async (opts: unknown) => ({ range: opts, rows: [] })),
 }));
 
-// The aggregation prices with the corrections the domain reads per call, so
-// every engine call carries a clock and a correction list. The tests care
-// about the days/opts argument, not the other two.
+// Usage aggregation reads corrections per call; tests isolate the requested day/options arguments.
 const ANY_CLOCK = expect.any(Date);
 const NO_OVERRIDES: readonly never[] = [];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function invoke(channel: string, event: unknown, ...args: unknown[]): unknown {
   return invokeRegisteredHandlerWithEvent(handlers, channel, event, ...args);
 }
-
-// ─── Setup ────────────────────────────────────────────────────────────────────
 
 const mockAuditLogger = { log: vi.fn(), search: vi.fn(), getStats: vi.fn(), flush: vi.fn(async (): Promise<void> => {}) };
 const mockGenerateText = vi.fn(async () => "AI daily summary");
@@ -65,23 +49,18 @@ function makeMinimalDeps() {
     auditLogger: mockAuditLogger,
     conversationLoop: { generateText: mockGenerateText },
     getMainWindow: () => null,
-    // The domain reads `llm.pricingOverrides` on every usage call.
     settingsService: { get: mockSettingsGet },
-    // rest unused by usage domain
   } as unknown as import("../types.js").IpcDeps;
 }
 
 beforeEach(async () => {
   handlers.clear();
   vi.clearAllMocks();
-  // clearAllMocks drops calls, not implementations — restore the default so a
-  // correction installed by one test does not price the next one.
+  // clearAllMocks retains implementations; restore pricing defaults between tests.
   mockSettingsGet.mockImplementation(noCorrections);
   const { registerUsageHandlers } = await import("../domains/usage.js");
   registerUsageHandlers(makeMinimalDeps());
 });
-
-// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("ave:usage:summary", () => {
   it("is registered", () => {
@@ -128,8 +107,6 @@ describe("ave:usage:summary", () => {
 
     await invoke("ave:usage:summary", hostFrameEvent(), 30);
 
-    // Registration happened in beforeEach, before this correction existed: a
-    // captured value would still be reporting list price here.
     expect(getUsageSummary).toHaveBeenCalledWith(30, ANY_CLOCK, correction);
   });
 });

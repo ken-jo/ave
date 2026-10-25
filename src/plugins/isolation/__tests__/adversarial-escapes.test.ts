@@ -1,41 +1,8 @@
-/**
- * Admission's adversarial fixture under the REAL wrap
- * (`docs/design/plugin-hostapi-protocol.md` §9.8 A2, "The four escapes, stated
- * as assertions"; decision 53).
- *
- * The fixture (`fixtures/adversarial/`) is staged into an isolated
- * `AVE_HOME` outside the checkout — the install location
- * `<AVE_HOME>/plugins/<id>` a real plugin has, with no `node_modules` above it
- * to walk into — beside a sentinel in `secrets/` and a second plugin's data
- * directory. It is spawned through the PRODUCTION factory with the production
- * child entry, and its host API is the PRODUCTION one: `createHostApiFactory`
- * with its four-tier secret gate, its audit sink (a real `AuditLogger` writing
- * into the isolated home) and its `hostFetch` guard. A recording double could
- * not prove a denial, so none stands behind the table.
- *
- * THE CONTROLS RUN FIRST, and an escape case asserts nothing until its control
- * held: the sentinel is readable from the test process, the listener accepts a
- * connection from it, a full Electron main process (`control-electron-main.cjs`
- * — the same binary with `ELECTRON_RUN_AS_NODE` removed) runs the fixture's own
- * detector and it reports the API usable, and `patch()` really replaces
- * `globalThis.fetch` where it runs. Inside the sandbox, the child writes and
- * reads back its own data directory, and a worker it asks for prints it, before
- * either is held to failing on a neighbour's. A probe that
- * cannot be shown live is no evidence, so a control that fails or cannot start
- * fails the file.
- *
- * WHERE IT RUNS. Escapes 1, 2 and 4 need a live sandbox and are gated by
- * `sandboxCasesRun()` — `AVE_REQUIRE_SANDBOX_CASES=1` on the confinement jobs
- * turns "cannot measure" into a failure. Escape 3 needs no sandbox (the child
- * is `process.execPath` under `ELECTRON_RUN_AS_NODE=1` whether wrapped or not),
- * is spawned unwrapped as the default host spawns it, and runs everywhere its
- * control can start: macOS and Windows directly, Linux
- * under a display or `xvfb-run -a`. Off CI, a Linux host with neither reports
- * the Electron control and row 3 not exercised (`it.runIf`), never passed.
- */
+// Run each escape against the real factory, permissions, audit sink and confinement; controls must prove the probe works.
+// Required sandbox cases fail if unavailable; unmeasured controls never count as passes.
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { useVerifiedAveHomePrivacy } from "../../../__tests__/support/ave-home-privacy.js";
 
-/** What the protocol session warned about this connection, for escape 4's unknown field. */
 const sessionWarnings = vi.hoisted(() => [] as unknown[][]);
 vi.mock("../../../lib/logger.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../../lib/logger.js")>();
@@ -64,6 +31,10 @@ import { AuditLogger } from "../../../audit/audit-logger.js";
 import { createBootHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-api-factory.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../../../permissions/sandbox-capability.js";
 import { HostApiGenerationScope } from "../../plugin-host-effect-scope.js";
 import { admittedGenerationAccess } from "../../__tests__/test-helpers.js";
 import { resolvePluginHostStorageDir, resolvePluginSocketDir } from "../../plugin-storage-layout.js";
@@ -82,6 +53,8 @@ import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-en
 import { installPythonSmoke } from "./python-smoke-harness.js";
 import { sandboxCasesRequired, sandboxCasesRun } from "./sandbox-cases.js";
 
+useVerifiedAveHomePrivacy();
+
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
   return {
@@ -99,44 +72,64 @@ const SECRETS_SENTINEL = "the host secret no plugin child may read";
 const NEIGHBOUR_SENTINEL = "the neighbour's own bytes, which no other plugin may read";
 const LATE_SENTINEL = "a plugin installed after the child spawned";
 
-/**
- * A neighbour agent plugin's data (`agent-plugin-data/<name>`) and installed
- * version (`packages/agent-plugin/<name>/<version>`): outside the plugins root,
- * refused to every plugin-owned wrap all the same.
- */
+/** Agent-plugin data and installed versions remain outside every plugin-owned read envelope. */
 function agentPluginNeighbourDirs(aveHome: string): string[] {
   return [join(aveHome, "agent-plugin-data", NEIGHBOUR_ID), join(aveHome, "packages", "agent-plugin", NEIGHBOUR_ID, "1.0.0")];
 }
-/** What the fixture's in-sandbox controls write into its own data directory (`entry.mjs`). */
 const OWN_BYTES = "the adversarial plugin's own bytes";
 const OWN_SECRET = "the adversarial plugin's own stored secret";
 const NEIGHBOUR_SECRET = "the neighbour's stored secret";
 const DENIED_URL = "https://not-allowed.invalid/escape";
 const GENERATION_ID = "adversarial-generation";
-/** Escapes 1, 2 and 4 are measured where a wrap substrate exists (§9.8 A2 Gates). */
 const WRAP_PLATFORM = process.platform === "darwin" || process.platform === "linux" || process.platform === "win32";
 
-/** The filesystem error each substrate answers a denied read with (table row 1a). */
+/** Temporary roots may inherit a nonprivate access list. */
+function protectWindowsTestRoot(root: string): void {
+  const systemRoot = process.env.SystemRoot;
+  if (!systemRoot) throw new Error("Cannot resolve the native system utilities directory");
+  const system32 = join(systemRoot, "System32");
+  const identity = execFileSync(join(system32, "whoami.exe"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf-8", windowsHide: true });
+  const sids = identity.match(/\bS-\d-\d+(?:-\d+)+\b/g);
+  if (sids?.length !== 1) throw new Error("Cannot resolve the test root owner's SID");
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$sid = New-Object System.Security.Principal.SecurityIdentifier($env:AVE_ADVERSARIAL_ROOT_SID)",
+    "$acl = Get-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT",
+    "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Test root owner mismatch' }",
+    "$acl.SetAccessRuleProtection($true, $false)",
+    "foreach ($entry in @($acl.Access)) { $acl.RemoveAccessRuleSpecific($entry) }",
+    "$rule = New-Object System.Security.AccessControl.FileSystemAccessRule($sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')",
+    "$acl.AddAccessRule($rule)",
+    "Set-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT -AclObject $acl",
+    "$check = Get-Acl -LiteralPath $env:AVE_ADVERSARIAL_ROOT",
+    "$sddl = $check.GetSecurityDescriptorSddlForm([System.Security.AccessControl.AccessControlSections]::Access)",
+    "$entries = @($check.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))",
+    "if (!$check.AreAccessRulesProtected -or $entries.Count -ne 1) { throw ('Test root DACL is not owner-only: ' + $sddl) }",
+    "$entry = $entries[0]",
+    "if ($entry.IdentityReference -ne $sid -or $entry.IsInherited -or $entry.AccessControlType -ne 'Allow' -or $entry.FileSystemRights -ne 'FullControl' -or $entry.InheritanceFlags -ne 'ContainerInherit,ObjectInherit' -or $entry.PropagationFlags -ne 'None') { throw ('Test root DACL grant mismatch: ' + $sddl) }",
+    "$sddl",
+  ].join("; ");
+  const sddl = execFileSync(join(system32, "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")], {
+    encoding: "utf-8",
+    windowsHide: true,
+    env: { ...process.env, AVE_ADVERSARIAL_ROOT: root, AVE_ADVERSARIAL_ROOT_SID: sids[0] },
+  }).trim();
+  console.info(`[adversarial] private root ${root}: ${sddl}`);
+}
+
 function deniedReadCodes(): readonly string[] {
   if (process.platform === "linux") return ["ENOENT"];
   return ["EPERM", "EACCES"];
 }
 
-/**
- * Whether the full Electron main process can start here. Linux needs a display
- * driver: an inherited `DISPLAY`, or `xvfb-run`, Electron's documented answer
- * for a headless host. A job that requires the measurement runs the case and
- * lets a helper that cannot start fail it.
- */
+/** The full main-process control needs a Linux display; required measurements must fail if it cannot start. */
 function electronControlLauncher():
   | { readonly command: string; readonly prefix: (scratchDir: string) => readonly string[] }
   | undefined {
   if (process.platform !== "linux" || process.env.DISPLAY) return { command: process.execPath, prefix: () => [] };
   try {
     execFileSync("xvfb-run", ["--help"], { stdio: "ignore" });
-    // Without `-f`, xvfb-run keeps its auth cookie in its own `mktemp -d`
-    // directory, which a SIGKILLed run leaves behind; `-f` puts the cookie in
-    // the control's scratch directory, which the harness removes.
+    // Place the display cookie inside harness scratch space so a killed control leaves no external temporary directory.
     return { command: "xvfb-run", prefix: (scratchDir) => ["-a", "-f", join(scratchDir, "Xauthority"), process.execPath] };
   } catch {
     return undefined;
@@ -145,7 +138,6 @@ function electronControlLauncher():
 const ELECTRON_CONTROL = electronControlLauncher();
 const ELECTRON_CONTROL_RUNS = ELECTRON_CONTROL !== undefined || sandboxCasesRequired();
 
-/** One plugin installed where a real one lives, and how its child is produced. */
 interface Installed {
   readonly pluginId: string;
   readonly pluginRoot: string;
@@ -163,11 +155,12 @@ interface Staged {
 }
 
 let staged: Staged;
+let stagedRoot: string | undefined;
 let previousAveHome: string | undefined;
 let listener: Server;
 let listenerPort = 0;
 const listenerConnections: string[] = [];
-/** Which control held, by escape. An escape case refuses to assert without its own. */
+/** Every escape must pass its own positive control before asserting denial. */
 const controls: Record<"secrets" | "network" | "electron" | "patch", "held" | undefined> = {
   secrets: undefined,
   network: undefined,
@@ -176,11 +169,13 @@ const controls: Record<"secrets" | "network" | "electron" | "patch", "held" | un
 };
 
 beforeAll(async () => {
-  // Short on POSIX, wherever the temp directory is (macOS's own is deep, and
-  // a test run's is a level below it): escape 1a's worker binds its
-  // control socket under `<AVE_HOME>/plugins/<id>/run/<worker>/`, and a path
-  // past `sun_path` is refused before any worker starts.
+  previousAveHome = process.env.AVE_HOME;
+  // Children and workers are confined only when worker confinement is enabled.
+  setPluginWorkerConfinementRequestedAtBoot(true);
+  // Use a short POSIX root so worker sockets fit the kernel sun_path limit.
   const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp", "adv-"));
+  stagedRoot = root;
+  if (process.platform === "win32") protectWindowsTestRoot(root);
   const aveHome = join(root, ".ave");
   const secretsDir = join(aveHome, "secrets");
   const neighbourDataDir = join(aveHome, "plugins", NEIGHBOUR_ID, "data");
@@ -194,8 +189,7 @@ beforeAll(async () => {
     mkdirSync(agentDir, { recursive: true, mode: 0o700 });
     writeFileSync(join(agentDir, SENTINEL_NAME), NEIGHBOUR_SENTINEL, "utf-8");
   }
-  // Staged outside the checkout, where a bare `electron` specifier has no
-  // `node_modules` to walk up into.
+  // Stage outside the checkout so bare imports cannot reach its dependencies.
   cpSync(FIXTURE_SOURCE, pluginRoot, { recursive: true });
   mkdirSync(pluginDataDir, { recursive: true, mode: 0o700 });
   mkdirSync(resolvePluginHostStorageDir(pluginDataDir), { recursive: true, mode: 0o700 });
@@ -213,16 +207,10 @@ beforeAll(async () => {
       launch: { kind: "entry", entryPath: join(pluginRoot, "entry.mjs") },
     },
   };
-  // The deny floor is derived from `aveHome()`: pointing it here is what makes
-  // `<AVE_HOME>/secrets` a real denied path with a real file in it.
-  previousAveHome = process.env.AVE_HOME;
+  // Point aveHome at the fixture so its secrets directory receives the real deny floor.
   process.env.AVE_HOME = aveHome;
   if (process.platform === "win32") {
-    // srt-win stamps each deny with an ACE on its parent too, and Windows
-    // propagates that change through the parent's whole tree. Under the real
-    // profile every initialize walks the user's entire home, past srt-win's
-    // 60s stamp budget on a developer machine. A home inside the staged root
-    // keeps the same floor over a tree the test owns.
+    // Use a fixture-owned home: Windows deny propagation across a real profile can exceed the stamp budget.
     vi.stubEnv("USERPROFILE", join(root, "home"));
     vi.stubEnv("HOME", join(root, "home"));
     vi.mocked(userInfo).mockReturnValue({ ...userInfo(), homedir: join(root, "home") });
@@ -237,13 +225,14 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  __resetSandboxRequestedAtBootForTest();
   if (liveControl !== undefined) killControl(liveControl.child, liveControl.group);
   await controlExit;
-  await new Promise<void>((resolve) => listener.close(() => resolve()));
+  if (listener !== undefined) await new Promise<void>((resolve) => listener.close(() => resolve()));
   if (previousAveHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousAveHome;
   vi.unstubAllEnvs();
-  rmSync(staged.root, { recursive: true, force: true });
+  if (stagedRoot !== undefined) rmSync(stagedRoot, { recursive: true, force: true });
 });
 
 afterEach(async () => {
@@ -253,25 +242,16 @@ afterEach(async () => {
 interface ProductionHost {
   readonly api: PluginHostApi;
   readonly audit: AuditLogger;
-  /** Every request that reached the transport underneath `hostFetch`. */
   readonly transportCalls: string[];
 }
 
-/**
- * The production host API for the fixture: `createHostApiFactory` itself, so
- * the secret gate, the audit vocabulary and the egress guard are the shipped
- * ones. Only the stores behind it are local — the secret values, the plugin's
- * saved config — and the transport, which records and refuses so a request
- * that got past the guard would be seen.
- */
+/** Use the production HostApi gates with fixture-owned stores and a recording, refusing transport. */
 function productionHost(installed: Installed, config: Record<string, unknown>): ProductionHost {
   const secrets = new Map<string, string>([
     [`plugin.${PLUGIN_ID}.key`, OWN_SECRET],
     [`plugin.${NEIGHBOUR_ID}.key`, NEIGHBOUR_SECRET],
   ]);
   const transportCalls: string[] = [];
-  // Its own directory per host, so each case reads only the rows its own
-  // spawn wrote.
   const audit = new AuditLogger(mkdtempSync(join(staged.root, "audit-")));
   const scope = new HostApiGenerationScope(installed.pluginId);
   const incarnation: PluginHostApiIncarnation = {
@@ -327,7 +307,6 @@ function productionHost(installed: Installed, config: Record<string, unknown>): 
   return { api, audit, transportCalls };
 }
 
-/** Every audit row written into the isolated home so far, as its text. */
 async function auditTexts(audit: AuditLogger): Promise<string[]> {
   await audit.flush();
   const dir = audit.getAuditDir();
@@ -349,7 +328,6 @@ interface Spawned {
   readonly child: () => ObservedPluginChild | undefined;
 }
 
-/** The context the runtime builds for an installed plugin. */
 function contextFor(installed: Installed, host: ProductionHost, config: Record<string, unknown>): PluginRuntimeContext {
   return {
     pluginId: installed.pluginId,
@@ -365,11 +343,7 @@ function contextFor(installed: Installed, host: ProductionHost, config: Record<s
   };
 }
 
-/**
- * An installed plugin, through the production factory, observed from its spawn:
- * wrapped, as a host with the OS sandbox on spawns it, unless `wrapped` is
- * false, as a host with the sandbox off (the default) does.
- */
+/** The production factory supplies both wrapped and explicitly unwrapped fixture children. */
 async function spawnInstalled(
   installed: Installed,
   config: Record<string, unknown> = {},
@@ -398,50 +372,29 @@ async function call(spawned: Spawned, tool: string, args: Record<string, unknown
   return (await spawned.instance.handlers[tool]!(args)) as Record<string, unknown>;
 }
 
-/**
- * How long the control may take to report, and then to exit by itself before it
- * is reaped. A healthy control exits within about 2 s of reporting; on a
- * contended macOS host its main thread can then wait in Chromium's shutdown far
- * longer (observed past 60 s), which is scheduler latency, not anything the
- * control proves, so it is killed with its helpers and the stall logged.
- */
+/** Observe the control report separately from shutdown; reap and diagnose controls that exceed the exit grace period. */
 const CONTROL_REPORT_TIMEOUT_MS = 60_000;
 const CONTROL_EXIT_GRACE_MS = 5_000;
 
-/** How the control process ended after it reported. */
 interface ControlExit {
   readonly code: number | null;
   readonly signal: NodeJS.Signals | null;
-  /** Whether the harness had to kill it after the grace period. */
   readonly reaped: boolean;
-  /** A process of its group still alive after it ended (POSIX only). */
   readonly survivor: boolean;
-  /**
-   * Descendants alive at reap time that had left its process group, so the
-   * group kill could not reach them: `ps` rows, empty when none (POSIX only).
-   */
+  /** Record live descendants outside the control process group; a group kill cannot reach them. */
   readonly escaped: readonly string[];
-  /** Its stderr, and where it was stuck if it had to be reaped. */
   readonly diagnostics: string;
 }
 
-/** The Electron control's report, and its exit, observed separately. */
 interface ControlRun {
   readonly report: Record<string, unknown>;
   readonly exited: Promise<ControlExit>;
 }
 
-/** The control's exit, asserted on its own once the report has held. */
 let controlExit: Promise<ControlExit> | undefined;
-/** A control still running, so `afterAll` can reap its process group. */
 let liveControl: { readonly child: ChildProcess; readonly group: boolean } | undefined;
 
-/**
- * Kill the control and every helper it started. On POSIX it leads its own
- * process group (`detached`), so the GPU, network and renderer helpers — and
- * `xvfb-run`'s server on Linux — go with it; on Windows the job object Chromium
- * keeps for its helpers closes with the main process.
- */
+/** Reap the control and its helpers; POSIX detached groups include renderer and display-server children. */
 function killControl(child: ChildProcess, group: boolean): void {
   if (!group || child.pid === undefined) {
     child.kill("SIGKILL");
@@ -450,19 +403,13 @@ function killControl(child: ChildProcess, group: boolean): void {
   try {
     process.kill(-child.pid, "SIGKILL");
   } catch (error) {
-    // ESRCH: the group is gone. EPERM: macOS refuses to signal a group whose
-    // only members are zombies, as when the control exits while it is sampled;
-    // whether anything really survived is `controlGroupAlive`'s question.
+    // ESRCH means gone; macOS EPERM can mean a zombie-only group, so check actual survivors.
     const code = (error as NodeJS.ErrnoException).code;
     if (code !== "ESRCH" && code !== "EPERM") throw error;
   }
 }
 
-/**
- * Whether any process of the control's group is still alive (POSIX). Read from
- * `ps`, not `kill(-pgid, 0)`: macOS answers that EPERM while the group's last
- * members are zombies awaiting their reaper, which is not a survivor.
- */
+/** Use process listings rather than signal 0; macOS reports EPERM for zombie-only groups. */
 function controlGroupAlive(pid: number): boolean {
   const table = execFileSync("/bin/ps", ["-Ao", "pgid=,stat="], { encoding: "utf-8" });
   return table.split("\n").some((row) => {
@@ -471,11 +418,7 @@ function controlGroupAlive(pid: number): boolean {
   });
 }
 
-/**
- * The live descendants of the control (by `ppid`, from one `ps` snapshot) that
- * are not in its process group: a group kill cannot reach them, so they are
- * what a "no helper outlives it" claim has to rule out (POSIX).
- */
+/** Check descendants outside the process group because group termination cannot reach them. */
 function controlDescendantsOutsideGroup(pid: number): { readonly pid: number; readonly row: string }[] {
   const rows = execFileSync("/bin/ps", ["-Ao", "pid=,ppid=,pgid=,stat=,command="], { encoding: "utf-8" })
     .split("\n")
@@ -499,11 +442,7 @@ function controlDescendantsOutsideGroup(pid: number): { readonly pid: number; re
     .map(({ pid: own, row }) => ({ pid: own, row }));
 }
 
-/**
- * Where a control that did not finish is stuck, for the failure message: its
- * main thread's stack (macOS `sample`) and its process group. Each part names
- * its own failure, so a missing tool reads as that, never as a clean process.
- */
+/** Report stack and group diagnostics independently; a missing diagnostic tool is never a clean result. */
 function controlDiagnostics(pid: number, userData: string): string {
   const parts: string[] = [];
   if (process.platform === "darwin") {
@@ -511,7 +450,6 @@ function controlDiagnostics(pid: number, userData: string): string {
     try {
       execFileSync("/usr/bin/sample", [String(pid), "2", "-file", sampleFile], { stdio: "ignore", timeout: 20_000 });
       const sample = readFileSync(sampleFile, "utf-8");
-      // The frames each thread was waiting in, then the call graph that led there.
       const top = sample.indexOf("Sort by top of stack");
       const tree = Math.max(0, sample.indexOf("Call graph:"));
       parts.push(
@@ -536,12 +474,7 @@ function controlDiagnostics(pid: number, userData: string): string {
   return parts.join("\n\n");
 }
 
-/**
- * Run the Electron control helper and read its one line as soon as it is
- * written. Its exit is a separate promise: the report is what the control
- * proves, and a process that then fails to exit is its own failure, killed with
- * its helpers after a grace period and reported with where it was stuck.
- */
+/** Read the control report immediately; separately await, diagnose and reap a stalled shutdown. */
 async function runElectronControl(): Promise<ControlRun> {
   const launcher = ELECTRON_CONTROL;
   if (launcher === undefined) {
@@ -556,15 +489,10 @@ async function runElectronControl(): Promise<ControlRun> {
     [
       ...launcher.prefix(userData),
       join(FIXTURE_SOURCE, "control-electron-main.cjs"),
-      // `--no-sandbox`: Chromium's own renderer sandbox is not what this
-      // control measures, and on a Linux host that restricts unprivileged
-      // user namespaces (Ubuntu 24.04's default) with an unprivileged
-      // `chrome-sandbox` helper the zygote aborts with SIGTRAP (exit 133)
-      // before the main script runs.
+      // Disable the control renderer sandbox where unprivileged namespaces prevent the main probe from starting.
       "--no-sandbox",
       `--user-data-dir=${userData}`,
-      // macOS: safeStorage would otherwise open the login Keychain item for
-      // this binary, which can wait on a prompt nobody answers.
+      // Avoid a macOS keychain prompt that no test participant can answer.
       ...(process.platform === "darwin" ? ["--use-mock-keychain"] : []),
     ],
     { env, stdio: ["ignore", "pipe", "pipe"], detached: group },
@@ -606,8 +534,7 @@ async function runElectronControl(): Promise<ControlRun> {
   ]);
   clearTimeout(reportTimer);
   if (outcome === "ended" && reportLine() === undefined && !child.stdout.readableEnded) {
-    // `exit` can precede the last stdout chunk; let the pipe drain before
-    // concluding the control wrote nothing.
+    // Drain stdout after exit before deciding the control produced no report.
     await Promise.race([reported, new Promise((resolve) => setTimeout(resolve, 2_000))]);
   }
   const line = reportLine();
@@ -633,8 +560,7 @@ async function runElectronControl(): Promise<ControlRun> {
       reaped = true;
       diagnostics = controlDiagnostics(pid, userData);
       if (group) {
-        // Taken while the control is still alive, so its helpers still name it
-        // as their parent; any that left its group would survive the group kill.
+        // Sample descendants before the parent exits so reparenting cannot hide escaped helpers.
         const outside = controlDescendantsOutsideGroup(pid);
         escaped = outside.map((entry) => entry.row);
         killControl(child, group);
@@ -651,12 +577,9 @@ async function runElectronControl(): Promise<ControlRun> {
     }, CONTROL_EXIT_GRACE_MS);
     const end = await ended;
     clearTimeout(grace);
-    // The main process is reaped, so its pid — and with it the pgid `afterAll`
-    // would signal — may be recycled from here on.
+    // After reaping, the control PID and group ID may be recycled; stop signaling them.
     liveControl = undefined;
-    // A helper that outlived its main process is a finding, then reaped too. A
-    // pgid with a live member cannot be recycled, so the group kill below only
-    // ever reaches this control's own group.
+    // A surviving group member prevents group-ID reuse; report it before terminating the group.
     let survivor = false;
     if (pid !== undefined && group) {
       const settle = Date.now() + 2_000;
@@ -709,7 +632,6 @@ describe("the controls, which must hold before any escape is asserted", () => {
   it.runIf(ELECTRON_CONTROL_RUNS)(
     "reports Electron's main-process API from a full main process of the same binary",
     async () => {
-      // The test process is NOT this control: it runs as Node itself.
       expect(process.env.ELECTRON_RUN_AS_NODE).toBe("1");
       const run = await runElectronControl();
       controlExit = run.exited;
@@ -717,8 +639,7 @@ describe("the controls, which must hold before any escape is asserted", () => {
         detector: { outcome: string; usable: string[] };
       };
       expect(control).toMatchObject({ BrowserWindow: "function", defaultSession: "object", ipcMain: "object" });
-      // The detector row 3 relies on, run where the API is real, finds it and
-      // uses it: "no-usable-api" below is that detector's answer, not its blind spot.
+      // Run the same detector where the API is usable so a later denial cannot be a blind probe.
       expect(control.detector.outcome).toBe("usable-api");
       expect(control.detector.usable).toEqual(
         expect.arrayContaining(["requireBare", "requireBare.newBrowserWindow", "requireBare.defaultSession", "requireBare.ipcMainHandle"]),
@@ -760,25 +681,20 @@ describe("the four escapes, against the production factory under the real wrap",
           sentinelName: SENTINEL_NAME,
           otherPluginId: NEIGHBOUR_ID,
         });
-        // The control inside the sandbox: the child wrote its own data directory
-        // and read the bytes back, so the reads below fail for being someone
-        // else's, not for a wrong path or a data directory left read-only.
+        // Successful own-data access proves neighbour denials come from confinement rather than a broken fixture.
         expect(result.own).toEqual({ write: { ok: true }, read: { ok: true, value: OWN_BYTES } });
         const filesystem = result.filesystem as Record<string, { ok: boolean; code?: string; value?: unknown }>;
-        // Both reads fail with the substrate's own error and return no bytes.
         for (const probe of ["readSecret", "readOtherData"]) {
           expect(filesystem[probe]!.ok, `${probe}: ${JSON.stringify(filesystem[probe])}`).toBe(false);
           expect(deniedReadCodes(), `${probe}: ${JSON.stringify(filesystem[probe])}`).toContain(filesystem[probe]!.code);
         }
-        // A listing either fails the same way or, under bubblewrap's empty
-        // tmpfs, names nothing.
+        // A confined listing may fail or return the empty mounted directory.
         for (const probe of ["listSecrets", "listOtherData"]) {
           const listing = filesystem[probe]!;
           if (listing.ok) expect(listing.value, probe).toEqual([]);
           else expect(deniedReadCodes(), `${probe}: ${JSON.stringify(listing)}`).toContain(listing.code);
         }
-        // There is no wire error for a denial: the gate answers `null`, and the
-        // own-namespace control answers the stored value.
+        // Secret denial returns null without wire errors; the own-namespace control must still succeed.
         expect(result.secrets).toMatchObject({
           foreign: { ok: true, value: null },
           own: { ok: true, value: OWN_SECRET },
@@ -794,9 +710,7 @@ describe("the four escapes, against the production factory under the real wrap",
         expect(audit).toContain(`[plugin:${PLUGIN_ID}] pluginSecret_read key=plugin.${PLUGIN_ID}.key`);
         expect(audit.filter((row) => row.startsWith(`[plugin:${NEIGHBOUR_ID}]`))).toEqual([]);
 
-        // A plugin installed AFTER this child spawned is refused too: the deny
-        // is the plugins root, not a list of what was in it. Windows has no
-        // such deny (`PerCommandFilesystem.denyPluginsRoot`).
+        // Deny the plugins root, including later installs; Windows has no equivalent neighbour deny.
         if (process.platform !== "win32") {
           const lateDataDir = join(staged.aveHome, "plugins", "lateplugin", "data");
           mkdirSync(lateDataDir, { recursive: true, mode: 0o700 });
@@ -814,9 +728,7 @@ describe("the four escapes, against the production factory under the real wrap",
           expect(deniedReadCodes()).toContain(lateRead.code);
           expect(JSON.stringify(late)).not.toContain(LATE_SENTINEL);
 
-          // An agent plugin's data and installed version, outside the plugins
-          // root: refused by the same flag (`asrt-sandbox.ts`,
-          // `ensurePluginOwnedReadRoots`), each with its unconfined control.
+          // Agent-plugin data and installed versions need separate controls outside pluginsRoot.
           for (const agentDir of agentPluginNeighbourDirs(staged.aveHome)) {
             expect(readFileSync(join(agentDir, SENTINEL_NAME), "utf-8")).toBe(NEIGHBOUR_SENTINEL);
             const agent = await call(spawned, "escape_secrets", {
@@ -839,16 +751,12 @@ describe("the four escapes, against the production factory under the real wrap",
     120_000,
   );
 
-  // Escape 1a by delegation: the child asks the host for a worker that reads
-  // what it cannot. `/bin/cat` is the worker; Windows workers run as the same
-  // single sandbox account as the child and have no neighbour deny to measure.
+  // A delegated worker must not read what the child cannot; Windows shared-account workers have no neighbour deny.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "1a by delegation: a worker the child asks for reads its own grant and not a neighbour's data",
     async () => {
       if (!(await sandboxCasesRun())) return;
       expect(controls.secrets, "the secrets control did not hold").toBe("held");
-      // The control outside the sandbox: the same command prints the
-      // neighbour's sentinel when nothing confines it.
       expect(execFileSync("/bin/cat", [join(staged.neighbourDataDir, SENTINEL_NAME)], { encoding: "utf-8" })).toBe(
         NEIGHBOUR_SENTINEL,
       );
@@ -857,8 +765,6 @@ describe("the four escapes, against the production factory under the real wrap",
       }
       const spawned = await spawnInstalled(staged.fixture);
       try {
-        // The plugins root's neighbour, then an agent plugin's data and
-        // installed version outside it.
         for (const otherDataDir of [staged.neighbourDataDir, ...agentPluginNeighbourDirs(staged.aveHome)]) {
           const result = await call(spawned, "escape_worker", {
             expectConfined: true,
@@ -867,14 +773,15 @@ describe("the four escapes, against the production factory under the real wrap",
             otherPluginId: NEIGHBOUR_ID,
             command: "/bin/cat",
           });
-          // The control inside the sandbox: granted its plugin's data directory,
-          // the worker prints what the child wrote there.
+          // The worker must read its granted own data before neighbour denials count.
           expect(result.own, JSON.stringify(result.own)).toMatchObject({
             ok: true,
             value: { stdout: OWN_BYTES, exit: 0 },
           });
           const other = result.other as { ok: boolean; value?: { stdout: string; stderr: string; exit: unknown } };
           expect(other.ok, `${otherDataDir}: ${JSON.stringify(other)}`).toBe(true);
+          // A worker that never exited measured nothing: only a refused read counts as confinement.
+          expect(other.value!.exit, `${otherDataDir}: ${JSON.stringify(other)}`).toBeTypeOf("number");
           expect(other.value!.exit, `${otherDataDir}: ${JSON.stringify(other)}`).not.toBe(0);
           expect(other.value!.stdout).toBe("");
           expect(JSON.stringify(result)).not.toContain(NEIGHBOUR_SENTINEL);
@@ -905,8 +812,7 @@ describe("the four escapes, against the production factory under the real wrap",
       });
       const refused = factory(contextFor(staged.fixture, host, config));
       await expect(refused).rejects.toBeInstanceOf(PluginSandboxGrantError);
-      // Refused for being the secrets directory — not merely for lacking an
-      // approval, which a value anywhere outside an approved root would also be.
+      // Check the secrets-root refusal, not merely a missing approval.
       await expect(refused).rejects.toThrow(/escapeDir/);
       await expect(refused).rejects.toThrow(/sensitive-path rule/);
       expect(observed, "a child was spawned for a refused grant").toBe(false);
@@ -931,17 +837,13 @@ describe("the four escapes, against the production factory under the real wrap",
         expect(raw.connect!.ok, JSON.stringify(raw.connect)).toBe(false);
         expect(raw.fetch!.ok, JSON.stringify(raw.fetch)).toBe(false);
         expect(listenerConnections.length, "the listener recorded a connection from the child").toBe(before);
-        // The child sees only that the host refused: the boundary carries no
-        // host-side detail. The reason is the host's own audit record.
+        // Child errors carry no host details; verify the reason through the audit sink.
         expect(result.hostFetch).toMatchObject({ url: DENIED_URL, ok: false });
-        // Refused by the allow-list, so nothing reached the transport.
         expect(spawned.host.transportCalls).toEqual([]);
         const audit = await auditTexts(spawned.host.audit);
         const denials = audit.filter((row) => row.startsWith(`[plugin:${PLUGIN_ID}] host_fetch_denied`));
         expect(denials, JSON.stringify(audit)).toHaveLength(1);
-        // The allow-list's own detail, not merely "denied": `.invalid` never
-        // resolves, so the SSRF layer behind the allow-list would deny it too,
-        // and only this line tells the two apart.
+        // Assert the allowlist reason so a later DNS or SSRF refusal cannot satisfy the test.
         expect(denials[0]).toContain("https://not-allowed.invalid not in networkAccess.allowedDomains");
         expect(audit.some((row) => row.includes(" host_fetch ") && !row.includes("host_fetch_denied"))).toBe(false);
       } finally {
@@ -955,12 +857,7 @@ describe("the four escapes, against the production factory under the real wrap",
     "3: the child is Electron run as Node, and no form of electron hands it a usable main-process API",
     async () => {
       expect(controls.electron, "the Electron control did not hold").toBe("held");
-      // Escape 3 needs no sandbox: the claim is about `process.execPath` under
-      // `ELECTRON_RUN_AS_NODE=1`, which the factory spawns wrapped or not. It
-      // runs unwrapped, as a host with the sandbox off — the default — spawns
-      // it, which is also where a child that lost the variable would come up as
-      // a full main process and answer, rather than be stopped by the wrap
-      // before the probe could report.
+      // Run the execPath escape unwrapped to prove node-mode startup itself disables main-process APIs.
       const spawned = await spawnInstalled(staged.fixture, {}, { wrapped: false });
       try {
         const result = await call(spawned, "escape_electron", { expectConfined: true });
@@ -969,7 +866,6 @@ describe("the four escapes, against the production factory under the real wrap",
           outcome: "no-usable-api",
           usable: [],
           runAsNode: "1",
-          // The trap: a version check says yes.
           version: expect.any(String),
           requireBare: { ok: false, code: "MODULE_NOT_FOUND" },
           importBare: {
@@ -1006,18 +902,15 @@ describe("the four escapes, against the production factory under the real wrap",
           emitNonJson: true,
           otherPluginId: NEIGHBOUR_ID,
         });
-        // The patch landed — in the child's own copy.
         expect(result.patched).toEqual({ fetch: true, stdoutWrite: true });
-        // The forged frame was dispatched as this connection's request: the
-        // gate saw `adversarial` asking for `neighbour`'s key and said no.
+        // A forged request keeps this connection identity; it cannot claim another plugin secret.
         expect(result.forged).toMatchObject({ key: `plugin.${NEIGHBOUR_ID}.key`, answered: true, result: null });
         const audit = await auditTexts(spawned.host.audit);
         expect(audit).toContain(
           `[plugin:${PLUGIN_ID}] hostSecret_denied reason=not-allowlisted key=plugin.${NEIGHBOUR_ID}.key`,
         );
         expect(audit.filter((row) => row.startsWith(`[plugin:${NEIGHBOUR_ID}]`))).toEqual([]);
-        // The identity field is not a parameter of `getSecret`: ignored, and
-        // named in the host's own log.
+        // Ignore and log identity fields outside the method contract.
         const warnings = sessionWarnings.slice(warningsBefore);
         expect(
           warnings.some(([meta, message]) =>
@@ -1027,13 +920,11 @@ describe("the four escapes, against the production factory under the real wrap",
           ),
           JSON.stringify(warnings),
         ).toBe(true);
-        // The non-JSON line reached the raw stream, the decoder dropped it, and
-        // the session went on: the next call answers.
+        // Malformed raw frames must be dropped without poisoning the next valid call.
         expect(spawned.stdout().split("\n")).toContain("this line is not JSON");
         await expect(call(spawned, "escape_electron", { expectConfined: true })).resolves.toMatchObject({
           outcome: "no-usable-api",
         });
-        // Nothing of the host's changed identity.
         expect(globalThis.fetch).toBe(hostFetch);
         expect(HOSTAPI_DISPATCH_TABLE).toBe(table);
         expect({ ...HOSTAPI_DISPATCH_TABLE }).toEqual(tableEntries);
@@ -1046,11 +937,7 @@ describe("the four escapes, against the production factory under the real wrap",
     },
     120_000,
   );
-  // The `process` variant (§9.8 A2): escapes 1 and 2 again, from the Python
-  // smoke — a child that is not JavaScript, spawned by the same factory under
-  // the same wrap, where a reviewer would expect the filesystem and socket
-  // claims to be re-proven. Escapes 3 and 4 are JavaScript-specific. A process
-  // entry never runs on win32.
+  // Recheck filesystem and socket confinement through the non-JavaScript process fixture; process entries exclude Windows.
   it.runIf(process.platform === "darwin" || process.platform === "linux")(
     "1a and 2 from a Python child: the same reads and the same socket are refused",
     async () => {
@@ -1078,7 +965,6 @@ describe("the four escapes, against the production factory under the real wrap",
           otherDataDir: staged.neighbourDataDir,
           sentinelName: SENTINEL_NAME,
         });
-        // The in-sandbox control, as for the JavaScript child.
         expect(secrets.own).toEqual({
           write: { ok: true, value: null },
           read: { ok: true, value: "the python-smoke plugin's own bytes" },
@@ -1108,8 +994,7 @@ describe("the four escapes, against the production factory under the real wrap",
   );
 });
 
-// The positive detector report holds before the escape cases. Its independent
-// shutdown can overlap their child work; every exit and survival assertion still runs.
+// Positive controls must report before escape assertions; shutdown observations may overlap child work.
 describe("the controls, which must hold before any escape is asserted", () => {
   it.runIf(ELECTRON_CONTROL_RUNS)(
     process.platform === "win32"
@@ -1119,21 +1004,17 @@ describe("the controls, which must hold before any escape is asserted", () => {
       expect(controlExit, "the Electron control did not start").toBeDefined();
       const exit = await controlExit!;
       if (exit.reaped) {
-        // Not a failure of what the control proves: its report already held.
-        // The stack says where shutdown was waiting, for the log.
-        // Written to stderr, as the python smoke reports, so it reaches the run log.
+        // A valid control report and stalled shutdown are separate outcomes; log the stall stack to stderr.
         process.stderr.write(
           `[adversarial-escapes] the Electron control was reaped ${CONTROL_EXIT_GRACE_MS} ms after reporting:\n${exit.diagnostics}\n`,
         );
       }
-      // A reaped control is killed, unless it exited by itself while sampled.
       const ended = [{ code: 0, signal: null }, ...(exit.reaped ? [{ code: null, signal: "SIGKILL" }] : [])];
       expect(ended, `the Electron control ended badly:\n${exit.diagnostics}`).toContainEqual({
         code: exit.code,
         signal: exit.signal,
       });
-      // On Windows nothing below is measured (see the title); `survivor` and
-      // `escaped` stay at their unmeasured defaults there, so they are not asserted.
+      // Do not assert survivor fields on Windows where those measurements are unavailable.
       if (process.platform !== "win32") {
         expect(exit.survivor, `a helper of the Electron control outlived it:\n${exit.diagnostics}`).toBe(false);
         expect(exit.escaped, `a helper had left the control's process group, out of the group kill's reach:\n${exit.diagnostics}`).toEqual([]);

@@ -1,91 +1,9 @@
-/**
- * Plugin tool invocation origin-chain tracker — issue #664 P2.
- *
- * ── CURRENT REACH (read this before designing against the "plugin" origin) ────
- * Only THREE producers dispatch an invocation today, and none of them is
- * `"plugin"`: `PluginRuntime.callFromUi` ("ui"), `PluginRuntime.callFromApp`
- * ("mcp-app"), and `createExternalToolCallSource` ("mcp-app"). All three enter
- * from an IPC handler, so no chain is ever nested inside another. `"plugin"`
- * survives as the least-trusted FLOOR of {@link resolveEffectiveOrigin} — the
- * value a re-entrant producer would inherit — not as a live lane. The wrapper
- * shape below is the case this tracker was built for; it is kept because it is
- * the design's motivating example and the shape any re-entrant producer will
- * take, but `hostApi.callTool` itself was removed with cross-plugin tool
- * invocation, so the flow is not currently reachable:
- *
- *   user clicks panel button
- *     → bridge.callTool("<wrapper_signin_tool>")        // UI origin
- *       → wrapper handler re-enters with "<inner_auth_tool>" // plugin origin
- *         → inner-auth handler shows OS-native sign-in window
- *
- * The user *did* approve the outer wrapper at the panel, but the inner call is
- * dispatched with `origin: "plugin"` because that is the HostApi the wrapper
- * holds. Pre-fix, the host then treated the inner call as headless and routed
- * it through the reviewer lane — silently queueing the sign-in popup forever
- * (#664 reproducer).
- *
- * Constraint (#1556): this stickiness only makes the inner call *foreground*;
- * it does NOT make an app-only-visibility inner method reachable. For the inner
- * `ctx.callTool("<inner_auth_tool>")` above to actually run, `inner_auth_tool`
- * must be model-visible in the owner plugin's `tools[]` (the governed
- * ToolExecutor path). An app-only-visibility *non-status* method cannot be
- * invoked from a plugin-origin `ctx.callTool` — the nested dispatcher never
- * forwards `userAction`, so the user-activation gate can never be satisfied, and
- * forwarding it is intentionally out of scope (no shipped first-party plugin
- * nests into an app-only method this way). Attempting it throws the explicit
- * "app-only-visibility method … cannot be invoked from a plugin-origin
- * ctx.callTool" error from `boot/plugin-tool-invocation.ts`
- * (dispatchAppOnlyRuntimeInvocation), NOT a generic activation error. The auth
- * *statusTool* is the exception: its
- * `appOnlyRuntimeInvocationRequiresUserAction` returns false, so it skips the
- * user-activation gate and DOES run on a plugin-origin chain (status polling is
- * a host-managed read, not a user-gesture action). See architecture.md §9.4a.
- *
- * This tracker uses {@link AsyncLocalStorage} to thread the outermost
- * (effective) origin through the call chain. The plugin runtime enters a
- * scope per `invokePluginTool` call and resolves the *effective* origin as
- *
- *   effective = parent || current.origin
- *
- * so a UI-rooted chain stays UI all the way down, while a plugin-emitted
- * chain (no UI ancestor) stays plugin. The effective origin is read by
- * `boot.ts` when it constructs `permissionContext.headless`.
- *
- * Boundary: the chain is process-local and follows the JavaScript async
- * frame — a setTimeout/queueMicrotask inside a plugin handler that calls
- * back into callTool retains the chain (this is what we want); an
- * out-of-band IPC message that arrives independently does NOT inherit it
- * (this is also what we want — IPC has its own origin classification at
- * the bridge entry point).
- *
- * MCP Apps: a card is NOT the plugin's panel. It dispatches with its own
- * `"mcp-app"` origin ({@link InvocationOrigin}), which outranks `"ui"` in the
- * precedence below, so an app-rooted chain can never be laundered into the
- * trusted-panel origin and therefore can never reach `callDeclaredAppOnlyTool`.
- */
+// Tracks effective origin through process-local async frames; independent IPC messages establish their own origin.
+// Foreground origin does not grant app-only reachability or prove browser user activation.
 import { AsyncLocalStorage } from "node:async_hooks";
 
-/**
- * SoT for the plugin tool-invocation origin union. Every consumer
- * (`PluginToolInvocationContext.origin` / `.parentOrigin`, the boot dispatch
- * predicates, this tracker) imports THIS type — the union is never re-declared
- * inline.
- *
- *  - `"plugin"` — an LLM/plugin-emitted call (`ctx.callTool`, the model's tool
- *    use). Headless by default.
- *  - `"ui"` — the plugin's OWN first-party React panel, running in the TRUSTED
- *    host renderer. It is the only origin that can carry a REAL user gesture
- *    (`userAction`, derived in preload from `navigator.userActivation`), and it
- *    is therefore the only origin allowed to reach the ungoverned app-only
- *    dispatch path (`callDeclaredAppOnlyTool`).
- *  - `"mcp-app"` — an MCP App card: UNTRUSTED HTML in a sandboxed iframe calling
- *    its own server's tools through the `oncalltool` bridge. It is NOT the
- *    plugin's panel: it cannot prove a user gesture, so it never carries
- *    `userAction` and never reaches the app-only dispatch path (see
- *    `boot/plugin-tool-invocation.ts` — `isAppOnlyRuntimeInvocation` returns
- *    false for anything that is not `"ui"`). Its calls always take the governed
- *    ToolExecutor.
- */
+// Trusted UI may carry verified browser activation; untrusted card calls always use governed execution.
+// All consumers share this origin union rather than redefining it.
 export type InvocationOrigin = "plugin" | "ui" | "mcp-app";
 
 interface ChainFrame {
@@ -95,23 +13,8 @@ interface ChainFrame {
 
 const storage = new AsyncLocalStorage<ChainFrame>();
 
-/**
- * Run `fn` inside an invocation-origin scope. Returns the result of `fn`.
- *
- * Precedence is LEAST-TRUSTED-WINS, evaluated over the three inputs (the
- * ambient chain frame, the explicit `parentOrigin` handoff, and `current`):
- *
- *   mcp-app  >  ui  >  plugin
- *
- *  - `"mcp-app"` first: an app-initiated chain stays app-initiated all the way
- *    down. It can NEVER be laundered into `"ui"` (the trusted-panel origin) by a
- *    nested hop, which is what keeps the ungoverned app-only dispatch path
- *    structurally unreachable from an untrusted card. It also cannot be degraded
- *    to `"plugin"` by an inner `ctx.callTool`, so an app-rooted chain keeps its
- *    foreground (non-headless) lane exactly like the UI-rooted chain it replaced.
- *  - `"ui"` next: the pre-existing #664 P2 rule — once a chain is UI, every
- *    descendant stays UI (the user's outer panel approval is honoured).
- */
+// Least-trusted origin wins across ambient, parent, and current inputs: mcp-app > ui > plugin.
+// Nested calls must never launder untrusted card origin into trusted panel authority.
 export function runWithInvocationOrigin<T>(
   current: InvocationOrigin,
   parentOrigin: InvocationOrigin | undefined,
@@ -122,7 +25,6 @@ export function runWithInvocationOrigin<T>(
   return storage.run({ effectiveOrigin: effective }, fn);
 }
 
-/** The ONE precedence rule (see {@link runWithInvocationOrigin}). */
 function resolveEffectiveOrigin(
   inherited: InvocationOrigin | undefined,
   parentOrigin: InvocationOrigin | undefined,
@@ -134,11 +36,7 @@ function resolveEffectiveOrigin(
   return "plugin";
 }
 
-/**
- * Read the effective origin of the current async chain, if any. Returns
- * `undefined` when called outside an invocation scope (e.g. boot-time
- * code, top-level IPC handlers).
- */
+/** Independent entry points have no ambient invocation origin. */
 export function currentInvocationOrigin(): InvocationOrigin | undefined {
   return storage.getStore()?.effectiveOrigin;
 }

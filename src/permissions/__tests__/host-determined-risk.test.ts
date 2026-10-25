@@ -6,13 +6,7 @@ import {
 import { isReviewerAutoDecisionOutcome } from "../permission-manager.js";
 import { makeRiskClassifierContext as ctx } from "./test-helpers.js";
 
-/**
- * Host-determined bypass: `agent_spawn`'s risk is settled by system structure
- * (every effectful call the child makes re-enters PermissionManager), a fact
- * absent from the reviewer prompt — so the LLM is a question it cannot answer,
- * and its habitual HIGH kept overriding the host's LOW through max(rule, llm).
- * These cases pin that the LLM is never consulted for it, and ONLY for it.
- */
+// Child tool effects re-enter PermissionManager; only the host-determined spawn call skips model risk review.
 function alwaysHighProvider(): { provider: LlmReviewerProvider; spy: ReturnType<typeof vi.fn> } {
   const spy = vi.fn(async () => ({
     text: '{"level":"high","reason":"in-process execution without sandbox isolation"}',
@@ -47,8 +41,7 @@ describe("host-determined risk bypass", () => {
 
     const trace = await classifier.classifyWithTrace(SPAWN);
 
-    // The meta rule for agent_spawn is LOW; had the provider been consulted,
-    // max(rule, llm) would have produced HIGH.
+    // The meta rule for agent_spawn is LOW; had the provider been consulted, max(rule, llm) would have produced HIGH.
     expect(trace.finalVerdict.level).toBe("low");
     expect(trace.finalVerdict).toEqual(trace.ruleVerdict);
     expect(trace.llmVerdict).toBeNull();
@@ -67,8 +60,7 @@ describe("host-determined risk bypass", () => {
       ctx({ ...SPAWN, source: "plugin" }),
     );
 
-    // A plugin claiming the builtin's name gets no host authority: the full
-    // composed path runs and the LLM's HIGH stands.
+    // A plugin claiming the builtin's name gets no host authority: the full composed path runs and the LLM's HIGH stands.
     expect(spy).toHaveBeenCalled();
     expect(trace.outcome).toBe("fresh");
     expect(trace.finalVerdict.level).toBe("high");
@@ -78,9 +70,7 @@ describe("host-determined risk bypass", () => {
     const { provider, spy } = alwaysHighProvider();
     const classifier = new LlmRiskClassifier(provider, "test-model");
 
-    // The bypass is co-scoped with the meta rule that justifies it: a category
-    // drift must send the call down the full composed path, never hand the
-    // final verdict to a different rule with no LLM cross-check.
+    // The bypass is co-scoped with the meta rule that justifies it: a category drift must send the call down the full composed path, never hand the final verdict to a different rule with no LLM cross-check.
     const trace = await classifier.classifyWithTrace(
       ctx({ ...SPAWN, category: "shell" }),
     );
@@ -107,9 +97,7 @@ describe("host-determined risk bypass", () => {
     const { provider, spy } = alwaysHighProvider();
     const classifier = new LlmRiskClassifier(provider, "test-model");
 
-    // Issue #2323 moved `agent_status` off `meta` and onto the `read` it always
-    // was. A call still arriving as `meta` is a drift, not the tool, so it loses
-    // the bypass and takes the full composed path.
+    // moved `agent_status` off `meta` and onto the `read` it always was. A call still arriving as `meta` is a drift, not the tool, so it loses the bypass and takes the full composed path.
     const trace = await classifier.classifyWithTrace(
       ctx({ toolName: "agent_status", source: "builtin", category: "meta", pathFields: [], finalInput: {} }),
     );
@@ -122,8 +110,7 @@ describe("host-determined risk bypass", () => {
     const { provider, spy } = alwaysHighProvider();
     const classifier = new LlmRiskClassifier(provider, "test-model");
 
-    // agent_list honestly declares `read`, not `meta`. The bypass tracks each
-    // tool's own declared category rather than a single hard-coded one.
+    // agent_list honestly declares `read`, not `meta`. The bypass tracks each tool's own declared category rather than a single hard-coded one.
     const trace = await classifier.classifyWithTrace(
       ctx({ toolName: "agent_list", source: "builtin", category: "read", pathFields: [], finalInput: {} }),
     );
@@ -162,9 +149,7 @@ describe("host-determined risk bypass", () => {
     const { provider, spy } = alwaysHighProvider();
     const classifier = new LlmRiskClassifier(provider, "test-model");
 
-    // A rule-HIGH input would be composition-pinned and skip the provider,
-    // so the non-bypass is shown on a non-HIGH rule verdict: the LLM is
-    // consulted and its escalation lands in the composed verdict.
+    // A rule-HIGH input would be composition-pinned and skip the provider, so the non-bypass is shown on a non-HIGH rule verdict: the LLM is consulted and its escalation lands in the composed verdict.
     const trace = await classifier.classifyWithTrace(
       ctx({
         toolName: "write_file",

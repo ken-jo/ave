@@ -1,14 +1,4 @@
-/**
- * The host-side session-cookie vault: scoping + jar reads.
- *
- * The scoping half is a port of the rules a portal plugin's `cookieScope.ts` enforced from
- * inside the plugin, so these cases are deliberately the SAME questions that
- * module answered — including the ONE documented divergence from RFC 6265 §5.4
- * (a Secure cookie is NOT withheld from an `http://` request, because legacy
- * corporate portals serve authenticated pages over plain HTTP). A regression
- * there does not fail loudly at runtime; it silently withholds a session cookie
- * and the portal answers 401, so it is pinned here.
- */
+// Secure cookies are intentionally sent over HTTP for legacy portals, diverging from RFC 6265 §5.4.
 import { describe, expect, it, vi } from "vitest";
 import type { Session } from "electron";
 import {
@@ -98,9 +88,7 @@ describe("selectCookiesForUrl", () => {
   });
 
   it("KEEPS a Secure-marked session cookie on an http:// request (legacy-portal divergence)", () => {
-    // The upstream IdP marks session cookies Secure while the legacy intranet
-    // portal serves authenticated pages over plain HTTP. A strict RFC 6265 §5.4
-    // check here would withhold the credential and every such call would 401.
+    // Legacy intranet portals serve authenticated pages over HTTP even when the IdP marks session cookies Secure.
     const header = cookieHeaderForUrl(jar, new URL("http://portal.example.com/app/x"));
     expect(header).toContain("SMSESSION=sso");
     expect(header).toContain("JSESSIONID=specific");
@@ -117,8 +105,7 @@ describe("partition jar reads", () => {
       { name: "A", value: "1", domain: ".example.com", path: "/" },
     ]);
     await readPartitionJar(session);
-    // `get({})`, not `get({ url })` — the url filter would apply Chromium's own
-    // Secure check and undo the divergence pinned above.
+    // `get({})`, not `get({ url })` — the url filter would apply Chromium's own Secure check and undo the divergence pinned above.
     expect(session.cookies.get).toHaveBeenCalledWith({});
   });
 

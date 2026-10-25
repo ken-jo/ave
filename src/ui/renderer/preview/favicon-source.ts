@@ -1,4 +1,3 @@
-/** Image schemes admitted by the renderer's img-src policy, alongside same-origin paths. */
 export const FAVICON_SCHEMES = ["data:", "blob:", "ave-content:"] as const;
 
 export function faviconSource(value: unknown): string | null {

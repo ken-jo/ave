@@ -1,14 +1,4 @@
-/**
- * Property test for the diagnostic scrubber's assignment lexer: seeded
- * grammar noise around the shapes it promises to redact. It drives the
- * strict scrubber, which throws on a broken internal contract, not the
- * fail-closed wrapper that would hide one.
- *   - the scan never breaks its own invariant;
- *   - scrubbing the scrubber's output never throws (the renderer scrubs
- *     again what main already scrubbed);
- *   - a credential value planted in a promised shape never survives.
- * A failure names the seed and the input, so it reproduces exactly.
- */
+/** Drive the strict assignment scrubber with seeded grammar noise; verify invariants, repeat scrubbing, and credential removal. */
 import { describe, expect, it } from "vitest";
 import { scrubDiagnosticSecretsStrict } from "../../shared/dlp.js";
 
@@ -33,7 +23,6 @@ const ATOMS = [
 ];
 const CANARY = "QZcanaryQZ";
 const KEYS = ["token", "password", "api_key", "GH_TOKEN", "x-auth", "client_secret", "db.password"];
-/** Whitespace-only separators: they cannot open a string or join a key. */
 const SEPARATORS = [" ", "\n", " ; ", "\n\n", ", "];
 
 function generator(seed: number) {
@@ -44,16 +33,13 @@ function generator(seed: number) {
     for (let i = Math.floor(next() * max); i > 0; i--) text += pick(ATOMS);
     return text;
   };
-  /** A shape the scrubber promises to redact, holding the canary as the credential value. */
   const planted = (): string => {
     const key = pick(KEYS);
     switch (Math.floor(next() * 17)) {
-      // Authorization headers, each scheme's credentials planted where they stand.
       case 13: return `Authorization: Basic ${CANARY}`;
       case 14: return `authorization="Bearer ${CANARY}"`;
       case 15: return `Authorization=Token ${CANARY}`;
       case 16: return `Authorization: Digest username="u", response="${CANARY}"`;
-      // JSON carried in a JSON string, alone, as a key, and inside a key's value.
       case 9: return `\\"${key}\\": \\"${CANARY}\\"`;
       case 10: return `{\\"${key}\\":\\"${CANARY}\\"}`;
       case 11: return `"{\\"${key}\\": \\"${CANARY}\\"}"`;
@@ -69,7 +55,7 @@ function generator(seed: number) {
       default: return `${key}="${CANARY}"`;
     }
   };
-  // The plant stands on its own lines, so noise cannot legitimately swallow it as part of something else.
+  // Keep canaries on separate lines so noise cannot absorb them legitimately.
   return { noise: () => noise(40), planted: () => `${noise(20)}\n${pick(SEPARATORS)}${planted()}${pick(SEPARATORS)}\n${noise(20)}` };
 }
 

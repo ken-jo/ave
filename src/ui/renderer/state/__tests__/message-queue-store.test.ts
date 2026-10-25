@@ -1,8 +1,4 @@
-/**
- * MessageQueueStore 단위 테스트.
- *
- * Spec: docs/blueprints/composer-redesign-message-queue.md#message-queue-semantics
- */
+/** See docs/blueprints/composer-redesign-message-queue.md#message-queue-semantics. */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MessageQueueStore, formatQueueInject } from "../message-queue-store.js";
@@ -17,8 +13,6 @@ describe("MessageQueueStore", () => {
   afterEach(() => {
     vi.useRealTimers();
   });
-
-  // ─── add ──────────────────────────────────────────────────────────────
 
   it("add 는 item 을 추가하고 size 증가", () => {
     expect(store.size()).toBe(0);
@@ -67,8 +61,6 @@ describe("MessageQueueStore", () => {
     expect(listener).toHaveBeenCalledTimes(1);
   });
 
-  // ─── remove ───────────────────────────────────────────────────────────
-
   it("remove 는 해당 항목만 제거", () => {
     const a = store.add("a");
     store.add("b");
@@ -87,8 +79,6 @@ describe("MessageQueueStore", () => {
     expect(listener).not.toHaveBeenCalled();
     expect(store.size()).toBe(1);
   });
-
-  // ─── toggleSelect ─────────────────────────────────────────────────────
 
   it("toggleSelect 는 selection 토글", () => {
     const a = store.add("a");
@@ -119,8 +109,6 @@ describe("MessageQueueStore", () => {
     expect(store.selectedCount()).toBe(2);
   });
 
-  // ─── clearSelection ───────────────────────────────────────────────────
-
   it("clearSelection 은 모든 선택 해제 (item 은 유지)", () => {
     const a = store.add("a");
     const b = store.add("b");
@@ -139,8 +127,6 @@ describe("MessageQueueStore", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
-  // ─── clear ────────────────────────────────────────────────────────────
-
   it("clear 는 큐 전체 비움", () => {
     store.add("a");
     store.add("b");
@@ -154,8 +140,6 @@ describe("MessageQueueStore", () => {
     store.clear();
     expect(listener).not.toHaveBeenCalled();
   });
-
-  // ─── takeAll (자연 인입) ──────────────────────────────────────────────
 
   it("takeAll 은 전체 항목 반환 + 큐 비움", () => {
     store.add("a");
@@ -172,8 +156,6 @@ describe("MessageQueueStore", () => {
     expect(store.takeAll()).toEqual([]);
     expect(listener).not.toHaveBeenCalled();
   });
-
-  // ─── takeSelected (즉시 주입) ─────────────────────────────────────────
 
   it("takeSelected 는 선택 항목만 꺼냄, 미선택 잔존", () => {
     const a = store.add("a");
@@ -194,8 +176,6 @@ describe("MessageQueueStore", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
-  // ─── takeOne (행별 즉시) ──────────────────────────────────────────────
-
   it("takeOne 은 특정 1 항목 꺼냄, 다른 항목 잔존", () => {
     store.add("a");
     const b = store.add("b");
@@ -213,8 +193,6 @@ describe("MessageQueueStore", () => {
     expect(listener).not.toHaveBeenCalled();
     expect(store.size()).toBe(1);
   });
-
-  // ─── subscribe / unsubscribe ──────────────────────────────────────────
 
   it("subscribe 가 unsubscribe 함수 반환", () => {
     const listener = vi.fn();
@@ -235,8 +213,6 @@ describe("MessageQueueStore", () => {
     expect(l1).toHaveBeenCalledTimes(1);
     expect(l2).toHaveBeenCalledTimes(1);
   });
-
-  // ─── update (큐 항목 수정) ────────────────────────────────────────────
 
   it("update 는 텍스트 수정 + expiresAt 갱신 + listener 호출", () => {
     const a = store.add("original");
@@ -282,12 +258,9 @@ describe("MessageQueueStore", () => {
     expect(listener).not.toHaveBeenCalled();
   });
 
-  // ─── 자동 만료 (lazy prune) ───────────────────────────────────────────
-
   it("getItems 는 만료된 항목 자동 prune", () => {
     const item = store.add("will expire");
-    // 항목의 expiresAt 을 과거로 직접 변형 — store 내부 시점 manipulation
-    // 어려우니 vi.setSystemTime 으로 시간 진행.
+    // 항목의 expiresAt 을 과거로 직접 변형 — store 내부 시점 manipulation 어려우니 vi.setSystemTime 으로 시간 진행.
     vi.useFakeTimers();
     vi.setSystemTime(Date.now() + MessageQueueStore.DEFAULT_TTL_MS + 1);
     const items = store.getItems();
@@ -309,7 +282,6 @@ describe("MessageQueueStore", () => {
     vi.setSystemTime(start);
     const item = store.add("foo");
     const initialExpiresAt = store.getItems()[0].expiresAt;
-    // TTL 의 절반 시간 경과
     vi.setSystemTime(start + MessageQueueStore.DEFAULT_TTL_MS / 2);
     store.update(item.id, "bar");
     const newExpiresAt = store.getItems()[0].expiresAt;

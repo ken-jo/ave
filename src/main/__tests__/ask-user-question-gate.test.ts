@@ -1,13 +1,3 @@
-/**
- * AskUserQuestionGate — timeout coverage + multi-question contract.
- *
- * The gate must:
- *   1. Resolve `{ dismissed: true }` after the configured timeout.
- *   2. Send a `ave:ask-user-question:timeout` IPC event so the renderer
- *      can drop the stale card before the user clicks into a no-op.
- *   3. Accept 1–4 questions per card and surface them as a single request
- *      payload to the renderer.
- */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   AskUserQuestionGate,
@@ -16,7 +6,6 @@ import {
 import { MAX_FREE_TEXT_LENGTH } from "../../shared/ask-user-question-limits.js";
 import { makeMockWebContents } from "../../__tests__/test-helpers.js";
 
-/** Convenience — most tests only care about the wait/abort/timeout shape. */
 function single(question: string) {
   return { sessionId: "session-1", questions: [{ question, choices: ["Continue", "Stop"] }] };
 }
@@ -33,7 +22,6 @@ describe("AskUserQuestionGate — timeout path", () => {
     const wc = makeMockWebContents();
     const gate = new AskUserQuestionGate(wc as never, 5 * 60 * 1000);
     const promise = gate.ask(single("still there?"));
-    // Drain the request emission tick first.
     expect(wc.send).toHaveBeenCalledWith(
       "ave:ask-user-question:request",
       expect.objectContaining({
@@ -47,7 +35,6 @@ describe("AskUserQuestionGate — timeout path", () => {
     const response = await promise;
     expect(response.dismissed).toBe(true);
 
-    // M2: renderer must be notified via the dedicated timeout channel.
     const timeoutCall = wc.send.mock.calls.find(
       (call) => call[0] === IPC_ASK_USER_QUESTION_TIMEOUT,
     );
@@ -59,7 +46,6 @@ describe("AskUserQuestionGate — timeout path", () => {
     const wc = makeMockWebContents();
     const gate = new AskUserQuestionGate(wc as never, 60_000);
     const slots: Array<Promise<unknown>> = [];
-    // Fill the gate up to the cap.
     for (let i = 0; i < 5; i++) {
       slots.push(gate.ask(single(`q-${i}`)));
     }
@@ -74,9 +60,8 @@ describe("AskUserQuestionGate — timeout path", () => {
     await Promise.allSettled(slots);
   });
 
-  // Regression: the user's 중단 button must unblock a pending question
-  // immediately. Before this, the gate sat on its 5-minute timer even after
-  // the conversation loop had aborted, and the abort button felt dead.
+  // Regression: the user's 중단 button must unblock a pending question immediately. Before this, the gate sat on its 5-minute timer even after the
+  // conversation loop had aborted, and the abort button felt dead.
   it("aborts immediately when the abortSignal fires and notifies the renderer", async () => {
     const wc = makeMockWebContents();
     const gate = new AskUserQuestionGate(wc as never, 60_000);
@@ -89,8 +74,7 @@ describe("AskUserQuestionGate — timeout path", () => {
     expect(response.dismissed).toBe(true);
     expect(gate.pendingCount).toBe(0);
 
-    // Renderer must be told the card is gone, same channel as the timeout
-    // path, so the composer-dock card disappears even if the user never clicked.
+    // Renderer must be told the card is gone, same channel as the timeout path, so the composer-dock card disappears even if the user never clicked.
     const timeoutCall = wc.send.mock.calls.find(
       (call) => call[0] === IPC_ASK_USER_QUESTION_TIMEOUT,
     );
@@ -98,9 +82,7 @@ describe("AskUserQuestionGate — timeout path", () => {
     expect(timeoutCall![1]).toMatchObject({ requestId: response.requestId });
   });
 
-  // Regression for the LOW from PR #287's review: a long-lived
-  // AbortController reused across several sequential asks must not leak an
-  // abort listener every time the user resolves a question via IPC.
+  // Reusing one AbortController across questions must not accumulate abort listeners after IPC resolution.
   it("removes the abort listener when the user resolves via IPC (no leak across sequential asks)", async () => {
     const wc = makeMockWebContents();
     const gate = new AskUserQuestionGate(wc as never, 60_000);
@@ -108,7 +90,6 @@ describe("AskUserQuestionGate — timeout path", () => {
     const removeSpy = vi.spyOn(ac.signal, "removeEventListener");
 
     const slot = gate.ask({ ...single("first?"), abortSignal: ac.signal });
-    // Find the request id that was sent to the renderer.
     const reqCall = wc.send.mock.calls.find(
       (c) => c[0] === "ave:ask-user-question:request",
     );
@@ -119,8 +100,7 @@ describe("AskUserQuestionGate — timeout path", () => {
     const response = await slot;
     expect(response.answers).toEqual([{ choice: "Continue" }]);
 
-    // The listener registered on the controller's signal must have been cleaned up,
-    // so a later abort on the same controller does not invoke a stale handler.
+    // The listener registered on the controller's signal must have been cleaned up, so a later abort on the same controller does not invoke a stale handler.
     expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
     expect(gate.pendingCount).toBe(0);
   });
@@ -138,8 +118,7 @@ describe("AskUserQuestionGate — timeout path", () => {
     expect(wc.send).not.toHaveBeenCalled();
   });
 
-  // Dev-mode reload destroys the boot-time webContents. A lazy resolver lets
-  // the gate keep working against the current window after reload.
+  // Dev-mode reload destroys the boot-time webContents. A lazy resolver lets the gate keep working against the current window after reload.
   it("uses the lazy resolver every send so a fresh webContents is picked up after reload", async () => {
     const stale = makeMockWebContents();
     stale.isDestroyed.mockReturnValue(true);
@@ -320,8 +299,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
     );
     const requestId = (reqCall![1] as { id: string }).id;
 
-    // Neither question asked for a typed answer, so text is not an answer
-    // channel the renderer may open on its own.
+    // Neither question asked for a typed answer, so text is not an answer channel the renderer may open on its own.
     expect(gate.resolve({
       requestId,
       answers: [{ freeText: "수기 응답" }, { choices: ["AI"] }],
@@ -413,8 +391,7 @@ describe("AskUserQuestionGate — multi-question contract", () => {
       requestId,
       answers: [{ freeText: "x".repeat(MAX_FREE_TEXT_LENGTH + 1) }, { choices: ["AI"] }],
     })).toBe(false);
-    // The first question has no chips, so an empty multi-select with no text
-    // leaves it unanswered.
+    // The first question has no chips, so an empty multi-select with no text leaves it unanswered.
     expect(gate.resolve({
       requestId,
       answers: [{ freeText: "10" }, {}],

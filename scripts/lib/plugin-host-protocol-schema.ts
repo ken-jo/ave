@@ -1,37 +1,5 @@
-/**
- * The plugin host protocol schema generator. Its command line, which writes the
- * schema or checks the committed copy, is
- * `scripts/generate-plugin-host-protocol-schema.ts`; this module only builds
- * the text, so a test can drive it without writing anything.
- *
- * `schemas/plugin-host-protocol/<version>/protocol.schema.json` is what a
- * plugin written in another language builds against
- * (docs/design/plugin-hostapi-protocol.md §6.1). It is GENERATED from the
- * sources the dispatcher compiles against, so it cannot say something the
- * host does not do:
- *
- *  - `HOSTAPI_PATH_CONTRACTS` decides which members are methods, what their
- *    params are called, and which axis each side of the call travels on;
- *  - `public-contract.ts` supplies the type of every `plain-json` side, read
- *    off the `PluginHostApi` member itself (overloads become `anyOf`);
- *  - `host-api-wire.ts` supplies the `Wire*` type of every `encoded` or
- *    `handle` side — never the `Uint8Array`, `RequestInit`, `Response` or
- *    function type of the contract, which do not cross as themselves;
- *  - `plugin-instance-wire.ts` supplies the `ave/instance/*` shapes, and the
- *    `HostApiNotification` union the notification shapes;
- *  - `HostApiEventPayloads` supplies what each registration or handle pushes,
- *    which is the type the dispatcher's `deliver` accepts for that member.
- *
- * The TypeScript-to-schema step is `ts-json-schema-generator`, driven through
- * its node-level API: it cannot derive `Parameters<>` of a method signature,
- * so this module finds each parameter's type node and hands it over. The
- * generator bundles its own TypeScript, which is what lets it run beside the
- * app's native compiler.
- *
- * `$id` is the app-tagged URL the schema is mirrored at (§6.1), so it changes
- * with `package.json`'s version: a version bump regenerates this file in the
- * same change, and `scripts/release.mjs` does so after it bumps.
- */
+// Project schemas from the same contracts and wire types used by dispatch.
+// Read parameter type nodes directly and regenerate app-tagged schema URLs on version bumps.
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -60,36 +28,23 @@ import { hostProtocolSchemaId } from "./plugin-host-protocol-mirror.mjs";
 type JsonSchema = Record<string, unknown>;
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
-// The generator takes a glob, and the compiler keys its files by path; both
-// read `/`, which a Windows `join` would not give them.
+// Compiler keys and generator globs require forward slashes on every platform.
 const POSIX_ROOT = ROOT.replaceAll("\\", "/");
 const PUBLIC_CONTRACT = "src/plugins/public-contract.ts";
 const HOST_API_WIRE = "src/plugins/isolation/host-api-wire.ts";
 const PLUGIN_INSTANCE_WIRE = "src/plugins/isolation/plugin-instance-wire.ts";
-/** The prefix of every line the generator and its command line print. */
 export const HOST_PROTOCOL_SCHEMA_LABEL = "[plugin-host-protocol-schema]";
 const LABEL = HOST_PROTOCOL_SCHEMA_LABEL;
 
-/** Where one served version's schema lives, relative to the repository root. */
 function hostProtocolSchemaPath(version: string): string {
   return `schemas/plugin-host-protocol/${version}/protocol.schema.json`;
 }
 
-/** The app-tagged URL a published copy is mirrored at (§6.1). */
 function schemaId(version: string, appVersion: string): string {
   return hostProtocolSchemaId(`${version}/v${appVersion}/protocol.schema.json`);
 }
 
-/**
- * The wire form of every `encoded` or `handle` side, by path. A string names a
- * `Wire*` type in `host-api-wire.ts`; an object is the schema itself, for the
- * one side whose wire form has no type of its own.
- *
- * Kept here, and held complete below, because the axis says a side is encoded
- * but not what it is encoded AS — that lives in the child stub and the
- * dispatcher handler, which the golden frames validated against this schema
- * then hold to it.
- */
+// Encoded axes need explicit wire shapes; golden frames keep these paired with dispatcher and child stubs.
 const WIRE_FORMS: Partial<
   Record<HostApiPath, { params?: Record<string, string | JsonSchema>; result?: string | JsonSchema }>
 > = {
@@ -98,7 +53,7 @@ const WIRE_FORMS: Partial<
   resolveApiKey: { params: { opts: "WireResolveApiKeyOptions" }, result: "WireApiKeyLease" },
   callLlm: { params: { options: "WireCallLlmOptions" } },
   hostFetch: {
-    // The stub sends the URL's text: a `Request` or `URL` does not cross.
+    // Only URL text crosses the boundary, never Request or URL objects.
     params: { input: { type: "string" }, init: "WireRequestInit" },
     result: "WireHttpResponse",
   },
@@ -107,7 +62,6 @@ const WIRE_FORMS: Partial<
   attachFloatingPanel: { result: "WireFloatingPanelHandle" },
 };
 
-/** The `ave/instance/*` shapes. Keyed by the method table, so a new method does not compile without one. */
 const INSTANCE_FORMS: Record<
   keyof typeof PLUGIN_INSTANCE_METHODS,
   { params: string | JsonSchema; result: string | JsonSchema; errors: readonly HostApiWireErrorCode[] }
@@ -123,7 +77,6 @@ const INSTANCE_FORMS: Record<
   shutdown: { params: "PluginShutdownParams", result: { type: "null" }, errors: ["payload-too-large"] },
 };
 
-/** The subscription id a `handler-registration` member sends in place of its function. */
 const SUBSCRIPTION_ID: JsonSchema = {
   type: "string",
   description: "The subscription id the child allocated. The function stays in the child.",
@@ -133,23 +86,17 @@ function fail(message: string): never {
   throw new Error(`${LABEL} ${message}`);
 }
 
-/** One declared signature of a `PluginHostApi` member. */
 interface Signature {
   readonly parameters: ReadonlyArray<{ name: string; optional: boolean; type: ts.TypeNode | undefined }>;
   readonly returnType: ts.TypeNode | undefined;
   readonly description: string | undefined;
 }
 
-/**
- * The first paragraph of a comment's text, on one line. Line endings are made
- * `\n` FIRST: a CRLF source would otherwise leave a lone `\r` at the end of
- * the paragraph, which no later step can tell from a real one.
- */
+// Normalize line endings before cutting summaries so a trailing CR cannot become content.
 function firstParagraph(text: string): string {
   return text.replace(/\r\n?/g, "\n").trim().split(/\n\s*\n/)[0]!.replace(/\s*\n\s*/g, " ");
 }
 
-/** The first paragraph of a node's JSDoc, which is its summary. */
 function summaryOf(node: ts.Node): string | undefined {
   for (const doc of ts.getJSDocCommentsAndTags(node)) {
     if (!ts.isJSDoc(doc)) continue;
@@ -159,10 +106,6 @@ function summaryOf(node: ts.Node): string | undefined {
   return undefined;
 }
 
-/**
- * Every signature of every `PluginHostApi` member, by dotted path — through a
- * named interface (`storage`) and an inline object type (`config`).
- */
 function hostApiSignatures(source: ts.SourceFile): Map<string, Signature[]> {
   const declarations = new Map<string, ts.Node>();
   for (const statement of source.statements) {
@@ -204,24 +147,14 @@ function hostApiSignatures(source: ts.SourceFile): Map<string, Signature[]> {
   return found;
 }
 
-/**
- * The declarations the generator reads as DATA tables rather than projecting
- * as types. None is emitted under `$defs.types`, and in each `never` is a
- * value of the table, not an exclusion, so {@link excludeNeverProperties}
- * exempts exactly these names. Each reader takes its name from this list.
- */
+// Data-table declarations are not emitted types; never is a table value rather than an exclusion.
 export const TABLE_DECLARATIONS = ["HostApiEventPayloads"] as const;
 
 type TableDeclaration = (typeof TABLE_DECLARATIONS)[number];
 
-/** Where `never` means "pushes nothing": what each registration or handle pushes. */
+// Here never means the registration or handle pushes nothing.
 const EVENT_PAYLOADS_TABLE: TableDeclaration = "HostApiEventPayloads";
 
-/**
- * The event payload table, by path: each entry's type and its summary. The
- * entries are property signatures whose names are the member paths, quoted
- * where the path is dotted.
- */
 function eventPayloads(
   named: ReadonlyMap<string, ts.Node>,
   source: ts.SourceFile,
@@ -241,20 +174,8 @@ function eventPayloads(
   return found;
 }
 
-/**
- * Make every property an emitted interface declares `never` a `false`
- * subschema (docs/design/plugin-hostapi-protocol.md decision 33).
- *
- * `ts-json-schema-generator` drops a `never` property, so an exclusive union —
- * `{ entry: string; process?: never } | { process: …; entry?: never }` — would
- * project to two branches that each simply omit the other key and, with
- * `additionalProperties: true`, accept a document carrying both. `false` is the
- * same exclusion the manifest schema already writes for the same pair. The rule
- * is read off the source, so it covers every such declaration rather than one
- * named special case; a `never` property on an interface that is not emitted —
- * unexported, or exported and never reached — is an error, not a silent skip.
- * The one exemption is {@link TABLE_DECLARATIONS}: tables read as data.
- */
+// Project never properties as false subschemas so exclusive unions reject both keys.
+// Exempt data tables; un-emitted interfaces fail rather than silently skipping enforcement.
 export function excludeNeverProperties(
   named: ReadonlyMap<string, ts.Node>,
   types: Record<string, unknown>,
@@ -283,10 +204,7 @@ export function excludeNeverProperties(
   }
 }
 
-/**
- * Turn the generator's draft-07 output into 2020-12: `definitions` references
- * point into `$defs.types`, and a tuple's `items` array becomes `prefixItems`.
- */
+// Rewrite draft-07 references and tuple items into the published schema dialect.
 function to2020(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(to2020);
   if (!value || typeof value !== "object") return value;
@@ -303,9 +221,7 @@ function to2020(value: unknown): unknown {
     }
   }
   if (Array.isArray(out.anyOf)) {
-    // `T | undefined` arrives as a `{ not: {} }` branch. `undefined` is not a
-    // JSON value — an absent member is how it crosses — so the branch says
-    // nothing about any frame, and a reader would take it for a real one.
+    // Undefined has no wire value; absent members represent it, so remove empty undefined branches.
     const branches = (out.anyOf as unknown[]).filter(
       (branch) => JSON.stringify(branch) !== JSON.stringify({ not: {} }),
     );
@@ -315,15 +231,8 @@ function to2020(value: unknown): unknown {
   return out;
 }
 
-/**
- * Canonical key order and line endings, so the file is byte-stable. Every blob
- * is LF (`.gitattributes`), but a source can still reach the compiler with
- * CRLF — saved by an editor with platform endings, or in a tree copied without
- * git — and the generator's own descriptions of named types keep that `\r\n`,
- * which becomes `\n` here. The summaries this module cuts are normalised
- * before the cut instead ({@link firstParagraph}): a `\r` the cut left alone
- * would become a `\n` here, not disappear.
- */
+// Normalize key order and line endings for byte-stable output.
+// Summary text must be normalized before cutting to avoid retaining a stray CR.
 function sortKeys(value: unknown): unknown {
   if (typeof value === "string") return value.replace(/\r\n?/g, "\n");
   if (Array.isArray(value)) return value.map(sortKeys);
@@ -335,19 +244,12 @@ function sortKeys(value: unknown): unknown {
   );
 }
 
-/**
- * The codes an `ave/host/*` reply may carry: every code but the version
- * mismatch, which only `construct` answers. The dispatcher names a failure by
- * the CLASS the host threw (`classifyHostApiError`), whichever member threw
- * it, so narrowing a method to its contract's `errors` would promise a
- * guarantee the host does not make. That list is what the member's own
- * implementation raises, and the method's `errors` says so in its description.
- */
+// Replies can carry any dispatcher-classified error except version mismatch, which belongs to construction.
+// Member error lists describe local implementation failures, not a wire guarantee.
 const HOST_METHOD_ERROR_CODES = HOST_API_WIRE_ERROR_CODES.filter(
   (code) => code !== "protocol-version-mismatch",
 );
 
-/** A JSON-RPC error one of `codes` may arrive as. `coded` says whether `data` is always present. */
 function errorSchema(
   codes: readonly HostApiWireErrorCode[],
   coded: boolean,
@@ -378,7 +280,6 @@ function errorSchema(
   };
 }
 
-/** Build the schema for one served protocol version. */
 export function generateHostProtocolSchema(): { path: string; text: string } {
   if (HOST_PROTOCOL_VERSIONS_SERVED.length !== 1) {
     fail(
@@ -475,9 +376,7 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
       fail(`'${path}' encodes its arguments; name each encoded one's wire form`);
     }
     const registers = contract.arguments === "handler-registration";
-    // A registration or a handle outlives its reply, and what it pushes over
-    // that lifetime is protocol too: a payload rename the schema did not see
-    // would reach a plugin as its own bug.
+    // Subscription and handle pushes remain part of the protocol after the initial reply.
     const outlivesReply = registers || contract.result === "handle" || contract.result === "handle-or-denied";
     const event = events.get(path);
     if (outlivesReply !== (event !== undefined)) {
@@ -559,8 +458,7 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
     methods[method] = {
       params: formOf(form.params),
       result: formOf(form.result),
-      // A lifecycle method that failed in the plugin's own code carries no
-      // code; only the runtime's refusals do.
+      // Plugin-code lifecycle failures carry no code; runtime refusals do.
       errors: errorSchema(form.errors, false),
     };
   }
@@ -579,9 +477,7 @@ export function generateHostProtocolSchema(): { path: string; text: string } {
     const key = nameNode.exprName.right.text as keyof typeof HOST_PROTOCOL_NOTIFICATIONS;
     const method = HOST_PROTOCOL_NOTIFICATIONS[key] ?? fail(`no notification named '${key}'`);
     if (method in notifications) fail(`'${method}' is declared twice`);
-    // The member's JSDoc precedes its `|`, so it is trivia of that token and
-    // neither a JSDoc node nor a leading comment of the member: read the last
-    // doc comment between the previous member and this one.
+    // Union-member docs are trivia before the separator; read the final doc block in the preceding gap.
     const index = union.type.types.indexOf(member);
     const gap = wire.text.slice(
       index === 0 ? union.type.pos : union.type.types[index - 1]!.end,

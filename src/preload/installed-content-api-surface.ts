@@ -1,8 +1,4 @@
-/**
- * Narrow host-renderer bridge for installed content packages (blueprint P3):
- * the themes, languages and fonts the settings pickers list, and the catalog
- * of an installed language. Plugin frames and public surfaces never receive it.
- */
+/** Installed-content capabilities are host-only; plugin and public frames receive none. */
 import { ipcRenderer } from "electron";
 import { CHANNELS } from "../contract/app-contract.js";
 import {
@@ -15,7 +11,6 @@ import {
 
 const UNAVAILABLE = Object.freeze({ ok: false, error: "installed-content-unavailable" }) as { ok: false; error: string };
 
-/** Build the private `window.aveApi.installedContent` namespace. */
 export function buildInstalledContentApiSurface(): InstalledContentApi {
   return Object.freeze({
     async installed(): Promise<InstalledContentResult> {

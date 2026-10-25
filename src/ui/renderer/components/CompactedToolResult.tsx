@@ -1,8 +1,3 @@
-
-
-
-
-
 import { useState } from "react";
 import { useTranslation } from "../../../i18n/react.js";
 import { getApi } from "../api-client.js";
@@ -25,19 +20,16 @@ function splitLines(content: string, limit: number): { lines: string[]; truncate
   return { lines, truncated };
 }
 
-/** Truncate tool input to a short display string. */
 function truncateInput(input: Record<string, unknown> | undefined): string {
   if (!input) return "";
   const keys = Object.keys(input);
   if (keys.length === 0) return "";
-  // Show first key=value pair, cut at 48 chars
   const first = keys[0];
   const val = String(input[first] ?? "");
   const pair = `${first}=${val}`;
   return pair.length > 48 ? pair.slice(0, 45) + "…" : pair;
 }
 
-/** Extract original char count from stub text for display fallback. */
 function parseStubChars(compactedResultText: string): number | null {
   const m = compactedResultText.match(/(?:origLen|originalBytes)=(\d+)/);
   return m ? parseInt(m[1], 10) : null;
@@ -51,9 +43,7 @@ function formatChars(n: number): string {
 export interface CompactedToolResultProps {
   /** tool_use_id that maps to the verbatim in main process history */
   toolUseId: string;
-  /** Display name of the tool (e.g. "Read") */
   toolName: string;
-  /** Original tool input, for short display in header */
   input?: Record<string, unknown>;
   /** Stub content — `[tool_result stripped: ...]` */
   compactedResultText: string;
@@ -78,7 +68,6 @@ export function CompactedToolResult({
   const origChars = parseStubChars(compactedResultText);
 
   async function handleExpand() {
-    // cache hit — verbatim already fetched, skip IPC
     if (verbatim) {
       setState("expanded");
       return;
@@ -163,7 +152,6 @@ export function CompactedToolResult({
     );
   }
 
-  // collapsed (or loading)
   return (
     <button
       type="button"

@@ -11,12 +11,10 @@ describe("ensureWorkspaceCwd", () => {
 
   beforeEach(() => {
     prevCwd = process.cwd();
-    // realpathSync normalizes macOS /var/folders → /private/var/folders so the
-    // path matches process.cwd() after chdir (kernel resolves the symlink).
+    // realpathSync normalizes macOS /var/folders → /private/var/folders so the path matches process.cwd() after chdir (kernel resolves the symlink).
     tmpHome = realpathSync(mkdtempSync(join(tmpdir(), "ave-workspace-cwd-")));
-    // vi.stubEnv tracks the mutation so vi.unstubAllEnvs() in afterEach
-    // restores the prior value automatically — safer than manual save/restore
-    // and forward-compatible with `it.concurrent`.
+    // vi.stubEnv tracks the mutation so vi.unstubAllEnvs() in afterEach restores the prior value automatically — safer than manual save/restore and
+    // forward-compatible with `it.concurrent`.
     vi.stubEnv("AVE_HOME", tmpHome);
   });
 

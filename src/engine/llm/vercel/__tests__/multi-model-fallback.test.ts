@@ -1,21 +1,8 @@
-/**
- * D1a — multi-model fallback chain tests.
- *
- * Tests cover:
- *   (a) Primary succeeds → no fallback attempt.
- *   (b) Primary throws transient error (5xx/network) → falls back to next, succeeds.
- *   (c) Primary throws auth error (401) → no fallback, re-throws.
- *   (d) AbortError from primary → no fallback, re-throws (user cancel sacred).
- *   (e) All chain entries exhausted → throws last error.
- */
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { collectStreamEvents as collect } from "./test-helpers.js";
 import type { LLMProvider, StreamEvent } from "../../types.js";
 import { FallbackProvider, streamWithFallback } from "../fallback-chain.js";
 import type { FallbackChainEntry, ProviderFactory } from "../fallback-chain.js";
-
-// ─── helpers ────────────────────────────────────────────────────
-
 
 function makeProvider(vendor: string, events: StreamEvent[]): LLMProvider {
   return {
@@ -59,8 +46,6 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// ─── (a) Primary succeeds → no fallback ─────────────────────────
-
 describe("(a) primary succeeds — no fallback", () => {
   it("yields all primary events without touching chain", async () => {
     const primary = makeProvider("claude", GOOD_EVENTS);
@@ -75,7 +60,6 @@ describe("(a) primary succeeds — no fallback", () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual({ type: "text_delta", text: "hello" });
     expect(events[1]).toEqual({ type: "message_complete", stopReason: "end_turn" });
-    // Factory must not be called — primary succeeded.
     expect(factorySpy).not.toHaveBeenCalled();
   });
 
@@ -107,8 +91,6 @@ describe("(a) primary succeeds — no fallback", () => {
     expect(factorySpy).not.toHaveBeenCalled();
   });
 });
-
-// ─── (b) Primary transient error → fallback succeeds ─────────────
 
 describe("(b) primary transient error → fallback succeeds", () => {
   it("retryable error event triggers fallback; fallback yields good events", async () => {
@@ -249,8 +231,6 @@ describe("(b) primary transient error → fallback succeeds", () => {
   });
 });
 
-// ─── (c) Auth error (401) → no fallback ─────────────────────────
-
 describe("(c) auth error → no fallback, re-throws", () => {
   it("error event with classification=api-key is yielded as-is (not retried)", async () => {
     const primary: LLMProvider = {
@@ -265,7 +245,6 @@ describe("(c) auth error → no fallback, re-throws", () => {
       streamWithFallback(primary, BASE_PARAMS, CHAIN, getApiKey, factory),
     );
 
-    // Non-retryable error event is yielded directly — factory never called.
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ type: "error", classification: "api-key" });
     expect(factory).not.toHaveBeenCalled();
@@ -296,8 +275,6 @@ describe("(c) auth error → no fallback, re-throws", () => {
     expect(factory).not.toHaveBeenCalled();
   });
 });
-
-// ─── (d) AbortError → no fallback ───────────────────────────────
 
 describe("(d) AbortError → no fallback, re-throws (user cancel sacred)", () => {
   it("AbortError is never retried", async () => {
@@ -338,8 +315,6 @@ describe("(d) AbortError → no fallback, re-throws (user cancel sacred)", () =>
     expect(factory).not.toHaveBeenCalled();
   });
 });
-
-// ─── (e) All chain exhausted → throws last error ─────────────────
 
 describe("(e) all chain exhausted → throws last error", () => {
   it("throws when every entry in the chain fails", async () => {

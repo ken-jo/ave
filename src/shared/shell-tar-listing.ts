@@ -1,4 +1,3 @@
-/** File operands of a literal archive listing with no external-command options. */
 export interface TarListing {
   archivePaths: string[];
   archiveArgIndices: number[];
@@ -6,19 +5,14 @@ export interface TarListing {
 
 const LISTING_SWITCHES = new Set(["--verbose", "--gzip", "--bzip2", "--xz", "--numeric-owner"]);
 
-/**
- * Recognize only explicit-file listing forms. Unknown options, file-supplied
- * options and remote archives remain unresolved. Callers supply the canonical
- * argument projection and separately check unresolved expansion provenance.
- */
+/** Only explicit-file listings are provable reads; unknown options, file-supplied options, and remote archives remain unresolved. Check expansion provenance separately. */
 export function parseTarListing(argv: readonly string[]): TarListing | null {
   const archivePaths: string[] = [];
   const archiveArgIndices: number[] = [];
   let lists = false;
   let optionsEnded = false;
   const takeArchive = (value: string | undefined, index: number): boolean => {
-    // A colon can select a remote transport. An omitted file can select a tape
-    // device or an environment-provided archive, so neither is a literal read.
+    // A colon may select remote transport; an omitted file may select a device or environment archive, so neither is a literal read.
     if (!value || value.includes(":")) return false;
     archivePaths.push(value);
     archiveArgIndices.push(index);
@@ -36,7 +30,7 @@ export function parseTarListing(argv: readonly string[]): TarListing | null {
       continue;
     }
     if (token.startsWith("--")) return null;
-    // Only the first argument uses the traditional undashed option cluster.
+    // Only the first argument permits a traditional undashed option cluster.
     const traditional = i === 1 && !token.startsWith("-");
     if (!traditional && !token.startsWith("-")) continue;
     const flags = traditional ? token : token.slice(1);
@@ -45,8 +39,7 @@ export function parseTarListing(argv: readonly string[]): TarListing | null {
       const flag = flags[j]!;
       if (flag === "t") lists = true;
       else if (flag === "f") {
-        // In a dashed cluster the remainder is the file value. Traditional
-        // clusters always take file values from subsequent arguments.
+        // Dashed clusters may embed a file value; traditional clusters take it from following arguments.
         const glued = traditional ? "" : flags.slice(j + 1);
         if (!takeArchive(glued || argv[++i], i)) return null;
         if (!traditional) break;

@@ -61,8 +61,7 @@ describe("tool approval expiration attribution", () => {
     wc.send.mockImplementation((channel: string, request: ApprovalRequest) => {
       if (channel === IPC_APPROVAL_REQUEST) resolveSent(request);
     });
-    // Use the real gate and its configured default deadline. Only wall time
-    // advances virtually; no synthetic decision can manufacture host provenance.
+    // Use real host-issued approval provenance; advance only wall time.
     gate = new ApprovalGate(wc as never, undefined, undefined, audit);
     const logger = vi.spyOn(audit, "log");
     const executor = new ToolExecutor(
@@ -76,6 +75,7 @@ describe("tool approval expiration attribution", () => {
       },
     ], {
       sessionId: "approval-expiry-session",
+      executionCwd: workspace,
       ...(signal ? { abortSignal: signal } : {}),
       permissionContext: userPermissionContext({ additionalDirectories: [workspace] }),
     });

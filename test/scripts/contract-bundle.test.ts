@@ -8,11 +8,7 @@ import { format } from "node:util";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { sha256Hex as sha256 } from "../../src/marketplace/__tests__/fixtures/package-files.js";
 
-/**
- * The contract bundle a tag publishes under contract/<tag>/:
- * scripts/build-contract-bundle.mjs must reproduce its bytes exactly, and
- * scripts/upload-contract-bundle-r2.mjs must never replace a published object.
- */
+// Tagged contract bundles must be reproducible and immutable.
 
 const root = process.cwd();
 const BUILD = resolve(root, "scripts/build-contract-bundle.mjs");
@@ -36,8 +32,7 @@ function tempDir(label: string): string {
 }
 
 function build(out: string, extra: string[] = []) {
-  // The working tree may hold uncommitted edits during development; the copies
-  // still come from HEAD's objects and the bundles from this checkout.
+  // Dirty source copies reflect HEAD while bundles reflect the checked-out sources.
   return spawnSync(process.execPath, [BUILD, "--out", out, "--tag", "v9.9.9", "--allow-dirty", ...extra], {
     cwd: root,
     encoding: "utf8",
@@ -144,7 +139,6 @@ describe.runIf(process.platform !== "win32")("upload-contract-bundle-r2", () => 
     R2_BUCKET: "bucket-for-test",
   };
 
-  /** A staged bundle with a small stand-in for every file and a signature. */
   function staged(signature = "signature-ok-1"): string {
     const dir = tempDir("staged");
     const sums: Record<string, string> = {};
@@ -159,12 +153,7 @@ describe.runIf(process.platform !== "win32")("upload-contract-bundle-r2", () => 
     return dir;
   }
 
-  /**
-   * A stand-in bucket: `aws` stores objects as files under `objects/`, logs
-   * each call, and answers head-object with the stored object's md5 ETag.
-   * `cosign verify-blob` accepts a signature whose bytes start with
-   * "signature-ok" when called with the expected identity and issuer.
-   */
+  // Use fixture object identities with the expected digest and issuer.
   function fakeTools(): { bin: string; objects: string; log: string } {
     const bin = tempDir("bin");
     const objects = join(bin, "objects");
@@ -215,8 +204,7 @@ process.exit(ok ? 0 : 1);
     const env = { ...process.env, ...secrets, PATH: `${tools.bin}:${process.env.PATH ?? ""}` };
     if (realProcess) return spawnSync(process.execPath, [UPLOAD, ...args], { cwd: root, encoding: "utf8", env });
 
-    // Run the same tool fixtures in-process; the uploader still supplies their
-    // arguments and child environments and handles their files and exit codes.
+    // Exercise uploader arguments, environment, files and exit status at the process boundary.
     const childProcess = await import("node:child_process");
     vi.resetModules();
     const loggedCalls = () => existsSync(tools.log) ? readFileSync(tools.log, "utf8").trim().split("\n").filter(Boolean).length : 0;
@@ -254,8 +242,7 @@ process.exit(ok ? 0 : 1);
       process.env = env;
       process.exitCode = 0;
       await vi.importActual("../../scripts/upload-contract-bundle-r2.mjs");
-      // A real tool process writes the same log, so a lost mock cannot silently pass.
-      // Local validation failures legitimately invoke no tools.
+      // Validation may legitimately invoke no tool, so log actual invocations.
       expect(runTool).toHaveBeenCalledTimes(loggedCalls() - callsBefore);
       return { status: process.exitCode, stdout: stdout.join(""), stderr: stderr.join("") };
     } finally {
@@ -272,7 +259,7 @@ process.exit(ok ? 0 : 1);
 
   it("uploads the bundle write-once with the signature last, then reads it back", async () => {
     const tools = fakeTools();
-    // Keep a real subprocess smoke for the CLI entry, PATH lookup and child environment isolation.
+    // Use a real subprocess to cover PATH and environment propagation.
     const result = await upload(["--dir", staged(), "--prefix", PREFIX, "--identity", IDENTITY], tools, true);
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);

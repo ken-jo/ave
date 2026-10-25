@@ -1,42 +1,6 @@
-/**
- * Main-process registry of the browser tabs each main window hosts — the one
- * authority on what the agent browser tools may touch.
- *
- * FEED. Every guest `<webview>` on the side browser's partition that a main
- * window attaches is recorded here with its window (`did-attach-webview` in
- * main-window.ts), wherever the renderer mounted it. The renderer then BINDS
- * its own tab id to that guest (`ave:browser:bind-tab`); main accepts the bind
- * only for a guest it saw attach to the sender's own window, so a renderer
- * cannot point a tab id at another window's page. A tab that is remounted
- * with a new guest is bound again and keeps its handle and provenance.
- *
- * HANDLES. Tools name a tab by an opaque handle main mints (`tab-<n>`), unique
- * across windows. The approval hooks see only a tool's input — no session, no
- * window — so they resolve a handle to its origin here; execute then enforces
- * the window scope, and a handle of another window answers exactly like one
- * that does not exist.
- *
- * PROVENANCE. A matching fresh blank bind attributes creation to the actual
- * tool session. Creator identity survives temporary control and human pause;
- * permission provenance remains separately bound to the approved origin.
- *
- * USER INPUT. Keyboard or mouse input the user gives an agent-controlled tab
- * persistently pauses mutation. Native input marks and bounded delivery
- * watches attribute injected events independently of asynchronous actions.
- *
- * ACTIVE SURFACE. Per window, the browser/terminal tab the user is looking at
- * — a hint tools default to when no tab is named, never an authority.
- *
- * BOUND CONVERSATION. A chat opened in a terminal or web pane's own panel is
- * bound to that pane's tab: each of its turns names the tab, and its tools
- * default to that tab instead of the window's active surface. A bound tab that
- * is gone is an error, never a reason to act on another tab. Sub-agents reach
- * the binding through their hosting conversation's session.
- * Creator ownership and pane conversations share the workspace tab's binding
- * record. Saved layout slots retain those facts across launches, while the
- * renderer reads one revisioned session-to-tab projection. Control leases and
- * origin approvals are never restored from the layout.
- */
+// Bind tabs only to guests observed in the sender’s window; opaque handles never bypass window scope.
+// Human input pauses mutation; active-surface hints are not authority and missing bound tabs must fail.
+// Layout restores creator and pane-conversation identity, never control leases or origin approvals.
 import type { WebContents } from "electron";
 import type {
   ActiveWorkspaceSurface,
@@ -62,21 +26,21 @@ interface WorkspaceTabBinding {
   readonly surface: ActiveWorkspaceSurface;
   owner: BrowserSessionActor | null;
   paneSessionId?: string;
-  /** Keep a closing pane turn addressed to its missing tab until its loop ends. */
+  // Keep a closing pane turn addressed to its missing tab until its loop ends.
   closed?: boolean;
 }
 
 export interface SessionTabBindingPersistence {
   savedWindowId(): number | undefined;
-  /** Only the primary window owns the saved layout. */
+  // Only the primary window owns the saved layout.
   load(windowId: number): MainLayoutSnapshot | undefined;
   save(windowId: number, layout: MainLayoutSnapshot): Promise<void>;
   sessionExists(sessionId: string): boolean;
-  /** Read only when a saved slot predates binding persistence. */
+  // Read only when a saved slot predates binding persistence.
   legacyPaneSession?(tabId: string): string | undefined;
 }
 
-/** What one injected press's touch input did, by the guests' own native input events. */
+// What one injected press's touch input did, by the guests' own native input events.
 export interface TouchDeliveryReport {
   started: boolean;
   ended: boolean;
@@ -137,17 +101,17 @@ interface TouchWatchState {
   readonly report: TouchDeliveryReport;
 }
 
-/** What the registry needs of a guest. Production passes Electron `WebContents`. */
+// What the registry needs of a guest. Production passes Electron `WebContents`.
 export interface BrowserGuest {
   readonly id: number;
   isDestroyed(): boolean;
   getURL(): string;
   getTitle(): string;
-  /** Native focus capability; operations that require it reject when unavailable. */
+  // Native focus capability; operations that require it reject when unavailable.
   isFocused?(): boolean;
 }
 
-/** A document transition invalidated the old page; it grants no further input authority. */
+// A document transition invalidated the old page; it grants no further input authority.
 export class BrowserDocumentChangedError extends Error {
   readonly code = "browser-document-changed";
 
@@ -170,29 +134,29 @@ export interface BrowserTabRecord<G extends BrowserGuest> {
   readonly targetKind: "embedded" | "popup";
   readonly openerTabId: string | null;
   owner: BrowserSessionActor | null;
-  /** Embedded records retain this same object through temporary guest remounts. */
+  // Embedded records retain this same object through temporary guest remounts.
   readonly binding?: WorkspaceTabBinding;
   lease: BrowserControlLease | null;
-  /** Aborted on pause; only explicit Resume may replace a paused controller. */
+  // Aborted on pause; only explicit Resume may replace a paused controller.
   actions: AbortController;
 }
 
-/** One tab as a tool sees it. */
+// One tab as a tool sees it.
 export interface BrowserTabView extends BrowserTabControlView {
   readonly openedBy: BrowserTabOpener;
   readonly active: boolean;
 }
 
-/** How the registry reaches a window's renderer. Installed by the browser IPC domain. */
+// How the registry reaches a window's renderer. Installed by the browser IPC domain.
 export interface BrowserTabRendererLink {
   sendTabOp(windowId: number, request: BrowserTabOpRequest): boolean;
   sendControl(windowId: number, state: BrowserTabControlState): void;
   sendSessionBindings?(windowId: number, state: SessionTabBindingsState): void;
-  /** Native window visibility proof, required before any explicit focus request. */
+  // Native window visibility proof, required before any explicit focus request.
   isWindowVisible?(windowId: number): boolean;
 }
 
-/** The tab a conversation's browser tools act on when none is named — or why there is none. */
+// The tab a conversation's browser tools act on when none is named — or why there is none.
 export type DefaultBrowserTab =
   | { readonly ok: true; readonly handle: string }
   | { readonly ok: false; readonly error: string };
@@ -215,7 +179,7 @@ interface PendingTabOp {
   readonly settle: (outcome: BrowserTabOpOutcome) => void;
 }
 
-/** How long the renderer has to carry out a tab operation. */
+// How long the renderer has to carry out a tab operation.
 const BROWSER_TAB_OP_TIMEOUT_MS = 15_000;
 
 const AGENT_INPUT_EVENT_TYPES: ReadonlySet<string> = new Set([
@@ -233,19 +197,12 @@ const MOUSE_RECEIPT_MAX_MS = 1_000;
 const FOCUS_RECEIPT_MAX_MS = 1_000;
 const FOCUS_RECEIPT_POLL_MS = 20;
 
-/**
- * Whether a tap gesture's modifiers fit one derived from an injected touch.
- * The derived gestures do not carry the debugger bit; measured in the app,
- * they arrive with either the derived-tap bit or no modifiers at all. Any
- * other bit (a held key) is not part of the injected sequence. The sequence
- * itself — a marked touch first, each gesture once, in order — is what
- * attributes them; a user's own tap starts with an unmarked touch.
- */
+// Derived taps may omit debugger modifiers; attribute them by an ordered marked touch sequence, rejecting any unrelated held-key bits.
 function isDerivedTapModifiers(modifiers: number): boolean {
   return modifiers === 0 || modifiers === DERIVED_TAP_MODIFIERS;
 }
 
-/** Whether an input event type is the user acting on the page (not hovering). */
+// Whether an input event type is the user acting on the page (not hovering).
 export function isUserActionInputType(type: string): boolean {
   return AGENT_INPUT_EVENT_TYPES.has(type);
 }
@@ -289,7 +246,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.bindingPersistence = persistence;
   }
 
-  /** Await durable writes at shutdown and in restart validation. */
+  // Await durable writes at shutdown and in restart validation.
   async flushBindingWrites(): Promise<void> {
     let pending: Promise<void>;
     do {
@@ -298,7 +255,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     } while (pending !== this.bindingWrites);
   }
 
-  /** Layout writes carry bindings too, including geometry-only renderer updates. */
+  // Layout writes carry bindings too, including geometry-only renderer updates.
   trackBindingWrite(write: Promise<unknown>): void {
     this.bindingWrites = Promise.all([this.bindingWrites.catch(() => undefined), write]).then(() => undefined);
     void this.bindingWrites.catch((error: unknown) => log.error("Tab binding persistence failed: %s", error));
@@ -359,7 +316,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     if (windowId !== undefined) this.restoreBindings(windowId);
   }
 
-  /** Main decorates renderer geometry; renderer-supplied ownership is never accepted. */
+  // Main decorates renderer geometry; renderer-supplied ownership is never accepted.
   prepareLayoutBindings(windowId: number, layout: MainLayoutSnapshot): MainLayoutSnapshot {
     this.restoreBindings(windowId);
     const surfaces = [...Object.values(layout.surfaces), ...Object.values(layout.sideTabs).flat()];
@@ -381,8 +338,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         changed = true;
       }
       binding.closed = true;
-      // Ending pane turns still need their original target. Browser records retain
-      // creator identity themselves until remount or final close.
+      // Ending pane turns still need their original target. Browser records retain creator identity themselves until remount or final close.
       if (!binding.paneSessionId) this.workspaceBindings.delete(key);
       else if (!this.handleByWindowTab.has(key)) binding.owner = null;
     }
@@ -440,9 +396,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.trackBindingWrite(write);
   }
 
-  // ── feed ────────────────────────────────────────────────────────────────
-
-  /** A browser guest attached to `windowId`. Call `guestDestroyed` when it goes. */
+  // A browser guest attached to `windowId`. Call `guestDestroyed` when it goes.
   guestAttached(guest: G, windowId: number): void {
     this.attached.set(guest.id, { guest, windowId, sequence: ++this.nextAttachment });
   }
@@ -466,7 +420,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  /** Bind a renderer tab id to an attached guest of the sender's window. */
+  // Bind a renderer tab id to an attached guest of the sender's window.
   bindTab(senderWindowId: number, request: BrowserTabBindRequest): BrowserTabBindResult {
     this.restoreBindings(senderWindowId);
     const entry = this.attached.get(request.webContentsId);
@@ -552,7 +506,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return { ok: true };
   }
 
-  /** Stop or user navigation clears origin approval, retaining the durable creator. */
+  // Stop or user navigation clears origin approval, retaining the durable creator.
   stop(senderWindowId: number, rendererTabId: string): boolean {
     const key = windowTabKey(senderWindowId, rendererTabId);
     this.userOwnedTabs.add(key);
@@ -567,7 +521,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return handle === undefined ? null : this.liveTabInWindow(handle, windowId) ?? null;
   }
 
-  /** A trusted chrome pause may precede the first blank bind. */
+  // A trusted chrome pause may precede the first blank bind.
   pause(windowId: number, rendererTabId: string): boolean {
     this.userOwnedTabs.add(windowTabKey(windowId, rendererTabId));
     const tab = this.liveRendererTab(windowId, rendererTabId);
@@ -640,7 +594,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.broadcastControl(tab.windowId);
   }
 
-  /** Only a validated native child callback may register a popup. */
+  // Only a validated native child callback may register a popup.
   registerPopup(openerGuestId: number, guest: G, native: { select(): boolean | Promise<boolean>; close(): void }): string | null {
     const opener = [...this.tabs.values()].find((tab) => tab.guest?.id === openerGuestId && this.isLive(tab));
     if (!opener || guest.isDestroyed() || [...this.tabs.values()].some((tab) => tab.guest?.id === guest.id)) return null;
@@ -659,10 +613,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return handle;
   }
 
-  /**
-   * The user gave a guest keyboard or mouse input. In an agent-controlled tab
-   * this cancels the pending tool actions; input the tools inject is ignored.
-   */
+  // The user gave a guest keyboard or mouse input. In an agent-controlled tab this cancels the pending tool actions; input the tools inject is ignored.
   userInput(guestId: number, input?: NativeBrowserInput): void {
     const modifiers = input?._modifiers ?? 0;
     if (input) this.recordTouch(guestId, input.type, modifiers);
@@ -681,8 +632,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       return;
     }
     const touch = this.injectedTouches.get(guestId);
-    // Match only the native tap sequence derived from that marked contact.
-    // An unmarked contact, key, mouse or other gesture still cancels below.
+    // Match only the native tap sequence derived from that marked contact. An unmarked contact, key, mouse or other gesture still cancels below.
     if (touch && isDerivedTapModifiers(modifiers)) {
       if (input?.type === "gestureTapDown" && touch.pressed && !touch.down) {
         touch.down = true;
@@ -708,13 +658,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  /**
-   * Watch the touch input of `guestId`'s window while one injected press runs:
-   * whether this guest reported the marked touch start and end and the tap
-   * derived from them, and how many touch starts other guests of the window
-   * reported meanwhile (the press landing in the wrong page). `stop` drops
-   * the guest's press mark when none of the press reached it.
-   */
+  // Observe all guests during the press to confirm its recipient and detect cross-page routing; drop unused press marks on stop.
   watchTouches(guestId: number): { delivery(): TouchDeliveryReport; stop(): void } {
     const state: TouchWatchState = {
       guestId,
@@ -726,14 +670,13 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
       delivery: () => ({ ...state.report }),
       stop: () => {
         this.touchWatches.delete(state);
-        // A press none of whose touch reached this guest leaves no mark to
-        // match a later tap; one that did keeps it for its own late gestures.
+        // A press none of whose touch reached this guest leaves no mark to match a later tap; one that did keeps it for its own late gestures.
         if (!state.report.started) this.injectedTouches.delete(guestId);
       },
     };
   }
 
-  /** Watch one bounded press/release; each receipt requires a separately armed dispatch. */
+  // Watch one bounded press/release; each receipt requires a separately armed dispatch.
   watchMouse(guestId: number): { delivery(): MouseDeliveryReport; stop(): void } {
     const windowId = this.pointerWatchWindow(guestId);
     const state: MouseWatchState = {
@@ -744,7 +687,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return { delivery: () => ({ ...state.report }), stop: () => { this.mouseWatches.delete(state); } };
   }
 
-  /** The native mouse payload omits source marks; correlate only an exact one-shot dispatch. */
+  // The native mouse payload omits source marks; correlate only an exact one-shot dispatch.
   armMouse(guestId: number, input: BrowserMouseExpectation): void {
     const watch = [...this.mouseWatches].find((candidate) => candidate.guestId === guestId && !candidate.invalid);
     const now = Date.now();
@@ -846,11 +789,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  /**
-   * The agent's action in `guestId`'s tab is done: ask the window's renderer
-   * to give keyboard focus back to what held it before. Fire-and-forget; the
-   * page actions watch the page lose focus.
-   */
+  // The agent's action in `guestId`'s tab is done: ask the window's renderer to give keyboard focus back to what held it before. Fire-and-forget; the page
+  // actions watch the page lose focus.
   releaseFocus(guestId: number): void {
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
@@ -864,7 +804,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  /** Focus only the actual leased guest, through trusted chrome or its native popup. */
+  // Focus only the actual leased guest, through trusted chrome or its native popup.
   async focusGuest(guestId: number): Promise<void> {
     const tab = [...this.tabs.values()].find((candidate) => candidate.guest?.id === guestId && this.isLive(candidate));
     if (!tab || !tab.guest) throw new Error("no live browser focus target");
@@ -914,12 +854,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  /** Group an operation; native event provenance owns its individual inputs. */
+  // Group an operation; native event provenance owns its individual inputs.
   async withAgentInput<T>(_guestId: number, inject: () => Promise<T>): Promise<T> {
     return inject();
   }
 
-  /** Invalidate document authority before the next main-frame load commits. */
+  // Invalidate document authority before the next main-frame load commits.
   navigationStarted(guestId: number, url: string): void {
     for (const tab of this.tabs.values()) {
       if (tab.guest?.id !== guestId) continue;
@@ -939,8 +879,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     }
   }
 
-  // ── active surface ─────────────────────────────────────────────────────
-
   setActiveSurface(windowId: number, surface: ActiveWorkspaceSurface | null): void {
     this.activePopup.delete(windowId);
     if (surface === null) this.activeSurface.delete(windowId);
@@ -952,13 +890,13 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return this.activeSurface.get(windowId);
   }
 
-  /** The renderer id of the window's active terminal tab, if a terminal is the active surface. */
+  // The renderer id of the window's active terminal tab, if a terminal is the active surface.
   activeTerminalTabId(windowId: number): string | undefined {
     const surface = this.activeSurface.get(windowId);
     return surface?.kind === "terminal" ? surface.tabId : undefined;
   }
 
-  /** The handle of the window's active browser tab, if one is shown and bound. */
+  // The handle of the window's active browser tab, if one is shown and bound.
   activeBrowserTab(windowId: number): string | undefined {
     const popup = this.activePopup.get(windowId);
     if (popup && this.liveTabInWindow(popup, windowId)) return popup;
@@ -969,13 +907,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return tab && this.isLive(tab) ? tab.handle : undefined;
   }
 
-  // ── bound conversations ───────────────────────────────────────────────
-
-  /**
-   * Bind conversation `sessionId` to one tab of `windowId`: it is that pane's
-   * own chat. A pane holds one conversation at a time, so a conversation the
-   * pane held before is released.
-   */
+  // Bind conversation `sessionId` to one tab of `windowId`: it is that pane's own chat. A pane holds one conversation at a time, so a conversation the
+  // pane held before is released.
   bindConversationSurface(sessionId: string, binding: { windowId: number; surface: ActiveWorkspaceSurface }): { ok: true } | { ok: false; error: "pane-chat-ended" } {
     this.restoreSavedBindings();
     this.restoreBindings(binding.windowId);
@@ -993,7 +926,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return { ok: true };
   }
 
-  /** The conversation the pane chat of `tabId` in `windowId` holds, if it has one. */
+  // The conversation the pane chat of `tabId` in `windowId` holds, if it has one.
   paneConversation(windowId: number, tabId: string): string | undefined {
     this.restoreBindings(windowId);
     return this.workspaceBindings.get(windowTabKey(windowId, tabId))?.paneSessionId;
@@ -1006,16 +939,13 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return this.workspaceBindings.has(key) || this.retiredWorkspaceTabs.has(key);
   }
 
-  /** Whether `sessionId` is a pane chat's conversation (bound to a pane's tab). */
+  // Whether `sessionId` is a pane chat's conversation (bound to a pane's tab).
   isPaneConversation(sessionId: string): boolean {
     this.restoreSavedBindings();
     return [...this.workspaceBindings.values()].some((binding) => binding.paneSessionId === sessionId);
   }
 
-  /**
-   * The pane chat of `tabId` in `windowId` is over (its pane closed, or the
-   * user started it afresh): unbind its conversation and say which it was.
-   */
+  // The pane chat of `tabId` in `windowId` is over (its pane closed, or the user started it afresh): unbind its conversation and say which it was.
   releasePaneConversation(windowId: number, tabId: string, closed = false): string | undefined {
     this.closingByAgent.delete(windowTabKey(windowId, tabId));
     const sessionId = this.paneConversation(windowId, tabId);
@@ -1037,18 +967,12 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return sessionId;
   }
 
-  /**
-   * An agent's `browser_tab_close` is closing pane tab `tabId`: the turn that
-   * asked keeps running to its end, and the pane chat ends after it.
-   */
+  // An agent's `browser_tab_close` is closing pane tab `tabId`: the turn that asked keeps running to its end, and the pane chat ends after it.
   isClosedByAgent(windowId: number, tabId: string): boolean {
     return this.closingByAgent.has(windowTabKey(windowId, tabId));
   }
 
-  /**
-   * The windows that hold tab `tabId` now: as a page, or as a pane whose chat
-   * holds a conversation.
-   */
+  // The windows that hold tab `tabId` now: as a page, or as a pane whose chat holds a conversation.
   windowsHoldingTab(tabId: string): number[] {
     this.restoreSavedBindings();
     const windows = new Set<number>();
@@ -1062,7 +986,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return [...windows];
   }
 
-  /** A window is gone: none of its panes holds a conversation any more. */
+  // A window is gone: none of its panes holds a conversation any more.
   releaseWindow(windowId: number): void {
     for (const [key, bound] of this.workspaceBindings) {
       if (bound.windowId === windowId) this.workspaceBindings.delete(key);
@@ -1098,17 +1022,14 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.restoredBindingWindows.delete(windowId);
   }
 
-  /** The surface conversation `sessionId` is bound to in `windowId`, if any. */
+  // The surface conversation `sessionId` is bound to in `windowId`, if any.
   conversationSurface(windowId: number, sessionId: string): ActiveWorkspaceSurface | undefined {
     this.restoreBindings(windowId);
     return [...this.workspaceBindings.values()].find((binding) => binding.windowId === windowId && binding.paneSessionId === sessionId)?.surface;
   }
 
-  /**
-   * The tab a conversation's browser tools act on when the call names none: the
-   * tab its pane chat is bound to, else the window's active browser tab. A
-   * binding that cannot be honoured is an error, never another tab.
-   */
+  // The tab a conversation's browser tools act on when the call names none: the tab its pane chat is bound to, else the window's active browser tab. A
+  // binding that cannot be honoured is an error, never another tab.
   defaultBrowserTab(windowId: number, sessionId: string): DefaultBrowserTab {
     const bound = this.conversationSurface(windowId, sessionId);
     if (bound === undefined) {
@@ -1126,27 +1047,22 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     return { ok: true, handle: tab.handle };
   }
 
-  /**
-   * The terminal a conversation's terminal tools read when the call names none:
-   * the terminal its pane chat is bound to, none for a chat bound to a page,
-   * else the window's active terminal.
-   */
+  // The terminal a conversation's terminal tools read when the call names none: the terminal its pane chat is bound to, none for a chat bound to a page,
+  // else the window's active terminal.
   defaultTerminalTabId(windowId: number, sessionId: string): string | undefined {
     const bound = this.conversationSurface(windowId, sessionId);
     if (bound !== undefined) return bound.kind === "terminal" ? bound.tabId : undefined;
     return this.activeTerminalTabId(windowId);
   }
 
-  // ── lookups ────────────────────────────────────────────────────────────
-
-  /** A live tab by handle, in any window. For approval hooks, which have no session. */
+  // A live tab by handle, in any window. For approval hooks, which have no session.
   liveTab(handle: string): BrowserTabRecord<G> | undefined {
     const tab = this.tabs.get(handle);
     if (tab?.guest) this.checkProvenance(tab, tab.guest.getURL());
     return tab && this.isLive(tab) ? tab : undefined;
   }
 
-  /** A live tab of `windowId`. Another window's tab answers like a missing one. */
+  // A live tab of `windowId`. Another window's tab answers like a missing one.
   liveTabInWindow(handle: string, windowId: number): BrowserTabRecord<G> | undefined {
     const tab = this.tabs.get(handle);
     return tab?.windowId === windowId ? this.liveTab(handle) : undefined;
@@ -1179,13 +1095,8 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     };
   }
 
-  // ── tab UI operations ──────────────────────────────────────────────────
-
-  /**
-   * Ask the window's renderer to open, select or close a tab, and resolve
-   * when main observes it done (a bind echoing the request, the tab shown, the
-   * guest gone). Never resolves `ok` on the renderer's say-so alone.
-   */
+  // Ask the window's renderer to open, select or close a tab, and resolve when main observes it done (a bind echoing the request, the tab shown, the guest
+  // gone). Never resolves `ok` on the renderer's say-so alone.
   requestTabOp(
     windowId: number,
     op: RequestedTabOp,
@@ -1209,9 +1120,7 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
         }
       }
     }
-    // Closing a pane's page from an agent turn ends that pane's chat only once
-    // the turn is over (see `isClosedByAgent`); a close that does not happen
-    // takes the mark back.
+    // Closing a pane's page from an agent turn ends that pane's chat only once the turn is over (see `isClosedByAgent`); a close that does not happen takes the mark back.
     let closingKey: string | undefined;
     if (op.op === "close" && target?.rendererTabId !== null) {
       const rendererTabId = target!.rendererTabId!;
@@ -1280,8 +1189,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     });
   }
 
-  // ── internals ──────────────────────────────────────────────────────────
-
   private isLive(tab: BrowserTabRecord<G>): boolean {
     return tab.guest !== null && !tab.guest.isDestroyed();
   }
@@ -1347,7 +1254,6 @@ export class BrowserTabRegistry<G extends BrowserGuest> {
     this.link?.sendControl(windowId, this.controlState(windowId));
   }
 
-  /** Test-only. */
   __reset(): void {
     this.attached.clear();
     this.tabs.clear();
@@ -1394,5 +1300,5 @@ function windowTabKey(windowId: number, tabId: string): string {
   return `${windowId}\u0000${tabId}`;
 }
 
-/** The process-wide registry of the main windows' browser tabs. */
+// The process-wide registry of the main windows' browser tabs.
 export const browserTabRegistry = new BrowserTabRegistry<WebContents>();

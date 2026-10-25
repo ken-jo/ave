@@ -1,11 +1,4 @@
-/**
- * `ave:home-docs:*` — applying, keeping, and merging a packaged doc update.
- *
- * The suite runs against a real temp `~/.ave` and real upgrade markers, so
- * what a marker IS stays decided by the seeder's own grammar rather than by a
- * fixture that agrees with it today. Only the reviewer is a stub: what the
- * model returns is not what these handlers decide.
- */
+// Use real upgrade markers so eligibility follows the seeder's grammar.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, lstatSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -28,7 +21,6 @@ vi.mock("electron", () => ({
 let home: string;
 const prevAveHome = process.env.AVE_HOME;
 
-/** A reviewer that answers with fixed text, so the handler is what is measured. */
 function stubReviewer(answer = "MERGED DOC\n") {
   return {
     review: vi.fn(async (_task: string, _prompt: string, _options?: unknown) => answer),
@@ -110,7 +102,6 @@ describe("home-docs — listing and reading markers", () => {
 
     expect(status.markers).toHaveLength(1);
     expect(status.markers[0].actionable).toBe(false);
-    // Listed is not actionable: applying one is a different decision.
     expect(
       await invokeAppIpcHandler(
         handlers,
@@ -162,7 +153,6 @@ describe("home-docs — applying a packaged version", () => {
     expect(readFileSync(join(home, "AGENTS.md"), "utf8")).toBe("packaged v2\n");
     expect(existsSync(join(home, "AGENTS.md.new"))).toBe(false);
     expect(existsSync(join(home, "AGENTS.md.new.2026-01-01"))).toBe(false);
-    // A genuinely different version is still an open offer.
     expect(existsSync(join(home, "AGENTS.md.new.2026-02-01"))).toBe(true);
   });
 

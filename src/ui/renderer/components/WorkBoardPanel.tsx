@@ -1,7 +1,3 @@
-
-
-
-
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, CheckCircle2, Loader2, Play, Plus, RefreshCw, XCircle } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -47,11 +43,8 @@ import { usePaneActions } from "./PaneFrame.js";
 export interface WorkBoardPanelProps {
   api: AveApi;
   project?: ProjectIdentity;
-  /**
-   * An item another surface asked the board to open — the sidebar's
-   * conversation row. The board opens the item's detail with its latest run
-   * transcript expanded, then reports the request consumed.
-   */
+  /** An item another surface asked the board to open — the sidebar's conversation row. The board opens the item's detail with
+   * its latest run transcript expanded, then reports the request consumed. */
   focusItemId?: number | null;
   onFocusConsumed?: () => void;
 }
@@ -60,7 +53,6 @@ const TITLE_MAX = 256;
 const DESCRIPTION_MAX = 16384;
 const DEFAULT_PRIORITY: WorkItemPriority = "medium";
 
-// ─── Priority chips ──────────────────────────────────────────────────────────
 //
 // Domain priority (high/medium/low) is surfaced as P0/P1/P2 chips. The chip
 // variant maps severity to the host token palette: high → destructive accent,
@@ -97,11 +89,7 @@ function PriorityChip({ priority }: { priority: WorkItemPriority }) {
   );
 }
 
-// ─── Date helpers ─────────────────────────────────────────────────────────────
-//
-// The board's day projection is the shared one. It used to be a fourth,
-// independent `Intl`/`Asia/Seoul` spelling, so the day a due date displayed
-// under here and the day the work report counted it in could differ.
+// Use the shared day projection so board dates and work-report grouping agree.
 
 /** Project a stored instant to the local civil day the `<input type="date">` speaks. */
 function isoToLocalDate(iso: string | undefined): string {
@@ -111,11 +99,8 @@ function isoToLocalDate(iso: string | undefined): string {
   return localDateKey(d);
 }
 
-/**
- * The wire form of a picked due date: the instant that calendar day begins,
- * locally. Absolute and self-describing, which is what the store persists and
- * what `localDayBounds` compares a report window against.
- */
+/** The wire form of a picked due date: the instant that calendar day begins, locally. Absolute and self-describing, which
+ * is what the store persists and what `localDayBounds` compares a report window against. */
 function dueAtForPickedDay(dayKey: string): string | null {
   return localDayStart(dayKey)?.toISOString() ?? null;
 }
@@ -125,19 +110,8 @@ function formatDue(iso: string | undefined): string {
   return date ? t("workBoard.dueLabel", { date }) : t("workBoard.noDueDate");
 }
 
-// ─── Agent-orchestration run state ─────────────────────────────────────────────
-//
-// Live per-item run state derived ENTIRELY from the host run events — there is
-// no second source of truth in the renderer. `phase` mirrors the engine's
-// WorkBoardRunEvent phases; `busy` is the coarse "a run is in flight" marker
-// driven by runStarted/runFinished/runFailed so the indicator survives the gap
-// before the first progress event AND the moment after the terminal one.
-//
-// `awaiting_approval` is intentionally surfaced as a passive notice: the engine
-// drives plan approval through the host ApprovalGate (`requestAndWait`), which
-// already renders the standard §8 approval dock. The board does NOT fork a
-// second approve/reject control — doing so would mean two competing gates for
-// one decision. The notice points the user at the surfaced approval prompt.
+// Derive run state only from host events; awaiting-approval is informational because the shared host gate owns the
+// decision.
 
 type RunPhase = RunProgressEventPayload["phase"];
 
@@ -273,15 +247,13 @@ function useWorkBoardRun(api: AveApi): {
   return { runState, runItem };
 }
 
-// ─── Run indicator (live phase badge + spinner) ────────────────────────────────
-
 function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
   if (!run) return null;
   const inFlight = isRunInFlight(run);
   const phase = run.phase;
 
-  // Terminal states — only render error/denied; `done` is reflected by the
-  // item's stored output in the detail modal, not a persistent card badge.
+  // Terminal states — only render error/denied; `done` is reflected by the item's stored output in the detail modal, not a
+  // persistent card badge.
   if (!inFlight) {
     if (phase === "denied") {
       return (
@@ -340,8 +312,6 @@ function RunIndicator({ run }: { run: WorkItemRunState | undefined }) {
     </span>
   );
 }
-
-// ─── Card for a single work item ──────────────────────────────────────────────
 
 interface WorkItemCardProps {
   item: WorkItemResolved;
@@ -458,8 +428,6 @@ function WorkItemCard({ item, run, onStart, onComplete, onReopen, onRun, onOpenD
   );
 }
 
-// ─── A single kanban column ────────────────────────────────────────────────────
-
 interface BoardColumnProps {
   heading: string;
   items: WorkItemResolved[];
@@ -521,8 +489,6 @@ function BoardColumn({
   );
 }
 
-// ─── Priority picker (shared by create + detail dialogs) ───────────────────────
-
 function PriorityPicker({
   value,
   onChange,
@@ -558,8 +524,6 @@ function PriorityPicker({
   );
 }
 
-// ─── Create dialog ─────────────────────────────────────────────────────────────
-
 interface CreateDialogProps {
   api: AveApi;
   project?: ProjectIdentity;
@@ -590,8 +554,7 @@ export function WorkItemCreateDialog({ api, project, onClose, onCreated }: Creat
     }
     const input: WorkItemCreateInput = { title: titleTrimmed };
     if (detail.trim()) input.detail = detail.trim();
-    // Local midnight, so the stored instant is the start of the calendar day
-    // the user actually picked on their own calendar.
+    // Local midnight, so the stored instant is the start of the calendar day the user actually picked on their own calendar.
     if (!noDeadline && dueDate) {
       const dueAt = dueAtForPickedDay(dueDate);
       if (dueAt) input.due_at = dueAt;
@@ -696,8 +659,6 @@ export function WorkItemCreateDialog({ api, project, onClose, onCreated }: Creat
   );
 }
 
-// ─── Detail dialog ─────────────────────────────────────────────────────────────
-
 interface DetailDialogProps {
   api: AveApi;
   itemId: number;
@@ -709,7 +670,6 @@ interface DetailDialogProps {
   onRun: (id: number) => void;
 }
 
-// ─── Run output panel (live + persisted plan/result) ───────────────────────────
 //
 // Renders the captured plan + execution result. Source precedence: the live run
 // state's terminal session id / liveText (current run) layered over the item's
@@ -787,7 +747,6 @@ const STATUS_LABEL: Record<WorkItemResolved["status_resolved"], string> = {
   overdue: "overdueBadge",
 };
 
-// ─── Run history (accumulated past runs + their transcripts) ────────────────
 //
 // `item.runHistory` is the board-persisted index (newest last); each entry's
 // transcript (the plan+execute conversation) is fetched on demand from
@@ -931,8 +890,8 @@ export function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose,
     };
   }, [api, itemId, reloadKey]);
 
-  // When the in-flight run reaches a terminal phase, re-fetch so the persisted
-  // `plan` / `output` / `runSessionId` written by the engine land in the item.
+  // When the in-flight run reaches a terminal phase, re-fetch so the persisted `plan` / `output` / `runSessionId` written by
+  // the engine land in the item.
   const terminalPhase =
     run?.phase === "done" || run?.phase === "denied" || run?.phase === "error";
   useEffect(() => {
@@ -951,8 +910,8 @@ export function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose,
 
   const canSave = !!item && dirty && title.trim().length > 0 && !busy;
 
-  // A mutation either lands (close, let the board reload) or explains itself
-  // in the dialog; the host's refusal reads the same for every operation.
+  // A mutation either lands (close, let the board reload) or explains itself in the dialog; the host's refusal reads the
+  // same for every operation.
   const settleMutation = (ok: boolean, result: object) => {
     if (ok) {
       onChanged();
@@ -1153,19 +1112,8 @@ export function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose,
   );
 }
 
-// ─── Recommended work (plugin-proposed cards) ──────────────────────────────────
-//
-// A proposal is a plugin's claim that the user should consider something. It
-// carries text and a key and NOTHING EXECUTABLE — so 시작 does not run
-// anything the plugin supplied: it promotes the proposal into an ordinary work
-// item through the ordinary create path and then hands that item to the host's
-// own plan → approve → execute run, where the user still reads and approves the
-// plan before a single tool fires.
-//
-// Every string on this card was authored by a plugin. It is rendered as plain
-// text — no markdown, so no link or HTML surface — and the source plugin is
-// always named, because a card sitting inside the host's own board otherwise
-// reads as the host's own recommendation.
+// Plugin proposals contain no executable content; render attributed plain text and promote accepted proposals through the
+// ordinary plan/approve/execute path.
 
 function ProposalDetailPart({ heading, children }: { heading: string; children: React.ReactNode }) {
   return (
@@ -1308,12 +1256,8 @@ function ProposalCard({
   );
 }
 
-/**
- * The 추천 작업 band above the lanes.
- *
- * Renders nothing at all when no proposal is open: an always-present empty
- * shell would spend the top of the board on a permanent "nothing here".
- */
+/** The 추천 작업 band above the lanes. Renders nothing at all when no proposal is open: an always-present empty shell would
+ * spend the top of the board on a permanent "nothing here". */
 function ProposalsSection({
   proposals,
   pendingId,
@@ -1357,24 +1301,7 @@ function ProposalsSection({
   );
 }
 
-// ─── Reports & briefings section ───────────────────────────────────────────────
-//
-// Two directions over the same two windows, in one card because the user picks
-// between them:
-//
-//   report   — summarize what is ALREADY on the board. Calls `generate-report`,
-//              which drives the host-native reporter (board state + activity log
-//              + learned memory → LLM → markdown) and renders the markdown here.
-//   briefing — go and LOOK at the user's work, then file what needs doing back
-//              onto the board. Calls `run-briefing`, which drives a read-only
-//              sub-agent survey; its findings land in the recommended-work band
-//              above as cards the user accepts or dismisses, so this row reports
-//              only how many were filed rather than rendering them twice.
-//
-// Both rows carry their own one-line description, because "daily report" and
-// "daily briefing" sitting next to each other are otherwise indistinguishable.
-// `empty` and `error` surface as discriminated results in both directions, so a
-// press always produces feedback.
+// Reports summarize board state; briefings survey read-only and file findings as separately reviewed proposals.
 
 function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdentity }) {
   const [generating, setGenerating] = useState<"daily" | "weekly" | null>(null);
@@ -1487,9 +1414,8 @@ function ReportsSection({ api, project }: { api: AveApi; project?: ProjectIdenti
   );
 }
 
-// The briefing's own result line. The cards themselves render in the
-// recommended-work band, so this says only how many arrived — or, when the
-// survey found nothing new, that there is nothing to look at.
+// The briefing's own result line. The cards themselves render in the recommended-work band, so this says only how many
+// arrived — or, when the survey found nothing new, that there is nothing to look at.
 function BriefingResultLine({
   result,
 }: {
@@ -1509,8 +1435,8 @@ function BriefingResultLine({
       </p>
     );
   }
-  // An `ok` run that refreshed existing cards and added none is, to the user,
-  // the same answer as a survey that found nothing: no new work arrived.
+  // An `ok` run that refreshed existing cards and added none is, to the user, the same answer as a survey that found
+  // nothing: no new work arrived.
   if (result.status === "empty" || result.filed.length === 0) {
     return (
       <p className="mt-2 text-[11px] text-muted-foreground" data-testid="work-board-briefing-empty">
@@ -1525,8 +1451,8 @@ function BriefingResultLine({
   );
 }
 
-// Render the discriminated report result: `ok` → period heading + markdown,
-// `empty` → muted reason, `error` / `{ok:false}` → destructive reason.
+// Render the discriminated report result: `ok` → period heading + markdown, `empty` → muted reason, `error` / `{ok:false}`
+// → destructive reason.
 function ReportResultBlock({
   result,
   onClose,
@@ -1574,8 +1500,6 @@ function ReportResultBlock({
   );
 }
 
-// ─── Main Panel ─────────────────────────────────────────────────────────────────
-
 export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: WorkBoardPanelProps) {
   const [items, setItems] = useState<WorkItemResolved[]>([]);
   const [proposals, setProposals] = useState<WorkProposal[]>([]);
@@ -1583,8 +1507,8 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   const [loading, setLoading] = useState(false);
   const [showCreate, setShowCreate] = useState(false);
   const [detailId, setDetailId] = useState<number | null>(null);
-  // True while the open detail was reached from a conversation row: that
-  // arrival is about the run, so the latest transcript opens with it.
+  // True while the open detail was reached from a conversation row: that arrival is about the run, so the latest transcript
+  // opens with it.
   const [detailOpensLatestRun, setDetailOpensLatestRun] = useState(false);
   const mountedRef = useRef(true);
   useEffect(() => () => { mountedRef.current = false; }, []);
@@ -1665,16 +1589,16 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
     [api, refresh],
   );
 
-  // Bucket by stored status. `overdue` is a projection over planned/in_progress
-  // so those items stay in their lifecycle column with an overdue badge.
+  // Bucket by stored status. `overdue` is a projection over planned/in_progress so those items stay in their lifecycle
+  // column with an overdue badge.
   const planned = useMemo(() => items.filter((i) => i.status === "planned"), [items]);
   const inProgress = useMemo(() => items.filter((i) => i.status === "in_progress"), [items]);
   const completed = useMemo(() => items.filter((i) => i.status === "completed"), [items]);
 
   const capReached = items.length >= MAX_ITEMS;
 
-  // Agent-orchestration run state + launcher. Subscribes to the four host run
-  // channels in a single effect (cleanup inside the hook).
+  // Agent-orchestration run state + launcher. Subscribes to the four host run channels in a single effect (cleanup inside
+  // the hook).
   const { runState, runItem } = useWorkBoardRun(api);
 
   // A finished run may have written engine fields (plan/output/runStatus) onto
@@ -1689,11 +1613,8 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
     return unsub;
   }, [api, refresh]);
 
-  /**
-   * Promote a proposal into a work item. Returns the new item id so the caller
-   * decides what happens next — 시작 hands it straight to the run, 나중에 stops
-   * here and leaves it sitting in 진행 예정.
-   */
+  /** Promote a proposal into a work item. Returns the new item id so the caller decides what happens next — 시작 hands it
+   * straight to the run, 나중에 stops here and leaves it sitting in 진행 예정. */
   const acceptProposal = useCallback(
     async (proposal: WorkProposal): Promise<number | null> => {
       if (typeof api.acceptWorkProposal !== "function") return null;
@@ -1714,9 +1635,8 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   const onProposalStart = useCallback(
     (proposal: WorkProposal) => {
       void acceptProposal(proposal).then((itemId) => {
-        // The plugin supplied nothing executable: what runs is the host's own
-        // plan → approve → execute over the item the host just composed, and
-        // the user still approves the plan before anything fires.
+        // The plugin supplied nothing executable: what runs is the host's own plan → approve → execute over the item the host just
+        // composed, and the user still approves the plan before anything fires.
         if (itemId !== null) runItem(itemId);
       });
     },
@@ -1747,9 +1667,8 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
   const onRun = useCallback((id: number) => runItem(id), [runItem]);
   const onOpenDetail = useCallback((id: number) => setDetailId(id), []);
 
-  // The board's own global controls. They sat beside the heading this panel no
-  // longer draws; the pane's header carries them now. What is left in the body
-  // is the state they act on — the count and the cap warning — not a control.
+  // The board's own global controls. They sat beside the heading this panel no longer draws; the pane's header carries them
+  // now. What is left in the body is the state they act on — the count and the cap warning — not a control.
   usePaneActions(useMemo(() => [
     {
       id: "work-board-add",
@@ -1765,6 +1684,22 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
       onSelect: () => void refresh(),
     },
   ], [capReached, refresh]));
+
+  const renderColumn = (heading: string, columnItems: WorkItemResolved[], emptyLabel: string, testId: string) => (
+    <BoardColumn
+      heading={heading}
+      items={columnItems}
+      runState={runState}
+      emptyLabel={emptyLabel}
+      loading={loading}
+      onStart={onStart}
+      onComplete={onComplete}
+      onReopen={onReopen}
+      onRun={onRun}
+      onOpenDetail={onOpenDetail}
+      testId={testId}
+    />
+  );
 
   return (
     <>
@@ -1792,45 +1727,9 @@ export function WorkBoardPanel({ api, project, focusItemId, onFocusConsumed }: W
             onDismiss={onProposalDismiss}
           />
           <div className="grid min-h-0 gap-3 sm:grid-cols-3">
-            <BoardColumn
-              heading={t("workBoard.columnPlanned")}
-              items={planned}
-              runState={runState}
-              emptyLabel={t("workBoard.emptyPlanned")}
-              loading={loading}
-              onStart={onStart}
-              onComplete={onComplete}
-              onReopen={onReopen}
-              onRun={onRun}
-              onOpenDetail={onOpenDetail}
-              testId="work-board-column-planned"
-            />
-            <BoardColumn
-              heading={t("workBoard.columnInProgress")}
-              items={inProgress}
-              runState={runState}
-              emptyLabel={t("workBoard.emptyInProgress")}
-              loading={loading}
-              onStart={onStart}
-              onComplete={onComplete}
-              onReopen={onReopen}
-              onRun={onRun}
-              onOpenDetail={onOpenDetail}
-              testId="work-board-column-in-progress"
-            />
-            <BoardColumn
-              heading={t("workBoard.columnCompleted")}
-              items={completed}
-              runState={runState}
-              emptyLabel={t("workBoard.emptyCompleted")}
-              loading={loading}
-              onStart={onStart}
-              onComplete={onComplete}
-              onReopen={onReopen}
-              onRun={onRun}
-              onOpenDetail={onOpenDetail}
-              testId="work-board-column-completed"
-            />
+            {renderColumn(t("workBoard.columnPlanned"), planned, t("workBoard.emptyPlanned"), "work-board-column-planned")}
+            {renderColumn(t("workBoard.columnInProgress"), inProgress, t("workBoard.emptyInProgress"), "work-board-column-in-progress")}
+            {renderColumn(t("workBoard.columnCompleted"), completed, t("workBoard.emptyCompleted"), "work-board-column-completed")}
           </div>
           <div className="border-t pt-4">
             <ReportsSection api={api} project={project} />

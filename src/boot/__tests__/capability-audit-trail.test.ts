@@ -1,15 +1,3 @@
-/**
- * M4 — Capability-gate violations produce audit trail entries.
- *
- * Two paths are audited:
- *   1. plugin calls emitEvent() for a namespace requiring a capability it
- *      doesn't declare → boot.ts emit closure writes "plugin_emit_capability_denied".
- *   2. plugin declares eventSubscriptions to a private namespace
- *      (memory.private.*, settings.apiKey.*, audit.*, dlp.*) → plugins.ts
- *      registerManifestEventSubscriptions writes "plugin_subscription_private_denied".
- *
- * Legitimate emissions do NOT audit-log.
- */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -31,13 +19,7 @@ function collectingAudit() {
   };
 }
 
-/**
- * Mirror the createHostApi emit closure's SHAPE (gate, then deny) over a real
- * loaded PluginRuntime. The gate predicate and the denial row are NOT restated
- * here — they are the production `canEmitEvent` and `auditPluginEmitDenial`.
- * The call site itself is covered producer-driven in
- * boot/steps/__tests__/plugin-runtime-hostapi-wiring.test.ts.
- */
+/** Exercise the production gate and audit writer; the host API wiring suite covers the call site. */
 function makeGuardedEmit(
   runtime: PluginRuntime,
   pluginId: string,

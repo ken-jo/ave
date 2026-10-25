@@ -1,13 +1,3 @@
-/**
- * RoutinesStore v2 — coverage mirrors the RemindersStore atomic-write / cap / mode / clamp tests.
- *
- * - Invalid `at` rejection.
- * - 50-record cap enforcement.
- * - Atomic write (tmp file replaced, no half-write).
- * - File mode 0o600 on POSIX.
- * - Monthly clamping — Feb 28/29, April 30.
- * - markFired advances daily/weekly/monthly/interval repeat.
- */
 import { describe, it, expect } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 import { readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
@@ -552,7 +542,6 @@ describe("RoutinesStore v2 — LLM session sub-cap", () => {
   it("notification-only routines are not affected by LLM sub-cap", async () => {
     const { store, cleanup } = tempRoutinesStore();
     try {
-      // Fill LLM sub-cap
       for (let i = 0; i < MAX_LLM_SESSION_ROUTINES; i++) {
         await store.add({
           trigger: "schedule",
@@ -578,7 +567,6 @@ describe("RoutinesStore v2 — LLM session sub-cap", () => {
 describe("RoutinesStore v2 — advanceInterval far-past (no loop)", () => {
   it("advances far-past interval schedule in arithmetic time (no while loop)", async () => {
     const { store, cleanup } = tempRoutinesStore();
-    // Create a routine with an at timestamp 1 year in the past.
     const farPastMs = Date.now() - 365 * 24 * 60 * 60 * 1000;
     const farPastIso = new Date(farPastMs).toISOString();
     try {
@@ -607,8 +595,7 @@ describe("RoutinesStore v2 — advanceMonthly UTC correctness (DST-independence)
     const { store, cleanup } = tempRoutinesStore();
     try {
       await withTz("America/Los_Angeles", async () => {
-        // Jan 31 in UTC — if advanceMonthly used local-time methods, LA timezone
-        // offset would shift the date and produce a different day.
+        // Jan 31 in UTC — if advanceMonthly used local-time methods, LA timezone offset would shift the date and produce a different day.
         const jan31Utc = new Date("2026-01-31T12:00:00Z");
         const r = await store.add({
           trigger: "schedule",
@@ -635,8 +622,7 @@ describe("RoutinesStore v2 — advanceMonthly UTC correctness (DST-independence)
 
 describe("RoutinesStore v2 — advanceMonthly originalDay preservation (C-critic-2)", () => {
   it("multi-month advance preserves originalDay across all months (Jan 31 → 6 cycles)", async () => {
-    // Simulate Jan 31 far in the past so markFired multi-skips through 6 months.
-    // Expected: originalDay=31 is clamped per-month (Feb→28/29, Apr→30, Jun→30)
+    // Simulate Jan 31 far in the past so markFired multi-skips through 6 months. Expected: originalDay=31 is clamped per-month (Feb→28/29, Apr→30, Jun→30)
     // but NEVER drifts below 28 after a Feb clamp (the pre-fix bug: 31→28→28→28...).
     const { store, cleanup } = tempRoutinesStore();
     try {
@@ -654,8 +640,7 @@ describe("RoutinesStore v2 — advanceMonthly originalDay preservation (C-critic
       // The next-fire date must be after now.
       expect(nextAt.getTime()).toBeGreaterThan(Date.now());
 
-      // The day-of-month must be originalDay (31) clamped to the month's last day.
-      // It must NEVER be less than the last day of that month.
+      // The day-of-month must be originalDay (31) clamped to the month's last day. It must NEVER be less than the last day of that month.
       const year = nextAt.getUTCFullYear();
       const month = nextAt.getUTCMonth(); // 0-based
       const lastDayOfMonth = new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
@@ -887,7 +872,6 @@ describe("RoutinesStore workspace scope revocation", () => {
       await cleanup();
     }
   });
-
 
   it("is a no-op when no routine scope is covered", async () => {
     const { store, dir, cleanup } = tempRoutinesStore();

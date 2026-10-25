@@ -6,7 +6,7 @@ export interface NativeWindowCoordinator {
 
 let coordinator: NativeWindowCoordinator | null = null;
 
-/** Configure the native window/menu/tray composition boundary exactly once. */
+// Configure the native window/menu/tray composition boundary exactly once.
 export function configureNativeWindowCoordinator(next: NativeWindowCoordinator): void {
   if (coordinator) throw new Error("native-window-coordinator-already-configured");
   coordinator = next;
@@ -29,7 +29,7 @@ export function requestNativeChromeRefresh(): void {
   requireCoordinator().refreshNativeChrome();
 }
 
-/** @internal test-only reset for isolated module-state tests. */
+// @internal test-only reset for isolated module-state tests.
 export function resetNativeWindowCoordinatorForTests(): void {
   coordinator = null;
 }

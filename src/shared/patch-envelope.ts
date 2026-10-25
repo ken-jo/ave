@@ -1,28 +1,4 @@
-/**
- * Patch envelope grammar used by `apply_patch` — parsing and in-memory
- * application. Pure: no filesystem access, so the tool owns every read,
- * permission check and write.
- *
- * ```
- * *** Begin Patch
- * *** Add File: <path>
- * +<line>
- * *** Update File: <path>
- * *** Move to: <path>            (optional)
- * @@ <context line>              (optional anchor; bare "@@" separates chunks)
- *  <context>
- * -<removed>
- * +<added>
- * *** End of File                (optional: the chunk ends at end of file)
- * *** Delete File: <path>
- * *** End Patch
- * ```
- *
- * A chunk's old block (context and removed lines) is located from a cursor
- * that only moves forward, first by exact line match, then ignoring trailing
- * whitespace, then ignoring surrounding whitespace. The first match after the
- * cursor wins, so chunks must appear in file order.
- */
+/** Pure patch parsing and application; the tool owns filesystem access and permissions. Chunks match forward in file order, trying exact, trailing-whitespace, then surrounding-whitespace matches. */
 
 export interface PatchChunk {
   /** `@@ <anchor>` line text; the old block is searched after this line. */
@@ -63,10 +39,7 @@ function isFileHeader(line: string): boolean {
   return line.startsWith(ADD) || line.startsWith(DELETE) || line.startsWith(UPDATE) || line === END;
 }
 
-/**
- * Strip an optional surrounding Markdown fence so a patch pasted inside
- * ```` ```diff ```` still parses; the envelope markers stay mandatory.
- */
+/** Optional surrounding Markdown fences do not replace mandatory envelope markers. */
 function envelopeLines(text: string): string[] {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   while (lines.length > 0 && lines[0]!.trim() === "") lines.shift();
@@ -183,8 +156,7 @@ function parseChunks(
     const marker = line.charAt(0);
     const text = line.slice(1);
     if (line === "") {
-      // An empty line inside a chunk is an empty context line whose leading
-      // space was dropped.
+      // An empty chunk line is a context line with its leading space dropped.
       current.oldLines.push("");
       current.newLines.push("");
     } else if (marker === " ") {
@@ -206,7 +178,6 @@ function parseChunks(
   return { ok: true, chunks, next: index };
 }
 
-/** Every path a parsed patch reads or writes, in patch order, without duplicates. */
 export function patchOperationPaths(operations: readonly PatchFileOperation[]): string[] {
   const paths: string[] = [];
   for (const operation of operations) {
@@ -244,10 +215,7 @@ function seekSequence(
   return -1;
 }
 
-/**
- * Apply update chunks to `original`, preserving its line separator (`\r\n`
- * when the file uses it) and whether it ends with a newline.
- */
+/** Preserve the original line separator and final-newline state. */
 export function applyPatchChunks(original: string, chunks: readonly PatchChunk[]): PatchApplyResult {
   const separator = original.includes("\r\n") ? "\r\n" : "\n";
   const endsWithNewline = original.endsWith("\n");

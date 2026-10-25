@@ -43,7 +43,7 @@ function runtime(): ConversationSurfaceRuntime {
   } as ConversationSurfaceRuntime;
 }
 
-/** A probe reading whose only question is which login this desktop is signed in as. */
+// A probe reading whose only question is which login this desktop is signed in as.
 function tailscaleEnvironment(login: string | null) {
   return {
     state: "ready" as const,
@@ -75,9 +75,8 @@ function options(
       env,
       dependencies: {
         startServer: startServer as never,
-        // This matrix asks an environment question. Reading the real
-        // host-owned file would make the answer depend on whether the
-        // developer running it happens to have an observer configured.
+        // This matrix asks an environment question. Reading the real host-owned file would make the answer depend on whether the developer running it happens to
+        // have an observer configured.
         readConfigFile: async () => null,
       },
     },
@@ -108,8 +107,7 @@ describe("Tailnet observer lifecycle", () => {
       pairedSharingEnabled: false,
     });
 
-    // Identity mode is a first-class choice, not the absence of one: it has to
-    // be named as explicitly as the capability it replaces.
+    // Identity mode is a first-class choice, not the absence of one: it has to be named as explicitly as the capability it replaces.
     expect(resolveTailnetObserverConfig({
       AVE_TAILNET_OBSERVER: "1",
       AVE_TAILNET_OBSERVER_AUTHORIZATION: "tailnet-identity",
@@ -128,8 +126,7 @@ describe("Tailnet observer lifecycle", () => {
       pairedSharingEnabled: true,
     });
 
-    // The controller needs the pairing boundary, so it is only valid WITH
-    // paired sharing — the same coupling the web adapter already requires.
+    // The controller needs the pairing boundary, so it is only valid WITH paired sharing — the same coupling the web adapter already requires.
     expect(resolveTailnetObserverConfig({
       AVE_TAILNET_OBSERVER: "1",
       AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
@@ -149,8 +146,6 @@ describe("Tailnet observer lifecycle", () => {
       pairedSharingEnabled: true,
       webOrigin: WEB_ORIGIN,
     });
-
-
 
     for (const env of [
       { AVE_TAILNET_OBSERVER: "1" },
@@ -173,8 +168,7 @@ describe("Tailnet observer lifecycle", () => {
         AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
         AVE_TAILNET_CONTROLLER: "true",
       },
-      // Controller enabled (valid "1") but WITHOUT paired sharing — the new
-      // coupling gate rejects it rather than leaving the native routes ungated.
+      // Controller enabled (valid "1") but WITHOUT paired sharing — the new coupling gate rejects it rather than leaving the native routes ungated.
       {
         AVE_TAILNET_OBSERVER: "1",
         AVE_TAILNET_OBSERVER_AUTHORIZATION: CAPABILITY_ENV,
@@ -295,17 +289,14 @@ describe("Tailnet observer lifecycle", () => {
     }).pairing?.deviceStatus;
     expect(deviceStatus).toBeTypeOf("function");
 
-    // The owner's own device pairs, but through the ordinary invitation: the
-    // pairing is pending and the desktop still has to activate it.
+    // The owner's own device pairs, but through the ordinary invitation: the pairing is pending and the desktop still has to activate it.
     await expect(deviceStatus?.(OWNER_LOGIN, ACTOR))
       .resolves.toEqual({ pairing: "pending", ownDevice: true });
     expect(createInvitation).toHaveBeenCalledOnce();
-    // The deadline stays on this side: what crossed the boundary is only that a
-    // pairing exists, and it is `pending` — the desktop still has to activate it.
+    // The deadline stays on this side: what crossed the boundary is only that a pairing exists, and it is `pending` — the desktop still has to activate it.
     expect(pairing).toMatchObject({ state: "pending", expiresAt: 123_456 });
 
-    // The waiting page reloads on a timer; re-entry must not spend a second
-    // invitation on a claim that the existing pairing would refuse.
+    // The waiting page reloads on a timer; re-entry must not spend a second invitation on a claim that the existing pairing would refuse.
     await expect(deviceStatus?.(OWNER_LOGIN, ACTOR))
       .resolves.toEqual({ pairing: "pending", ownDevice: true });
     expect(createInvitation).toHaveBeenCalledOnce();
@@ -368,8 +359,6 @@ describe("Tailnet observer lifecycle", () => {
     expect(getTailnetPairedSharingRuntime()).toBeNull();
   });
 
-
-
   it("starts only the separate literal-loopback observer and closes it idempotently", async () => {
     const close = vi.fn(async () => undefined);
     const startServer = vi.fn(async (input: { port: number }) => ({
@@ -420,10 +409,8 @@ describe("Tailnet observer lifecycle", () => {
     }, startServer as never);
 
     const starting = maybeStartTailnetObserverServer(f.input);
-    // Resolving the configuration reads the host-owned file, so listener
-    // construction is no longer reached within the caller's own tick. Wait for
-    // it rather than assuming: this case is about the shutdown race, and a
-    // `resolveServer` that is still undefined would hang instead of failing.
+    // Resolving the configuration reads the host-owned file, so listener construction is no longer reached within the caller's own tick. Wait for it rather
+    // than assuming: this case is about the shutdown race, and a `resolveServer` that is still undefined would hang instead of failing.
     await vi.waitFor(() => expect(startServer).toHaveBeenCalled());
     const stopping = stopTailnetObserverServer();
     resolveServer?.({
@@ -500,8 +487,7 @@ describe("Tailnet observer configuration surface", () => {
   });
 
   it("puts the file through the same gates the environment goes through", async () => {
-    // One vocabulary, one validator: the file cannot admit a port, a capability
-    // key, or a scope combination the env form would have rejected.
+    // One vocabulary, one validator: the file cannot admit a port, a capability key, or a scope combination the env form would have rejected.
     await expect(loadTailnetObserverConfig({
       env: {},
       readConfigFile: file({ enabled: true, authorization: APP_CAPABILITY, port: 65_536 }),
@@ -586,7 +572,7 @@ describe("Tailnet observer configuration surface", () => {
   });
 });
 
-/** A `tailscale status --json` payload for a node that is up and signed in. */
+// A `tailscale status --json` payload for a node that is up and signed in.
 function readyStatus(overrides: Record<string, unknown> = {}): string {
   return JSON.stringify({
     BackendState: "Running",
@@ -811,7 +797,7 @@ describe("Tailnet observer restart", () => {
 });
 
 describe("choosing a loopback port for the observer", () => {
-  /** A port nothing holds right now, learned from the OS rather than guessed. */
+  // A port nothing holds right now, learned from the OS rather than guessed.
   async function freePort(): Promise<number> {
     const probe = createServer();
     const port = await new Promise<number>((resolve, reject) => {
@@ -835,8 +821,7 @@ describe("choosing a loopback port for the observer", () => {
   it("asks for the shared default when nothing is preferred", async () => {
     const release = await occupy(DEFAULT_TAILNET_OBSERVER_PORT);
     try {
-      // Occupied here, so the answer is a different port — which is itself the
-      // evidence the default is what was asked for first.
+      // Occupied here, so the answer is a different port — which is itself the evidence the default is what was asked for first.
       const chosen = await chooseObserverPort(null);
       expect(chosen).not.toBeNull();
       expect(chosen).not.toBe(DEFAULT_TAILNET_OBSERVER_PORT);
@@ -850,8 +835,7 @@ describe("choosing a loopback port for the observer", () => {
     const releasePreferred = await occupy(taken);
     try {
       const chosen = await chooseObserverPort(taken);
-      // The default may itself be busy on the machine running this; what must
-      // never happen is silently handing back the port that is already held.
+      // The default may itself be busy on the machine running this; what must never happen is silently handing back the port that is already held.
       expect(chosen).not.toBe(taken);
       expect(chosen).not.toBeNull();
     } finally {
@@ -868,8 +852,7 @@ describe("choosing a loopback port for the observer", () => {
       expect(chosen).not.toBeNull();
       expect(chosen).not.toBe(taken);
       expect(chosen).not.toBe(DEFAULT_TAILNET_OBSERVER_PORT);
-      // Usable, not merely a number: the whole point is that the listener can
-      // bind what this returned.
+      // Usable, not merely a number: the whole point is that the listener can bind what this returned.
       expect(await chooseObserverPort(chosen)).toBe(chosen);
     } finally {
       await releaseDefault();
@@ -878,10 +861,7 @@ describe("choosing a loopback port for the observer", () => {
   });
 });
 
-/**
- * A namespace that lives only in this test, so nothing here reads — or writes —
- * the admission record of whoever is running the suite.
- */
+// A namespace that lives only in this test, so nothing here reads — or writes — the admission record of whoever is running the suite.
 function memoryNamespace(seed: Record<string, unknown> = {}): FeatureNamespaceHandle {
   const files = new Map<string, unknown>(Object.entries(seed));
   return {
@@ -908,12 +888,8 @@ interface FakePairing {
   state: "pending" | "active" | "revoked";
 }
 
-/**
- * The pairing store reduced to what admission touches. `activatePairing` and
- * `revokePairing` behave exactly as the durable store does — including
- * answering false for a pairing that is already in the target state, which is
- * what keeps a re-entry from being audited as a second grant.
- */
+// The pairing store reduced to what admission touches. `activatePairing` and `revokePairing` behave exactly as the durable store does — including
+// answering false for a pairing that is already in the target state, which is what keeps a re-entry from being audited as a second grant.
 function fakeStore(initial: readonly FakePairing[] = []) {
   const pairings = initial.map((entry) => ({ ...entry }));
   const store = {
@@ -968,7 +944,7 @@ function fakeRuntime(store: ReturnType<typeof fakeStore>, logins: Record<string,
   } as unknown as TailnetPairedSharingRuntime;
 }
 
-/** Collects the audit entries the admission path writes. */
+// Collects the audit entries the admission path writes.
 function fakeAuditLogger() {
   const entries: { sessionId: string; type: string; input?: string }[] = [];
   return {
@@ -1023,8 +999,7 @@ describe("own-device admission", () => {
       auditLogger: audit.logger,
     });
 
-    // `active`, not just "paired": the page is what turns this into the sentence
-    // the device reads, and an admitted device is not waiting for an approval.
+    // `active`, not just "paired": the page is what turns this into the sentence the device reads, and an admitted device is not waiting for an approval.
     await expect(deviceStatus(OWNER_LOGIN, OWN_ACTOR))
       .resolves.toEqual({ pairing: "active", ownDevice: true });
     expect(store.pairings).toEqual([
@@ -1035,8 +1010,7 @@ describe("own-device admission", () => {
     ]);
     expect(JSON.parse(audit.entries[0]?.input ?? "{}")).toMatchObject({ action: "granted" });
 
-    // The waiting page reloads on a timer. A pairing that is already active is
-    // not a second grant, so it is neither re-activated nor audited again.
+    // The waiting page reloads on a timer. A pairing that is already active is not a second grant, so it is neither re-activated nor audited again.
     await expect(deviceStatus(OWNER_LOGIN, OWN_ACTOR))
       .resolves.toEqual({ pairing: "active", ownDevice: true });
     expect(audit.entries).toHaveLength(1);
@@ -1081,9 +1055,8 @@ describe("own-device admission", () => {
   });
 
   it("reports what a code-redeemed device already has instead of claiming nothing", async () => {
-    // Not this desktop's own account, so nothing is claimed for it — but its
-    // pairing exists, and reporting it is what stops the page asking for a
-    // second code five seconds after the first one was accepted.
+    // Not this desktop's own account, so nothing is claimed for it — but its pairing exists, and reporting it is what stops the page asking for a second
+    // code five seconds after the first one was accepted.
     const namespace = memoryNamespace();
     const store = fakeStore([{ id: PENDING_ID, actorId: OTHER_ACTOR, state: "pending" }]);
     const deviceStatus = await deviceStatusFor({
@@ -1095,8 +1068,7 @@ describe("own-device admission", () => {
     await expect(deviceStatus("guest@example.test", OTHER_ACTOR))
       .resolves.toEqual({ pairing: "pending", ownDevice: false });
 
-    // And once the owner approves it by hand, the same read says the approval
-    // is done and a conversation share is what is missing.
+    // And once the owner approves it by hand, the same read says the approval is done and a conversation share is what is missing.
     await store.activatePairing(PENDING_ID);
     await expect(deviceStatus("guest@example.test", OTHER_ACTOR))
       .resolves.toEqual({ pairing: "active", ownDevice: false });

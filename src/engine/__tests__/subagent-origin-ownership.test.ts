@@ -6,19 +6,11 @@ import { join } from "node:path";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/**
- * `isPersistedSpawnOfOrigin` is an authorization predicate: it decides whether a
- * parent may read a child's transcript. These cases pin the boundary — it must
- * accept only a sub-agent session whose host-written `originSessionId` names
- * exactly this parent, and reject everything else, including a MAIN session id
- * (which would otherwise be a way to read another conversation).
- */
+// Transcript ownership requires a subagent session with this exact host-recorded origin.
 function runnerWith(metadataById: Record<string, unknown>) {
   const subAgentMemoryManager = {
     loadSessionMetadata: vi.fn((id: string) => metadataById[id] ?? null),
   };
-  // Only the two members the predicate touches are needed; the rest of the
-  // runner's dependency surface is irrelevant to this decision.
   return new SubAgentRunner({ subAgentMemoryManager } as never);
 }
 
@@ -60,8 +52,7 @@ describe("SubAgentRunner.isPersistedSpawnOfOrigin", () => {
   });
 
   it("rejects a session that is not a sub-agent even if origin matches", () => {
-    // A main session must never be readable through the sub-agent transcript
-    // path, whatever its metadata claims about an origin.
+    // Main sessions must never be readable through child transcripts, regardless of claimed origin.
     const runner = runnerWith({
       [CHILD]: { sessionKind: "main", originSessionId: PARENT },
     });
@@ -69,8 +60,7 @@ describe("SubAgentRunner.isPersistedSpawnOfOrigin", () => {
   });
 
   it("rejects a child with no recorded origin", () => {
-    // Older children predate origin recording; absent ownership is not
-    // ownership, and the transcript-scan path remains their only route.
+    // Missing legacy origin metadata grants no ownership; use transcript scanning instead.
     const runner = runnerWith({ [CHILD]: { sessionKind: "subagent" } });
     expect(runner.isPersistedSpawnOfOrigin(PARENT, CHILD)).toBe(false);
   });

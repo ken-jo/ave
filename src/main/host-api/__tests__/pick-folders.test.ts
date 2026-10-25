@@ -1,16 +1,4 @@
-/**
- * The host's folder picker, measured against a stubbed `dialog`.
- *
- * WHAT THESE CASES ARE FOR. The picker's whole safety argument is that it hands
- * back an ANSWER rather than a reach: the paths come from the OS, the title
- * names the caller, and a second concurrent chooser is refused. Each of those
- * is a claim a future edit could break silently, so each is pinned here.
- *
- * `dialog` is stubbed rather than driven, because a native chooser has no
- * scriptable "the user picked this" — the thing worth pinning is what the host
- * ASKS Electron for and what it does with the reply, both of which are visible
- * at that seam.
- */
+// The native picker supplies paths and caller attribution; a second concurrent chooser must be refused.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const showOpenDialog = vi.fn();
@@ -23,7 +11,7 @@ import {
 } from "../pick-folders.js";
 import type { BrowserWindow } from "electron";
 
-/** A stand-in for a real window; only its identity is ever compared. */
+// A stand-in for a real window; only its identity is ever compared.
 const FAKE_WINDOW = { id: 7 } as unknown as BrowserWindow;
 
 const withWindow = { parentWindow: () => FAKE_WINDOW };
@@ -44,8 +32,7 @@ describe("what the host asks the OS for", () => {
     const [parent, options] = showOpenDialog.mock.calls[0] as [BrowserWindow, Record<string, unknown>];
     expect(parent).toBe(FAKE_WINDOW);
     expect(options.properties).toEqual(["openDirectory", "multiSelections"]);
-    // The ID, never `manifest.name`: a plugin-authored display name is free
-    // text, so attribution built on it could be made to read as the host's own.
+    // The ID, never `manifest.name`: a plugin-authored display name is free text, so attribution built on it could be made to read as the host's own.
     expect(String(options.title)).toContain("local-indexer");
   });
 
@@ -55,8 +42,7 @@ describe("what the host asks the OS for", () => {
     const result = await pickFoldersForPlugin("local-indexer", withoutWindow);
 
     expect(result.canceled).toBe(true);
-    // ONE argument — the unparented overload. Called with `(null, options)`
-    // Electron would treat the null as the options bag and throw.
+    // ONE argument — the unparented overload. Called with `(null, options)` Electron would treat the null as the options bag and throw.
     expect(showOpenDialog.mock.calls[0]).toHaveLength(1);
   });
 });
@@ -83,10 +69,8 @@ describe("what the plugin gets back", () => {
   });
 
   it("reads an empty selection as the same answer as a dismissal", async () => {
-    // Electron can report `canceled: false` with nothing selected. The two
-    // spellings mean the same thing — the user named no folder — and a caller
-    // that had to tell them apart would be branching on a distinction with no
-    // consequence.
+    // Electron can report `canceled: false` with nothing selected. The two spellings mean the same thing — the user named no folder — and a caller that had
+    // to tell them apart would be branching on a distinction with no consequence.
     showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [] });
 
     await expect(pickFoldersForPlugin("local-indexer", withWindow)).resolves.toEqual({
@@ -109,8 +93,7 @@ describe("one chooser per plugin", () => {
     await expect(pickFoldersForPlugin("local-indexer", withWindow)).rejects.toBeInstanceOf(
       FolderPickerBusyError,
     );
-    // REFUSED, not queued: the second call must not have reached Electron, or
-    // the user would get the extra modal anyway, just later.
+    // REFUSED, not queued: the second call must not have reached Electron, or the user would get the extra modal anyway, just later.
     expect(showOpenDialog).toHaveBeenCalledTimes(1);
 
     release({ canceled: true, filePaths: [] });
@@ -118,9 +101,8 @@ describe("one chooser per plugin", () => {
   });
 
   it("lets a DIFFERENT plugin ask while the first one's chooser is up", async () => {
-    // The bound is per-plugin because it exists to stop ONE plugin stacking
-    // modals. A shared bound would let any plugin with a chooser open suppress
-    // every other plugin's — a cross-plugin channel, and a denial of service.
+    // The bound is per-plugin because it exists to stop ONE plugin stacking modals. A shared bound would let any plugin with a chooser open suppress every
+    // other plugin's — a cross-plugin channel, and a denial of service.
     let release: (value: { canceled: boolean; filePaths: string[] }) => void = () => {};
     showOpenDialog.mockReturnValueOnce(
       new Promise((resolve) => {

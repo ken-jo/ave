@@ -1,20 +1,5 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-/**
- * What happens to a durable Telegram pairing when this machine loses the local
- * key its actor digests were derived under.
- *
- * The dominant real causes are an OS keychain reset and restoring the app data
- * onto another machine. Both surface as a decrypt failure, which
- * `SafeStorageSecretStore` answers with null, so the platform runtime mints a
- * fresh key and every actor digest changes. Without a guard that is silent: the
- * paired owner stops being recognised and the settings surface still says
- * "paired".
- *
- * Everything here runs the production pieces — the real encrypted secret store
- * over a real directory, the real connection store over a real feature
- * namespace, the real paired runtime — because the defect lived exactly in the
- * seam between them.
- */
+// Keychain reset or machine restore changes actor digests; the real store/runtime seam must retire stale pairings.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -47,11 +32,8 @@ const CODE_DIGEST = "c".repeat(64);
 
 const tempDirectory = useTempDirs("ave-telegram-rotation-");
 
-/**
- * The real encrypted store, plus the one failure a memory-backed double cannot
- * express: the ciphertext stays exactly as written and only this machine's
- * ability to decrypt it goes away.
- */
+// The real encrypted store, plus the one failure a memory-backed double cannot express: the ciphertext stays exactly as written and only this machine's
+// ability to decrypt it goes away.
 function encryptedSecrets(): { readonly store: SecretStore; breakDecryption: () => void } {
   const state = { broken: false };
   const encryption: SafeStorageLike = {
@@ -79,7 +61,7 @@ async function openStore(directory: string): Promise<TelegramConnectionStore> {
   return store;
 }
 
-/** Pair the owner and share the conversation they have open. */
+// Pair the owner and share the conversation they have open.
 async function pairAndShare(store: TelegramConnectionStore, actorDigest: string): Promise<void> {
   await store.createPendingCode({ codeDigest: CODE_DIGEST });
   expect(await store.completePairing({ codeDigest: CODE_DIGEST, actorDigest })).not.toBeNull();
@@ -89,11 +71,8 @@ async function pairAndShare(store: TelegramConnectionStore, actorDigest: string)
   })).not.toBeNull();
 }
 
-/**
- * The production order, which is what makes a pairing nameable at all:
- * activation adopts the key before the bridge exists, so no code can be
- * redeemed until the document knows which key its digests will belong to.
- */
+// The production order, which is what makes a pairing nameable at all: activation adopts the key before the bridge exists, so no code can be redeemed
+// until the document knows which key its digests will belong to.
 async function connectedAndPaired(
   store: TelegramConnectionStore,
   secretStore: SecretStore,
@@ -104,7 +83,7 @@ async function connectedAndPaired(
   await pairAndShare(store, digester.digestFor(OWNER_ID)!);
 }
 
-/** The runtime as activation composes it, over whichever key is loadable now. */
+// The runtime as activation composes it, over whichever key is loadable now.
 function pairedRuntime(store: TelegramConnectionStore, secretStore: SecretStore) {
   return createTelegramPairedPlatformRuntime({
     botFingerprint: BOT_FINGERPRINT,
@@ -131,17 +110,13 @@ function ownerEnvelope() {
   };
 }
 
-/** The production step, over whichever key this machine can load right now. */
+// The production step, over whichever key this machine can load right now.
 async function reconcile(store: TelegramConnectionStore, secretStore: SecretStore): Promise<void> {
   await reconcileTelegramActorKey({ store, secretStore, encryption: unavailableSecretEncryption });
 }
 
-/**
- * The service as `main.ts` composes it, minus the parts a boot resume with no
- * credential never reaches. A bridge start here would be the defect: this
- * resume must give up at the missing token, and it must already have
- * reconciled by then.
- */
+// The service as `main.ts` composes it, minus the parts a boot resume with no credential never reaches. A bridge start here would be the defect: this
+// resume must give up at the missing token, and it must already have reconciled by then.
 function connectionService(store: TelegramConnectionStore, secretStore: SecretStore) {
   return createTelegramConnectionService({
     store,
@@ -163,8 +138,7 @@ function connectionService(store: TelegramConnectionStore, secretStore: SecretSt
     conversationDigestFor: (conversationId: string) =>
       telegramConversationDigest(BOT_FINGERPRINT, conversationId),
     conversationExists: () => true,
-    // This resume gives up at the missing credential, so no Bot API request
-    // may happen; this transport fails loudly if one ever does.
+    // This resume gives up at the missing credential, so no Bot API request may happen; this transport fails loudly if one ever does.
     networkFetch: unusedNetworkFetch,
   });
 }
@@ -207,13 +181,11 @@ describe("telegram actor key rotation", () => {
     const secrets = encryptedSecrets();
     const store = await openStore(tempDirectory("ave-telegram-rotation-store-"));
     await connectedAndPaired(store, secrets.store);
-    // One keychain reset takes both secrets: the token this resume needs and
-    // the key the pairing's digests were minted under.
+    // One keychain reset takes both secrets: the token this resume needs and the key the pairing's digests were minted under.
     secrets.breakDecryption();
 
-    // Through the composition boot actually runs, not around it. The resume
-    // gives up at the missing credential, and everything the bridge would have
-    // done — the reconcile included — is downstream of that return.
+    // Through the composition boot actually runs, not around it. The resume gives up at the missing credential, and everything the bridge would have done —
+    // the reconcile included — is downstream of that return.
     await connectionService(store, secrets.store).resumeStoredConnection();
 
     expect(store.ownerSnapshot().pairing).toBeNull();
@@ -239,8 +211,7 @@ describe("telegram actor key rotation", () => {
     expect(persisted).not.toContain(actorSecret);
     expect(persisted).not.toContain(OWNER_ID);
 
-    // Survives the restart it exists for: a reopened document reconciles clean
-    // against the same key rather than re-reporting a rotation.
+    // Survives the restart it exists for: a reopened document reconciles clean against the same key rather than re-reporting a rotation.
     const reopened = await openStore(directory);
     expect(await reopened.reconcileActorKey(digester.actorKeyDigest)).toBe(false);
     expect(reopened.ownerSnapshot().pairing).not.toBeNull();
@@ -254,13 +225,11 @@ describe("telegram actor key rotation", () => {
       secretStore: secrets.store,
       encryption: unavailableSecretEncryption,
     });
-    // Deliberately skipping the adoption activation performs, which is the
-    // shape of a document written before the field existed, or edited by hand.
+    // Deliberately skipping the adoption activation performs, which is the shape of a document written before the field existed, or edited by hand.
     await store.setConnected(BOT_FINGERPRINT);
     await pairAndShare(store, digester.digestFor(OWNER_ID)!);
 
-    // Nothing named the key, so this store cannot show that the stored digest
-    // is still derivable — the same evidence gap as a rotation.
+    // Nothing named the key, so this store cannot show that the stored digest is still derivable — the same evidence gap as a rotation.
     expect(await store.reconcileActorKey(digester.actorKeyDigest)).toBe(true);
     expect(store.ownerSnapshot().pairingUnrecognized).toBe(true);
 

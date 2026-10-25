@@ -1,9 +1,3 @@
-/**
- * Window domain IPC handlers.
- * Covers: window:minimize, window:toggleMaximize, window:close,
- *         window:syncTitleBarTheme
- * Re-exports the leaf registerWindowEventListeners helper for compatibility.
- */
 import { BrowserWindow, ipcMain, type BrowserWindow as ElectronBrowserWindow, type IpcMainInvokeEvent } from "electron";
 import { t } from "../../i18n/index.js";
 import { resolveAppIconPath } from "../../main/app-icon.js";
@@ -98,9 +92,7 @@ export function registerWindowHandlers(deps: IpcDeps): void {
         sandbox: true,
         webSecurity: true,
         webviewTag: false,
-        // JavaScript stays enabled for the host-owned toolbar shell. The
-        // untrusted render_html document is isolated in a sandboxed iframe,
-        // and the in-window toggle only changes that iframe's script sandbox.
+        // Keep scripts enabled for the host toolbar; the toggle affects only the untrusted document's sandboxed iframe.
         javascript: true,
         partition: RENDER_HTML_PARTITION,
       },

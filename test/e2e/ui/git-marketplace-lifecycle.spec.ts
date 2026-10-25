@@ -32,25 +32,8 @@ import type { InstalledContentResult } from '../../../src/shared/installed-conte
 import { TEST_IDS, testIdSelector } from '../../../src/shared/test-ids.js';
 import { scrubDiagnosticSecrets } from '../../../src/shared/dlp.js';
 
-/**
- * The git marketplace end to end (design §17): the built app, run with the dev
- * flag that lets it reach a marketplace on this machine, adds a marketplace
- * served over HTTP by a local `git http-backend`, installs one package of every
- * kind from it, updates each after a new publish, and removes the source.
- *
- * Every step goes through the same preload bridge the Marketplace tab calls,
- * and the tab itself adds and removes the source. What each install changed
- * is read back from the app, not from the files: the installed content view
- * (theme, language, font, routine template), the command menu (both MCP
- * tools, both skills, and the prompt), and the catalog (every kind, installed
- * at the version published).
- *
- * The MCP server is a package-local script run with the app's own Node, so the
- * run needs no network. It is a shell script, so the spec does not run on
- * Windows. MCP governance denies every server its policy does not approve, so
- * the run's AVE_HOME carries a policy that approves this one, the way an
- * organization's would.
- */
+/** Exercise local marketplace add/install/update/remove through preload and UI, reading results through app surfaces rather than disk.
+ * The fixture server runs locally with an isolated governance policy; its shell-script transport excludes Windows. */
 
 const SOURCE_ID = 'harbor-tools';
 /** The first release that knows the served host protocol. */
@@ -139,9 +122,8 @@ function governancePolicy(aveHome: string): McpGovernancePolicy {
 
 /** The shared fixtures, with the governance policy written before the app starts. */
 const test = base.extend({
-  userDataDir: async ({ userDataDir }, use) => {
+  userDataDir: async ({ userDataDir, aveHome }, use) => {
     // The fixture's AVE_HOME (see fixtures.ts).
-    const aveHome = join(userDataDir, 'ave-state');
     mkdirSync(join(aveHome, 'governance'), { recursive: true });
     writeFileSync(join(aveHome, 'governance', 'mcp-policy.json'), `${JSON.stringify(governancePolicy(aveHome), null, 2)}\n`);
     await use(userDataDir);
@@ -436,8 +418,7 @@ test.describe('git marketplace lifecycle', () => {
         const updateSettings = await openInlineSettings(app, mainWindow, 'marketplace');
         await updateSettings.getByTestId(`git-marketplace:card:${key.sourceId}:${key.kind}:${key.name}`).getByTestId('git-marketplace:card:state').click();
         const sheet = mainWindow.getByTestId('git-marketplace:sheet');
-        // The package's files changed, its server declaration among them (code), so each
-        // component's approval is asked again with the full review (§18.7.3), not the one-row form.
+        // The package's files changed, its server declaration among them (code), so each component's approval is asked again with the full review (§18.7.3), not the one-row form.
         await expect(sheet.getByTestId('git-marketplace:code-free')).toHaveCount(0);
         await expect(sheet.getByTestId('git-marketplace:consent-row:mcpServer:notes')).toContainText('mcp.json');
         for (const field of ['mcpServer:notes', 'hook:0']) {

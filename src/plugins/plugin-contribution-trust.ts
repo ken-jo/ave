@@ -12,14 +12,7 @@ export interface PluginContributionTrustIdentity {
   fingerprint: string;
 }
 
-/**
- * One approval: the exact generation's identity, plus what the approval
- * covers (design §18.7.3). `approvalDigest` is the component's approval
- * digest when it was approved, or null when its closure could not be
- * determined or the approval came from a version-2 file and has not been
- * matched to its running bytes. `carriedFrom` names the generation an
- * approval was carried forward from.
- */
+/** Approvals bind exact generation identity and coverage digest; carriedFrom identifies the source approval. */
 export interface PluginContributionTrustRecord extends PluginContributionTrustIdentity {
   approvalDigest: string | null;
   carriedFrom?: string;
@@ -68,15 +61,7 @@ function validIdentity(identity: PluginContributionTrustIdentity | undefined): b
   );
 }
 
-/**
- * Durable exact-generation trust store (design §18.7.3). An approval names
- * one generation; a new generation's component is approved only explicitly
- * or by carry-forward, which the lifecycles decide from `approvalDigest`.
- *
- * Version 2 (0.12) loads strictly as before, every record without an
- * approval digest; version 3 loads strictly too; anything else fails. The
- * next write is version 3.
- */
+/** Load trust versions strictly; only explicit approval or validated carry-forward authorizes a new generation. */
 export class PluginContributionTrustStore {
   private approvals = new Map<string, Readonly<PluginContributionTrustRecord>>();
 
@@ -111,7 +96,6 @@ export class PluginContributionTrustStore {
     }
   }
 
-  /** Approve the exact identity, covering `approvalDigest`; `carriedFrom` marks a carried approval. */
   approve(identity: PluginContributionTrustIdentity, approvalDigest: string | null, carriedFrom?: string): void {
     const next = new Map(this.approvals);
     next.set(key(identity), Object.freeze({ ...identityOf(identity), approvalDigest, ...(carriedFrom ? { carriedFrom } : {}) }));
@@ -123,19 +107,11 @@ export class PluginContributionTrustStore {
     return this.approvals.has(key(identity));
   }
 
-  /** The approval of the exact identity, if any. */
   record(identity: PluginContributionTrustIdentity): Readonly<PluginContributionTrustRecord> | undefined {
     return this.approvals.get(key(identity));
   }
 
-  /**
-   * Record the approval digest of an approval that has none, computed from
-   * the bytes of the exact generation it names while that generation runs
-   * (design §18.7.3, version-2 migration). Those are the bytes the user
-   * approved: the generation id commits to every receipt-covered byte. A
-   * digest that is still null, or an approval that already has one, is
-   * left as it is.
-   */
+  /** Backfill a missing digest only from its exact running generation; never replace a recorded digest. */
   recordDigest(identity: PluginContributionTrustIdentity, approvalDigest: string | null): void {
     const current = this.approvals.get(key(identity));
     if (!current || current.approvalDigest !== null || approvalDigest === null) return;
@@ -165,13 +141,11 @@ export class PluginContributionTrustStore {
   }
 }
 
-/** A projection whose approval the stores hold: its trust identity and its approval digest. */
 export interface ApprovableProjection {
   owner: PluginContributionTrustIdentity;
   approvalDigest: string | null;
 }
 
-/** The trust store operations a carry-forward uses, on projections. */
 export interface ProjectionTrust<P extends ApprovableProjection> {
   approve(projection: P, carriedFrom?: string): void;
   isApproved(projection: P): boolean;
@@ -179,14 +153,7 @@ export interface ProjectionTrust<P extends ApprovableProjection> {
   revoke(projection: P): void;
 }
 
-/**
- * Carry approvals forward to a new generation (design §18.7.3 "Prepare"):
- * each component of `next` whose predecessor in `previous` (same local id)
- * is approved with a non-null approval digest equal to its own gets a
- * provisional approval naming the predecessor's generation. Returns the
- * carried pairs, so the caller revalidates them before publication and
- * revokes them on failure.
- */
+/** Carry only matching non-null component digests; revalidate source approvals before publishing and revoke failed candidates. */
 export function carryApprovals<P extends ApprovableProjection>(
   trust: ProjectionTrust<P>,
   previous: readonly P[],
@@ -205,12 +172,7 @@ export function carryApprovals<P extends ApprovableProjection>(
   return carried;
 }
 
-/**
- * Revalidate carried approvals under the serialization that publishes the
- * new generation (design §18.7.3 "Publish"): each source approval must still
- * be held with the same digest. Throws {@link CarriedApprovalWithdrawnError}
- * when one is not, so a revocation in between is not undone.
- */
+/** Recheck source approval and digest under publication serialization so concurrent revocation cannot be undone. */
 export function assertCarriedApprovalsHold<P extends ApprovableProjection>(
   trust: Pick<ProjectionTrust<P>, "record">,
   carried: ReadonlyArray<{ from: P; to: P }>,
@@ -223,11 +185,7 @@ export function assertCarriedApprovalsHold<P extends ApprovableProjection>(
   }
 }
 
-/**
- * A carried approval's source was revoked between preparation and
- * publication: the publication is abandoned, and an automatic update
- * becomes `needs-review` (design §18.7.3).
- */
+/** Withdrawn source consent aborts publication and requires a new update review. */
 export class CarriedApprovalWithdrawnError extends Error {
   constructor(readonly pluginId: string, readonly localId: string) {
     super(`the approval of ${pluginId}:${localId} was withdrawn while its update was prepared`);
@@ -235,13 +193,7 @@ export class CarriedApprovalWithdrawnError extends Error {
   }
 }
 
-/**
- * The approval of a reviewed installed component carries the reviewed
- * generation and the approval digest the review showed (design §18.7.5).
- * When the installed generation or digest is no longer that, nothing is
- * approved: a generation that replaced the reviewed one is never approved by
- * mistake.
- */
+/** Installed approval must match the exact generation and digest the user reviewed. */
 export class ContributionTrustReviewStaleError extends Error {
   constructor(readonly pluginId: string, readonly localId: string) {
     super(`${pluginId}:${localId} changed since it was reviewed`);

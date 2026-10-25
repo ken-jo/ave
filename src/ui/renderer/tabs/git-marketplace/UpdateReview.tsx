@@ -1,16 +1,5 @@
-/**
- * What an update changes in what the user agreed to, and the approvals it
- * asks for (design §18.7.3, §18.7.5):
- *   - one row per `consentDelta` entry, with an approve box for a bundled MCP
- *     server or hook the update changes or adds, an extension's included;
- *   - the one-row review when only non-code files changed, approved in one
- *     step with *Approve update*;
- *   - the component mode of an `approval-pending` agent plugin, which
- *     approves through `components:approve`, bound to the installed
- *     generation the review shows.
- * Every label is a literal `t("…")` call so the used-keys gate proves it
- * exists in the catalog.
- */
+/** Consent changes need explicit approval; component approval is bound to the installed generation. Keep labels literal for
+ * catalog-key validation. */
 import { useState } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { Checkbox } from "../../../../components/ui/checkbox.js";
@@ -122,11 +111,8 @@ function ConsentDeltaRows({ delta, approvable, approved, onApprovedChange, disab
   );
 }
 
-/**
- * The components an update review approves: every one the review lists
- * when the change is code-free (*Approve update* approves them in one step),
- * otherwise the ones whose box is checked.
- */
+/** The components an update review approves: every one the review lists when the change is code-free (*Approve update*
+ * approves them in one step), otherwise the ones whose box is checked. */
 export function updateConsents(plan: UpdatePlanView, approved: Readonly<Record<string, boolean>>): ComponentConsent[] {
   return approvableComponents(plan).filter((component) => plan.codeFreeChange || approved[component.field] === true).map((component) => component.consent);
 }

@@ -46,9 +46,7 @@ export const WORKLOAD_BROKER_LIMITS = Object.freeze({
   maximumPathBytes: 4 * 1_024,
   maximumTimeoutMs: 60 * 60 * 1_000,
   maximumWaitMs: 60_000,
-  // The broker revalidates the exact Docker identity during admission. Its
-  // bounded inspect may legitimately consume 10s on a loaded daemon, so the
-  // client must leave room for that proof and response framing.
+  // Allow the bounded admission inspect and response framing before client timeout.
   handshakeTimeoutMs: TOOL_TIMEOUT_POLICY.workloadBrokerPreEffectHandshakeMs,
 } as const);
 
@@ -236,11 +234,7 @@ const TextSchema = z.string().refine(
   "text too large",
 );
 const ExecutionIdSchema = z.string().regex(EXECUTION_ID);
-/**
- * Shell cursors are UTF-8 byte offsets, never JavaScript string indices.
- * Four bytes is the largest encoded Unicode scalar, so a conforming broker can
- * always return at least one complete code point when output remains.
- */
+/** Cursors are UTF-8 byte offsets; a four-byte allowance must return at least one complete code point. */
 const ShellByteOffsetSchema = z.number().int().nonnegative();
 const ShellReadMaxBytesSchema = z.number().int().min(4)
   .max(WORKLOAD_BROKER_LIMITS.maximumResponseBytes);

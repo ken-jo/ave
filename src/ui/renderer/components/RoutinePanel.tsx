@@ -1,9 +1,3 @@
-/**
- * RoutinePanel v2 — unified routine management UI.
- *
- * Single list with execution mode badge per row, 3 input styles, and the
- * store-enforced persisted routine cap.
- */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Plus, RefreshCw } from "lucide-react";
 import { t } from "../../../i18n/runtime.js";
@@ -31,11 +25,8 @@ import type { RoutineRunRow } from "../../../shared/session-lookup.js";
 import { packageRoutineSource, type AgentPluginRoutineTemplate } from "../../../shared/agent-plugin-routine-template.js";
 import { useInstalledContent } from "../installed-content.js";
 
-/**
- * A run row as this panel holds it: the shared conversation row, with the
- * routine's own title resolved. The panel fetches runs one routine at a time,
- * so the routine naming each row is known before the row is built.
- */
+/** A run row as this panel holds it: the shared conversation row, with the routine's own title resolved. The panel fetches
+ * runs one routine at a time, so the routine naming each row is known before the row is built. */
 type RoutineRunListRow = RoutineRunRow & { routineTitle: string };
 
 /**
@@ -55,8 +46,6 @@ export interface RoutinePanelProps {
   onOpenSession?: (sessionId: string) => void | boolean | Promise<void | boolean>;
 }
 
-// ─── Execution badge ─────────────────────────────────────────────────────────
-
 function ExecutionBadge({ execution }: { execution: RoutineExecution }) {
   return (
     <Badge variant={execution === "llm-session" ? "default" : "outline"}>
@@ -64,8 +53,6 @@ function ExecutionBadge({ execution }: { execution: RoutineExecution }) {
     </Badge>
   );
 }
-
-// ─── Routine row ─────────────────────────────────────────────────────────────
 
 interface RoutineRowProps {
   routine: RoutineRecord;
@@ -196,11 +183,8 @@ function RoutineRow({ routine, installedTemplateSources, onDismiss, onRemove, on
   );
 }
 
-/**
- * One run of a routine. The row is the sidebar's row — same fields, same time
- * label — because it is the same session; only the opening snippet is drawn
- * here, where there is room for it.
- */
+/** One run of a routine. The row is the sidebar's row — same fields, same time label — because it is the same session; only
+ * the opening snippet is drawn here, where there is room for it. */
 function RoutineSessionRow({ session, onOpen }: { session: RoutineRunListRow; onOpen: (sessionId: string) => void }) {
   return (
     <button
@@ -227,8 +211,6 @@ function RoutineSessionRow({ session, onOpen }: { session: RoutineRunListRow; on
   );
 }
 
-// ─── Add Routine Modal ────────────────────────────────────────────────────────
-
 type InputTab = "form" | "cron" | "natural";
 
 const REPEAT_OPTIONS: Array<{ value: RepeatKind; labelKey: string }> = [
@@ -246,9 +228,8 @@ interface AddRoutineModalProps {
   template?: AgentPluginRoutineTemplate;
 }
 
-// Exported for renderer tests — the modal owns the button → scope-payload
-// mapping that we want to lock down (empty selection MUST
-// map to `{ mode: "deny-all" }`, not "inherit" / "allow all").
+// Exported for renderer tests — the modal owns the button → scope-payload mapping that we want to lock down (empty
+// selection MUST map to `{ mode: "deny-all" }`, not "inherit" / "allow all").
 export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineModalProps) {
   const [tab, setTab] = useState<InputTab>(template?.schedule?.repeat?.kind === "cron" ? "cron" : "form");
   const [trigger, setTrigger] = useState<"schedule" | "shutdown">(template?.trigger ?? "schedule");
@@ -268,7 +249,6 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
   const [repeatKind, setRepeatKind] = useState<RepeatKind>(template?.schedule?.repeat?.kind ?? "none");
   const [intervalMinutes, setIntervalMinutes] = useState(template?.schedule?.repeat?.kind === "interval" ? String(template.schedule.repeat.intervalMs / 60_000) : "60");
 
-  // Cron tab
   const [cronExpression, setCronExpression] = useState(template?.schedule?.repeat?.kind === "cron" ? template.schedule.repeat.expression : "0 9 * * 1-5");
   const [cronError, setCronError] = useState("");
 
@@ -338,8 +318,8 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
 
   const handleSubmit = async () => {
     if (tab === "natural") {
-      // Natural language tab has its own submit button; this branch is unreachable
-      // from the main submit button (which is hidden for tab === "natural").
+      // Natural language tab has its own submit button; this branch is unreachable from the main submit button (which is hidden
+      // for tab === "natural").
       return;
     }
 
@@ -378,9 +358,8 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
       ...(execution === "llm-session"
         ? {
             prePrompt: prePrompt.trim(),
-            // Permission policy Layer 4 — RoutinePanel always emits an explicit scope:
-            // empty plugin selection = deny-all (matches the panel's
-            // "허용 안 함" semantic); non-empty = explicit allow-list.
+            // Permission policy Layer 4 — RoutinePanel always emits an explicit scope: empty plugin selection = deny-all (matches the
+            // panel's "허용 안 함" semantic); non-empty = explicit allow-list.
             scope: {
               pluginIds:
                 allowedPluginIds.length > 0
@@ -418,9 +397,8 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
     setNaturalParsing(true);
     setNaturalError("");
     try {
-      // Natural language → LLM parses and calls routine_schedule directly.
-      // Fence the user input so it cannot influence the system prompt region.
-      // Cap at 1000 chars to prevent oversized payloads.
+      // Natural language → LLM parses and calls routine_schedule directly. Fence the user input so it cannot influence the
+      // system prompt region. Cap at 1000 chars to prevent oversized payloads.
       const fencedInput = naturalInput.trim().slice(0, 1000);
       await api.chatSend(
         t("routinePanel.naturalRoutinePrompt", { input: fencedInput }),
@@ -698,8 +676,6 @@ export function AddRoutineModal({ api, onClose, onAdded, template }: AddRoutineM
   );
 }
 
-// ─── Main Panel ───────────────────────────────────────────────────────────────
-
 export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
   const templates = useInstalledContent().routineTemplates;
   const installedTemplateSources = useMemo(() => new Set(templates.map(packageRoutineSource)), [templates]);
@@ -724,8 +700,7 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
             .filter((routine) => routine.execution === "llm-session")
             .map(async (routine) => {
               const records = await api.listRoutineSessions(routine.id, 10);
-              // The panel groups runs BY routine, so every row it holds is
-              // named by the routine record it was fetched for rather than by
+              // The panel groups runs BY routine, so every row it holds is named by the routine record it was fetched for rather than by
               // whatever title the session happened to persist.
               const routineTitle =
                 routine.title ?? routine.notificationTitle ?? routine.prePrompt?.slice(0, 30) ?? routine.id.slice(0, 8);
@@ -784,8 +759,8 @@ export function RoutinePanel({ api, onOpenSession }: RoutinePanelProps) {
   const llmCount = routines.filter((r) => r.execution === "llm-session").length;
   const totalCapReached = routines.length >= MAX_PERSISTED_ROUTINES;
 
-  // The panel's global controls, drawn by the pane header. The counts they act
-  // on stay in the body: a badge reports state, it is not a control.
+  // The panel's global controls, drawn by the pane header. The counts they act on stay in the body: a badge reports state,
+  // it is not a control.
   usePaneActions(useMemo(() => [
     {
       id: "routine-add",

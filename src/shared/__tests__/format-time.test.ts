@@ -12,9 +12,7 @@ import {
   type RelativeTimeLabels,
 } from "../format-time.js";
 
-// These helpers render in the host zone by design, so the assertions only mean
-// something once the host zone is pinned. Node re-reads `TZ` on assignment,
-// which moves both `Date` and the `Intl` default.
+// Pin TZ because helpers use the host calendar; assigning TZ updates Date and Intl defaults.
 const INSTANT = Date.UTC(2026, 0, 2, 4, 26);
 let previousTz: string | undefined;
 

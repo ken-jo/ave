@@ -1,7 +1,3 @@
-/**
- * The files the web site publishes (web/public, design §11) parse with the
- * app's own parsers, so a site edit cannot ship a document the app refuses.
- */
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";

@@ -3,9 +3,7 @@
 
 
 
-// Defined in the shared module because the renderer now receives the decision
-// this file makes: one vocabulary for the gate and for the surface reporting it,
-// so a new branch here cannot describe itself to the user as something else.
+// Share gate reason vocabulary with the renderer so diagnostics describe the same outcome.
 export type {
   SandboxGateAction,
   SandboxGateReason,
@@ -17,27 +15,22 @@ import type {
 } from "../../shared/sandbox-capability-info.js";
 
 export interface SandboxGateInputs {
-  /** `features.osToolSandbox` — the Settings toggle; off by default everywhere. */
+  /** `features.osToolSandbox` OR `features.pluginWorkerConfinement`; a Settings toggle of either scope; the shell
+   * scope is on by default on macOS/Linux and gated off on Windows, the worker scope off by default everywhere. */
   settingOn: boolean;
-  /** `AVE_SANDBOX_ENABLED=1` — the deliberate, fail-closed env override. */
+  /** `AVE_SANDBOX_ENABLED=1` OR `AVE_PLUGIN_WORKER_CONFINEMENT=1`; the deliberate, fail-closed env override of either scope. */
   explicitEnv: boolean;
-  /** `process.platform` at boot. */
   platform: NodeJS.Platform;
-  /** Whether the sandbox CAN activate — `checkAsrtDependencies().errors.length === 0`
-   *  (or, on the init-failure re-check, `false`). */
+  /** Whether the sandbox CAN activate; `checkAsrtDependencies().errors.length === 0` (or, on the init-failure re-check, `false`). */
   depsOk: boolean;
 }
 
 export interface SandboxGateDecision {
   action: SandboxGateAction;
-  /** Stable machine reason for the chosen branch (audit/log/test). */
   reason: SandboxGateReason;
 }
 
-/**
- * Decide the OS-sandbox boot branch. Pure — no side effects, no env/platform
- * reads of its own (everything comes through {@link SandboxGateInputs}).
- */
+/** Gate decisions depend only on supplied inputs, with no environment reads or side effects. */
 export function decideSandboxGate(input: SandboxGateInputs): SandboxGateDecision {
   const optIn = input.settingOn || input.explicitEnv;
   if (!optIn) {
@@ -46,10 +39,8 @@ export function decideSandboxGate(input: SandboxGateInputs): SandboxGateDecision
   if (input.depsOk) {
     return { action: "activate", reason: "deps-present" };
   }
-  // From here the sandbox cannot activate (deps missing or init failed).
   if (input.platform === "win32") {
-    // Windows is always non-bricking — even an explicit opt-in cannot abort
-    // because the one-time UAC setup is unreachable before boot reaches the UI.
+    // Windows setup requires the UI; unavailable confinement must warn rather than abort even after explicit activation.
     return { action: "degrade", reason: "degrade-windows-not-installed" };
   }
   if (input.explicitEnv) {
@@ -58,22 +49,8 @@ export function decideSandboxGate(input: SandboxGateInputs): SandboxGateDecision
   return { action: "degrade", reason: "degrade-default-cannot-activate" };
 }
 
-/**
- * Whether the host-classify ⇄ sandbox interlock warning must fire.
- *
- * `hostClassifiesRisk` removes the foreground per-call human approval for plugin
- * tools and gates them at the host-mediated effect boundary instead — but that
- * boundary does NOT observe off-hostApi mutations (direct `node:fs` / bare
- * `fetch` / detached async frames); only the OS sandbox contains that residual.
- * So whenever host-classify is ON yet the sandbox is NOT active — gate off, OR a
- * default/settings gate that DEGRADED because the sandbox could not activate —
- * the operator must be warned the residual is uncontained.
- *
- * Keyed on the ACTUAL sandbox-active state (not the `!optIn` proxy the
- * older `!optIn` proxy): a settings-enabled degraded path has `optIn === true`
- * while the sandbox is inactive, so the old proxy would wrongly stay silent.
- * This fires on every sandbox-inactive path, the degraded one included.
- */
+/** Host risk classification cannot contain direct filesystem, network, or detached mutations outside HostApi.
+ * Warn whenever OS confinement is inactive, including failed settings activation. */
 export function shouldWarnHostClassifyInterlock(input: {
   hostClassifiesRisk: boolean;
   sandboxActive: boolean;

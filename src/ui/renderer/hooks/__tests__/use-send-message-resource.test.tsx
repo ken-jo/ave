@@ -1,17 +1,6 @@
 // @vitest-environment jsdom
-/**
- * The send path's IPC BOUNDARY, for a turn carrying an attached MCP resource.
- *
- * Everything else pins this feature one layer earlier — `composeOutgoing` returns the
- * fence as a part, the Composer puts a marker in the body. Neither can see what
- * `handleAsk` then does with those two values, and that is where the guarantee actually
- * has to hold: a fold inserted here would put server-authored text into the `input`
- * argument, the one field main's per-turn bound does not measure, and every other test
- * in this feature would stay green.
- *
- * It is also where a refused send has to leave the composer recoverable. The two live in
- * one file because they are the same two arguments read at the same boundary.
- */
+/** Keep server-resource fences out of the user input field; main's resource bound measures content parts. Refused sends
+ * must preserve recoverable composer state. */
 import "../../../../../test/renderer/setup.js";
 import { describe, expect, it, vi } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
@@ -136,8 +125,8 @@ function setup(options?: {
     unmarkLastAssistantInterrupted,
     appendSystemEntry,
     checkApiKey: options?.checkApiKey ?? (async () => true),
-    // The real composer output for "summarize [Resource #1]" plus one resource: the
-    // marker stays in the body, the fence rides as its own part.
+    // The real composer output for "summarize [Resource #1]" plus one resource: the marker stays in the body, the fence rides
+    // as its own part.
     composeOutgoing: (raw: string) => ({
       text: raw,
       attachments: attachments.flatMap((attachment): UserContentPart[] => {
@@ -219,9 +208,8 @@ describe("handleAsk — a turn carrying an attached resource", () => {
 
     expect(chatSend).toHaveBeenCalledTimes(1);
     const [input, parts] = chatSend.mock.calls[0] as [string, UserContentPart[]];
-    // The bound main enforces counts fences in the PARTS. If a future change folds the
-    // two arguments together, this is the assertion that notices — `composeOutgoing`'s
-    // own tests cannot, because they never see this call.
+    // The bound main enforces counts fences in the PARTS. If a future change folds the two arguments together, this is the
+    // assertion that notices — `composeOutgoing`'s own tests cannot, because they never see this call.
     expect(input).toBe("summarize [Resource #1]");
     expect(input).not.toContain(MCP_RESOURCE_FENCE_OPEN);
     expect(input).not.toContain("SERVER BODY");
@@ -277,8 +265,8 @@ describe("handleAsk — a turn carrying an attached resource", () => {
       expect(restored).not.toContain("mcp-prompt source=");
       expect(restored).not.toContain("run the audit");
     }
-    // The staged bubble is not dropped either — a staged turn renders as an imported
-    // trigger card, which this repair does not own.
+    // The staged bubble is not dropped either — a staged turn renders as an imported trigger card, which this repair does not
+    // own.
     expect(dropUserEntry).not.toHaveBeenCalled();
   });
 
@@ -303,8 +291,8 @@ describe("handleAsk — a turn carrying an attached resource", () => {
 
       expect(confirm).not.toHaveBeenCalled();
       expect(chatSend).not.toHaveBeenCalled();
-      // The block happens before composer clearing and cleanup, preserving the
-      // exact draft + attachments until this runtime supports raw upload.
+      // The block happens before composer clearing and cleanup, preserving the exact draft + attachments until this runtime
+      // supports raw upload.
       expect(setQuestion).not.toHaveBeenCalled();
       expect(setAttachments).not.toHaveBeenCalled();
       expect(setErrorWithThought).toHaveBeenCalledWith("app.subscriptionAttachmentUnsupported");
@@ -387,9 +375,8 @@ describe("handleAsk — a turn carrying an attached resource", () => {
   });
 
   it("does not send to a vendor default when main reports no connected provider", async () => {
-    // The keyless gate and a stored key for some other vendor must not make a
-    // first-run send go out on a model nobody chose; the user is taken to
-    // provider setup and the draft stays.
+    // The keyless gate and a stored key for some other vendor must not make a first-run send go out on a model nobody chose;
+    // the user is taken to provider setup and the draft stays.
     const checkApiKey = vi.fn(async () => true);
     const { result, chatSend, onOpenSettings, setQuestion } = setup({
       attachments: [],
@@ -488,8 +475,8 @@ describe("handleAsk — a send while a turn is still running", () => {
     expect(markLastAssistantInterrupted).toHaveBeenCalledTimes(1);
     expect(chatSend).toHaveBeenCalledTimes(1);
     expect(chatSend.mock.calls[0]?.[5]).toEqual({ interrupt: true });
-    // The interrupted turn's closing frame finalizes its own entry from the
-    // accumulators; clearing them here would leave that entry open.
+    // The interrupted turn's closing frame finalizes its own entry from the accumulators; clearing them here would leave that
+    // entry open.
     expect(resetStreamAccumulators).not.toHaveBeenCalled();
   });
 
@@ -642,9 +629,8 @@ describe("handleAsk — images on a model that cannot read them", () => {
   const IMAGE_ONLY = RAW_LOCAL_ATTACHMENTS.filter((attachment) => attachment.kind === "image");
 
   it("refuses the send outright and leaves the draft and its attachments alone", async () => {
-    // The refusal is what the user gets instead of a question: nothing is dropped
-    // on the way to a text-only model, and nothing is taken from the composer, so
-    // removing the images or switching models is a one-step recovery.
+    // The refusal is what the user gets instead of a question: nothing is dropped on the way to a text-only model, and nothing
+    // is taken from the composer, so removing the images or switching models is a one-step recovery.
     const {
       result, chatSend, setQuestion, setAttachments, setErrorWithThought, beginStreamingRequest,
     } = setup({ attachments: IMAGE_ONLY, ...TEXT_ONLY });
@@ -654,8 +640,8 @@ describe("handleAsk — images on a model that cannot read them", () => {
     });
 
     expect(chatSend).not.toHaveBeenCalled();
-    // Above the turn counter and the stream lease: no lease is taken, so none has
-    // to be handed back, and the composer never blinks empty.
+    // Above the turn counter and the stream lease: no lease is taken, so none has to be handed back, and the composer never
+    // blinks empty.
     expect(beginStreamingRequest).not.toHaveBeenCalled();
     expect(setQuestion).not.toHaveBeenCalled();
     expect(setAttachments).not.toHaveBeenCalled();
@@ -731,9 +717,8 @@ describe("the renderer asks nothing through the browser", () => {
         } else if (/\.tsx?$/.test(entry.name)) {
           const text = readFileSync(full, "utf-8");
           for (const [index, line] of text.split("\n").entries()) {
-            // Prose naming the removed call is not the removed call. Comments
-            // carry the WHY of its absence, so scanning them would make the
-            // explanation itself the violation.
+            // Prose naming the removed call is not the removed call. Comments carry the WHY of its absence, so scanning them would
+            // make the explanation itself the violation.
             const code = line
               .replace(/^\s*\*.*$/, "")
               .replace(/\/\/.*$/, "")

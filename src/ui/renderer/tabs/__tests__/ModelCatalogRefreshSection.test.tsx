@@ -1,10 +1,4 @@
-/**
- * ModelCatalogRefreshSection — the `llm.modelCatalogRefresh` switch.
- *
- * On by default, saved through updateSettings, and read-only with a reason
- * whenever something other than the switch decides: a `AVE_MODEL_CATALOG`
- * pin or the managed policy file.
- */
+/** Environment pins and managed policy make the catalog refresh switch read-only with a reason. */
 import "../../../../../test/renderer/setup.js";
 import { describe, it, expect } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";

@@ -1,8 +1,4 @@
-/**
- * test:prepare builds the git-ignored Windows job launcher when it is missing
- * or older than its sources. Covers the decision, the no-toolchain failure and
- * the hook wiring on fixtures; the build itself is a stub here.
- */
+// Fixture builds cover missing or stale native launchers without invoking a toolchain.
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -37,7 +33,6 @@ function fixtureRoot({ launcher }: { launcher?: Date } = {}): string {
   return root;
 }
 
-/** A build stub that writes the launcher, as build:windows-job would. */
 function buildStub(root: string, calls: string[][]) {
   return (command: string, args: string[]) => {
     calls.push([command, ...args]);

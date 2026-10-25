@@ -1,7 +1,3 @@
-
-
-
-
 import type { LLMProvider, StreamTurnParams, StreamEvent, ToolCallBlock, ToolSchema, GenericMessage, TokenUsage, ThinkingBlock } from "../llm/types.js";
 import { isContextLengthError } from "../auto-compact.js";
 import { prepareMarkedToolResultsForWire } from "../wire-serialize.js";
@@ -28,15 +24,7 @@ export interface StreamCollectParams {
   systemPrompt: string;
   messages: GenericMessage[];
   toolSchemas: ToolSchema[];
-  /**
-   * Generation policy for this turn. ConversationLoop passes the active
-   * vendor block (`llm.vendors[provider]`) merged with the cross-vendor
-   * `streamSmoothing` setting from the top-level LLMSettings — this is
-   * the only place those two scopes meet.
-   *
-   * Sampling defaults stay with the provider. The resolved output ceiling and
-   * thinking policy travel separately from presentation-only stream smoothing.
-   */
+  // Sampling stays provider-owned; resolved output and thinking controls remain separate from stream presentation.
   llmSettings: Pick<StreamTurnParams,
     "thinkingBudgetTokens" | "requestedThinkingBudgetTokens" | "outputTokenLimit"
     | "requestedOutputTokenLimit" | "outputCeiling" | "outputCeilingSource" | "catalogModel" | "modelCapabilities"
@@ -45,18 +33,12 @@ export interface StreamCollectParams {
     enableThinking: boolean;
   };
   abortSignal?: AbortSignal;
-  /**
-   * Forwarded to StreamTurnParams.continuationPrefill — when true the trailing
-   * assistant message in `messages` is a partial turn to be CONTINUED (vLLM
-   * continue_final_message).
-   */
+  // Prefill marks the final assistant row as a partial response to continue verbatim.
   continuationPrefill?: boolean;
-  /** Forwarded to StreamTurnParams.promptCacheKey — the conversation's session id. */
   promptCacheKey?: string;
 
   onReasoningDelta?: (text: string) => void;
   onTextDelta?: (text: string) => void;
-  /** Called at provider dispatch after runtime and cancellation guards pass. */
   onRequestStarted?: () => void;
   onRequestControls?: StreamTurnParams["onRequestControls"];
 }
@@ -71,15 +53,12 @@ export type StreamCollectResult =
       toolCalls: ToolCallBlock[];
       stopReason: "end_turn" | "tool_use" | "max_tokens";
       usage?: TokenUsage;
-      /** Non-billable subscription telemetry for this completed remote round. */
       subscriptionUsage?: SubscriptionUsageTelemetry;
     }
 
   | { kind: "interrupted"; text: string }
 
   | { kind: "context_error"; errorMessage: string }
-
-
 
   | {
       kind: "stream_error";
@@ -88,11 +67,7 @@ export type StreamCollectResult =
       providerError: ProviderErrorDiagnostics;
     };
 
-/**
- * Keeps the active-authentication check adjacent to the only call that starts
- * a provider stream. This also protects independently-created routine and
- * sub-agent loops that are not refreshed by the interactive Settings IPC.
- */
+// Recheck authentication beside dispatch to cover independently constructed or stale loops.
 export function collectActiveRuntimeRoundStream(
   params: StreamCollectParams,
   activeChatRuntime: ActiveChatRuntime | undefined,
@@ -104,9 +79,6 @@ export function collectActiveRuntimeRoundStream(
   }
   return collectRoundStream(params);
 }
-
-
-
 
 export async function collectRoundStream(
   params: StreamCollectParams,
@@ -138,7 +110,6 @@ export async function collectRoundStream(
   let subscriptionUsage: SubscriptionUsageTelemetry | undefined;
   let sawMessageComplete = false;
 
-
   const wireMessages = prepareMarkedToolResultsForWire(messages);
 
   try {
@@ -155,8 +126,7 @@ export async function collectRoundStream(
         : { thinkingBudgetTokens: llmSettings.thinkingBudgetTokens }),
       ...(continuationPrefill ? { continuationPrefill: true } : {}),
       ...(params.promptCacheKey === undefined ? {} : { promptCacheKey: params.promptCacheKey }),
-      // API settings resolve the default or explicit ceiling before collection.
-      // Managed runtimes omit it when their protocol owns output control.
+      // API limits resolve before collection; managed runtimes own their protocol output controls.
       ...(llmSettings.outputTokenLimit === undefined
         ? {}
         : { outputTokenLimit: llmSettings.outputTokenLimit }),
@@ -231,14 +201,9 @@ export async function collectRoundStream(
           if (abortSignal?.aborted) return { kind: "interrupted", text };
           const rawForClassification = event.providerError?.messagePreview ?? event.error;
           if (isContextLengthError(rawForClassification)) {
-
-
             return { kind: "context_error", errorMessage: rawForClassification };
           }
-          // Subscription adapters deliberately project a fixed renderer-safe
-          // `error` string while retaining structured diagnostics only for
-          // host recovery (schema drop / TPM compaction). Never use that
-          // internal diagnostic preview to build a user-visible message.
+          // Subscription diagnostics are host-recovery-only; never build visible errors from their private preview.
           const classified = classifyProviderError(
             provider.subscriptionRuntime ? event.error : rawForClassification,
           );

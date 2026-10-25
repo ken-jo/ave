@@ -222,6 +222,47 @@ describe("installer smoke and packaging discipline", () => {
     expectPinnedAction(workflow, "softprops/action-gh-release");
   });
 
+  it("keeps the disposable installer scope on the static hosted matrix", () => {
+    const workflow = readRepoFile(".github/workflows/build-installers.yml");
+    const parsed = parseYaml(workflow) as {
+      on: { workflow_dispatch: { inputs: { installer_scope: { default: string; options: string[] } } } };
+    };
+    expect(parsed.on.workflow_dispatch.inputs.installer_scope).toMatchObject({
+      default: "all",
+      options: ["all", "windows-disposable"],
+    });
+    // Every installer entry already runs on a disposable hosted image
+    // (workflow-runner-policy.ts needs a statically readable matrix), so the
+    // scope does not compute the matrix: it only keeps the build unsigned and
+    // unpublished, asserted in the next test.
+    const jobs = workflowJobs(workflow);
+    const installers = jobs.get("installers");
+    const profile = jobs.get("release-profile");
+    if (installers === undefined || profile === undefined) throw new Error("missing installers or release-profile job");
+    expect(installers).not.toContain("needs.release-profile.outputs");
+    expect(profile).not.toMatch(/^ {4}outputs:$/mu);
+    expect(workflow).not.toContain("vars.AVE_");
+  });
+
+  it("keeps disposable Windows validation unsigned and outside release publication", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
+    const installers = jobs.get("installers");
+    if (installers === undefined) throw new Error("missing installers job");
+    expect(installers).toContain("if: github.event_name == 'push' || inputs.installer_scope == 'windows-disposable' || inputs.contract_probe != 'true'");
+    const build = jobRunCommands(installers).find((command) => command.includes('args=("--${{ matrix.target }}")'));
+    if (build === undefined) throw new Error("missing installer build command");
+    expect(build.split("elif")[0]).toContain('if [ "${{ inputs.installer_scope }}" = "windows-disposable" ]; then');
+    expect(build.split("elif")[0]).toContain('args+=("--skip-code-sign" "--publish" "never")');
+    expect(build.split("elif")[0]).toContain('echo "skip_sign=true" >> "$GITHUB_OUTPUT"');
+    for (const id of ["publish-release", "publish-r2"]) {
+      expect(jobs.get(id)).toMatch(/^ {4}if: github\.event_name == 'push'$/mu);
+    }
+    expect(jobs.get("publish-contract")).toContain("inputs.installer_scope != 'windows-disposable'");
+    // Every installer job runs on a disposable hosted image, so the Windows
+    // smoke is authorized by target alone; no runner.environment branch.
+    expect(installers).toContain("AVE_ALLOW_DISPOSABLE_WINDOWS_INSTALLER_SMOKE: ${{ matrix.target == 'win' && '1' || '' }}");
+  });
+
   it("smoke-launches the packaged app before uploading installer artifacts", () => {
     const workflow = readRepoFile(".github/workflows/build-installers.yml");
     const smokeScript = readRepoFile("scripts/smoke-packaged-app.mjs");
@@ -1006,7 +1047,7 @@ describe("installer smoke and packaging discipline", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/build-installers.yml"));
     const contract = jobs.get("publish-contract");
     if (contract === undefined) throw new Error("build-installers.yml has no publish-contract job");
-    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true'\)$/mu);
+    expect(contract).toMatch(/^ {4}if: github\.event_name == 'push' \|\| \(github\.event_name == 'workflow_dispatch' && github\.ref == 'refs\/heads\/main' && inputs\.contract_probe == 'true' && inputs\.installer_scope != 'windows-disposable'\)$/mu);
     expect(contract).toContain("if: github.event_name == 'push'");
     expect(contract).toContain('if [ "$REF_PROTECTED" != "true" ]; then');
     expect(contract).toContain('if [ "$tag_object_type" != "tag" ]');
@@ -1467,6 +1508,23 @@ describe("installer smoke and packaging discipline", () => {
     expect(jobsCarryingGates).toBeGreaterThanOrEqual(1);
   });
 
+  it("runs the native control boundaries in both platform regression jobs", () => {
+    const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
+    for (const job of ["macos-permission-tests", "linux-confinement-tests"]) {
+      const commands = jobRunCommands(jobs.get(job) as string);
+      const tests = commands.find((command) => command.includes("bun run test --"));
+      expect(tests, `${job} has no native regression invocation`).toBeDefined();
+      for (const suite of [
+        "sandbox-control-writes.integration.test.ts",
+        "sandbox-shell-sockets.integration.test.ts",
+        "sandbox-git-controls.integration.test.ts",
+        "egress-terminal-background.integration.test.ts",
+      ]) {
+        expect(tests, `${job} omits ${suite}`).toContain(`src/permissions/__tests__/${suite}`);
+      }
+    }
+  });
+
   it("keeps ci.yml's hygiene gates inside the required build-and-test check", () => {
     const jobs = workflowJobs(readRepoFile(".github/workflows/ci.yml"));
     const verification = jobs.get("build-and-test");
@@ -1565,7 +1623,14 @@ describe("installer smoke and packaging discipline", () => {
     expect(runtime[1].run).toContain("bwrap --unshare-all --ro-bind / / --dev /dev --proc /proc /bin/true");
     const job = workflowJobs(source).get(jobId) as string;
     expect(jobRunCommands(job).join("\n")).not.toMatch(/apt-get\s+install/u);
-    if (jobId === "vitest") expect(job).not.toContain("AVE_REQUIRE_SANDBOX_CASES");
+    // Native confinement cases run in both lanes, so a lane whose backend
+    // cannot start fails instead of skipping them.
+    const tests = steps.findIndex((step: { run?: string }) =>
+      step.run?.includes(jobId === "vitest" ? "bun run test:ci" : "bun run test --"));
+    expect(tests).toBeGreaterThan(steps.indexOf(runtime[1]));
+    expect(steps[tests].env?.AVE_REQUIRE_SANDBOX_CASES).toBe("1");
+    const mustRun = JSON.parse(readRepoFile("config/ci-must-run-tests.json")) as { groups: Record<string, string[]> };
+    expect(mustRun.groups.permissions).toContain("src/permissions/");
   });
 
   it("gates the Vitest shards on the build job's documentation classification", () => {
@@ -2089,10 +2154,16 @@ describe("installer smoke and packaging discipline", () => {
     expect(agents).toContain("AbortController");
     expect(agents).toContain("plus `Tool Governance` and `Security And Audit`");
     expect(agents).not.toContain("architecture section 6.3");
-    expect(agents).toContain("OS tool sandbox is opt-in on every platform");
-    expect(agents).toContain("per the decision comment beside");
-    expect(agents).toContain("src/data/settings-defaults.ts#L237-L254");
-    expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1`");
+    expect(agents).toContain("OS tool sandbox defaults on for macOS/Linux and remains default-off on Windows");
+    expect(agents).toContain("per `osToolSandbox`");
+    expect(agents).toContain("src/data/settings-defaults.ts");
+    expect(agents).toContain("On `darwin`/`linux`, explicit `AVE_SANDBOX_ENABLED=1` or\n  `AVE_PLUGIN_WORKER_CONFINEMENT=1` activation failure");
+    // The two sandbox scopes stay separate in the contract: neither setting or
+    // variable decides the other.
+    expect(agents).toContain("`osToolSandbox` confines host shells only");
+    expect(agents).toContain("`pluginWorkerConfinement` confines plugin workers");
+    expect(agents).toContain("`AVE_SANDBOX_ENABLED=1` forces the shell scope only");
+    expect(agents).toContain("on `isPluginWorkerConfinementActive`, never the raw `isAsrtSandboxActive`");
     expect(agents).toContain("aborts startup; settings activation warns and continues without OS isolation");
     expect(agents).toContain("Windows always warns and continues when unavailable");
     expect(agents).toContain("Keep plugin read relaxation conditional on active filesystem confinement");

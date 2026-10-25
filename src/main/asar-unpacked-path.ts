@@ -1,17 +1,8 @@
 import { existsSync } from "node:fs";
 import { sep } from "node:path";
 
-/**
- * Resolve a packaged native executable to its physical `app.asar.unpacked`
- * copy. `require.resolve` reports a virtual path inside `app.asar`, which the
- * OS cannot execute; electron-builder extracts `asarUnpack` globs to the
- * sibling tree. A dev checkout has no `app.asar` segment and is returned as is.
- *
- * A path inside `app.asar` whose unpacked copy is missing returns `null`:
- * Electron's patched `fs` reports the virtual path as existing, so handing it
- * back would turn a packaging defect into an opaque spawn ENOENT/ENOTDIR
- * instead of the caller's own "unavailable" error.
- */
+// Native executables need the physical app.asar.unpacked path; virtual ASAR paths cannot be spawned. Return null when the unpacked copy is missing, even
+// if patched fs reports the virtual path exists.
 export function preferAsarUnpackedPath(
   candidate: string,
   exists: (path: string) => boolean = existsSync,

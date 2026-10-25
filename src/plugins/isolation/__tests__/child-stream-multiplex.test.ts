@@ -1,13 +1,4 @@
-/**
- * The frame bound on the plugin channel, in both directions.
- *
- * Each end reads the other's stdout into a buffer the other end fills. Without
- * a bound, a peer that never writes 0x0A grows that buffer until the reader
- * runs out of memory — on the host side, the Electron main process. The bound
- * is {@link FRAME_BYTES_MAX}. A writer refuses to cross it — a reply too large
- * becomes a `payload-too-large` error for its call — and a reader that sees a
- * longer line anyway ends the channel.
- */
+/** Bound frames in both directions; a peer withholding newline must not grow the reader indefinitely. */
 import { describe, expect, it } from "vitest";
 import { PassThrough } from "node:stream";
 import { frameMessage } from "../../../mcp/stdio-framing.js";
@@ -18,7 +9,6 @@ import { PluginChildTransport, type ChildLink } from "../plugin-child-transport.
 import { servePluginChild } from "../plugin-child-main.js";
 import { settleMacrotask as settle } from "../../../__tests__/test-helpers.js";
 
-/** A JSON object line of exactly `bytes` bytes, newline excluded. */
 function lineOf(bytes: number): Buffer {
   const shell = '{"s":""}';
   return Buffer.from(`{"s":"${"x".repeat(bytes - shell.length)}"}\n`, "utf-8");
@@ -26,10 +16,7 @@ function lineOf(bytes: number): Buffer {
 
 describe("the frame bound", () => {
   it("holds the largest frame the protocol produces: a payload at the limit, twice", () => {
-    // A `tools/call` result carries the plugin's value as text content AND as
-    // the raw result, so a value at the payload limit crosses twice.
-    // The shape `plugin-child-runtime`'s delegate emits for a string value:
-    // the text content, and the value itself under the raw-result key.
+    // Tool results carry both text and raw values; a payload-sized string can cross twice.
     const encoded = Buffer.alloc(WIRE_BYTES_MAX, 0xff).toString("base64");
     const frame = frameMessage({
       jsonrpc: "2.0",
@@ -68,8 +55,7 @@ describe("the frame bound", () => {
     await settle();
     expect(violations).toHaveLength(1);
     expect(violations[0]).toMatch(new RegExp(`exceeded ${FRAME_BYTES_MAX} bytes`));
-    // Nothing after the overflow is read: it cannot be trusted to start on a
-    // line boundary.
+    // Discard everything after overflow because no remaining line boundary can be trusted.
     expect(messages).toEqual([]);
   });
 });

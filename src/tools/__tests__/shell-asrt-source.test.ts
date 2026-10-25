@@ -1,9 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { readRepoFile } from "../../__tests__/test-helpers.js";
 
-// Both shell dialects live in shell-tools.ts; assert each dialect's own
-// section carries the full plan-sealing + permit-consumption preamble, so a
-// regression in one dialect cannot hide behind the other's copy.
+// Check plan sealing and permit consumption in each dialect so one implementation cannot mask the other's gap.
 const shellTools = readRepoFile("src/tools/shell-tools.ts");
 const powershellSectionStart = shellTools.indexOf(" * Native PowerShell tool.");
 const bashSection = shellTools.slice(0, powershellSectionStart);
@@ -18,8 +16,7 @@ function expectShellDialectContracts(section: string): void {
   expect(section).toContain('hostShellPlan.mode === "asrt"');
   expect(section).toContain("shell: false");
   expect(section).toContain("const { allowRead, denyRead, floorPierces } = getBuiltinShellReadPolicy(");
-  // The saved-session read is the one pierce of the protected floor a shell
-  // holds; the wrap withholds it unless the shell names it.
+  // Saved-session reads pierce the protected floor only when the shell explicitly requests them.
   expect(section).toContain("    floorPierces,\n  };");
   expect(section).toContain("denyWrite: getDefaultSensitiveWriteDenyPaths()");
 }
@@ -36,13 +33,7 @@ describe("shell ASRT source contracts", () => {
 });
 
 describe("background shell lifetime contract", () => {
-  // A background child is registered with the managed-child registry, and app
-  // shutdown force-kills everything in it. That is deliberate. What was not
-  // stated anywhere the MODEL can read is that the process therefore does not
-  // outlive the session -- so a benchmark trial started a gRPC server with
-  // run_in_background and reported it as "still running for the client to
-  // connect to" after the turn had already killed it. These assertions tie the
-  // two surfaces the model reads to the mechanism that makes the claim true.
+  // Background processes are managed children killed at shutdown; model-facing descriptions must disclose that lifetime.
   it("registers the background child with the managed-child registry", () => {
     expect(bashSection).toMatch(/trackManagedChildProcess\(child,\s*\{\s*label:\s*"tool:bash:background",\s*killProcessGroup,?\s*\}\)/);
     expect(bashSection).toContain('spawnWindowsJobProcess(shell.cmd, [...argv], { cwd, env })');

@@ -6,7 +6,7 @@
  * objects) and merges the English default catalog here. Non-English generated
  * catalogs are language-pack chunks under `../generated-locales/`.
  *
- * Fragments: 186
+ * Fragments: 189
  */
 import { en as en_agentBrowser } from "./agentBrowser.js";
 import { en as en_alerts } from "./alerts.js";
@@ -104,6 +104,7 @@ import { en as en_deferredQueueDialog } from "./deferredQueueDialog.js";
 import { en as en_deferredQueuePanel } from "./deferredQueuePanel.js";
 import { en as en_devToolsPanel } from "./devToolsPanel.js";
 import { en as en_dockedApprovalCard } from "./dockedApprovalCard.js";
+import { en as en_egressApprovalCard } from "./egressApprovalCard.js";
 import { en as en_errorBoundary } from "./errorBoundary.js";
 import { en as en_fileEditDiff } from "./fileEditDiff.js";
 import { en as en_formatIpcError } from "./formatIpcError.js";
@@ -171,6 +172,7 @@ import { en as en_summaryToast } from "./summaryToast.js";
 import { en as en_tailnetAccessTab } from "./tailnetAccessTab.js";
 import { en as en_telegramConnection } from "./telegramConnection.js";
 import { en as en_terminalBlocks } from "./terminalBlocks.js";
+import { en as en_terminalEgressBanner } from "./terminalEgressBanner.js";
 import { en as en_tokenCostBadge } from "./tokenCostBadge.js";
 import { en as en_tokenProgressRing } from "./tokenProgressRing.js";
 import { en as en_toolActivity } from "./toolActivity.js";
@@ -180,6 +182,7 @@ import { en as en_toolGroupCard } from "./toolGroupCard.js";
 import { en as en_trustOriginLabel } from "./trustOriginLabel.js";
 import { en as en_turnActionBar } from "./turnActionBar.js";
 import { en as en_unifiedSearchPanel } from "./unifiedSearchPanel.js";
+import { en as en_upstreamProxySettings } from "./upstreamProxySettings.js";
 import { en as en_usageDashboard } from "./usageDashboard.js";
 import { en as en_useChatState } from "./useChatState.js";
 import { en as en_useMemorySearch } from "./useMemorySearch.js";
@@ -292,6 +295,7 @@ export const generatedEn: Record<string, string> = {
   ...en_deferredQueuePanel,
   ...en_devToolsPanel,
   ...en_dockedApprovalCard,
+  ...en_egressApprovalCard,
   ...en_errorBoundary,
   ...en_fileEditDiff,
   ...en_formatIpcError,
@@ -359,6 +363,7 @@ export const generatedEn: Record<string, string> = {
   ...en_tailnetAccessTab,
   ...en_telegramConnection,
   ...en_terminalBlocks,
+  ...en_terminalEgressBanner,
   ...en_tokenCostBadge,
   ...en_tokenProgressRing,
   ...en_toolActivity,
@@ -368,6 +373,7 @@ export const generatedEn: Record<string, string> = {
   ...en_trustOriginLabel,
   ...en_turnActionBar,
   ...en_unifiedSearchPanel,
+  ...en_upstreamProxySettings,
   ...en_usageDashboard,
   ...en_useChatState,
   ...en_useMemorySearch,

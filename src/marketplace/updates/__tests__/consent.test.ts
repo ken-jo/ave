@@ -1,9 +1,3 @@
-/**
- * The consent fingerprint (design §18.7.3): one row per field of every kind,
- * where changing that field alone is a difference (so the update needs
- * review), an unknown baseline field is a difference, and the catalog
- * checkpoint sees only what the index row carries.
- */
 import { describe, expect, it } from "vitest";
 import type { PayloadFile } from "../../../plugins/contribution-approval-digest.js";
 import type { AgentPluginComponents, IndexVersion } from "../../catalog/types.js";
@@ -153,7 +147,6 @@ describe("consentFingerprint: one row per field, each change alone needs review"
 
   it.each(["skill", "agent", "theme", "font", "language"] as const)("%s minAppVersion", (kind) => {
     expect(changedFields(contentConsent(kind, "0.13.0", []), contentConsent(kind, "0.14.0", []))).toEqual(["minAppVersion"]);
-    // Text and data alone change nothing the user consented to.
     expect(changedFields(contentConsent(kind, "0.13.0", [file("SKILL.md", "a")]), contentConsent(kind, "0.13.0", [file("SKILL.md", "b")]))).toEqual([]);
   });
 
@@ -216,7 +209,7 @@ describe("checkpoint one: the catalog", () => {
 
   it("a field the index does not carry is pending, not equal: no difference yet", () => {
     const authority = { capabilities: ["notes.read"], requires: { minAppVersion: "0.13.0", hostProtocol: "2", capabilities: ["calendar"] } };
-    // Bundled MCP servers and hooks are not in the index: only the staged bytes show them.
+    // Bundled components require staged bytes; the index cannot establish their consent.
     expect(catalogDelta(plugin(), version({ authority }))).toEqual([]);
   });
 
