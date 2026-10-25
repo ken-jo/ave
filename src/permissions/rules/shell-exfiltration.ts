@@ -823,6 +823,13 @@ function checkWord(word: ShellWord, state: ScanState): void {
 function scanCodeText(text: string, state: ScanState): void {
   if (state.sensitive) return;
   const names = new Set(sensitiveNames());
+  // Preserve brace-shaped path operands when no syntax tree is available.
+  if (text.includes("{")) {
+    for (const token of text.split(/[\s'"`;|&()<>=:+]+/)) {
+      if (token.includes("{") && token.includes("/")) checkRawText(token, state);
+      if (state.sensitive) return;
+    }
+  }
   for (const token of text.split(/[\s'"`;|&()<>,{}[\]=:+]+/)) {
     if (!token || !(token.includes("/") || /^[.~$]/.test(token) || names.has(token))) continue;
     checkRawText(token, state);
@@ -1572,6 +1579,7 @@ function scanStateFor(parsed: ParsedShellCommand, cwd: string | undefined): Scan
 function scanParsedInto(parsed: ParsedShellCommand, state: ScanState): void {
   if (!parsed.analysis.ok) {
     const visible = boundedInspectionText(parsed.command);
+    state.ordinaryAsk ??= parsed.analysis.reason;
     state.hidden = true;
     state.network ||= NETWORK_DEVICE.test(visible) || NETWORK_WORD.test(visible);
     scanCodeText(visible, state);
@@ -1647,6 +1655,8 @@ export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string)
 
 // Incomplete path inspection is an ordinary ask, never credential evidence.
 export function shellScanOrdinaryAsk(input: ShellCommandInput, cwd?: string): string | null {
-  const scan = scanCommand(asParsedShellCommand(input), cwd);
+  const parsed = asParsedShellCommand(input);
+  if (!parsed.analysis.ok) return parsed.analysis.reason;
+  const scan = scanCommand(parsed, cwd);
   return scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk ?? null;
 }

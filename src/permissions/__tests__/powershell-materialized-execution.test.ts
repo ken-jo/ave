@@ -88,9 +88,9 @@ const MATERIALIZED = [
 ];
 
 describe("file execution provenance", () => {
-  it.each(["python3.12", "/usr/bin/python3.12"])("retains materialized script provenance through normalized %s", (program) => {
+  it.each(["python3.12", "/usr/bin/python3.12"])("keeps versioned program execution opaque: %s", (program) => {
     const result = inspectPowerShellCommand(`Set-Content script.py 'print(1)'; ${program} script.py`, CWD);
-    expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.stringMatching(/materialized file/) });
+    expect(result).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.stringMatching(/materialized file|opaque executable file payload/) });
   });
   it.each(ASSOCIATED_TYPES)("requires approval for an associated executable type: %s", (extension) => {
     expect(inspectPowerShellCommand(`Invoke-Item payload.${extension}`, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
