@@ -3,12 +3,16 @@
 //
 // It reads the argv each shell's own lexer produced (`powerShellLaunchArgv` for PowerShell, the bash rule shape for bash): the same unescaped view
 // of the command the rule matcher uses, so an escape, quote or dash spelling the lexer resolves cannot hide a parameter from this reader alone.
-// It fails closed: a launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, ...) whose argv is not fully literal (a variable, splat,
-// subexpression, backtick or caret escape), input the lexer cannot read, an encoded payload it cannot fully decode, or an encoded-looking word
-// after `-Command`/`-File`, is `hidden` code: the permission manager treats it as a destructive floor (a forced modal, never an allow rule).
+// Every launcher is followed (`launcherKind`): each PowerShell vocabulary entry with a `launcher` effect and the bash side's shells, wrappers and
+// runners has its trailing argv re-read as a command, recursively, with its own option grammar where it has one (pwsh, cmd, wsl, POSIX shells).
+// It fails closed: a launched shell whose argv is not fully literal (a variable, splat, subexpression, backtick or caret escape), a launcher option
+// or command it cannot place, input the lexer cannot read, an encoded payload it cannot fully decode, or an encoded-looking word after
+// `-Command`/`-File`, is `hidden` code: the permission manager treats it as a destructive floor (a forced modal, never an allow rule).
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 import { powerShellLaunchArgv } from "./powershell-exfiltration.js";
 import { analyzeShellForRules } from "./shell-rule-matcher.js";
+import { POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
+import { RUNNER_SET, SHELL_SET, WRAPPER_SET } from "./shell-prefix-values.js";
 import type { ShellCommandInput } from "./shell-prefix-policy.js";
 
 // `-EncodedCommand` and every prefix PowerShell accepts for it (`-e`, `-ec`, `-enc`, ...), behind any dash PowerShell's parser accepts as a parameter
@@ -20,8 +24,35 @@ const FILE_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:f|file)(?::[\s\S]*)?$/i;
 // A launched shell named anywhere in unreadable input.
 const MENTIONS_LAUNCHER_RE = /(?:^|[^A-Za-z0-9_-])(?:pwsh|powershell|cmd|bash|sh|zsh|dash|ksh)(?:\.exe)?(?![A-Za-z0-9_-])/i;
 
-const POWERSHELL_LAUNCHERS = new Set(["pwsh", "powershell"]);
-const POSIX_LAUNCHERS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
+// Every program that runs another command: each PowerShell vocabulary entry with a `launcher` effect (its aliases included), and the bash side's
+// shells, wrappers and package runners. A launcher's trailing argv is re-read as a command, recursively (`launcherKind`).
+const LAUNCHER_NAMES: ReadonlySet<string> = new Set([
+  ...Object.entries(POWERSHELL_COMMAND_POLICIES)
+    .filter(([, policy]) => policy.effects.includes("launcher"))
+    .flatMap(([name, policy]) => [name, programOf(name), ...policy.aliases.map((alias) => alias.toLowerCase())]),
+  ...SHELL_SET, ...WRAPPER_SET, ...RUNNER_SET,
+]);
+const POSIX_SHELLS = new Set([...SHELL_SET].filter((name) => !["pwsh", "powershell", "cmd", "busybox"].includes(name)));
+
+type LauncherKind = "powershell" | "cmd" | "wsl" | "posix" | "generic";
+
+/** How the reader follows a launcher to the command it runs, or null for a program that runs none. Exported for the coverage test. */
+export function launcherKind(program: string): LauncherKind | null {
+  if (program === "pwsh" || program === "powershell") return "powershell";
+  if (program === "cmd") return "cmd";
+  if (program === "wsl") return "wsl";
+  if (POSIX_SHELLS.has(program)) return "posix";
+  return LAUNCHER_NAMES.has(program) ? "generic" : null;
+}
+
+// cmd.exe switches: `/c`, `/r` (its synonym) and `/k` start the command line, also glued to it (`/cpwsh ...`); the others take no command.
+const CMD_RUN_RE = /^\/[ckr]/i;
+const CMD_SWITCH_RE = /^\/(?:s|q|d|a|u|(?:t|e|f|v):\S*)$/i;
+// wsl.exe: options that take a value, options that run no command, and the ones that start the command (`-e`/`--exec` an argv, `--` a command line).
+const WSL_VALUE_OPTIONS = new Set(["-d", "--distribution", "--distribution-id", "-u", "--user", "--cd", "--shell-type"]);
+const WSL_FLAG_OPTIONS = new Set(["--system"]);
+const WSL_NO_COMMAND = new Set(["-l", "--list", "--status", "--shutdown", "--update", "--version", "-v", "--help", "--install", "-s", "--set-default",
+  "--set-version", "--set-default-version", "-t", "--terminate", "--unregister", "--export", "--import", "--import-in-place", "--mount", "--unmount", "--manage"]);
 
 const MAX_PAYLOADS = 8;
 const MAX_DEPTH = 4;
@@ -70,26 +101,59 @@ class Reader {
       if (MENTIONS_LAUNCHER_RE.test(text)) this.hidden = true;
       return;
     }
-    for (const argv of commands) this.command(argv, depth);
+    for (const argv of commands) this.command(dialect, argv, depth);
   }
 
-  private command(argv: Argv, depth: number): void {
+  /** `scanned`: the argv was found inside another launcher's arguments, so its tail may hold that launcher's own parameters. */
+  private command(dialect: ShellRuleDialect, argv: Argv, depth: number, scanned = false): void {
     const head = argv[0];
     if (typeof head !== "string") return;
-    const program = programOf(head);
-    const powershell = POWERSHELL_LAUNCHERS.has(program);
-    const posix = POSIX_LAUNCHERS.has(program);
-    const cmd = program === "cmd";
-    if (!powershell && !posix && !cmd) return;
-    // What a launched shell runs must be fixed before it starts.
+    const kind = launcherKind(programOf(head));
+    if (kind === null) return;
+    // A chain of launchers is followed only so deep.
+    if (depth > MAX_DEPTH) {
+      this.hidden = true;
+      return;
+    }
+    if (kind === "generic") return this.generic(dialect, programOf(head), argv.slice(1), depth, scanned);
+    // What a shell runs must be fixed before it starts.
     if (argv.includes(null)) {
       this.hidden = true;
       return;
     }
     const args = argv.slice(1) as string[];
-    if (powershell) this.powershell(args, depth);
-    else if (posix) this.posix(args, depth);
-    else this.cmd(args, depth);
+    switch (kind) {
+      case "powershell": return this.powershell(args, depth);
+      case "posix": return this.posix(args, depth);
+      case "cmd": return this.cmd(args, depth);
+      case "wsl": return this.wsl(args, depth);
+    }
+  }
+
+  /** A launcher with no modeled grammar: the first argument that names a launcher starts the command it runs, and is read with its own grammar; an
+   *  argument holding a whole command line (`-ArgumentList 'pwsh -enc ...'`, `/tr "..."`) is read as one. With no launcher named, a command wrapper
+   *  runs its first plain argument (after options, `NAME=value` settings and numbers): one the host cannot read (`sudo $cmd`, `timeout 30 $cmd`) is
+   *  hidden. */
+  private generic(dialect: ShellRuleDialect, program: string, args: Argv, depth: number, scanned: boolean): void {
+    for (const arg of args) {
+      if (arg !== null && /\s/.test(arg)) this.embedded(dialect, arg, depth);
+    }
+    const inner = args.findIndex((arg) => arg !== null && launcherKind(programOf(arg)) !== null);
+    if (inner !== -1) {
+      this.command(dialect, args.slice(inner), depth + 1, true);
+      return;
+    }
+    // Only a command wrapper's first plain argument is the command it runs; a code launcher's (`iex`, an interpreter, a package runner) is code,
+    // which keeps the opaque-code asks of the floor inspection.
+    if (scanned || !WRAPPER_SET.has(program)) return;
+    const first = args.find((arg) => arg === null || !(/^[-/]/.test(arg) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(arg) || /^\d+(?:\.\d+)?[smhd]?$/.test(arg)));
+    if (first === null) this.hidden = true;
+  }
+
+  /** An argument holding a command line: read it, and treat an encoded-command word in it as hidden (it is a launch the host cannot place). */
+  private embedded(dialect: ShellRuleDialect, arg: string, depth: number): void {
+    if (arg.split(/\s+/).some((word) => ENCODED_PARAMETER_RE.test(word))) this.hidden = true;
+    this.text(dialect, arg, depth + 1);
   }
 
   private powershell(args: readonly string[], depth: number): void {
@@ -112,6 +176,7 @@ class Reader {
         if (command !== null) this.text("powershell", [command[1] ?? "", ...rest].join(" ").trim(), depth + 1);
         return;
       }
+      if (/\s/.test(arg)) this.embedded("powershell", arg, depth);
     }
   }
 
@@ -129,9 +194,45 @@ class Reader {
       this.hidden = true;
       return;
     }
-    const run = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
-    if (run === -1) return;
-    this.text("powershell", args.slice(run + 1).join(" "), depth + 1);
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!;
+      if (CMD_RUN_RE.test(arg) && !CMD_SWITCH_RE.test(arg)) {
+        const glued = arg.slice(2);
+        const line = [...(glued.length > 0 ? [glued] : []), ...args.slice(index + 1)].join(" ");
+        this.text("powershell", line, depth + 1);
+        return;
+      }
+      // An unknown switch, or an argument before /c, /r or /k: the host cannot tell what cmd runs.
+      if (!CMD_SWITCH_RE.test(arg)) {
+        this.hidden = true;
+        return;
+      }
+    }
+  }
+
+  private wsl(args: readonly string[], depth: number): void {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!;
+      const option = arg.toLowerCase();
+      if (option === "-e" || option === "--exec") {
+        this.command("bash", args.slice(index + 1), depth + 1);
+        return;
+      }
+      if (option === "--") {
+        this.text("bash", args.slice(index + 1).join(" "), depth + 1);
+        return;
+      }
+      if (WSL_VALUE_OPTIONS.has(option)) { index += 1; continue; }
+      if (WSL_FLAG_OPTIONS.has(option)) continue;
+      if (WSL_NO_COMMAND.has(option)) return;
+      if (arg.startsWith("-")) {
+        this.hidden = true;
+        return;
+      }
+      // The first plain argument starts the command line wsl hands to the distribution's shell.
+      this.text("bash", args.slice(index).join(" "), depth + 1);
+      return;
+    }
   }
 }
 

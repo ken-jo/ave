@@ -8,7 +8,9 @@ import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootFor
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { canonicalRuleSpecifier, normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { buildShellRuleApproval, isWildcardShellRule, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
-import { powerShellRuleShape } from "../rules/powershell-exfiltration.js";
+import { _recordPowerShellLexesForTest, powerShellRuleShape } from "../rules/powershell-exfiltration.js";
+import { inspectEncodedPowerShell, launcherKind } from "../rules/powershell-encoded-command.js";
+import { POWERSHELL_COMMAND_POLICIES } from "../rules/powershell-command-policy.js";
 import { validatePermissionRule } from "../rules/rule-files.js";
 
 let dir: string;
@@ -365,6 +367,81 @@ describe("PowerShell -EncodedCommand", () => {
     expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true })).toMatchObject({ exactRule: null, decodedCommands: [DESTRUCTIVE] });
     expect(check(command, dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  // Re-review round 6: every launcher's trailing argv is re-read as a command, with its own option grammar where it has one (wsl, cmd, start), so
+  // no launcher name lets an encoded command past the reader; an option or argv the reader cannot place is hidden code.
+  it.each([
+    `wsl pwsh -enc ${PAYLOAD}`,
+    `wsl.exe pwsh -enc ${PAYLOAD}`,
+    `wsl -e pwsh -enc ${PAYLOAD}`,
+    `wsl --exec pwsh -enc ${PAYLOAD}`,
+    `wsl -- pwsh -enc ${PAYLOAD}`,
+    `wsl -d Ubuntu -u root pwsh -enc ${PAYLOAD}`,
+    `cmd /r pwsh -enc ${PAYLOAD}`,
+    `cmd /cpwsh -enc ${PAYLOAD}`,
+    `cmd /s /c pwsh -enc ${PAYLOAD}`,
+    `conhost pwsh -enc ${PAYLOAD}`,
+    `conhost.exe --headless pwsh -enc ${PAYLOAD}`,
+    `cmd /c start pwsh -enc ${PAYLOAD}`,
+    `cmd /c start "title" pwsh -enc ${PAYLOAD}`,
+  ])("follows a launcher to the encoded command it runs: %s", (command) => {
+    manager.setRules(ALLOW_LAUNCHERS.concat([{ pattern: "PowerShell(wsl *)", action: "allow" }, { pattern: "PowerShell(conhost *)", action: "allow" }]));
+    expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true })).toMatchObject({ exactRule: null, decodedCommands: [DESTRUCTIVE] });
+    expect(check(command, "powershell", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(check(command, "powershell", false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
+  it.each([
+    [`cmd /x pwsh -enc ${PAYLOAD}`, "powershell"],
+    [`cmd pwsh -enc ${PAYLOAD}`, "powershell"],
+    [`wsl --bogus pwsh -enc ${PAYLOAD}`, "powershell"],
+    [`Start-Process pwsh -ArgumentList '-enc ${PAYLOAD}'`, "powershell"],
+    ["sudo $cmd", "bash"],
+    ["timeout 30 $cmd", "bash"],
+  ] as const)("treats a launcher whose command it cannot place as hidden code: %s (%s)", (command, dialect) => {
+    manager.setRules(ALLOW_LAUNCHERS.concat([{ pattern: "PowerShell(start-process *)", action: "allow" }, { pattern: "Bash(sudo *)", action: "allow" }, { pattern: "Bash(timeout *)", action: "allow" }]));
+    expect(inspectEncodedPowerShell(command, dialect).hidden).toBe(true);
+    expect(check(command, dialect, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  // Coverage: a launcher added to the PowerShell vocabulary is read by the recursive reader without another code change.
+  it("reads through every launcher in the PowerShell vocabulary, its aliases included", () => {
+    const launchers = Object.entries(POWERSHELL_COMMAND_POLICIES).filter(([, policy]) => policy.effects.includes("launcher"));
+    expect(launchers.length).toBeGreaterThan(100);
+    for (const [name, policy] of launchers) {
+      for (const spelling of [name, ...policy.aliases]) {
+        const base = spelling.replace(/\.exe$/i, "").toLowerCase();
+        const kind = launcherKind(base) ?? launcherKind(spelling.toLowerCase());
+        expect(kind, spelling).not.toBeNull();
+        // Each kind is driven through its own grammar to an encoded pwsh.
+        const tail = kind === "posix" ? `-c 'pwsh -enc ${PAYLOAD}'` : kind === "cmd" ? `/c pwsh -enc ${PAYLOAD}` : kind === "powershell" ? `-enc ${PAYLOAD}` : `pwsh -enc ${PAYLOAD}`;
+        const read = inspectEncodedPowerShell(`${spelling} ${tail}`, "powershell");
+        expect(read.scripts.includes(DESTRUCTIVE) || read.hidden, spelling).toBe(true);
+      }
+    }
+  });
+
+  it("leaves wrapped literal commands alone", () => {
+    for (const [command, dialect] of [["time make $T", "bash"], ["npm test", "bash"], ["wsl --list", "powershell"], ["cmd /c dir", "powershell"]] as const) {
+      expect(inspectEncodedPowerShell(command, dialect), command).toEqual({ scripts: [], hidden: false });
+    }
+  });
+
+  // Performance: the floor inspection, the rule shape and the launch reader share one lex of the input, as bash shares one parse.
+  it("lexes a PowerShell command once per decision", () => {
+    const recorder = _recordPowerShellLexesForTest();
+    try {
+      for (const command of ["Get-ChildItem src", `pwsh -NoProfile -enc ${PAYLOAD}`, "git status; Get-Date"]) {
+        manager.setRules([{ pattern: "PowerShell(git push *)", action: "deny" }, { pattern: "PowerShell(get-childitem src)", action: "allow" }]);
+        check(command, "powershell", false);
+        expect(recorder.lexed.filter((text) => text === command), command).toHaveLength(1);
+      }
+    } finally {
+      recorder.stop();
+    }
   });
 
   it("leaves a literal launched shell and a plain command alone", () => {
