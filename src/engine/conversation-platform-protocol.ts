@@ -26,13 +26,13 @@ import {
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import type { AuthorizationRequiredState } from "../shared/authorization-required.js";
 
-export const PLATFORM_CONVERSATION_PROTOCOL_VERSION = 1 as const;
+const PLATFORM_CONVERSATION_PROTOCOL_VERSION = 1 as const;
 
-export type PlatformConversationProtocolVersion =
+type PlatformConversationProtocolVersion =
   typeof PLATFORM_CONVERSATION_PROTOCOL_VERSION;
 
 /** Portable tool references exclude arguments, results, plans, and UI resource URIs. */
-export interface ConversationToolReference {
+interface ConversationToolReference {
   readonly name: string;
   readonly groupId: string;
   readonly toolUseId: string;
@@ -43,17 +43,17 @@ export interface ConversationToolReference {
   readonly mcpServerId?: string;
 }
 
-export interface ConversationToolStartOwnerDetail {
+interface ConversationToolStartOwnerDetail {
   readonly input: Record<string, unknown>;
 }
 
-export interface ConversationToolEndOwnerDetail {
+interface ConversationToolEndOwnerDetail {
   readonly result: string;
   readonly executionPlan?: HostShellExecutionPlanAuditProjection;
   readonly uiPayload?: McpUiPayload;
 }
 
-export interface ConversationAssistantRound {
+interface ConversationAssistantRound {
   readonly roundIndex: number;
   readonly text: string;
   readonly stopReason: "end_turn" | "tool_use" | "max_tokens";
@@ -66,7 +66,7 @@ export interface ConversationAssistantRound {
   };
 }
 
-export interface ConversationPermissionReview {
+interface ConversationPermissionReview {
   readonly status: PermissionReviewStatus;
   readonly tool: ConversationToolReference;
   readonly verdictLevel?: RiskLevel;
@@ -77,7 +77,7 @@ export interface ConversationPermissionReview {
   };
 }
 
-export type ConversationUsageReport = Parameters<
+type ConversationUsageReport = Parameters<
   NonNullable<TurnCallbacks["onTurnSummary"]>
 >[0];
 
@@ -175,7 +175,7 @@ export type PlatformConversationEvent =
     readonly byKind: Readonly<Record<string, number>>;
   };
 
-export interface PlatformConversationEventInput {
+interface PlatformConversationEventInput {
   readonly conversationId: string;
   readonly turnId?: string;
   readonly event: PlatformConversationEvent;
@@ -193,17 +193,17 @@ export interface PlatformConversationEventEnvelope {
   readonly event: PlatformConversationEvent;
 }
 
-export type PlatformConversationEventListener = (
+type PlatformConversationEventListener = (
   event: PlatformConversationEventEnvelope,
 ) => void;
 
-export interface PlatformConversationSubscriptionOptions {
+interface PlatformConversationSubscriptionOptions {
   readonly conversationId?: string;
   readonly afterCursor?: number;
   readonly replay?: "none" | "available";
 }
 
-export interface PlatformConversationReplay {
+interface PlatformConversationReplay {
   readonly conversationId: string;
   readonly afterCursor: number | null;
   readonly oldestRetainedCursor: number | null;
@@ -212,7 +212,7 @@ export interface PlatformConversationReplay {
   readonly events: readonly PlatformConversationEventEnvelope[];
 }
 
-export interface PlatformConversationSubscription {
+interface PlatformConversationSubscription {
   readonly replay: PlatformConversationReplay | undefined;
   unsubscribe(): void;
 }

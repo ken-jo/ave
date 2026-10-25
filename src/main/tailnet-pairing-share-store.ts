@@ -64,7 +64,7 @@ export interface TailnetOwnerPairingSummary {
   readonly expiresAt: number | null;
 }
 
-export interface TailnetOwnerShareSummary {
+interface TailnetOwnerShareSummary {
   readonly id: string;
   readonly pairingId: string;
   readonly actorFingerprint: string;

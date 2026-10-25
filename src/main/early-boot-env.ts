@@ -25,7 +25,7 @@ import {
 } from "./persisted-hardware-acceleration.js";
 
 const log = createLogger("ave");
-export const WINDOWS_TOAST_ACTIVATOR_CLSID =
+const WINDOWS_TOAST_ACTIVATOR_CLSID =
   "{62FD3EFB-B3D2-4235-9402-6979F52C0286}";
 
 export function applyRuntimeAppIcon() {

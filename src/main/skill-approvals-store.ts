@@ -49,7 +49,7 @@ import { withInProcessFileQueue } from "../lib/with-file-lock.js";
 import { adoptLegacyRootFileSync, readJsonFileOrEmpty, writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
 
-export interface SkillApprovalRecord {
+interface SkillApprovalRecord {
   /** Record key from the caller — a skill name, or `<name>#bundled`. */
   name: string;
   /** Hash of the approval material bound to that key. */
@@ -57,7 +57,7 @@ export interface SkillApprovalRecord {
   approvedAt: string;
 }
 
-export interface SkillApprovalsFile {
+interface SkillApprovalsFile {
   version: 2;
   approvedSkills: SkillApprovalRecord[];
 }

@@ -345,7 +345,7 @@ export const BUILT_IN_LLM_VENDOR_IDS = [
   "openai-compatible",
 ] as const satisfies readonly LLMVendor[];
 
-export type BuiltInLLMVendor = (typeof BUILT_IN_LLM_VENDOR_IDS)[number];
+type BuiltInLLMVendor = (typeof BUILT_IN_LLM_VENDOR_IDS)[number];
 
 export const DEFAULT_VISIBLE_LLM_VENDOR_IDS = BUILT_IN_LLM_VENDOR_IDS;
 
@@ -366,7 +366,6 @@ export const INSTALLED_LLM_VENDOR_IDS = LLM_VENDORS.filter(
 /** Accept compatibility ids at migration, secret, and runtime boundaries. */
 export const KNOWN_LEGACY_LLM_VENDOR_IDS = INSTALLED_LLM_VENDOR_IDS;
 
-export type KnownLegacyLLMVendor = (typeof KNOWN_LEGACY_LLM_VENDOR_IDS)[number];
 
 export type MarketplaceEligibleLLMVendor = InstalledLLMVendor;
 

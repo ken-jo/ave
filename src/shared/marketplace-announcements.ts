@@ -8,7 +8,7 @@ import {
 import { validateExternalUrl } from "./external-url.js";
 import { appVersionSatisfiesMin } from "./semver-compare.js";
 
-export const MARKETPLACE_ANNOUNCEMENT_LEVELS = [
+const MARKETPLACE_ANNOUNCEMENT_LEVELS = [
   "info",
   "warning",
   "critical",

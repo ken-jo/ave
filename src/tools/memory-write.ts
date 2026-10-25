@@ -20,7 +20,7 @@ export const MEMORY_WRITE_MAX_CONTENT_CHARS = 8_000;
  * `<!--ave:`, `<!--\tave:`, `<!--  AVE:` — all of which the parser still
  * accepts — so the guard must match every spacing/casing variant the reader does.
  */
-export const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
+const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
 
 /**
  * True if `title` contains a C0 control character (code point below 0x20) or
@@ -32,7 +32,7 @@ export const MEMORY_WRITE_RESERVED_MARKER_PATTERN = /<!--\s*ave:/i;
  * always illegitimate here; forbidding them removes that line-injection vector
  * (checked with code points to avoid a control-character regex literal).
  */
-export function memoryWriteTitleHasControlChar(title: string): boolean {
+function memoryWriteTitleHasControlChar(title: string): boolean {
   for (const char of title) {
     const code = char.codePointAt(0);
     if (code !== undefined && (code < 0x20 || code === 0x7f)) return true;

@@ -136,7 +136,7 @@ function parseAllowedPlugins(raw: unknown): string[] | null {
   return [...new Set(ids)];
 }
 
-export function routineScheduleApprovalCacheKey(rawInput: unknown): string {
+function routineScheduleApprovalCacheKey(rawInput: unknown): string {
   const input = (rawInput ?? {}) as Record<string, unknown>;
   const allowedPlugins = parseAllowedPlugins(input.allowedPlugins);
   if (!allowedPlugins) return "scope:invalid";

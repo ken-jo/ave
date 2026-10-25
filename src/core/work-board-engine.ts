@@ -203,12 +203,12 @@ export interface WorkBoardEngineDeps {
   onRunComplete?: (info: { itemId: number; title: string; projectRoot?: string; projectName?: string }) => void | Promise<void>;
 }
 
-export interface RunItemOptions {
+interface RunItemOptions {
   /** Named agent profile — supplies the model for both child phases. */
   agentName?: string;
 }
 
-export interface RunItemResult {
+interface RunItemResult {
   status: "completed" | "denied" | "not_found" | "error" | "already_running";
   /** Captured execution OUTPUT (completed). */
   output?: string;

@@ -42,7 +42,7 @@ export function isA2AQuestionInputRequiredControl(
     && !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(record.prompt);
 }
 
-export type A2AQuestionWaitReservation =
+type A2AQuestionWaitReservation =
   | { ok: true; token: unknown }
   | { ok: false; reason: "question-already-outstanding" };
 

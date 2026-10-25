@@ -6,7 +6,7 @@ export const INITIAL_APP_MODE_ARG_PREFIX = "--ave-initial-app-mode=";
 export type InitialAppMode = "chat" | "work";
 
 /** Normalize legacy persisted values only at boundaries; internals use work. */
-export const LEGACY_ACTION_APP_MODE = "action";
+const LEGACY_ACTION_APP_MODE = "action";
 
 /** First-run default keeps the workspace expanded. */
 export const DEFAULT_APP_MODE: InitialAppMode = "work";

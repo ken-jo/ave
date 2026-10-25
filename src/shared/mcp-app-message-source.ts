@@ -9,7 +9,7 @@ import {
 const APP_KIND = stagedOriginFor("app-emitted");
 
 /** Bound source ids with the shared pattern; invalid tags must never be enveloped. */
-export const APP_MESSAGE_SOURCE_PATTERN = APP_KIND.sourcePattern;
+const APP_MESSAGE_SOURCE_PATTERN = APP_KIND.sourcePattern;
 
 export function appMessageSource(serverId: string): string {
   return `app:${serverId}`;

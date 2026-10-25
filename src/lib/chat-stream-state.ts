@@ -17,7 +17,7 @@ import { t } from "../i18n/index.js";
 import type { ExecutionMode } from "../shared/permission-mode.js";
 import { parseResolvedModelPricing, type ModelUsageSegment } from "../shared/model-pricing.js";
 
-export type TokenUsageSegment = ModelUsageSegment<LLMVendor>;
+type TokenUsageSegment = ModelUsageSegment<LLMVendor>;
 
 
 

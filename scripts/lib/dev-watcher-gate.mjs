@@ -26,7 +26,7 @@ import { statSync } from "node:fs";
  *
  * Returns true if either signal arrives within `timeoutMs`, false on timeout.
  */
-export async function waitForFirstBuild(watcher, since, timeoutMs, sleepMs = 100) {
+async function waitForFirstBuild(watcher, since, timeoutMs, sleepMs = 100) {
   if (watcher.readyPromise) {
     const timeout = new Promise((r) => setTimeout(() => r("__timeout__"), timeoutMs));
     const result = await Promise.race([watcher.readyPromise.then(() => "__ready__"), timeout]);

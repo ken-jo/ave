@@ -26,7 +26,7 @@ import {
 /** Hard cap for text files rendered/read for preview (matches read_file). */
 export const MAX_TEXT_FILE_BYTES = 2_000_000;
 /** Leading-byte sample size used for the NUL-byte binary sniff. */
-export const BINARY_SAMPLE_BYTES = 8_192;
+const BINARY_SAMPLE_BYTES = 8_192;
 
 /**
  * A glob pattern (`**\/*.md`, `foo?.ts`, `a{b,c}`) is a tool ARGUMENT, never a
@@ -37,7 +37,7 @@ export function isGlobPattern(value: string): boolean {
   return /[*?[\]{}]/.test(value) || value.includes("**");
 }
 
-export type AssertReadableFailure = "not-a-file" | "sensitive-path" | "path-not-allowed";
+type AssertReadableFailure = "not-a-file" | "sensitive-path" | "path-not-allowed";
 
 export type AssertReadableResult =
   | { ok: true; resolved: string }

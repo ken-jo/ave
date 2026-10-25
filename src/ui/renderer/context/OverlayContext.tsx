@@ -29,7 +29,7 @@ import {
 import type { PluginOnboardingAction } from "../../../plugins/public-contract.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 
-export type OverlayItemSource =
+type OverlayItemSource =
   | { kind: "routine"; routineId: string; firedAt: string }
   // Host overlay items are delivered through main-process IPC, not a plugin-specific bridge.
   | { kind: "plugin"; pluginId: string; eventId: string }

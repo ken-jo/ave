@@ -9,7 +9,7 @@ import { inspectShellExecution, ShellExecutionError, type ShellExecutionFacts } 
 import { buildSafeChildEnv } from "../tools/safe-env.js";
 import { inspectEmbeddedShellPrograms, projectFixedChildShellCommand } from "../tools/shell-path-policy.js";
 
-export type ValidationDecision = "allow" | "warn" | "deny";
+type ValidationDecision = "allow" | "warn" | "deny";
 export interface BashAstValidationResult {
   decision: ValidationDecision;
   reason?: string;

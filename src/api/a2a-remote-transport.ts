@@ -14,7 +14,7 @@ import {
 // Use the shared reachability classifier so transport and SSRF validation agree on reserved and non-unicast addresses.
 import { isGloballyRoutableAddress } from "../core/network-guard.js";
 
-export interface A2ADnsAnswer {
+interface A2ADnsAnswer {
   address: string;
   family: 4 | 6;
 }
@@ -28,7 +28,7 @@ export interface CreateA2AStrictTransportOptions {
 }
 
 
-export function validateA2ARemoteUrl(raw: string): URL {
+function validateA2ARemoteUrl(raw: string): URL {
   let url: URL;
   try {
     url = new URL(raw);

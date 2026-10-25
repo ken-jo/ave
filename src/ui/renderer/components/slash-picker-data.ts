@@ -105,7 +105,7 @@ export function catLabel(category: Category): string {
 }
 
 /** Normalize a typed query for case-insensitive substring matching. */
-export function normalizeSlashQuery(query: string): string {
+function normalizeSlashQuery(query: string): string {
   return query.trim().toLowerCase();
 }
 

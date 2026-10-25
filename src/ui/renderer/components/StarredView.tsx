@@ -17,7 +17,7 @@ import { shortSessionId } from "../../../shared/session-lookup.js";
 import { usePaneActions } from "./PaneFrame.js";
 import { sessionDisplayTitle } from "../../../shared/suggestions-session.js";
 
-export interface StarredItem {
+interface StarredItem {
   id: string;
   sessionId: string;
   messageIndex: number;

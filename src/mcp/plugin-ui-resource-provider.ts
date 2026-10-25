@@ -3,7 +3,7 @@ import type { McpUiResourceRead, PluginUiResourceDecl } from "./types.js";
 
 export const MCP_APP_MIME_TYPE = "text/html;profile=mcp-app";
 
-export interface PluginUiResourceListing {
+interface PluginUiResourceListing {
   uri: string;
   mimeType: string;
 }

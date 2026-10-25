@@ -16,7 +16,7 @@ import { matchesCron } from "../routines/cron-evaluator.js";
 import { createLogger } from "../lib/logger.js";
 const log = createLogger("ave");
 
-export interface RoutineFiredEvent {
+interface RoutineFiredEvent {
   routine: RoutineRecord;
 }
 

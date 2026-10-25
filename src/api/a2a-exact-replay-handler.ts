@@ -37,7 +37,7 @@ const EXACT_REPLAY_ERRORS = {
   capacity: [-32094, "Exact send replay capacity exhausted", "EXACT_SEND_REPLAY_CAPACITY_EXHAUSTED"],
 } as const;
 
-export interface A2ARemoteCallerAuthenticator {
+interface A2ARemoteCallerAuthenticator {
   authenticate(authorization: string | undefined): Promise<Readonly<{
     callerGenerationId: string;
   }> | null>;
@@ -253,10 +253,4 @@ export class A2AExactReplayHandler implements A2ARequestHandler {
       ),
     };
   }
-}
-
-export function createA2AExactReplayHandler(
-  options: CreateA2AExactReplayHandlerOptions,
-): A2ARequestHandler {
-  return options.enabled ? new A2AExactReplayHandler(options) : options.handler;
 }

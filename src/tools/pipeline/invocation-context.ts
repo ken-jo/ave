@@ -70,7 +70,7 @@ import { emitToolStart } from "./display-mask.js";
  * {@link createInvocationContext} seeds the initial values ({@link
  * InitialInvocationState}).
  */
-export interface InvocationContext {
+interface InvocationContext {
   /**
    * Layer-3 permission verdict. Reassigned across authorization as the call
    * flows through the category matrix, the sandbox relaxation blocks, the

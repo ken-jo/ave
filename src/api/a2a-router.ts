@@ -80,7 +80,7 @@ export class A2AWireResponseError extends Error {
   }
 }
 
-export interface A2AHttpRouterAuditEvent {
+interface A2AHttpRouterAuditEvent {
   type: "a2a-wire-drop";
   reason: "unknown-handler" | "invalid-request" | "handler-error";
   handlerId?: string;
@@ -220,7 +220,7 @@ function interfaceUrl(req: IncomingMessage, handlerId: string, advertisedOrigin?
     : "http://127.0.0.1:" + String(req.socket.localPort) + "/a2a/" + handlerId;
 }
 
-export function buildA2AAgentCard(
+function buildA2AAgentCard(
   handler: A2ARequestHandler,
   advertisedInterfaceUrl: string,
 ): A2AAgentCard {

@@ -24,7 +24,7 @@ import {
 
 export const RATIONALE_TRIGGER_DENIED_RESULT =
   "Rationale approval was denied; the action was not executed.";
-export const RATIONALE_TRIGGER_CANCELLED_RESULT =
+const RATIONALE_TRIGGER_CANCELLED_RESULT =
   "Rationale approval was cancelled; the action was not executed.";
 export const RATIONALE_TRIGGER_TIMED_OUT_RESULT =
   "Rationale approval timed out; the action was not executed.";

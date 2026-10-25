@@ -18,7 +18,6 @@ export type IdleState =
   | "PAUSED"
   | "RESUME_DELAY";
 
-export type Priority = 0 | 1 | 2 | 3 | 4;
 
 
 export interface IndexJob {

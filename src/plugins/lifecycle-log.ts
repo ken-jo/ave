@@ -54,7 +54,7 @@ export const PluginPhase = {
   CAPABILITY_DENY: "lifecycle:capability:deny",
 } as const;
 
-export type PluginPhaseValue = (typeof PluginPhase)[keyof typeof PluginPhase];
+type PluginPhaseValue = (typeof PluginPhase)[keyof typeof PluginPhase];
 
 /** pluginId and phase are required; skip/failure branches also need a reason. */
 export interface PluginLogContext {

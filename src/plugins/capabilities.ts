@@ -21,7 +21,7 @@ export const CAPABILITY_RAW_API_KEY: CapabilityId = "secrets:raw-api-key";
 
 // Presence marks a gated namespace; labels serve audit output, not author-declared capabilities.
 // Authorization comes from emittedEvents; plugin-owned namespaces are checked separately.
-export const EVENT_NAMESPACE_CAPABILITY: ReadonlyMap<string, string> = new Map([
+const EVENT_NAMESPACE_CAPABILITY: ReadonlyMap<string, string> = new Map([
   ["email", "mail-source"],
   ["calendar", "calendar-source"],
   ["meeting", "meeting-recorder"],

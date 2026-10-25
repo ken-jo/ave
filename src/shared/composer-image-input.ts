@@ -35,9 +35,6 @@ export function composerImageFormatForExtension(extension: string): ComposerImag
 export function composerImageFormatForMimeType(mimeType: string): ComposerImageFormat | undefined {
   return FORMAT_BY_MIME_TYPE.get(mimeType);
 }
-export function composerImageMimeForExtension(extension: string): string | undefined {
-  return composerImageFormatForExtension(extension)?.mimeType;
-}
 
 /** Strict magic sniff; picker fallback behavior stays with its caller. */
 export function sniffComposerImageFormat(bytes: Uint8Array): ComposerImageFormat | null {

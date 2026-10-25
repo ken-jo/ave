@@ -19,14 +19,6 @@ export { countHangul, estimateTokens } from "../shared/token-estimate.js";
 
 // Resolve context windows from settings, endpoint reports, catalog, then the conservative default.
 
-/** Active routes supply their resolved window; vendor/model-only callers use catalog defaults. */
-export function getModelContextWindow(
-  vendor: LLMVendor,
-  model: string,
-  resolvedContextWindow?: number,
-): number {
-  return resolvedContextWindow ?? resolveModelContextWindow({ vendor, model }).contextWindow;
-}
 
 // Resolve the prompt cap and context window from the same route.
 function budgetWindow(

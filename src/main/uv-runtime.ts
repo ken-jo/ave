@@ -21,7 +21,7 @@ export interface BundledUvRuntimeOptions {
   arch?: string;
 }
 
-export function isPackagedUvRuntime(options: BundledUvRuntimeOptions = {}): boolean {
+function isPackagedUvRuntime(options: BundledUvRuntimeOptions = {}): boolean {
   if (options.defaultApp !== undefined) return !options.defaultApp && !!options.resourcesPath;
   if (options.resourcesPath !== undefined) return true;
   return getHostResources().isPackaged;

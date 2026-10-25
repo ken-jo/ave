@@ -573,7 +573,7 @@ function defaultDueIso(): string {
   return localDateKey(d);
 }
 
-export function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialogProps) {
+function WorkItemCreateDialog({ api, project, onClose, onCreated }: CreateDialogProps) {
   const [title, setTitle] = useState("");
   const [detail, setDetail] = useState("");
   const [dueDate, setDueDate] = useState(defaultDueIso());
@@ -885,7 +885,7 @@ function RunHistorySection({
   );
 }
 
-export function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChanged, onRun }: DetailDialogProps) {
+function WorkItemDetailDialog({ api, itemId, run, openLatestRun, onClose, onChanged, onRun }: DetailDialogProps) {
   const [item, setItem] = useState<WorkItemResolved | null>(null);
   const [loadError, setLoadError] = useState("");
   const [reloadKey, setReloadKey] = useState(0);

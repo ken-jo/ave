@@ -50,7 +50,7 @@ export interface CrashReporterDeps {
   sentryLoader?: () => SentryLike | null;
 }
 
-export interface SentryLike {
+interface SentryLike {
   init(opts: { dsn: string }): void;
 }
 

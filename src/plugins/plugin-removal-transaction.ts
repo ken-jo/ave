@@ -24,9 +24,9 @@ const MAX_JOURNAL_BYTES = 1024 * 1024;
 const MAX_TRANSACTION_ENTRIES = 256;
 
 export type RemovalTransactionKind = "uninstall" | "install-rollback" | "quarantine";
-export type RemovalTransactionPhase = "staging" | "registry-committed";
+type RemovalTransactionPhase = "staging" | "registry-committed";
 
-export interface RemovalTransactionMapping {
+interface RemovalTransactionMapping {
   pluginId: string;
   originalPath: string;
   stagedPath: string;

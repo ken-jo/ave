@@ -53,7 +53,7 @@ import type { AuditLogger, AuditEntry } from "./audit-logger.js";
 import { utcDateKey } from "../shared/local-date.js";
 
 /** Bundle schema version — bump on a structural change to the ZIP layout. */
-export const DIAGNOSTICS_BUNDLE_SCHEMA_VERSION = 1;
+const DIAGNOSTICS_BUNDLE_SCHEMA_VERSION = 1;
 
 /**
  * Total-size ceiling for the assembled bundle (uncompressed bytes accounted as
@@ -61,7 +61,7 @@ export const DIAGNOSTICS_BUNDLE_SCHEMA_VERSION = 1;
  * skipped and `manifest.truncated` is set. Guards against a runaway log tree
  * producing a multi-GB "diagnostics" file.
  */
-export const MAX_BUNDLE_BYTES = 50 * 1024 * 1024;
+const MAX_BUNDLE_BYTES = 50 * 1024 * 1024;
 
 export interface CrashDumpMeta {
   /** File name only — no directory component (never leaks the userData path). */
@@ -72,7 +72,7 @@ export interface CrashDumpMeta {
   size: number;
 }
 
-export interface DiagnosticsBundleManifest {
+interface DiagnosticsBundleManifest {
   schemaVersion: number;
   appVersion: string;
   createdAt: string;

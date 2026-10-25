@@ -59,10 +59,9 @@ import {
   type McpUiDisplayMode,
 } from "../../../shared/mcp-app-display-mode.js";
 
-export type { McpUiDisplayMode };
 
 /** @see ext-apps `McpUiTheme` */
-export type McpUiTheme = "light" | "dark";
+type McpUiTheme = "light" | "dark";
 
 /**
  * The FIXED standard CSS-variable vocabulary exposed to MCP apps.
@@ -147,10 +146,10 @@ export type McpUiStyleVariableKey =
   | "--shadow-lg";
 
 /** @see ext-apps `McpUiStyles` — hosts MAY provide any subset. */
-export type McpUiStyles = Record<McpUiStyleVariableKey, string | undefined>;
+type McpUiStyles = Record<McpUiStyleVariableKey, string | undefined>;
 
 /** @see ext-apps `McpUiHostStyles` */
-export interface McpUiHostStyles {
+interface McpUiHostStyles {
   variables?: McpUiStyles;
   css?: { fonts?: string };
 }

@@ -1,7 +1,7 @@
 import { useCallback, useState } from "react";
 import { projectBasename, type WorkspaceRootIdentity } from "../../../shared/project-identity.js";
 
-export interface PendingRootWarning {
+interface PendingRootWarning {
   path: string;
   warnings: string[];
   ackToken: string;

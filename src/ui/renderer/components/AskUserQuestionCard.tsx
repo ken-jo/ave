@@ -561,7 +561,7 @@ function ChoiceBadge({ kind }: { kind: "recommend" | "alt" }) {
  *   "closed"     — respondAndClose() already called (single-question path);
  *                  handler must NOT call onAdvance() to avoid a double advance/race.
  */
-export type ChoiceResult =
+type ChoiceResult =
   | { kind: "incomplete" }
   | { kind: "advance" }
   | { kind: "closed" };

@@ -34,7 +34,7 @@ import type { DeferredApprovalSource, DeferredGrantScope, RiskLevel } from "../s
  * `permissions/reviewer/risk-classifier.ts::RiskVerdict` so callers
  * can pass the runtime verdict in directly.
  */
-export interface RiskVerdict {
+interface RiskVerdict {
   level: RiskLevel;
   reason: string;
 }
@@ -95,7 +95,7 @@ export interface HookResult {
  * but is intentionally `Record<string, unknown>` rather than the typed
  * `RoutineScope` to keep the audit shape stable across schema bumps.
  */
-export type RoutineScopeSnapshot = Record<string, unknown>;
+type RoutineScopeSnapshot = Record<string, unknown>;
 
 /**
  * Common fields present on every permission audit entry. The chain link is
@@ -105,7 +105,7 @@ export type RoutineScopeSnapshot = Record<string, unknown>;
  * is appended, so the active tail is authenticated without waiting for a
  * successor. `entryHash` is optional only for reading pre-migration rows.
  */
-export interface AuditCommon {
+interface AuditCommon {
   /** ISO 8601 timestamp. */
   ts: string;
   /** UUIDv4 — uniquely identifies this audit entry. */
@@ -177,7 +177,7 @@ export interface ToolExecutionAuditMetadata {
  * `directory` and `directoryAllowed` are present only when the tool
  * invocation declares an explicit path or directory surface.
  */
-export interface AuditAllow extends AuditCommon {
+interface AuditAllow extends AuditCommon {
   decision: "allow";
   tool: string;
   source: ToolSource;
@@ -219,7 +219,7 @@ export interface AuditAllow extends AuditCommon {
  * *prompt* event; the eventual user gesture (allow/deny) lands as a
  * follow-up `AuditAllow` or `AuditDeny`.
  */
-export interface AuditAsk extends AuditCommon {
+interface AuditAsk extends AuditCommon {
   decision: "ask";
   tool: string;
   source: ToolSource;
@@ -236,7 +236,7 @@ export interface AuditAsk extends AuditCommon {
  * one entry is recorded in v1 — but the schema is plural so future
  * dual-deny / dry-run modes don't need a schema bump.
  */
-export interface AuditDeny extends AuditCommon {
+interface AuditDeny extends AuditCommon {
   decision: "deny";
   tool: string;
   source: ToolSource;
@@ -251,7 +251,7 @@ export interface AuditDeny extends AuditCommon {
  * surface the entry from the `DeferredQueuePanel`. The `queueId` ties this
  * audit row to a specific entry in `~/.ave/permissions/deferred-queue.jsonl`.
  */
-export interface AuditDeferred extends AuditCommon {
+interface AuditDeferred extends AuditCommon {
   decision: "deferred";
   tool: string;
   source: ToolSource;
@@ -265,7 +265,7 @@ export interface AuditDeferred extends AuditCommon {
  * The queue file stores the mutable entry status; this append-only audit row
  * preserves the user's approval/rejection action in the tamper-evident chain.
  */
-export interface AuditDeferredResolve extends AuditCommon {
+interface AuditDeferredResolve extends AuditCommon {
   decision: "deferred_resolve";
   tool: string;
   source: ToolSource;
@@ -295,7 +295,7 @@ export interface AuditDeferredResolve extends AuditCommon {
  * origin here so forensics can spot a slash dispatcher bug if a
  * non-user-keyboard origin ever reaches this entry.
  */
-export interface AuditModeChange extends AuditCommon {
+interface AuditModeChange extends AuditCommon {
   decision: "mode_change";
   fromMode: ExecutionMode;
   toMode: ExecutionMode;
@@ -322,7 +322,7 @@ export interface AuditModeChange extends AuditCommon {
  * is added to `manifestIntegrityState.disabledPluginIds` and this
  * row records the attempt for forensics.
  */
-export interface AuditManifestViolation extends AuditCommon {
+interface AuditManifestViolation extends AuditCommon {
   decision: "manifest_violation";
   pluginId: string;
   toolName: string;

@@ -14,7 +14,7 @@ import type { Tool } from "./base.js";
 import { MAX_TIMER_DELAY_MS, resolveShellTimeoutMs, TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 
 /** Termination reason recorded for audit and error message branching. */
-export type ToolCeilingTerminationReason = "ceiling" | "user-abort" | "error";
+type ToolCeilingTerminationReason = "ceiling" | "user-abort" | "error";
 
 /**
  * Head-room between a shell tool's own `timeoutSeconds` expiry and the

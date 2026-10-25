@@ -39,14 +39,14 @@ export const ACP_SUBSCRIPTION_RUNTIME_POLICY_VERSION = 8;
 const NATIVE_POLICY_MARKER = `# ave-acp-native-policy-v${ACP_SUBSCRIPTION_RUNTIME_POLICY_VERSION}`;
 const EMPTY_ACP_SUBSCRIPTION_MCP_SERVERS: readonly AcpSubscriptionMcpServerConfig[] = Object.freeze([]);
 export const GROK_BUILD_REQUIRED_MINIMUM_VERSION = "0.2.116";
-export const GROK_BUILD_GOVERNED_AGENT_FILE_NAME = "ave-governed-chat.md";
+const GROK_BUILD_GOVERNED_AGENT_FILE_NAME = "ave-governed-chat.md";
 /**
  * A nonempty MCP-classified entry makes Grok Build 0.2.116 strip native
  * default tools while retaining MCP schemas registered after session creation.
  * It is deliberately a sentinel, not a static Ave tool schema: bridge tools
  * are selected dynamically for each governed turn.
  */
-export const GROK_BUILD_MCP_TOOLSET_SENTINEL = "mcp__ave-host-tools__workspace_read";
+const GROK_BUILD_MCP_TOOLSET_SENTINEL = "mcp__ave-host-tools__workspace_read";
 
 
 /**
@@ -184,7 +184,7 @@ function validatedMcpEnvironment(value: unknown): Readonly<Record<string, string
  * server or a broader ACP launch shape: unknown fields and non-stdio inputs
  * are rejected instead of being forwarded to `session/new`.
  */
-export function validateAcpSubscriptionMcpServerConfig(
+function validateAcpSubscriptionMcpServerConfig(
   value: unknown,
 ): AcpSubscriptionMcpServerConfig {
   if (!isPlainRecord(value) || !hasExactKeys(value, ["name", "command", "args", "env"])) {

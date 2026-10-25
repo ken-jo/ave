@@ -488,7 +488,7 @@ export const RATIONALE_SECURITY_SUFFIX = Object.freeze([
   "tool-end-emit",
 ] as const);
 
-export type RationaleSecuritySuffixStep = (typeof RATIONALE_SECURITY_SUFFIX)[number];
+type RationaleSecuritySuffixStep = (typeof RATIONALE_SECURITY_SUFFIX)[number];
 
 export interface SealedRationaleResumeRequest {
   contractVersion: typeof RATIONALE_CONTROL_CONTRACT_VERSION;

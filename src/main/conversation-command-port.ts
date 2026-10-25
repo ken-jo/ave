@@ -146,13 +146,13 @@ export function createPlatformBridgeActor(
  * has persisted the corresponding public turn handle. It never crosses a wire
  * payload and cannot be minted by a renderer, CLI JSON body, or webhook.
  */
-export interface HostOwnedPublicTurn {
+interface HostOwnedPublicTurn {
   readonly turnId: string;
   readonly abortController: AbortController;
 }
 
 /** Closed command vocabulary. New commands require an explicit actor policy. */
-export type ConversationCommand =
+type ConversationCommand =
   | {
       readonly kind: "message.send";
       readonly payload: unknown;
@@ -163,13 +163,13 @@ export type ConversationCommand =
       readonly turnId: string;
     };
 
-export type ConversationCommandResult =
+type ConversationCommandResult =
   | TurnResult
   | { readonly ok: true; readonly cancelled: true }
   | { readonly ok: false; readonly error: string };
 
 /** A turn lease already acquired by the command port, with async completion. */
-export interface ConversationCommandSubmission {
+interface ConversationCommandSubmission {
   readonly completion: Promise<ConversationCommandResult>;
   /** Returned only for a host-minted remote public turn. */
   readonly publicTurnId?: string;

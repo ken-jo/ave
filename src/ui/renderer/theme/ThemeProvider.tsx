@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from "react";
 import type { AppSettings, AveApi } from "../types.js";
 import {
-  BUNDLES,
   DEFAULT_BUNDLE_ID,
   findBundle,
   systemPairOf,
@@ -12,7 +11,6 @@ import { ensureInstalledContent, useInstalledContent } from "../installed-conten
 import type { ThemeBundle } from "./bundles/index.js";
 import { applyBundleToDocument, resolveSystemPair } from "./resolve-theme.js";
 import { bundleToPluginTokens } from "./plugin-token-map.js";
-export { bundleToPluginTokens };
 import type { ThemeContextValue, UnvalidatedBundleId, ResolvedShell } from "./types.js";
 import type { InitialThemePrime } from "../../../shared/initial-theme.js";
 
@@ -385,6 +383,3 @@ export function useTheme(): ThemeContextValue {
 export function useOptionalTheme(): ThemeContextValue | null {
   return useContext(ThemeContext);
 }
-
-/** @internal — exported for the bundle registry */
-export { BUNDLES };

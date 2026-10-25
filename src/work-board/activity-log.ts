@@ -11,7 +11,7 @@ import type { WorkBoardStorage } from "./storage.js";
 import { parseJsonlLines } from "../audit/jsonl-reader.js";
 
 /** Relative path (under the feature dir) of the activity log. */
-export const ACTIVITY_FILE = "activity.jsonl";
+const ACTIVITY_FILE = "activity.jsonl";
 
 /**
  * One work-flow event. `kind` mirrors the board lifecycle verbs. `from`/`to`

@@ -176,7 +176,7 @@ function normalizedInlineDataUrl(
  * image and generic file IPC so a string can never be reinterpreted as a URL
  * by the AI SDK's provider mapper.
  */
-export function normalizeInlineLocalDataUrl(
+function normalizeInlineLocalDataUrl(
   dataUrl: unknown,
   declaredMimeType?: unknown,
 ): Readonly<{ mimeType: string; data: string }> | null {
@@ -332,10 +332,6 @@ export function normalizeLocalUserContentParts(raw: unknown): UserContentPart[] 
   return out.length > 0 ? out : undefined;
 }
 
-/** Validate an internal attachment again at every process transport boundary. */
-export function isSubscriptionPromptAttachment(value: unknown): value is SubscriptionPromptAttachment {
-  return normalizeSubscriptionPromptAttachment(value) !== null;
-}
 
 export function subscriptionAttachmentByteLength(attachment: SubscriptionPromptAttachment): number {
   return Buffer.byteLength(attachment.data, "base64");

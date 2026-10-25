@@ -1,14 +1,14 @@
 /** Classify bounded untrusted app input as notification or turn text; sinks own sanitization. */
 
 /** Bound app text below the guidance-queue capacity. */
-export const MCP_APP_MESSAGE_MAX_CHARS = 4096;
+const MCP_APP_MESSAGE_MAX_CHARS = 4096;
 
-export const APP_NOTIFICATION_META_KEY = "ave/notification";
+const APP_NOTIFICATION_META_KEY = "ave/notification";
 
-export type AppNotificationSeverity = "info" | "warning" | "critical";
+type AppNotificationSeverity = "info" | "warning" | "critical";
 
 /** App notifications cannot bypass focus policy or select urgency; severity is audit-only. */
-export interface AppNotificationMeta {
+interface AppNotificationMeta {
   title: string;
   body: string;
   /** Audit-only claim, never a delivery-policy switch. */

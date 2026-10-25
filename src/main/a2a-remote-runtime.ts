@@ -17,9 +17,9 @@ import {
 import { openFeatureNamespace, type FeatureNamespaceHandle } from "./storage/feature-namespace.js";
 import { snapshotA2ARemoteGates, type A2ARemoteGateSnapshot } from "./a2a-remote-gates.js";
 
-export const A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY = "a2a.remote.route-control-auth";
+const A2A_REMOTE_ROUTE_CONTROL_SECRET_KEY = "a2a.remote.route-control-auth";
 export const A2A_REMOTE_RECEIVER_SECRET_KEY = "a2a.remote.receiver-bearer";
-export const a2aRemoteDataSecretKey = (bindingId: number, revisionId: number): string => `a2a.remote.data.${bindingId}.${revisionId}`;
+const a2aRemoteDataSecretKey = (bindingId: number, revisionId: number): string => `a2a.remote.data.${bindingId}.${revisionId}`;
 
 export interface A2ARemoteRuntime {
   readonly gates: Readonly<A2ARemoteGateSnapshot>;

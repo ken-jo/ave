@@ -30,7 +30,7 @@ import { formatBytes } from "../../../lib/turn-summary-format.js";
 
 type ToolItem = Extract<ChatEntry, { kind: "tool_group" }>["tools"][number];
 
-export type ChatPreviewKind =
+type ChatPreviewKind =
   | "file"
   | "image"
   | "paste"
@@ -41,7 +41,7 @@ export type ChatPreviewKind =
   | "url"
   | "plugin";
 
-export interface ChatPreviewTargetBase {
+interface ChatPreviewTargetBase {
   id: string;
   kind: ChatPreviewKind;
   title: string;
@@ -53,7 +53,7 @@ export interface ChatPreviewTargetBase {
   status?: ToolItem["status"];
 }
 
-export interface FilePreviewTarget extends ChatPreviewTargetBase {
+interface FilePreviewTarget extends ChatPreviewTargetBase {
   kind: "file";
   path: string;
   canOpenExternal: boolean;
@@ -66,7 +66,7 @@ export interface FilePreviewTarget extends ChatPreviewTargetBase {
   inlineText?: string;
 }
 
-export interface ImagePreviewTarget extends ChatPreviewTargetBase {
+interface ImagePreviewTarget extends ChatPreviewTargetBase {
   kind: "image";
   path: string;
   dataUrl: string;
@@ -77,37 +77,37 @@ export interface ImagePreviewTarget extends ChatPreviewTargetBase {
   canOpenExternal: boolean;
 }
 
-export interface PastePreviewTarget extends ChatPreviewTargetBase {
+interface PastePreviewTarget extends ChatPreviewTargetBase {
   kind: "paste";
   text: string;
   lines: number;
   chars: number;
 }
 
-export interface HtmlPreviewTarget extends ChatPreviewTargetBase {
+interface HtmlPreviewTarget extends ChatPreviewTargetBase {
   kind: "html";
   payload: RenderHtmlPayload;
 }
 
-export interface DiffPreviewTarget extends ChatPreviewTargetBase {
+interface DiffPreviewTarget extends ChatPreviewTargetBase {
   kind: "diff";
   path: string;
   diff: FileEditDiffData;
 }
 
-export interface JsonPreviewTarget extends ChatPreviewTargetBase {
+interface JsonPreviewTarget extends ChatPreviewTargetBase {
   kind: "json";
   value: unknown;
   raw: string;
 }
 
-export interface ToolResultPreviewTarget extends ChatPreviewTargetBase {
+interface ToolResultPreviewTarget extends ChatPreviewTargetBase {
   kind: "tool-result";
   raw: string;
   isStub: boolean;
 }
 
-export interface UrlPreviewTarget extends ChatPreviewTargetBase {
+interface UrlPreviewTarget extends ChatPreviewTargetBase {
   kind: "url";
   url: string;
   /**
@@ -133,7 +133,7 @@ export interface UrlPreviewTarget extends ChatPreviewTargetBase {
  */
 type UrlTargetOrigin = "argument" | "result" | "address";
 
-export interface PluginPreviewTarget extends ChatPreviewTargetBase {
+interface PluginPreviewTarget extends ChatPreviewTargetBase {
   kind: "plugin";
   serverId: string;
   resourceUri: string;

@@ -88,7 +88,7 @@ export interface UpdaterLike {
 // logged but not surfaced to the renderer — we keep the last good state
 // rather than introducing a fifth variant whose badge UX is unclear.
 
-export const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+const CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 /**
  * macOS Squirrel.Mac can only swap a running app bundle in place when that

@@ -412,7 +412,7 @@ export function transitionRationaleTicket(
   }
 }
 
-export type InvocationAuditState =
+type InvocationAuditState =
   "authorized" | "started" | "completed" | "failed" | "unknown-after-crash";
 
 export interface InvocationAuditRecord {

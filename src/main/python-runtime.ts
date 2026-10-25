@@ -34,7 +34,7 @@ const log = createLogger("python-runtime");
 
 
 
-export type BootstrapPhase =
+type BootstrapPhase =
   | "pending"
   | "installing-python"
   | "installing-deps"

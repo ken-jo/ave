@@ -106,7 +106,7 @@ const GROK_BUILD_GOVERNED_AGENT_PROFILE_META = Object.freeze({
  * the legacy shape exactly; the stock Grok Build client receives only Ave's
  * governed profile and no model-selection override.
  */
-export function buildAcpSubscriptionSessionNewParams(
+function buildAcpSubscriptionSessionNewParams(
   provider: AcpSubscriptionProviderId,
   workspaceDir: string,
   mcpServers: readonly AcpSubscriptionMcpServerConfig[],

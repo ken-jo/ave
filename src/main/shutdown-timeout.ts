@@ -71,14 +71,6 @@ function warnOnceOnUnusableEnvValue(env: NodeJS.ProcessEnv): void {
   );
 }
 
-/**
- * Test-only: reset the one-shot warn latch so each test gets a clean
- * surface for env-validation assertions. Not exported from the module
- * barrel — direct import only inside `__tests__`.
- */
-export function __resetShutdownTimeoutWarnLatchesForTest(): void {
-  invalidEnvWarnedOnce = false;
-}
 
 /**
  * Race the cleanup chain against a hard deadline.

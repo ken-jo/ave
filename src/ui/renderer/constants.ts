@@ -47,7 +47,7 @@ export const SOURCE_BADGE: Record<string, string> = {
 // a compile error — keeps the dropdown in lockstep with the canonical
 // vendor list. Model choices are read from the installed catalog without
 // selecting one on the user's behalf.
-export interface VendorUiMeta {
+interface VendorUiMeta {
   label: string;
   placeholder: string;
   needsBaseUrl: boolean;

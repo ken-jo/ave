@@ -36,38 +36,38 @@ import type {
 } from "../shared/work-board-types.js";
 
 /** Host one-shot LLM caller — shape of `createCallLlm(conversationLoop)`. */
-export interface CallLlm {
+interface CallLlm {
   (prompt: string, opts?: { maxTokens?: number; systemPrompt?: string }): Promise<string>;
 }
 
 /** Narrow board reader the reports need (satisfied by WorkBoardStore). */
-export interface ReportBoardReader {
+interface ReportBoardReader {
   list(filter?: WorkItemListFilter): Promise<WorkItemListResult>;
 }
 
 /** Storage slice for writing report markdown (write auto-creates parents). */
-export type ReportStorage = Pick<WorkBoardStorage, "write" | "mkdir">;
+type ReportStorage = Pick<WorkBoardStorage, "write" | "mkdir">;
 
 /** Report kind — re-aliased from the renderer-safe wire SOT (single source). */
-export type ReportKind = WorkBoardReportKind;
+type ReportKind = WorkBoardReportKind;
 
 /**
  * Reporter return — `ok` carries the markdown + period; `empty` skips the LLM.
  * The `error` variant is added at the IPC boundary, not here (the reporter
  * surfaces LLM failures by throwing — No-Fallback).
  */
-export type ReportResult =
+type ReportResult =
   | { status: "ok"; kind: ReportKind; period: string; markdown: string }
   | { status: "empty"; kind: ReportKind; period: string; reason: string };
 
-export interface DailyReportInput {
+interface DailyReportInput {
   /** Override the target day (`YYYY-MM-DD`, host-local). Default: today. */
   date?: string;
   projectRoot?: string;
   includeUnscoped?: boolean;
 }
 
-export interface WeeklyReportInput {
+interface WeeklyReportInput {
   /** Override the target ISO week (`YYYY-Www`). Default: the current local week. */
   weekIso?: string;
   /** Sunday-week offset relative to now (0 = this week, -1 = last week). */
@@ -79,7 +79,7 @@ export interface WeeklyReportInput {
 type ReportProjectOptions = Pick<DailyReportInput, "projectRoot" | "includeUnscoped">;
 
 /** Host event emitted after a report is generated (slim notification pointer). */
-export const REPORT_GENERATED_EVENT = "work_board.report.generated";
+const REPORT_GENERATED_EVENT = "work_board.report.generated";
 
 const DAILY_DIR = "reports/daily";
 const WEEKLY_DIR = "reports/weekly";
