@@ -2057,7 +2057,7 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   항상 거부는 비활성으로 보인다). 터미널의 "한 번"은 해당 연결만 허용하고,
   "이 탭"은 셸이 종료될 때까지 유지되며 같은 탭에서 셸을 다시 띄워도 이전 grant 는
   끝난다. 터미널에는 "이 프로젝트" 범위가 없다. 범위 값은 `once`·`session`·
-  `project`·`always` 이며, 예전 `conversation`·`workspace` 이름은 거부한다.
+  `tab`·`project`·`always` 이며(`tab` 은 터미널 탭 전용), 예전 `conversation`·`workspace` 이름은 거부한다.
   link-local·메타데이터·unspecified 주소는 묻지 않고 거절하고, loopback·
   `*.localhost`·사설망(RFC1918/CGNAT/ULA)은 경고와 함께 최대 "이번 세션"까지만
   허용한다(이름은 해석된 주소로도 판정). 콜백은 두 단계로 묻는다(patch part 5).

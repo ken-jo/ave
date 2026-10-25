@@ -1938,7 +1938,7 @@ banner offers none. An address literal has no host rule, and a
 `Network(...)` rule naming one is refused when it is parsed. An edited
 wildcard host allow is saved with the same `wildcard-allow-sandboxed-only`
 warning as a wildcard shell allow. The scope values on the wire and on disk are
-`once`, `session`, `project` and `always`; the earlier `conversation` and
+`once`, `session`, `tab` (a terminal tab's only), `project` and `always`; the earlier `conversation` and
 `workspace` names are refused everywhere, except that a version-1 grant file's
 `workspace` grants are migrated once: a grant made at its project root becomes
 the `project` grant for that root, and one made in a subdirectory of a
