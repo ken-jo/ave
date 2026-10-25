@@ -35,6 +35,13 @@ beforeEach(() => {
   vi.stubEnv("AVE_HOME", profile);
   vi.stubEnv("CLAUDE_CODE_TMPDIR", process.env.CLAUDE_CODE_TMPDIR);
   vi.stubEnv("CLAUDE_TMPDIR", process.env.CLAUDE_TMPDIR);
+  // baseAllowedDirectories() grants os.tmpdir() as a write root, and the
+  // sandbox scans and sweeps write roots for repositories with identity
+  // checks. The run's shared temp directory has concurrent repository churn
+  // from other test files, so this file grants a private one.
+  const privateTmp = join(root, "tmp");
+  mkdirSync(privateTmp);
+  vi.stubEnv("TMPDIR", privateTmp);
 });
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
