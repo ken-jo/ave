@@ -1,4 +1,4 @@
-import { closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
+import { type BigIntStats, closeSync, constants, fstatSync, lstatSync, openSync, opendirSync, readSync, realpathSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { settingsFilePath } from "../data/settings-store.js";
@@ -175,20 +175,22 @@ function isMissingPath(error: unknown): boolean {
 // No pipes, links or unbounded reads may turn discovery into an arbitrary file read.
 function readGitMetadata(path: string, budget: GitDiscoveryBudget): string | undefined {
   let fd: number;
-  let entry: ReturnType<typeof lstatSync> | undefined;
+  let entry: BigIntStats | undefined;
   try {
     if (constants.O_NOFOLLOW === undefined) {
-      entry = lstatSync(path);
+      // Windows file IDs are 64-bit; Number stats can round two IDs together.
+      entry = lstatSync(path, { bigint: true });
       if (!entry.isFile()) throw new Error("Invalid sandbox Git control metadata");
     }
     fd = openSync(path, constants.O_RDONLY | constants.O_NONBLOCK | (constants.O_NOFOLLOW ?? 0));
   }
   catch (error) { if (isMissingPath(error)) return undefined; throw error; }
   try {
-    const stat = fstatSync(fd);
-    if (entry !== undefined && (entry.dev !== stat.dev || entry.ino !== stat.ino)) {
-      throw new Error("Sandbox Git metadata changed during discovery");
+    if (entry !== undefined) {
+      const opened = fstatSync(fd, { bigint: true });
+      if (entry.dev !== opened.dev || entry.ino !== opened.ino) throw new Error("Sandbox Git metadata changed during discovery");
     }
+    const stat = fstatSync(fd);
     if (!stat.isFile() || stat.size > MAX_GIT_METADATA_BYTES) throw new Error("Invalid sandbox Git control metadata");
     if (stat.size > budget.metadataBytes) throw new Error("Sandbox Git metadata budget exhausted");
     const buffer = Buffer.alloc(Math.min(MAX_GIT_METADATA_BYTES, budget.metadataBytes) + 1);

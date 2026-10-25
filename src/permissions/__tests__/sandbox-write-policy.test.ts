@@ -548,6 +548,35 @@ describe("mandatory sandbox control-file writes", () => {
     expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("metadata changed during discovery");
   });
 
+  // 2^53 and 2^53 + 1 are equal as Numbers, so only a bigint comparison sees the swap.
+  it.skipIf(filesystem.constants.O_NOFOLLOW !== undefined)("rejects common-directory metadata whose file ID differs only beyond Number precision", () => {
+    const marker = join(root, ".git");
+    const pointer = join(marker, "commondir");
+    mkdirSync(marker);
+    writeFileSync(pointer, "common");
+    const withIno = <T extends object>(stats: T, ino: number | bigint): T => Object.assign(Object.create(Object.getPrototypeOf(stats)), stats, { ino });
+    const lstat = filesystem.lstatSync;
+    const open = filesystem.openSync;
+    const fstat = filesystem.fstatSync;
+    let pointerFd: number | undefined;
+    vi.spyOn(filesystem, "lstatSync").mockImplementation(((path: string, options?: { bigint?: boolean }) => {
+      const stats = lstat(path, options);
+      if (path !== pointer || stats === undefined) return stats;
+      return withIno(stats, options?.bigint ? 2n ** 53n : 2 ** 53);
+    }) as typeof filesystem.lstatSync);
+    vi.spyOn(filesystem, "openSync").mockImplementation((...args) => {
+      const fd = open(...args);
+      if (args[0] === pointer) pointerFd = fd;
+      return fd;
+    });
+    vi.spyOn(filesystem, "fstatSync").mockImplementation(((fd: number, options?: { bigint?: boolean }) => {
+      const stats = fstat(fd, options);
+      if (fd !== pointerFd) return stats;
+      return withIno(stats, options?.bigint ? 2n ** 53n + 1n : 2 ** 53);
+    }) as typeof filesystem.fstatSync);
+    expect(() => buildMandatorySandboxWritePolicy([root])).toThrow("metadata changed during discovery");
+  });
+
   it("revokes an exhausted broad grant while retaining a separately scanned child grant and bounded policy", () => {
     const queued = join(root, "queued");
     mkdirSync(queued);
