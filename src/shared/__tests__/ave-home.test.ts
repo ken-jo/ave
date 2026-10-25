@@ -340,6 +340,10 @@ describe("ensureAveHomePrivate", () => {
     readWindowsDirectoryDacls(["C:\\home"], true);
     const command = (vi.mocked(execFileSync).mock.calls.at(-1)![1] as readonly string[]).at(-1)!;
     expect(command).toContain("[HomeDirectoryDacl]::OpenRelative($homeHandle, [System.IO.Path]::GetFileName($path), $identity.User, $true)");
+    expect(command).toContain("[HomeDirectoryDacl]::Children($scanHandle)");
+    expect(command).toContain("[HomeDirectoryDacl]::OpenRelative($scanHandle, $leaf, $identity.User, $false, $false)");
+    expect(command).toContain("NtQueryDirectoryFile(handle,");
+    expect(command).not.toContain("Get-ChildItem");
     expect(command).toContain("$readBack = Read-Dacl $path $false $handle");
     expect(command).toContain("finally { if ($null -ne $homeHandle) { $homeHandle.Dispose() } }");
   });
@@ -387,47 +391,94 @@ describe("ensureAveHomePrivate", () => {
     expect(sddl(outside)).toBe(before);
     expect(sddl(inside)).toBe(before);
   });
-  function checkChildRefusal(name: string, createChild: (path: string) => void): void {
+  function checkChildRepair(name: string, createChild: (path: string) => void): void {
     const dir = home();
     const protectedHome = ensureAveHomePrivate(dir);
     expect(protectedHome, refusal(protectedHome)).toMatchObject({ enforcement: "win32-dacl" });
     const path = join(dir, "secrets", name);
     createChild(path);
     execFileSync(win32SystemBinary("icacls"), [path, "/grant", "*S-1-1-0:R", "/q"], { encoding: "utf-8", windowsHide: true });
-    const before = sddl(path);
     const result = ensureAveHomePrivate(dir);
-    expect(result).toMatchObject({ enforcement: "none", failedPath: path, category: "extra-principals",
-      extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0", account: expect.any(String) })] });
-    expect(sddl(path)).toBe(before);
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", repairs: [
+      { path, removedPrincipals: ["S-1-1-0"] },
+    ] });
+    const [entry] = readWindowsDirectoryDacls([path]);
+    expect(entry).toMatchObject({ protected: true, ownerSid: entry.currentUserSid, rules: [
+      expect.objectContaining({ ...OWNER_RULE, sid: entry.currentUserSid, inheritanceFlags: statSync(path).isDirectory() ? 3 : 0 }),
+    ] });
     setAveHomePrivacyAtBoot(result);
-    expect(() => assertAveHomePrivacyForConfinement()).toThrow(path);
+    expect(() => assertAveHomePrivacyForConfinement()).not.toThrow();
   }
-  it.runIf(process.platform === "win32")("reports a foreign explicit grant on a secrets child file without rewriting it", () => {
-    checkChildRefusal("file", (path) => writeFileSync(path, "private"));
+  it.runIf(process.platform === "win32")("heals a foreign explicit grant on a secrets child file", () => {
+    checkChildRepair("file", (path) => writeFileSync(path, "private"));
   });
-  it.runIf(process.platform === "win32")("reports a foreign explicit grant on a secrets child directory without rewriting it", () => {
-    checkChildRefusal("directory", (path) => mkdirSync(path));
+  it.runIf(process.platform === "win32")("heals a foreign explicit grant on a secrets child directory", () => {
+    checkChildRepair("directory", (path) => mkdirSync(path));
   });
-  it.runIf(process.platform === "win32")("refuses an inherited Everyone read grant on a secrets child without rewriting its ACL", () => {
+  it.runIf(process.platform === "win32")("heals an inherited Users read grant on a secrets child after parent repair", () => {
     const dir = home();
-    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const initial = ensureAveHomePrivate(dir);
+    expect(initial, refusal(initial)).toMatchObject({ enforcement: "win32-dacl" });
     const secrets = join(dir, "secrets");
-    execFileSync(win32SystemBinary("icacls"), [secrets, "/grant", "*S-1-1-0:(OI)(CI)R", "/q"], { encoding: "utf-8", windowsHide: true });
+    execFileSync(win32SystemBinary("icacls"), [secrets, "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/q"], { encoding: "utf-8", windowsHide: true });
     const child = join(secrets, "token");
     writeFileSync(child, "private");
     const [entry] = readWindowsDirectoryDacls([child]);
     expect(entry.rules).toEqual(expect.arrayContaining([
-      expect.objectContaining({ sid: "S-1-1-0", accessControlType: 0, isInherited: true }),
+      expect.objectContaining({ sid: "S-1-5-32-545", accessControlType: 0, isInherited: true }),
     ]));
     expect(entry.rules?.filter((rule) => rule.sid !== entry.currentUserSid)).toHaveLength(1);
-    const before = sddl(child, "Owner, Group, Access");
-    expect(before).toMatch(/^O:.*G:.*D:/);
     const result = ensureAveHomePrivate(dir);
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", repairs: [
+      { path: secrets, removedPrincipals: ["S-1-5-32-545"] },
+      { path: child, removedPrincipals: ["S-1-5-32-545"] },
+    ] });
+    const [after] = readWindowsDirectoryDacls([child]);
+    expect(after).toMatchObject({ ownerSid: entry.currentUserSid, protected: true, rules: [
+      expect.objectContaining({ ...OWNER_RULE, sid: entry.currentUserSid, inheritanceFlags: 0 }),
+    ] });
+    expect(sddl(child, "Access")).toMatch(/^D:P(?:AI)?\(A;;FA;;;[^;)]+\)$/);
+    setAveHomePrivacyAtBoot(result);
+    expect(() => assertAveHomePrivacyForConfinement()).not.toThrow();
+  });
+  it.runIf(process.platform === "win32")("refuses a hard-linked secrets child without changing either name's ACL", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const secrets = join(dir, "secrets");
+    execFileSync(win32SystemBinary("icacls"), [secrets, "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/q"], { encoding: "utf-8", windowsHide: true });
+    const child = join(secrets, "token");
+    const outside = join(dirname(dir), "outside-token");
+    writeFileSync(child, "private");
+    linkSync(child, outside);
+    expect(statSync(child).nlink).toBe(2);
+    const before = sddl(child, "Owner, Group, Access");
+    expect(sddl(outside, "Owner, Group, Access")).toBe(before);
+    const result = ensureAveHomePrivate(dir);
+    expect(result).toMatchObject({ enforcement: "none", failedPath: child, reason: expect.stringContaining("multiple links") });
     expect(sddl(child, "Owner, Group, Access")).toBe(before);
-    expect(result).toMatchObject({ enforcement: "none", failedPath: child, category: "extra-principals",
-      extraPrincipals: [expect.objectContaining({ sid: "S-1-1-0" })] });
+    expect(sddl(outside, "Owner, Group, Access")).toBe(before);
     setAveHomePrivacyAtBoot(result);
     expect(() => assertAveHomePrivacyForConfinement()).toThrow(child);
+  });
+  it.runIf(process.platform === "win32")("refuses a secrets child junction and leaves its target unchanged", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const target = join(dirname(dir), "child-target");
+    mkdirSync(target);
+    const token = join(target, "token");
+    writeFileSync(token, "private");
+    const child = join(dir, "secrets", "linked-child");
+    symlinkSync(target, child, "junction");
+    try {
+      const before = sddl(target, "Owner, Group, Access");
+      const tokenBefore = sddl(token, "Owner, Group, Access");
+      expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "none", failedPath: child, category: "reparse-point" });
+      expect(sddl(target, "Owner, Group, Access")).toBe(before);
+      expect(sddl(token, "Owner, Group, Access")).toBe(tokenBefore);
+      expect(readFileSync(token, "utf-8")).toBe("private");
+    } finally {
+      rmdirSync(child);
+    }
   });
   it.runIf(process.platform === "win32")("blocks later home grants from reaching subscription runtimes and new children", () => {
     const dir = home();
@@ -451,6 +502,55 @@ describe("ensureAveHomePrivate", () => {
     expect(descriptors[2].rules).not.toContainEqual(expect.objectContaining({ sid }));
     expect(descriptors[3].rules).not.toContainEqual(expect.objectContaining({ sid }));
   });
+  it.runIf(process.platform === "win32")("repairs immediate runtime files and directories without rewriting grandchildren", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const root = join(dir, "subscription-runtimes");
+    const file = join(root, "runtime.json");
+    const directory = join(root, "runtime");
+    mkdirSync(directory);
+    writeFileSync(file, "private");
+    execFileSync(win32SystemBinary("icacls"), [directory, "/grant", "*S-1-5-32-545:(OI)(CI)RX", "/q"], { windowsHide: true });
+    execFileSync(win32SystemBinary("icacls"), [file, "/grant", "*S-1-5-32-545:RX", "/q"], { windowsHide: true });
+    const grandchild = join(directory, "payload");
+    writeFileSync(grandchild, "fixture");
+    const before = sddl(grandchild, "Owner, Group, Access");
+    const result = ensureAveHomePrivate(dir);
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", repairs: expect.arrayContaining([
+      { path: file, removedPrincipals: ["S-1-5-32-545"] },
+      { path: directory, removedPrincipals: ["S-1-5-32-545"] },
+    ]) });
+    const [fileEntry, directoryEntry] = readWindowsDirectoryDacls([file, directory]);
+    expect(fileEntry).toMatchObject({ protected: true, rules: [
+      expect.objectContaining({ ...OWNER_RULE, sid: fileEntry.currentUserSid, inheritanceFlags: 0 }),
+    ] });
+    expect(directoryEntry).toMatchObject({ protected: true, rules: [
+      expect.objectContaining({ ...OWNER_RULE, sid: directoryEntry.currentUserSid }),
+    ] });
+    expect(sddl(grandchild, "Owner, Group, Access")).toBe(before);
+  });
+  it.runIf(process.platform === "win32")("reports child protection repairs without removed foreign principals and skips subsequent writes", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const file = join(dir, "secrets", "token");
+    const directory = join(dir, "subscription-runtimes", "runtime");
+    writeFileSync(file, "private");
+    mkdirSync(directory);
+    const result = ensureAveHomePrivate(dir);
+    expect(result).toMatchObject({ enforcement: "win32-dacl", repairs: [
+      { path: file, removedPrincipals: [] }, { path: directory, removedPrincipals: [] },
+    ] });
+    const fileBefore = sddl(file, "Owner, Group, Access");
+    const directoryBefore = sddl(directory, "Owner, Group, Access");
+    const second = protectWithCommand(dir, (command) => command.replace(
+      "WindowsOwnerClaim.Write(handle, user, directory, false);",
+      'if (user.Value.Length > 0) throw new InvalidOperationException("Unexpected child write"); WindowsOwnerClaim.Write(handle, user, directory, false);',
+    ));
+    expect(second, refusal(second)).toMatchObject({ enforcement: "win32-dacl" });
+    expect(second).not.toHaveProperty("repairs");
+    expect(sddl(file, "Owner, Group, Access")).toBe(fileBefore);
+    expect(sddl(directory, "Owner, Group, Access")).toBe(directoryBefore);
+  });
   it("refuses a link and an unaccepted owner before the permission command writes", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor("C:\\home")]));
@@ -462,7 +562,7 @@ describe("ensureAveHomePrivate", () => {
     expect(command.indexOf('if ((attributes & 0x400) != 0) throw new InvalidOperationException("Directory is a link or junction")')).toBeLessThan(write);
     expect(command.indexOf("'Directory is owned by another account'")).toBeLessThan(write);
     expect(command).toContain("$owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')");
-    expect(command).toContain("NtCreateFile(out handle, 0x02000000, ref attributes, out io, IntPtr.Zero, 0x10, 3, create ? 3u : 1u, 0x00004001, IntPtr.Zero, 0)");
+    expect(command).toContain("NtCreateFile(out handle, enumerate ? 0x00100001u : 0x02000000u, ref attributes, out io, IntPtr.Zero, 0x10, enumerate ? 7u : 3u, create ? 3u : 1u, 0x00004000u | (directory ? 1u : 0u) | (enumerate ? 0x20u : 0u), IntPtr.Zero, 0)");
     expect(command).toContain("CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)");
     expect(command).toContain("Root = parent.DangerousGetHandle(), Name = memory");
     expect(command).toContain("Marshal.StringToHGlobalUni(leaf)");
@@ -470,7 +570,7 @@ describe("ensureAveHomePrivate", () => {
     expect(command.indexOf('if (status == unchecked((int)0xC000050B)) throw new InvalidOperationException("Directory is a link or junction")')).toBeLessThan(command.indexOf("WindowsOwnerClaim.Write(handle, user, true, false)"));
     expect(command.indexOf('if ((attributes & 0x10) == 0) throw new InvalidOperationException("Path is not a directory")')).toBeLessThan(command.indexOf("WindowsOwnerClaim.Write(handle, user, true, false)"));
     expect(command.indexOf('if (ownerSid != user.Value && !(elevated && ownerSid == "S-1-5-32-544"))')).toBeLessThan(command.indexOf("WindowsOwnerClaim.Write(handle, user, true, false)"));
-    expect(command).toContain('"D:P(A;OICI;FA;;;" + user.Value + ")"');
+    expect(command).toContain('"D:P(A;" + (directory ? "OICI" : "") + ";FA;;;" + user.Value + ")"');
     expect(command.lastIndexOf("$readBack = Read-Dacl $path $false $handle")).toBeGreaterThan(write);
   });
   it("claims only the requested runtime root before writing its DACL", () => {
@@ -535,7 +635,7 @@ describe("ensureAveHomePrivate", () => {
     mkdirSync(target);
     const before = sddl(target);
     try {
-      const result = protectWithCommand(dir, (command) => command.replace(/^[ \t]*\$readBack; continue$/m, `
+      const result = protectWithCommand(dir, (command) => command.replace(/^[ \t]*\$resultsForPath = \$readBack$/m, `
         if ($path -eq $request.paths[0]) {
           try { [System.IO.Directory]::Move($path, $env:AVE_TEST_MOVED) }
           catch [System.IO.IOException] { [System.IO.File]::WriteAllText($env:AVE_TEST_MARKER, 'pinned') }
@@ -544,7 +644,7 @@ describe("ensureAveHomePrivate", () => {
             [System.IO.File]::WriteAllText($env:AVE_TEST_MARKER, 'swapped');
           }
         }
-        $readBack; continue`), { AVE_TEST_MOVED: moved, AVE_TEST_MARKER: marker, AVE_TEST_TARGET: target });
+        $resultsForPath = $readBack`), { AVE_TEST_MOVED: moved, AVE_TEST_MARKER: marker, AVE_TEST_TARGET: target });
       expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl" });
       expect(readFileSync(marker, "utf-8")).toBe("pinned");
       expect(sddl(target)).toBe(before);
@@ -559,6 +659,38 @@ describe("ensureAveHomePrivate", () => {
     const result = protectWithoutWrite(dir);
     expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl", home: dir });
     expect(result).not.toHaveProperty("repairs");
+  });
+  it.runIf(process.platform === "win32")("keeps the private directory pinned while enumerating its children", () => {
+    const dir = home();
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+    const secrets = join(dir, "secrets");
+    const child = join(secrets, "token");
+    writeFileSync(child, "private");
+    const target = join(dirname(dir), "scan-target");
+    const moved = join(dirname(dir), "moved-secrets");
+    const marker = join(dirname(dir), "scan-result");
+    mkdirSync(target);
+    const before = sddl(target, "Owner, Group, Access");
+    try {
+      const result = protectWithCommand(dir, (command) => command.replace(
+        "foreach ($leaf in [HomeDirectoryDacl]::Children($scanHandle)) {", `
+        if ($path -eq $request.paths[1]) {
+          try { [System.IO.Directory]::Move($path, $env:AVE_TEST_MOVED) }
+          catch [System.IO.IOException] { [System.IO.File]::WriteAllText($env:AVE_TEST_MARKER, 'pinned') }
+          if ([System.IO.Directory]::Exists($env:AVE_TEST_MOVED)) {
+            New-Item -ItemType Junction -Path $path -Target $env:AVE_TEST_TARGET | Out-Null;
+            [System.IO.File]::WriteAllText($env:AVE_TEST_MARKER, 'swapped');
+          }
+        }
+        foreach ($leaf in [HomeDirectoryDacl]::Children($scanHandle)) {`),
+      { AVE_TEST_MOVED: moved, AVE_TEST_MARKER: marker, AVE_TEST_TARGET: target });
+      expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl" });
+      expect(readFileSync(marker, "utf-8")).toBe("pinned");
+      expect(sddl(target, "Owner, Group, Access")).toBe(before);
+      expect(readWindowsDirectoryDacls([child])[0]).toMatchObject({ protected: true });
+    } finally {
+      if (existsSync(moved)) rmdirSync(secrets);
+    }
   });
   it.runIf(process.platform === "win32")("skips permission replacement for already protected owner-only directories", () => {
     const dir = home();

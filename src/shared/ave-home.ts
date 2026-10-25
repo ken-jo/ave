@@ -115,6 +115,29 @@ public static class HomeDirectoryDacl {
   private struct IoStatus { public IntPtr Status, Information; }
   [DllImport("ntdll.dll")]
   private static extern int NtCreateFile(out SafeFileHandle handle, uint access, ref ObjectAttributes attributes, out IoStatus status, IntPtr allocation, uint fileAttributes, uint share, uint disposition, uint options, IntPtr ea, uint eaLength);
+  [DllImport("ntdll.dll")]
+  private static extern int NtQueryDirectoryFile(SafeFileHandle handle, IntPtr evt, IntPtr apc, IntPtr context, out IoStatus status, IntPtr buffer, uint length, int infoClass, [MarshalAs(UnmanagedType.U1)] bool single, IntPtr name, [MarshalAs(UnmanagedType.U1)] bool restart);
+  [StructLayout(LayoutKind.Sequential)]
+  private struct FileStandardInfo { public long AllocationSize, EndOfFile; public uint NumberOfLinks; [MarshalAs(UnmanagedType.U1)] public bool DeletePending; [MarshalAs(UnmanagedType.U1)] public bool Directory; }
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out FileStandardInfo info, uint size);
+  public static string[] Children(SafeFileHandle handle) {
+    var names = new System.Collections.Generic.List<string>();
+    IntPtr buffer = Marshal.AllocHGlobal(65536);
+    try {
+      bool restart = true;
+      while (true) {
+        IoStatus io;
+        int status = NtQueryDirectoryFile(handle, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero, out io, buffer, 65536, 12, true, IntPtr.Zero, restart);
+        if (status == unchecked((int)0x80000006)) break;
+        if (status < 0) throw new Win32Exception((int)WindowsOwnerClaim.RtlNtStatusToDosError(status), "Directory enumeration failed");
+        restart = false;
+        string name = Marshal.PtrToStringUni(IntPtr.Add(buffer, 12), Marshal.ReadInt32(buffer, 8) / 2);
+        if (name != "." && name != "..") names.Add(name);
+      }
+      return names.ToArray();
+    } finally { Marshal.FreeHGlobal(buffer); }
+  }
   public static SafeFileHandle OpenHome(string path, SecurityIdentifier user) {
     string fullPath = System.IO.Path.GetFullPath(path);
     string parentPath = System.IO.Path.GetDirectoryName(fullPath);
@@ -125,7 +148,7 @@ public static class HomeDirectoryDacl {
       return OpenRelative(parent, leaf, user, true);
     }
   }
-  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, bool create) {
+  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, bool create, bool directory = true, bool enumerate = false) {
     if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
     IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
     IntPtr memory = IntPtr.Zero;
@@ -137,7 +160,7 @@ public static class HomeDirectoryDacl {
       var attributes = new ObjectAttributes { Length = (uint)Marshal.SizeOf(typeof(ObjectAttributes)), Root = parent.DangerousGetHandle(), Name = memory, Attributes = 0x1040, Descriptor = security.AddrOfPinnedObject() };
       SafeFileHandle handle;
       IoStatus io;
-      int status = NtCreateFile(out handle, 0x02000000, ref attributes, out io, IntPtr.Zero, 0x10, 3, create ? 3u : 1u, 0x00004001, IntPtr.Zero, 0);
+      int status = NtCreateFile(out handle, enumerate ? 0x00100001u : 0x02000000u, ref attributes, out io, IntPtr.Zero, 0x10, enumerate ? 7u : 3u, create ? 3u : 1u, 0x00004000u | (directory ? 1u : 0u) | (enumerate ? 0x20u : 0u), IntPtr.Zero, 0);
       if (status < 0) {
         if (handle != null) handle.Dispose();
         if (status == unchecked((int)0xC000050B)) throw new InvalidOperationException("Directory is a link or junction");
@@ -161,6 +184,31 @@ public static class HomeDirectoryDacl {
     security.SetSecurityDescriptorBinaryForm(WindowsOwnerClaim.ReadDescriptor(handle));
     return security;
   }
+  public static FileSystemSecurity ReadChild(SafeFileHandle handle) {
+    long attributes;
+    if (!WindowsOwnerClaim.GetFileInformationByHandleEx(handle, 9, out attributes, 8)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if ((attributes & 0x400) != 0) throw new InvalidOperationException("Directory is a link or junction");
+    FileSystemSecurity security = (attributes & 0x10) != 0 ? (FileSystemSecurity)new DirectorySecurity() : new FileSecurity();
+    security.SetSecurityDescriptorBinaryForm(WindowsOwnerClaim.ReadDescriptor(handle));
+    return security;
+  }
+  public static string[] ReapplyChild(SafeFileHandle handle, SecurityIdentifier user) {
+    var previous = ReadChild(handle);
+    if (previous.GetOwner(typeof(SecurityIdentifier)).Value != user.Value) throw new InvalidOperationException("Directory is owned by another account");
+    bool directory = previous is DirectorySecurity;
+    FileStandardInfo info;
+    if (!GetFileInformationByHandleEx(handle, 1, out info, (uint)Marshal.SizeOf(typeof(FileStandardInfo)))) throw new Win32Exception(Marshal.GetLastWin32Error());
+    if (!directory && info.NumberOfLinks > 1) throw new InvalidOperationException("File has multiple links");
+    var rules = previous.GetAccessRules(true, true, typeof(SecurityIdentifier));
+    var rule = rules.Count == 1 ? (FileSystemAccessRule)rules[0] : null;
+    if (previous.AreAccessRulesProtected && rule != null && rule.IdentityReference.Value == user.Value && rule.AccessControlType == AccessControlType.Allow && rule.FileSystemRights == FileSystemRights.FullControl && rule.InheritanceFlags == (directory ? InheritanceFlags.ObjectInherit | InheritanceFlags.ContainerInherit : InheritanceFlags.None) && rule.PropagationFlags == PropagationFlags.None && !rule.IsInherited) return null;
+    var removed = new System.Collections.Generic.SortedSet<string>(StringComparer.Ordinal);
+    foreach (FileSystemAccessRule entry in rules) if (entry.IdentityReference.Value != user.Value) removed.Add(entry.IdentityReference.Value);
+    WindowsOwnerClaim.Write(handle, user, directory, false);
+    var principals = new string[removed.Count];
+    removed.CopyTo(principals);
+    return principals;
+  }
   public static string[] Reapply(SafeFileHandle handle, SecurityIdentifier user, bool elevated) {
     var previous = Read(handle);
     string ownerSid = previous.GetOwner(typeof(SecurityIdentifier)).Value;
@@ -179,7 +227,7 @@ public static class HomeDirectoryDacl {
     }
     function Read-Dacl($path, $child, $handle = $null) {
       try {
-        $acl = if ($null -ne $handle) { [HomeDirectoryDacl]::Read($handle) } else { Get-Acl -LiteralPath $path };
+        $acl = if ($null -eq $handle) { Get-Acl -LiteralPath $path } elseif ($child) { [HomeDirectoryDacl]::ReadChild($handle) } else { [HomeDirectoryDacl]::Read($handle) };
         $rules = @($acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]) | ForEach-Object {
           $principal = @{ sid = $_.IdentityReference.Value; accessControlType = [int]$_.AccessControlType;
             fileSystemRights = [int]$_.FileSystemRights; inheritanceFlags = [int]$_.InheritanceFlags;
@@ -199,6 +247,7 @@ public static class HomeDirectoryDacl {
         if ($null -ne $refused) { @{ path = $path; category = $refused; error = 'An enclosing directory was refused' }; continue }
         if (-not $request.protect) { Read-Dacl $path $false; continue }
         $handle = $null;
+        $scanHandle = $null;
         try {
           if ($null -eq $homeHandle) {
             $homeHandle = [HomeDirectoryDacl]::OpenHome($path, $identity.User);
@@ -229,12 +278,36 @@ public static class HomeDirectoryDacl {
           if ($readBack.protected -and $readBack.rules.Count -eq 1 -and $rule.sid -eq $sid -and
               $rule.accessControlType -eq 0 -and $rule.fileSystemRights -eq 2032127 -and
               $rule.inheritanceFlags -eq 3 -and $rule.propagationFlags -eq 0 -and $rule.isInherited -eq $false) {
-            $readBack; continue
+            $resultsForPath = $readBack
+          } else {
+            $removed = @([HomeDirectoryDacl]::Reapply($handle, $identity.User, $elevated));
+            $readBack = Read-Dacl $path $false $handle;
+            if ($removed.Count -gt 0) { $readBack.removedPrincipals = @($removed) }
+            $resultsForPath = $readBack
           }
-          $removed = @([HomeDirectoryDacl]::Reapply($handle, $identity.User, $elevated));
-          $readBack = Read-Dacl $path $false $handle;
-          if ($removed.Count -gt 0) { $readBack.removedPrincipals = @($removed) }
-          $readBack;
+          $resultsForPath;
+          if ($path -ne $request.paths[0]) {
+            $scanHandle = [HomeDirectoryDacl]::OpenRelative($homeHandle, [System.IO.Path]::GetFileName($path), $identity.User, $false, $true, $true);
+            foreach ($leaf in [HomeDirectoryDacl]::Children($scanHandle)) {
+              $childPath = [System.IO.Path]::Combine($path, $leaf);
+              $childHandle = $null;
+              try {
+                $childHandle = [HomeDirectoryDacl]::OpenRelative($scanHandle, $leaf, $identity.User, $false, $false);
+                $removed = [HomeDirectoryDacl]::ReapplyChild($childHandle, $identity.User);
+                $childReadBack = Read-Dacl $childPath $true $childHandle;
+                if ($null -ne $removed) { $childReadBack.removedPrincipals = @($removed) }
+                $childReadBack;
+              } catch {
+                $message = $_.Exception.GetBaseException().Message;
+                $category = switch ($message) {
+                  'Directory is a link or junction' { 'reparse-point' }
+                  'Directory is owned by another account' { 'invalid-owner-grant' }
+                  default { 'icacls-failed' }
+                };
+                @{ path = $childPath; child = $true; category = $category; error = $message };
+              } finally { if ($null -ne $childHandle) { $childHandle.Dispose() } }
+            }
+          }
         } catch {
           $message = $_.Exception.GetBaseException().Message;
           $refused = switch ($message) {
@@ -244,14 +317,11 @@ public static class HomeDirectoryDacl {
             default { 'icacls-failed' }
           };
           @{ path = $path; category = $refused; error = $message };
-        } finally { if ($null -ne $handle -and $handle -ne $homeHandle) { $handle.Dispose() } }
+        } finally {
+          if ($null -ne $scanHandle) { $scanHandle.Dispose() }
+          if ($null -ne $handle -and $handle -ne $homeHandle) { $handle.Dispose() }
+        }
       });
-      if ($null -eq $refused -and $request.paths.Count -gt 1 -and (Test-Path -LiteralPath $request.paths[1])) {
-        try {
-          # Read immediate secrets children without changing their ACLs.
-          $results += @(Get-ChildItem -LiteralPath $request.paths[1] -Force | ForEach-Object { Read-Dacl $_.FullName $true });
-        } catch { $results += @{ path = $request.paths[1]; error = $_.Exception.Message } }
-      }
       ConvertTo-Json -InputObject @($results) -Depth 5 -Compress
     } finally { if ($null -ne $homeHandle) { $homeHandle.Dispose() } }`,
   ], { encoding: "utf-8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
@@ -393,7 +463,7 @@ export function ensureAveHomePrivate(
       }
     }
     if (!sid) throw new Error("Current account SID read-back missing");
-    const repairs = descriptors.filter((entry) => !entry.child && entry.removedPrincipals?.length)
+    const repairs = descriptors.filter((entry) => entry.removedPrincipals !== undefined && (entry.child || entry.removedPrincipals.length > 0))
       .map(({ path, removedPrincipals }) => ({ path, removedPrincipals: removedPrincipals! }));
     return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}) };
   } catch (err) {

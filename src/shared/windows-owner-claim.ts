@@ -33,13 +33,13 @@ public static class WindowsOwnerClaim {
   }
   private static string OwnerOf(SafeFileHandle handle) { return new RawSecurityDescriptor(ReadDescriptor(handle), 0).Owner.Value; }
   internal static byte[] Descriptor(SecurityIdentifier user, bool directory, bool claimOwner) {
-    var security = new RawSecurityDescriptor((claimOwner ? "O:" + user.Value : "") + (directory ? "D:P(A;OICI;FA;;;" + user.Value + ")" : ""));
+    var security = new RawSecurityDescriptor((claimOwner ? "O:" + user.Value : "") + (directory || !claimOwner ? "D:P(A;" + (directory ? "OICI" : "") + ";FA;;;" + user.Value + ")" : ""));
     byte[] bytes = new byte[security.BinaryLength];
     security.GetBinaryForm(bytes, 0);
     return bytes;
   }
   internal static void Write(SafeFileHandle handle, SecurityIdentifier user, bool directory, bool claimOwner) {
-    int status = NtSetSecurityObject(handle, (claimOwner ? 1u : 0u) | (directory ? 0x80000004u : 0u), Descriptor(user, directory, claimOwner));
+    int status = NtSetSecurityObject(handle, (claimOwner ? 1u : 0u) | (directory || !claimOwner ? 0x80000004u : 0u), Descriptor(user, directory, claimOwner));
     if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status));
   }
   public static string Owner(string path) {
