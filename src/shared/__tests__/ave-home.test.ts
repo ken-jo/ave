@@ -377,9 +377,11 @@ describe("ensureAveHomePrivate", () => {
     expect(after.protected).toBe(true);
     expect(after.rules).toEqual([expect.objectContaining({ ...OWNER_RULE, sid: token.currentUserSid })]);
     expect(after.rules?.some(({ sid }) => sid === "S-1-5-32-545")).toBe(false);
-    expect(sddl(dir, "Access")).toBe(`D:P(A;OICI;FA;;;${token.currentUserSid})`);
+    // SetSecurityInfo marks the DACL auto-inherited (AI); the SID may render as an alias such as LA, so match one OI|CI FullControl allow.
+    const access = sddl(dir, "Access");
+    expect(access).toMatch(/^D:PAI\(A;OICI;FA;;;[^;)]+\)$/);
     expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
-    expect(sddl(dir, "Access")).toBe(`D:P(A;OICI;FA;;;${token.currentUserSid})`);
+    expect(sddl(dir, "Access")).toBe(access);
   });
   it.runIf(process.platform === "win32")("changes a link itself, not its target, when the permission command runs with /L", () => {
     // The race the refusal above cannot close: a link swapped in after the check.

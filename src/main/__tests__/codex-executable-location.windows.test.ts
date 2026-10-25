@@ -229,8 +229,23 @@ it.runIf(process.platform === "win32")("replaces inherited foreign access when c
     sid: after.currentUserSid, accessControlType: 0, fileSystemRights: 2032127,
     inheritanceFlags: 3, propagationFlags: 0, isInherited: false,
   })]);
-  await expect(assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }],
-    { capSidPath: join(parent, "absent-cap-fixture") })).resolves.toBeUndefined();
+}, 45_000);
+
+it.runIf(process.platform === "win32")("admits a private runtime directory claimed from Administrators", async (context) => {
+  const fixture = realHostFixture();
+  await fixture.prime();
+  const parent = realpathSync(mkdtempSync(join(tmpdir(), "ave-owner-admit-")));
+  roots.push(parent);
+  const trust = { capSidPath: join(parent, "absent-cap-fixture") };
+  // Admission walks every ancestor; hosted runners can own the temp root's ancestors by an image account it rightly refuses.
+  const ancestors = await assertCodexLocations([{ path: parent, kind: "directory", routeKind: "native" }], trust)
+    .then(() => "", (error: unknown) => String(error));
+  if (ancestors.includes("untrusted owner")) context.skip(`The temp root's ancestors are not admissible on this host: ${ancestors}`);
+  const directory = realpathSync(mkdtempSync(join(parent, "runtime-")));
+  if (!readWindowsDirectoryDacls([directory])[0].elevated) context.skip("An elevated token is required to create the Administrators-owned private directory fixture");
+  setOwner(directory, "S-1-5-32-544");
+  await claimPrivateOwnership([directory]);
+  await expect(assertCodexLocations([{ path: directory, kind: "private-directory", routeKind: "native" }], trust)).resolves.toBeUndefined();
 }, 45_000);
 
 it.runIf(process.platform === "win32")("keeps a directory the account already owns without asking for WRITE_OWNER", async () => {
