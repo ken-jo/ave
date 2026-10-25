@@ -14,6 +14,10 @@ const SHA256 = /^[0-9a-f]{64}$/u;
  * Where Ave publishes its JSON Schemas: every schema `$id` the host owns is
  * this origin plus its path under `web/public/schemas/`, and the Ave site
  * serves the file at that URL.
+ *
+ * An identifier, not the site's location: third-party files carry these `$id`s
+ * verbatim, so this does not track web/lib/i18n.ts SITE_ORIGIN. If the site
+ * moves, this origin must keep serving or redirecting `/schemas/`.
  */
 const AVE_SCHEMA_ORIGIN = "https://ave.agent-connector.ai";
 const PUBLIC_SCHEMAS = "web/public/schemas";

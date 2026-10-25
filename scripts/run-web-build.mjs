@@ -10,7 +10,7 @@ const web = resolve(root, "web");
 const next = resolve(web, "node_modules/next/dist/bin/next");
 // The site's own SITE_ORIGIN is the one source; the link graph is checked against it.
 const siteOrigin = /^export const SITE_ORIGIN = "([^"]+)";$/m.exec(readFileSync(resolve(web, "lib/i18n.ts"), "utf8"))?.[1];
-if (!siteOrigin) throw new Error("web/lib/i18n.ts no longer declares SITE_ORIGIN as a string literal");
+if (!siteOrigin) throw new Error('web/lib/i18n.ts must declare the origin exactly as `export const SITE_ORIGIN = "…";`');
 const result = spawnSync(process.execPath, [next, "build", "--webpack"], {
   cwd: web,
   env: {

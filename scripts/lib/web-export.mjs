@@ -30,8 +30,8 @@ export function finishNotFound(outDir) {
     rmSync(dir, { recursive: true, force: true });
     rmSync(join(outDir, prefix, `${NOT_FOUND_ROUTE}.txt`), { force: true });
   }
-  // Next's own not-found route, exported as a live page by trailingSlash:
-  // /404/ before Next 16, /_not-found/ since.
+  // Next's own not-found route, exported as live pages by trailingSlash: Next 16
+  // emits both /404/ and /_not-found/ (beside 404.html), so neither is legacy.
   for (const route of ["404", "_not-found"]) rmSync(join(outDir, route), { recursive: true, force: true });
 }
 
