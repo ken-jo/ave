@@ -240,10 +240,6 @@ function payloadAadFromOwnerDigest(input: Readonly<{
   });
 }
 
-function cloneRecord(value: A2ARemoteAttemptRecord): A2ARemoteAttemptRecord {
-  return structuredClone(value);
-}
-
 function initialState(): StoreState {
   return { version: STORE_VERSION, attempts: [], payloads: [], tasks: [] };
 }
@@ -828,7 +824,7 @@ export class A2ARemoteDurableStore {
         item.prepared.attemptId === prepared.attemptId);
       if (sameAttempt) {
         return JSON.stringify(sameAttempt.prepared) === JSON.stringify(prepared)
-          ? { ok: true, duplicate: true, record: cloneRecord(sameAttempt) }
+          ? { ok: true, duplicate: true, record: structuredClone(sameAttempt) }
           : { ok: false, reason: "attempt-conflict" };
       }
       state = await this.withAttemptCapacity(state);
@@ -917,7 +913,7 @@ export class A2ARemoteDurableStore {
         }
         throw error;
       }
-      return { ok: true, duplicate: false, record: cloneRecord(record) };
+      return { ok: true, duplicate: false, record: structuredClone(record) };
     });
   }
 
@@ -932,7 +928,7 @@ export class A2ARemoteDurableStore {
           || JSON.stringify(sameAttempt.prepared) !== JSON.stringify(prepared)) {
           throw new Error("a2a-remote-attempt-conflict");
         }
-        return cloneRecord(sameAttempt);
+        return structuredClone(sameAttempt);
       }
       state = await this.withAttemptCapacity(state);
       const record: A2ARemoteAttemptRecord = {
@@ -945,7 +941,7 @@ export class A2ARemoteDurableStore {
       next.attempts.push(record);
       await this.persist(next);
       this.state = next;
-      return cloneRecord(record);
+      return structuredClone(record);
     });
   }
 
@@ -1018,7 +1014,7 @@ export class A2ARemoteDurableStore {
       record.updatedAt = this.now().toISOString();
       await this.persist(next);
       this.state = next;
-      return cloneRecord(record);
+      return structuredClone(record);
     });
   }
 
@@ -1156,7 +1152,7 @@ export class A2ARemoteDurableStore {
       }
       await this.persist(next);
       this.state = next;
-      return cloneRecord(record);
+      return structuredClone(record);
     });
   }
 
@@ -1223,14 +1219,14 @@ export class A2ARemoteDurableStore {
       const latest = this.terminalizePayloadOperation(next, next.attempts[sourceIndex]!);
       await this.persist(next);
       this.state = next;
-      return cloneRecord(latest);
+      return structuredClone(latest);
     });
   }
 
   async getAttempt(attemptId: string): Promise<A2ARemoteAttemptRecord | null> {
     return await this.withLock((state) => {
       const value = state.attempts.find((item) => item.prepared.attemptId === attemptId);
-      return value ? cloneRecord(value) : null;
+      return value ? structuredClone(value) : null;
     });
   }
 
@@ -1241,7 +1237,7 @@ export class A2ARemoteDurableStore {
         .find((item) => item.prepared.operationId === operationId
           && !(item.stage === "NOT_SENT"
             && item.outcomeCode === INTENDED_CREDENTIAL_REVISION_CONFLICT));
-      return value ? cloneRecord(value) : null;
+      return value ? structuredClone(value) : null;
     });
   }
 
@@ -1252,7 +1248,7 @@ export class A2ARemoteDurableStore {
         && item.prepared.operation === "initial-send"
         && item.prepared.payloadRecordId !== undefined
         && item.prepared.payloadBodySha256 !== undefined);
-      return value ? cloneRecord(value) : null;
+      return value ? structuredClone(value) : null;
     });
   }
 
@@ -1260,7 +1256,7 @@ export class A2ARemoteDurableStore {
     return await this.withLock((state) => {
       const value = [...state.attempts].reverse().find((item) =>
         item.prepared.operationId === operationId && item.resolved !== undefined);
-      return value ? cloneRecord(value) : null;
+      return value ? structuredClone(value) : null;
     });
   }
 
