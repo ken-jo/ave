@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { MarketplaceError } from "../../errors.js";
+import { normalizeMarketplace } from "../../../data/settings-normalization.js";
 import { legacySelectedThemes, migrateLegacyContent, type LegacyActivations, type LegacyContentKind } from "../legacy-content.js";
 
 const OFFICIAL = new Set(["theme:aurora", "theme:nebula", "language:korean", "provider:openrouter", "provider:nous-research"]);
@@ -33,6 +34,19 @@ describe("legacySelectedThemes", () => {
 });
 
 describe("migrateLegacyContent", () => {
+  it("preserves the legacy Korean activation through normalization and adopts its official overlay", async () => {
+    const marketplace = normalizeMarketplace({ installedLanguagePacks: ["ko"] });
+    expect(marketplace.installedLanguagePacks).toEqual(["ko"]);
+    const { run, adopt, release } = harness({ themes: [], locales: marketplace.installedLanguagePacks, providers: [] });
+
+    expect(await run()).toEqual({
+      adopted: [{ source: "ave", kind: "language", name: "korean" }],
+      failed: [],
+    });
+    expect(adopt).toHaveBeenCalledExactlyOnceWith("language", "korean");
+    expect(release).toHaveBeenCalledWith({ themes: [], locales: ["ko"] });
+  });
+
   it("adopts every legacy activation from the official source and drops the theme and language list entries", async () => {
     const { run, adopt, release } = harness({ themes: ["aurora"], locales: ["ko"], providers: ["nous-research", "openrouter", "openrouter"] });
 

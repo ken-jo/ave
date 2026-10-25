@@ -51,7 +51,7 @@ const missingConfiguredLanguages = DEFAULT_PACKAGED_ELECTRON_LANGUAGES.filter(
   (language) => !configuredLanguages.includes(language),
 );
 if (unexpectedConfiguredLanguages.length > 0 || missingConfiguredLanguages.length > 0) {
-  fail("desktop app must package only the default Electron language; ship UI languages as marketplace language packs", [
+  fail("desktop app must package only the default shell language; UI catalogs are independent of browser locale files", [
     ...missingConfiguredLanguages.map((language) => `missing:${language}`),
     ...unexpectedConfiguredLanguages.map((language) => `unexpected:${language}`),
   ]);

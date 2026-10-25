@@ -49,7 +49,7 @@ import {
   isValidFontFamilyOverride,
 } from "../shared/appearance-font.js";
 import {
-  isMarketplaceEligibleLocale,
+  isOfficialPackageLocale,
   normalizeLocaleSetting,
 } from "../i18n/index.js";
 import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
@@ -888,7 +888,7 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   );
   merged.installedLanguagePacks = uniqueValidList(
     raw.installedLanguagePacks,
-    isMarketplaceEligibleLocale,
+    isOfficialPackageLocale,
   );
   merged.updateCheckEnabled = typeof raw.updateCheckEnabled === "boolean"
     ? raw.updateCheckEnabled

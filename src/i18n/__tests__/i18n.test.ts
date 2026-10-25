@@ -1,14 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_LOCALE,
-  DEFAULT_VISIBLE_LOCALES,
-  MARKETPLACE_ELIGIBLE_LOCALES,
+  OFFICIAL_PACKAGE_LOCALES,
   SUPPORTED_LOCALES,
   isDefaultVisibleLocale,
   isLocale,
-  isMarketplaceEligibleLocale,
+  isOfficialPackageLocale,
   normalizeLocale,
-  recommendedMarketplaceLocaleForSystem,
   registerInstalledLocales,
   visibleLocalesFor,
 } from "../locale.js";
@@ -59,18 +57,26 @@ describe("locale", () => {
     expect(isLocale(null)).toBe(false);
   });
 
-  it("shows only English in the default language surface", () => {
-    expect(DEFAULT_VISIBLE_LOCALES).toEqual(["en"]);
+  it("shows every compiled locale without installing packages", () => {
+    expect(visibleLocalesFor()).toEqual(["en", "ko"]);
     expect(isDefaultVisibleLocale("en")).toBe(true);
-    expect(isDefaultVisibleLocale("ko")).toBe(false);
-    expect(MARKETPLACE_ELIGIBLE_LOCALES).toEqual(["ko"]);
-    expect(isMarketplaceEligibleLocale("ko")).toBe(true);
-    expect(isMarketplaceEligibleLocale("en")).toBe(false);
-    expect(isMarketplaceEligibleLocale("it")).toBe(false);
+    expect(isDefaultVisibleLocale("ko")).toBe(true);
+    expect(OFFICIAL_PACKAGE_LOCALES).toEqual(["ko"]);
+    expect(isOfficialPackageLocale("ko")).toBe(true);
+    expect(isOfficialPackageLocale("en")).toBe(false);
+    expect(isOfficialPackageLocale("it")).toBe(false);
     expect(visibleLocalesFor(["ko-KR"])).toEqual(["en", "ko"]);
-    expect(recommendedMarketplaceLocaleForSystem("ko-KR")).toBe("ko");
-    expect(recommendedMarketplaceLocaleForSystem("ko-KR", ["ko"])).toBeUndefined();
-    expect(recommendedMarketplaceLocaleForSystem("en-US")).toBeUndefined();
+  });
+
+  it("lists a third-party locale only while its package is installed", () => {
+    expect(visibleLocalesFor(["fr"])).toEqual(["en", "ko"]);
+    registerInstalledLocales([{ locale: "fr", nativeName: "Français", englishName: "French" }]);
+    try {
+      expect(visibleLocalesFor(["fr"])).toEqual(["en", "ko", "fr"]);
+    } finally {
+      registerInstalledLocales([]);
+    }
+    expect(visibleLocalesFor(["fr"])).toEqual(["en", "ko"]);
   });
 
   it("normalizeLocale coerces region tags and falls back to default", () => {
@@ -135,12 +141,12 @@ describe("translate", () => {
     }
   });
 
-  it("keeps marketplace language-pack locales lazy until explicitly loaded", () => {
+  it("keeps compiled non-default locales lazy until explicitly loaded", () => {
     expect(isLocaleMessagesLoaded("en")).toBe(true);
     expect(isLocaleMessagesLoaded("ko")).toBe(false);
   });
 
-  it("loads Korean as a language-pack catalog on demand", async () => {
+  it("loads the compiled Korean catalog on demand", async () => {
     expect(isLocaleMessagesLoaded("ko")).toBe(false);
 
     await loadLocaleMessages("ko");
