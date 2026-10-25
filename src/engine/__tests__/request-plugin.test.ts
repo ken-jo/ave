@@ -1,12 +1,3 @@
-/**
- * Phase 1.5 Option C — request_plugin meta-tool integration.
- *
- * Verifies:
- *   1. Calling request_plugin activates the plugin and (below the eager
- *      ceiling, #1176) exposes its FULL tool suite eagerly in the next round.
- *   2. Unknown pluginId returns an error tool_result without mutating scope.
- *   3. MAX_PLUGIN_EXPANSION (=2) is enforced per turn.
- */
 import { describe, it, expect, vi } from "vitest";
 
 import { InputClassifier } from "../../core/input-classifier.js";
@@ -42,12 +33,10 @@ function makeLoop(opts: {
   forcedActiveToolNames?: string[];
   extraPluginTools?: Array<{ pluginId: string; name: string }>;
   deniedToolPatterns?: string[];
-  /** Spy wired onto the pluginRuntime mock to prove the session-activation
-   *  path never persists enabled state. */
+  // Session activation must not persist the plugin enabled state.
   setPluginEnabled?: (pluginId: string, enabled: boolean) => Promise<void>;
 }): ConversationLoop {
   const toolRegistry = new ToolRegistry();
-  // request_plugin builtin (source=builtin so scope filter includes it)
   toolRegistry.register(createDynamicTool({
     name: "request_plugin",
     description: "활성화 요청",
@@ -76,7 +65,6 @@ function makeLoop(opts: {
     execute: async () => ({ output: "unreachable", isError: false }),
   }),
   );
-  // Plugin tools gated by their plugin catalog scope.
   toolRegistry.register(createDynamicTool({
     name: "meeting_start",
     description: "회의 시작",
@@ -158,7 +146,6 @@ function makeLoop(opts: {
 describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
   it("activates a plugin and exposes its full tool suite eagerly (#1176)", async () => {
     const provider = new RecordingProvider([
-      // Round 0: LLM asks to activate meeting plugin.
       [
         {
           type: "tool_call",
@@ -181,17 +168,13 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
       inputOrigin: "user-keyboard",
     });
     expect(result.text).toBe("활성화 완료");
-    // Round 0 (before activation) should NOT have meeting_start available.
     expect(provider.observedToolNames[0]).not.toContain("meeting_start");
-    // #1176: below the eager ceiling, activation loads the plugin's whole suite
-    // directly — no tool_search needed.
+    // Below the eager ceiling, activation exposes the full suite without tool_search.
     expect(provider.observedToolNames[1]).toContain("meeting_start");
     const messages = loop.getHistory().getMessages();
     const toolResult = messages.find((m) => m.role === "tool_result") as
       | { content: string }
       | undefined;
-    // The activation message tells the model the tools are loaded, not that it
-    // must call tool_search.
     expect(toolResult?.content).toContain("모두 로드됨");
     expect(toolResult?.content).not.toContain("tool_search");
   });
@@ -403,7 +386,6 @@ describe("ConversationLoop — request_plugin meta tool (Option C)", () => {
   });
 
   it("enforces MAX_PLUGIN_EXPANSION (=2) per turn", async () => {
-    // Ensure 3 available plugins; third activation must be rejected.
     const provider = new RecordingProvider([
       [
         {
@@ -514,7 +496,6 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
   it("activates an allow-listed DISABLED plugin for the session WITHOUT persisting (non-persistent)", async () => {
     const setPluginEnabled = vi.fn(async () => {});
     const provider = new RecordingProvider([
-      // Turn 1, round 0: LLM requests the registry-disabled (but allow-listed) plugin.
       [
         {
           type: "tool_call",
@@ -524,13 +505,11 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
         },
         { type: "message_complete", stopReason: "tool_use" },
       ],
-      // Turn 1, round 1: same turn, post-activation — its tools must be loaded.
       [
         { type: "text_delta", text: "활성화 완료" },
         { type: "message_complete", stopReason: "end_turn" },
       ],
-      // Turn 2, round 0: NO new request_plugin — Gate 3 must keep the
-      // session-activated plugin in scope (carry-forward across turns).
+      // Session activation must carry plugin scope across later turns.
       [
         { type: "text_delta", text: "다음 턴" },
         { type: "message_complete", stopReason: "end_turn" },
@@ -539,8 +518,8 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
     const loop = makeLoop({
       provider,
       availablePluginIds: ["local-indexer"],
-      inactivePluginIds: ["local-indexer"], // registry-disabled
-      allowedPluginIds: ["local-indexer"], // routine session allow-list
+      inactivePluginIds: ["local-indexer"],
+      allowedPluginIds: ["local-indexer"],
       setPluginEnabled,
     });
 
@@ -551,15 +530,10 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
       inputOrigin: "user-keyboard",
     });
 
-    // Round 0 (before activation): the disabled plugin's tool is hidden.
     expect(provider.observedToolNames[0]).not.toContain("index_scan_status");
-    // Round 1 (same turn, after session-activation): its tool IS callable.
     expect(provider.observedToolNames[1]).toContain("index_scan_status");
-    // Round 2 (next turn, no re-request): still in scope — Gate 3 skipped the
-    // disabled-drop for the session-activated id.
     expect(provider.observedToolNames[2]).toContain("index_scan_status");
 
-    // Activation succeeded (not an error tool_result).
     const toolResult = loop
       .getHistory()
       .getMessages()
@@ -568,9 +542,7 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
       | undefined;
     expect(toolResult?.isError).not.toBe(true);
 
-    // NON-PERSISTENCE invariant: the session-activation path NEVER calls
-    // setPluginEnabled, so the registry entry stays enabled:false. If this path
-    // ever persisted, this assertion fails.
+    // Session activation must leave the registry enabled state unchanged.
     expect(setPluginEnabled).not.toHaveBeenCalled();
   });
 
@@ -590,7 +562,6 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    // local-indexer is allow-listed; meeting is disabled AND NOT allow-listed.
     const loop = makeLoop({
       provider,
       availablePluginIds: ["local-indexer", "com.example.meeting"],
@@ -630,7 +601,6 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    // No allowedPluginIds → main chat. The plugin is disabled.
     const loop = makeLoop({
       provider,
       availablePluginIds: ["local-indexer"],
@@ -642,7 +612,6 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
       inputOrigin: "user-keyboard",
     });
 
-    // Disabled plugin's tool never visible and request_plugin is rejected.
     expect(provider.observedToolNames[0]).not.toContain("index_scan_status");
     expect(provider.observedToolNames[1]).not.toContain("index_scan_status");
     const toolResult = loop
@@ -657,28 +626,11 @@ describe("ConversationLoop — session-scoped on-demand activation (Option C, di
   });
 });
 
-/**
- * Carried-forward scope invalidation on disable — WITHOUT `onPluginDisabled`.
- *
- * Only the MAIN chat loop is reachable from the plugin runtime's `onDisable`
- * hook (`lateBinding.conversationLoopRef.fn` is assigned the main loop only, in
- * `src/boot/steps/conversation-wiring.ts`). The side-chat loop — and every
- * routine loop — is therefore NEVER told that a plugin was disabled, yet each
- * one carries `lastTurnScope` forward across turns.
- *
- * That is safe because `resolveToolScope` re-reads `pluginRuntime.isPluginEnabled`
- * on EVERY turn (`src/engine/turn/tool-scope.ts`) and drops now-disabled plugins
- * from the carried-forward set. `onPluginDisabled` is a redundant fast-path, not
- * the authority. These tests pin that: the loops below never call
- * `onPluginDisabled`, exactly like the side-chat loop in production.
- */
+// Loops without disable callbacks must re-read runtime enabled state before carrying scope forward.
 describe("ConversationLoop — disable invalidates carried-forward scope without onPluginDisabled", () => {
   it("drops a session-activated plugin the turn after it is disabled (side-chat shape)", async () => {
-    // Mutable so the runtime mock reports the disable BETWEEN turns, the way a
-    // real toggle does — the loop is never notified.
     const inactivePluginIds: string[] = [];
     const provider = new RecordingProvider([
-      // Turn 1 round 1 — the model activates the plugin for this session.
       [
         {
           type: "tool_call",
@@ -688,20 +640,16 @@ describe("ConversationLoop — disable invalidates carried-forward scope without
         },
         { type: "message_complete", stopReason: "tool_use" },
       ],
-      // Turn 1 round 2 — suite is live, so lastTurnScope carries it forward.
       [
         { type: "text_delta", text: "활성화됨" },
         { type: "message_complete", stopReason: "end_turn" },
       ],
-      // Turn 2 — after the disable.
       [
         { type: "text_delta", text: "계속" },
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    // Side-chat shape: no allowedPluginIds (main-chat-equivalent gating) and no
-    // forcedActivePluginIds, so `lastTurnScope` is the ONLY thing that can put
-    // the plugin into turn 2's scope.
+    // With no forced or allowed plugin IDs, only carried scope can expose the plugin next turn.
     const loop = makeLoop({
       provider,
       availablePluginIds: ["com.example.meeting"],
@@ -711,15 +659,12 @@ describe("ConversationLoop — disable invalidates carried-forward scope without
     await loop.runTurn("회의 정리해줘", undefined, undefined, {
       inputOrigin: "user-keyboard",
     });
-    // Positive control — the plugin really was in scope and really did carry
-    // forward, so turn 2's assertion is not vacuous.
     expect(provider.observedToolNames[1]).toContain("meeting_start");
     expect(
       (loop as unknown as { lastTurnScope: Set<string> | null }).lastTurnScope,
     ).toContain("com.example.meeting");
 
-    // The user toggles the plugin off. NOTE: `onPluginDisabled` is deliberately
-    // NOT called — this loop is not wired to the runtime's onDisable hook.
+    // Omit the disable callback to match loops not wired to the runtime notification.
     inactivePluginIds.push("com.example.meeting");
 
     await loop.runTurn("계속 진행해줘", undefined, undefined, {
@@ -727,7 +672,6 @@ describe("ConversationLoop — disable invalidates carried-forward scope without
     });
 
     expect(provider.observedToolNames[2]).not.toContain("meeting_start");
-    // The turn really ran with a non-empty surface — builtins are unaffected.
     expect(provider.observedToolNames[2]).toContain("request_plugin");
   });
 
@@ -765,9 +709,7 @@ describe("ConversationLoop — disable invalidates carried-forward scope without
       inputOrigin: "user-keyboard",
     });
 
-    // No disable happened → carry-forward is what keeps it visible. This is the
-    // assertion that fails if carry-forward is broken outright, so the test
-    // above cannot pass merely because scope is always empty on turn 2.
+    // The unchanged-plugin control prevents an always-empty carried scope from passing.
     expect(provider.observedToolNames[2]).toContain("meeting_start");
   });
 });

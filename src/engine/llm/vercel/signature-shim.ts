@@ -1,35 +1,9 @@
 import { createLogger } from "../../../lib/logger.js";
 const log = createLogger("signature-shim");
 
-/**
- * Anthropic extended-thinking signature extraction shim.
- *
- * Context: Vercel AI SDK has had edge cases where the reasoning `signature`
- * field was not consistently surfaced on stream parts, breaking Anthropic's
- * requirement that thinking blocks be echoed verbatim (with signature) when a
- * tool_use is in-flight.
- *
- * Issue trail:
- *   - #11688 (MERGED into ai@6.0.132): fixes signature loss on the smoothStream
- *     primary path. Our pin `ai@~6.0.168` includes this.
- *   - #12433 (OPEN): empty-buffer edge case where final reasoning chunk has
- *     no text but still carries a signature — can still be dropped in niche
- *     conditions. This shim guards that path.
- *
- * Behavior: log-and-skip thinking blocks whose signature is missing/empty.
- * Safer than sending a tampered echo.
- */
+// Skip unsigned thinking blocks rather than replay an invalid signed echo.
 
-/**
- * Extract signature from a Vercel reasoning stream part or reasoning content
- * part. Returns null (and logs a warning) if the signature is missing — the
- * thinking block must then be skipped in the next-turn echo, since Anthropic
- * rejects thinking blocks without verbatim signatures.
- *
- * Ask this only about parts from the Anthropic wire. No other provider sets a
- * signature, so asking about theirs turns the warning into a per-block
- * certainty and it stops carrying information.
- */
+/** Inspect only signed-wire parts; missing signatures require skipping the next-turn echo. */
 export function extractSignatureSafely(
   reasoningPart: unknown,
 ): string | null {

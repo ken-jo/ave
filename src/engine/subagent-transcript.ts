@@ -1,27 +1,5 @@
-/**
- * SubAgentTranscriptAccumulator — builds a `ChatEntry[]` for a sub-agent's
- * child {@link ConversationLoop} from its per-round turn callbacks, using the
- * SAME pure reducers the main chat renderer uses
- * (`lib/chat-stream-state.ts`). This is what lets the sub-agent tab render
- * through the shared `TranscriptRenderer` with a transcript that is visually
- * identical to the main chat (tool cards, reasoning cards, assistant text).
- *
- * ── Why this lives in the engine (main process) ──
- * The sub-agent runs out-of-band: its activity never flows through the
- * persisted main `chat.stream` channel, so there is no renderer-side reducer
- * to build its `ChatEntry[]`. We reconstruct the array here at the source and
- * forward whole snapshots on the `ave:agent-spawn:event` channel. This keeps a
- * single SOT model (`ChatEntry`) across live + persisted paths.
- *
- * ── DLP (spec line-item #5) ──
- * The child loop's tool RESULTS and reasoning THOUGHTS are NOT masked anywhere
- * else (the main chat.stream forwards them verbatim to the trusted renderer,
- * but this snapshot is a NEW persisted + forwarded surface). Every child tool
- * result and every reasoning/assistant text is run through
- * {@link maskSensitiveData} before it enters an entry. Tool INPUTS are already
- * masked by the executor's `emitToolStart` (display-mask.ts), so they arrive
- * pre-masked and are stored as-is.
- */
+// Build child transcript snapshots with the shared renderer reducers outside the main stream.
+// Mask results, thoughts, and text here; executor inputs arrive already masked.
 import { maskSensitiveData } from "../audit/dlp-filter.js";
 import {
   applyReasoningDelta,
@@ -46,26 +24,16 @@ type AssistantRound = Parameters<NonNullable<TurnCallbacks["onAssistantRound"]>>
 
 export class SubAgentTranscriptAccumulator {
   private entries: ChatEntry[] = [];
-  /**
-   * RAW reasoning text accumulated across this round's deltas.
-   *
-   * Kept raw because masking must run over the ACCUMULATION, never over a
-   * single delta: a secret split across two chunks matches no pattern in
-   * either half, so per-delta masking would leak exactly the values DLP
-   * exists to catch. `upsertStreamingReasoning` replaces the entry's text
-   * wholesale anyway, so whole-text masking is also the natural shape here.
-   * Reset at each round boundary.
-   */
+  // Mask accumulated reasoning, never individual deltas: secrets can span chunk boundaries.
+  // Reset raw accumulation at each round boundary.
   private roundReasoning = "";
 
-  /** Immutable snapshot of the child transcript so far. */
   snapshot(): ChatEntry[] {
     return this.entries;
   }
 
   onToolStart(name: string, input: Record<string, unknown>, meta: ToolCallMeta): void {
-    // `input` arrives already DLP-masked from the executor (emitToolStart), so
-    // we store it verbatim — double-masking would corrupt already-redacted text.
+    // Executor inputs are already masked; masking again can corrupt redacted text.
     this.entries = applyToolStart(dropPendingLlmStatusAssistant(this.entries), {
       groupId: meta.groupId,
       toolUseId: meta.toolUseId,
@@ -87,15 +55,8 @@ export class SubAgentTranscriptAccumulator {
     uiPayload: McpUiPayload | undefined,
     durationMs: number,
   ): void {
-    // Child tool RESULTS are unmasked at this boundary — mask before persist.
-    // `title` is a free-text server-authored label that enters this NEW
-    // persisted+forwarded snapshot, so it is DLP-masked like every other
-    // child-authored text field. Every other field is a host-minted or
-    // structural identifier (masking a URI would corrupt it), left verbatim —
-    // `generationId` in particular is minted by the host in `PluginMcpHost`,
-    // never child-authored, and the loopback resolver hard-fails a card
-    // without it, so dropping it renders a dead card in the sub-agent
-    // transcript.
+    // Mask result text and server titles before persistence; preserve structural IDs and URIs.
+    // Keep host-minted generationId so transcript cards resolve their backend.
     const storedUiPayload: McpUiPayload | undefined = uiPayload
       ? {
           ...uiPayload,
@@ -136,20 +97,7 @@ export class SubAgentTranscriptAccumulator {
     });
   }
 
-  /**
-   * One reasoning delta from the child's stream — the live half of what
-   * {@link onAssistantRound} later folds.
-   *
-   * The child's thinking was only ever visible at the round boundary, so the
-   * sub-agent panel sat blank for the whole time the child was actually
-   * thinking and then showed a finished thought. Feeding the same streaming
-   * reasoning entry the parent chat uses makes "Thinking…" appear while it is
-   * true.
-   *
-   * Purely additive to what is kept: the round fold below still overwrites this
-   * entry with the round's own `thought`, so the settled transcript — the one
-   * that gets persisted and replayed — is byte-identical to before.
-   */
+  /** Show live reasoning while the child thinks, then replace it with the completed round thought. */
   onReasoningDelta(delta: string): void {
     if (!delta) return;
     this.roundReasoning += delta;
@@ -158,11 +106,7 @@ export class SubAgentTranscriptAccumulator {
     this.entries = applyReasoningDelta(this.entries, masked);
   }
 
-  /**
-   * Show a retry or fallback while the child has not produced real work. The
-   * shared transcript reducer owns replacement once reasoning, text, tools, or
-   * a permission review arrives.
-   */
+  // Retry status yields to real reasoning, text, tool, or permission-review content.
   onLlmStatus(status: FallbackStatus): boolean {
     const message = formatLlmStatusMessage(status);
     if (!message) return false;
@@ -172,11 +116,7 @@ export class SubAgentTranscriptAccumulator {
     return true;
   }
 
-  /**
-   * A terminal child result has no next stream frame to supersede a retry or
-   * fallback placeholder. Clear that status-only entry before publishing the
-   * final snapshot so it cannot be persisted as indefinitely streaming work.
-   */
+  // Terminal snapshots must clear status-only entries because no later stream frame will replace them.
   finish(): boolean {
     const next = dropPendingLlmStatusAssistant(this.entries);
     if (next === this.entries) return false;
@@ -184,12 +124,7 @@ export class SubAgentTranscriptAccumulator {
     return true;
   }
 
-  /**
-   * Fold one completed assistant round into the transcript: the round's
-   * reasoning (thought) becomes a finalized reasoning entry, and the round's
-   * text becomes a finalized assistant entry. Both are DLP-masked. Called once
-   * per round boundary from the child loop's `onAssistantRound`.
-   */
+  /** Finalize each round reasoning and text through DLP before adding transcript entries. */
   onAssistantRound(
     thought: string,
     text: string,
@@ -202,17 +137,12 @@ export class SubAgentTranscriptAccumulator {
     if (maskedThought) {
       this.entries = upsertStreamingReasoning(this.entries, maskedThought);
     }
-    // Unconditional, unlike the upsert: a provider that streams reasoning
-    // deltas but reports an empty round `thought` would otherwise leave the
-    // streaming entry spinning "Thinking…" forever. With no streaming entry
-    // and no thought this is a no-op, so the no-delta path is unchanged.
+    // Clear live reasoning even when final thought is empty, or its spinner never stops.
     this.entries = finalizeStreamingReasoning(this.entries, maskedThought);
     const maskedText = text ? maskSensitiveData(text).masked : "";
     if (maskedText) {
       this.entries = upsertStreamingAssistant(this.entries, maskedText);
-      // A child transcript has no turn_summary carrier. Preserve the round's
-      // own completion boundary so the shared renderer cannot mislabel partial
-      // max-token/tool work as a completed response.
+      // Preserve round completion boundaries; child transcripts have no turn_summary carrier.
       const phase = stopReason === "end_turn" && !hasToolCalls ? "final" : "work";
       this.entries = finalizeStreamingAssistant(this.entries, maskedText, {
         phase,

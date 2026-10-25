@@ -1,13 +1,4 @@
-/**
- * O-1: compaction-path observability.
- *
- * `runPreflightGuard` decides fired / skipped / not-reached on every turn but
- * previously emitted nothing to `~/.ave/traces` — the only way to answer "is
- * compaction running?" was to reverse-engineer it from raw token telemetry.
- * These tests assert the `PREFLIGHT_GUARD` (+ `COMPACTION_RESULT` on the fired
- * path) trace steps carry the decision, without asserting on log lines or
- * prompt/message content.
- */
+// Trace compaction decisions without recording prompt or message content.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { makeHistoryExceedingEstimateThreshold } from "../../__tests__/conversation-loop-test-helpers.js";
 import { ConversationLoop } from "../../conversation-loop.js";
@@ -27,8 +18,6 @@ import {
   makeSyntheticCompactResult,
 } from "../../__tests__/conversation-loop-test-helpers.js";
 
-// vi.mock is hoisted — intercept compactWithBoundary so the fired path
-// resolves without a real LLM call (same pattern as conversation-loop-preflight.test.ts).
 vi.mock("../../structured-compact.js", () => ({
   DEFAULT_PRESERVE_RECENT_TURNS: 5,
   compactWithBoundary: vi.fn(),
@@ -51,7 +40,6 @@ class RecordingTracer implements ConversationTracer {
     this.steps.push({ name, meta });
   }
 }
-
 
 describe("PREFLIGHT_GUARD trace step — fired path", () => {
   it("emits PREFLIGHT_GUARD(fired) then COMPACTION_RESULT(applied) with threshold + source, no message content", async () => {
@@ -94,15 +82,10 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
       compactNum: expect.any(Number),
     });
 
-    // Diagnostic only — never the conversation content.
+    // Diagnostics must contain no conversation content.
     expect(JSON.stringify(rec.steps)).not.toContain("a".repeat(50));
   });
 
-  /**
-   * A settings double whose `llm` block is the one the route actually reads:
-   * the vendor block carries the declared window, and `modelListCache` carries
-   * the row a `/models` handshake left behind.
-   */
   function makeWindowSettings(overrides: {
     contextWindow?: number;
     reportedContextLength?: number;
@@ -191,10 +174,7 @@ describe("PREFLIGHT_GUARD trace step — fired path", () => {
   });
 
   it("names the fallback window as a fallback when no source knows the model", async () => {
-    // The budget for a model nothing knows rests on the conservative 128K
-    // guess. A reader of the trace has to be able to tell that apart from a
-    // budget the catalog or the provider actually answered for, or a served
-    // model with a 229K window looks like it was compacted on purpose.
+    // Trace whether capacity is a conservative fallback or reported model knowledge.
     const settings = makeSettings(true, "a-model-no-catalog-knows", "openai-compatible");
     const threshold = getModelPreflightThreshold("openai-compatible", "a-model-no-catalog-knows");
     const history = makeHistoryExceedingEstimateThreshold(threshold);

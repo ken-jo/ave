@@ -1,15 +1,3 @@
-/**
- * C1 gap-lock — ConversationLoop.handlePermissionCommand branch coverage.
- *
- * `handlePermissionCommand` fans a `/permission ...` slash out to
- * `dispatchPermissionSlash` and then renders each outcome kind. The
- * `mode`-change success path is already covered by
- * `conversation-loop-permission-mode.test.ts`; this file locks the OTHER
- * branches (parse-error, show-current, no-manager / no-logger guards, the
- * rules add/remove/list paths, and the non-user-origin "unhandled" branch)
- * against the CURRENT implementation. The method is private, so it is invoked
- * directly through a cast — every assertion pins observable current behavior.
- */
 import { describe, expect, it, vi } from "vitest";
 
 import { ConversationLoop, type ConversationLoopDeps } from "../conversation-loop.js";
@@ -73,8 +61,7 @@ describe("ConversationLoop.handlePermissionCommand", () => {
   });
 
   it("audit branch without an auditLogger returns the no-logger guard", async () => {
-    // makeConversationLoopDeps supplies no `auditLogger`, so `this.deps.auditLogger`
-    // is undefined and the audit branch short-circuits.
+    // No audit logger is supplied, so this fixture exercises the unaudited branch.
     const loop = makeLoop();
     const result = await callPermission(loop, "audit show");
     expect(result).toBe(t("be_conversationLoop.permissionAuditNoLogger"));

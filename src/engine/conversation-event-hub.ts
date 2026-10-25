@@ -1,42 +1,24 @@
-/**
- * A process-local, vendor-neutral event hub for one or more conversation
- * surfaces. Transport adapters own authentication, authorization, projection,
- * and serialization; this module owns only ordered in-memory delivery.
- */
+/** Own ordered in-memory delivery; adapters own authentication, projection, and serialization. */
 
-/** Stable wire version for {@link ConversationEventEnvelope}. */
 export const CONVERSATION_EVENT_PROTOCOL_VERSION = 1 as const;
 
 export type ConversationEventProtocolVersion =
   typeof CONVERSATION_EVENT_PROTOCOL_VERSION;
 
-/**
- * A payload supplied by a producer. Payloads must be structured-cloneable so
- * the hub can keep every producer and subscriber isolated from one another.
- */
+// Payloads must be structured-cloneable to isolate producers and subscribers.
 export type ConversationEventPayload = unknown;
 
-/** Input used to publish one event into a conversation session. */
 export interface ConversationEventInput<TPayload = ConversationEventPayload> {
-  /** Opaque, host-owned conversation/session identity. */
   readonly sessionId: string;
-  /** Vendor-neutral event name, for example `assistant.delta` or `turn.done`. */
   readonly channel: string;
-  /** Opaque structured-cloneable data. Projection belongs to surface adapters. */
+  // Projection belongs to surface adapters, not the opaque payload.
   readonly payload: TPayload;
-  /** Optional host-owned turn identity. */
   readonly turnId?: string;
-  /** Set false for a live-only event that must not occupy the replay window. */
+  // Live-only events do not occupy the replay window.
   readonly replay?: boolean;
 }
 
-/**
- * Versioned event envelope delivered to every matching surface adapter.
- *
- * `cursor` is monotonically increasing within `sessionId`; it is not a global
- * ordering across sessions. `eventId` is deterministic for a hub lifetime and
- * is suitable as a stable deduplication key together with its session.
- */
+/** Cursors order one session, not all sessions; event IDs deduplicate within the hub lifetime. */
 export interface ConversationEventEnvelope<
   TPayload = ConversationEventPayload,
 > {
@@ -50,30 +32,21 @@ export interface ConversationEventEnvelope<
   readonly payload: TPayload;
 }
 
-/**
- * A synchronous listener owned by a display, CLI, bot, or other surface adapter.
- * Async work must be queued by the adapter so rejected promises cannot escape the
- * hub's isolated synchronous delivery loop.
- */
+/** Listeners are synchronous; adapters must queue async work and handle its rejections. */
 export type ConversationEventListener = (
   event: ConversationEventEnvelope,
 ) => void;
 
-/** Optional filter and bounded replay delivery for one subscriber. */
 export interface ConversationEventSubscriptionOptions {
-  /** Limit live delivery, and optional replay, to exactly one session. */
+  // Session filters apply to live delivery and replay.
   readonly sessionId?: string;
-  /** Receive retained events strictly after this session-local cursor. */
+  // Replay excludes this session-local cursor itself.
   readonly afterCursor?: number;
-  /** Deliver retained events before future live events. Defaults to `none`. */
+  // Replay precedes live events and is disabled by default.
   readonly replay?: "none" | "available";
 }
 
-/**
- * A bounded replay read. When `snapshotRequired` is true, an adapter must
- * obtain host-owned current session state before treating the returned events
- * as a complete catch-up.
- */
+/** snapshotRequired means the adapter must fetch host state before treating replay as complete. */
 export interface ConversationEventReplay {
   readonly sessionId: string;
   readonly afterCursor: number | null;
@@ -83,41 +56,33 @@ export interface ConversationEventReplay {
   readonly events: readonly ConversationEventEnvelope[];
 }
 
-/** A subscription plus its initial replay status, if it is session-scoped. */
 export interface ConversationEventSubscription {
   readonly replay: ConversationEventReplay | undefined;
-  /** Idempotently stop future delivery to this adapter. */
   unsubscribe(): void;
 }
 
 export interface ConversationEventHubOptions {
-  /** Maximum retained events per session; defaults to 256 and may be zero. */
+  // Zero disables retention; the default is 256 events per session.
   readonly replayLimitPerSession?: number;
-  /**
-   * Maximum tracked session states before inactive least-recently-used state is
-   * evicted. Session-scoped subscribers pin their own state until unsubscribe.
-   */
+  // Scoped subscribers pin state; inactive session states are evicted by LRU.
   readonly maxTrackedSessions?: number;
-  /** Test seam for envelope timestamps. Must return a finite number. */
+  // Timestamp seams must return finite numbers.
   readonly now?: () => number;
 }
 
 export interface ConversationEventHub {
-  /** Publish one event and synchronously fan it out to matching subscribers. */
   publish<TPayload>(
     input: ConversationEventInput<TPayload>,
   ): ConversationEventEnvelope<TPayload>;
-  /** Subscribe a surface adapter. A throwing listener is isolated from others. */
+  // A throwing subscriber must not block other surfaces.
   subscribe(
     listener: ConversationEventListener,
     options?: ConversationEventSubscriptionOptions,
   ): ConversationEventSubscription;
-  /** Read the bounded retained tail for one session without subscribing. */
   read(
     sessionId: string,
     options?: { readonly afterCursor?: number },
   ): ConversationEventReplay;
-  /** Number of currently active surface adapters. */
   subscriberCount(): number;
 }
 
@@ -137,11 +102,7 @@ type Subscriber = {
 const DEFAULT_REPLAY_LIMIT_PER_SESSION = 256;
 const DEFAULT_MAX_TRACKED_SESSIONS = 256;
 
-/**
- * Create an empty conversation event hub. It deliberately has no transport,
- * auth, persistence, or privacy policy knowledge: adapters must enforce those
- * concerns before publishing and before rendering received payloads.
- */
+/** Adapters enforce authentication and privacy before publishing or rendering hub payloads. */
 export function createConversationEventHub(
   options: ConversationEventHubOptions = {},
 ): ConversationEventHub {
@@ -233,10 +194,7 @@ export function createConversationEventHub(
     const oldestRetainedCursor = session?.events[0]?.cursor ?? null;
     const snapshotRequired = afterCursor !== null && (
       hasReplayGap(afterCursor, latestCursor, oldestRetainedCursor)
-      // Once the bounded tombstone LRU has aged out any state, an unknown
-      // session ID might be that forgotten session. A cursor-bearing caller
-      // must obtain a host snapshot instead of treating an empty read as a
-      // complete catch-up.
+      // After tombstone eviction, unknown cursor-bearing sessions require a snapshot.
       || (session === undefined && tombstoneLatestCursor === undefined
         && hasForgottenCursorTombstone)
     );
@@ -292,8 +250,7 @@ export function createConversationEventHub(
       ? undefined
       : read(sessionId, { afterCursor });
     if (subscribeOptions.replay === "available" && replay !== undefined && replay.events.length > 0) {
-      // Queue all replay frames before the first callback. A listener may
-      // publish re-entrantly, and those live events must follow the replay tail.
+      // Queue the entire replay tail before callbacks can publish re-entrant live events.
       subscriber.pending.push(...replay.events);
       drainSubscriber(subscriber);
     }
@@ -324,12 +281,10 @@ export function createConversationEventHub(
         const event = subscriber.pending.shift();
         if (!event) continue;
         try {
-          // Each surface gets its own detached snapshot. A mutation or throw in
-          // one adapter cannot change the canonical event or another adapter.
+          // Detach each subscriber snapshot so one mutation or throw cannot affect another.
           subscriber.listener(cloneEnvelope(event));
         } catch {
-          // Surface adapters are best-effort observers. Error handling belongs
-          // to the adapter; one broken listener must not block the runtime.
+          // Observer failures must not block the runtime.
         }
       }
     } finally {
@@ -347,16 +302,14 @@ export function createConversationEventHub(
   function getCursorTombstone(sessionId: string): number | undefined {
     const latestCursor = cursorTombstones.get(sessionId);
     if (latestCursor === undefined) return undefined;
-    // Tombstones are also LRU so a recently resumed/read session keeps its
-    // exact cursor floor until it is either reactivated or becomes cold again.
+    // Tombstone LRU retains exact cursor floors for recently read or resumed sessions.
     cursorTombstones.delete(sessionId);
     cursorTombstones.set(sessionId, latestCursor);
     return latestCursor;
   }
 
   function touchSession(sessionId: string, session: StoredSession): void {
-    // Map insertion order is the LRU order. Delete first because Map#set on an
-    // existing key does not refresh its insertion position.
+    // Delete before set: updating an existing Map key does not refresh LRU order.
     sessions.delete(sessionId);
     sessions.set(sessionId, session);
   }
@@ -393,17 +346,13 @@ export function createConversationEventHub(
       );
       if (oldestInactiveSessionId === undefined) break;
       cursorTombstones.delete(oldestInactiveSessionId);
-      // From this point an unknown session ID may be an aged-out session. Seed
-      // it above the process-wide publication floor so its cursor/eventId can
-      // never collide with an earlier event for that ID.
+      // Seed forgotten sessions above the publication floor to prevent cursor or event ID collisions.
       hasForgottenCursorTombstone = true;
     }
   }
 
   function hasActiveScopedSubscriber(sessionId: string): boolean {
-    // An unscoped live listener observes every session, but cannot safely pin
-    // an unbounded set of historical session IDs. A scoped adapter explicitly
-    // owns this session's replay/cursor continuity for its active lifetime.
+    // Unscoped listeners cannot pin unbounded history; scoped subscriptions own replay continuity.
     return [...subscribers].some((subscriber) =>
       subscriber.active && subscriber.sessionId === sessionId
     );

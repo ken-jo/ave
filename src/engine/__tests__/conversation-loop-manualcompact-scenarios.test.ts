@@ -1,16 +1,3 @@
-/**
- * manualCompact — user-flow scenario suite for /compact slash command.
- *
- * Verifies behaviour from the user's perspective (not function-level):
- *   M3-B: no-op compact (removedCount=0) returns generic "not needed" message.
- *         Both genuine-small-history and structural-deadlock branches collapse
- *         to the same message — the "actionable deadlock guidance" approach
- *         was dropped because the right fix is the Gemini-style 3-layer
- *         compact pipeline (tracked as a follow-up rewrite issue) rather
- *         than telling the user to delete messages manually.
- *   M3-C: successful compact returns compacted=true + removedMessageCount.
- *   Trigger: manualCompact emits onCompactStarted with triggerSource="manual".
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { GenericMessage } from "../llm/types.js";
@@ -37,11 +24,8 @@ beforeEach(() => {
   vi.mocked(compactWithBoundary).mockClear();
 });
 
-// ─── Tests ────────────────────────────────────────────────────────────────────
-
 describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
   it("M3-B: removedCount=0 returns generic 'not needed' message (both small-history and deadlock branches)", async () => {
-    // Tiny history — well below 80% of preflight.
     const small: GenericMessage[] = [
       { role: "user", content: "hi" },
       { role: "assistant", content: "hello" },
@@ -115,8 +99,7 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
     await loop.resetAndResume("abe633f3-a47a-4758-874e-abe9160daf36");
     const provider = {
       ...makeProviderStub(),
-      // The fixture's inactive API-key provider remains Claude. The Codex
-      // subscription model must supply the compact threshold instead.
+      // The selected subscription model must own the threshold despite inactive API-key settings.
       subscriptionRuntime: {
         kind: "subscription" as const,
         provider: "codex" as const,
@@ -158,8 +141,7 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
       { role: "user", content: "question" },
       { role: "assistant", content: "answer" },
     ];
-    // The helper leaves the inactive API-key provider at Claude. ACP must not
-    // inherit its context window when the subscription exposes no model ID.
+    // Missing subscription model IDs must not borrow the inactive provider context window.
     const memoryReviewer = makeMemoryReviewer();
     const loop = new ConversationLoop(
       makeDeps({ memoryManager: makeMemoryManager(history), memoryReviewer }),
@@ -257,7 +239,6 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
   });
 });
 
-// #811 milestone-2 — PreCompact / PostCompact lifecycle events on the manual path.
 describe("manualCompact — #811 m2 PreCompact / PostCompact lifecycle events", () => {
   function stubManager() {
     return {

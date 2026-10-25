@@ -56,34 +56,14 @@ export type DeliverToParentResult =
 
 export type ParentWakeHandler = (parentSessionId: string) => Promise<void>;
 
-/**
- * In-process A2A-semantic child-to-parent bus.
- *
- * Delivery is mailbox-first. A running parent acknowledges only after the
- * round-boundary injection callback fires, so a late queue entry that is
- * dropped at turn end remains durable for the next turn.
- */
-/**
- * Wake-refusal reasons that are legitimate holds rather than stalls: the
- * mailbox entry's delivery is already owned by another mechanism (the active
- * turn's guidance injection and its turn-settled drain, or the in-flight
- * wake's completion drain). Everything else in wakeRefusalReasons is a HARD
- * refusal — nothing delivers until the outside world changes.
- */
+// Persist before delivery; acknowledge only after injection so dropped guidance remains durable.
+// Active guidance and in-flight wakes own delivery; other refusal reasons require an external change.
 const SOFT_WAKE_REFUSALS = new Set(["turn-active", "wake-in-flight"]);
 
 export class A2ASubAgentMessageBus {
   private wakeHandler: ParentWakeHandler | null = null;
   private readonly wakeInFlight = new Set<string>();
-  /**
-   * Per-parent progress token — "a stored delivery for this parent has not yet
-   * been reported as consumed". `drain` consumes it before dispatching a wake,
-   * which is the ONLY thing that bounds the loop: a wake that consumes nothing
-   * (a mailbox entry the receiving turn refused, an acknowledge that failed,
-   * a `prepareParentMailboxTurn` that fails closed) finds no token when it
-   * completes and therefore does not wake itself again. Peeking the mailbox
-   * instead would re-wake such a poisoned entry forever.
-   */
+  // Spend the per-parent dirty token before waking; mailbox contents alone cannot bound retries.
   private readonly wakeDirty = new Map<string, DeliverToParentInput>();
   private readonly ephemeralLeasesByEntryId = new Map<string, {
     parentSessionId: string;
@@ -156,8 +136,7 @@ export class A2ASubAgentMessageBus {
           entry.message.messageId,
         );
       } catch {
-        // Resolver failures may be transient. Do not inject or delete the
-        // durable entry; a later turn can retry the authoritative lookup.
+        // Lookup failures may be transient; retain the durable entry without injecting it.
         this.audit("warn", input, "dropped:storage-failed");
         continue;
       }
@@ -216,8 +195,7 @@ export class A2ASubAgentMessageBus {
       try {
         removed = await this.deps.mailbox.acknowledge(parentSessionId, rejectedIds);
       } catch {
-        // Copy-on-write mailbox persistence leaves every rejected entry
-        // durable on failure. They remain quarantined by the checks above.
+        // Failed copy-on-write persistence leaves rejected entries durable and quarantined.
       }
       if (removed !== rejectedIds.length) {
         for (const entry of rejected) {
@@ -334,9 +312,7 @@ export class A2ASubAgentMessageBus {
     }
     this.audit("info", deliveryInput, `stored:detections=${canonical.detectionCount}`);
     if (canonical.emptyBody) {
-      // The producer sent a report with no renderable content and the codec
-      // substituted a host-composed body. Never silent: an empty terminal
-      // delivery is a producer defect, and this is where it becomes visible.
+      // Audit empty producer reports even when the codec supplies a host-composed body.
       this.audit("warn", deliveryInput, "empty-body-fallback");
     }
 
@@ -348,10 +324,7 @@ export class A2ASubAgentMessageBus {
       });
     }
 
-    // The entry is durable from here on, so every path below owes it exactly
-    // one delivery attempt. Marking the parent dirty first means no branch can
-    // forget: a wake racing this store, a turn that ends before injection, and
-    // an outright refusal all converge on the same token for `drain` to spend.
+    // Mark durable delivery dirty before branching so every path owes one delivery attempt.
     this.wakeDirty.set(input.parentSessionId, deliveryInput);
 
     if (
@@ -362,8 +335,6 @@ export class A2ASubAgentMessageBus {
         wrapChildReportForParentJudgment(entry.formattedText),
         {
           approvalReasonPrefix: entry.approvalLabel,
-          // Structured provenance for the renderer: a child report is not the
-          // generic "injected from the message queue" chip.
           subAgentTitle: entry.childTitle,
           onInjected: () => this.acknowledgeParentMailbox(
             entry.parentSessionId,
@@ -371,12 +342,7 @@ export class A2ASubAgentMessageBus {
           )
             .then((removed) => {
               if (removed === 1) {
-                // The running turn consumed this delivery, so the token it
-                // minted is spent. Identity-matched on purpose: a later
-                // delivery may already own the slot, and its claim outranks
-                // this acknowledgement. Without this, every injected message
-                // would leave a token behind for the turn-settled drain to
-                // spend on a wake with nothing left to deliver.
+                // Clear only the acknowledged token; a newer delivery may already own the parent slot.
                 if (this.wakeDirty.get(entry.parentSessionId) === deliveryInput) {
                   this.wakeDirty.delete(entry.parentSessionId);
                 }
@@ -390,13 +356,9 @@ export class A2ASubAgentMessageBus {
             .catch(() => this.audit("warn", deliveryInput, "ack-failed")),
           onDropped: (reason) => {
             this.audit("warn", deliveryInput, `deferred:${reason}`);
-            // `turn-ended` needs nothing here: this callback runs inside the
-            // turn's own cleanup, whose turn-settled notification drains the
-            // very same token moments later.
+            // Turn cleanup will drain this token through its settlement notification.
             if (reason === "joined-limit") {
-              // The guidance was accepted into the active queue but could not
-              // join the next model call. Nothing else will carry it, so spend
-              // the token now; the lease-aware handler waits out the turn.
+              // Undeliverable queued guidance must spend its token through the lease-aware wake handler.
               this.drain(entry.parentSessionId);
             }
           },
@@ -413,51 +375,22 @@ export class A2ASubAgentMessageBus {
       : { ok: true, disposition: "mailbox", messageId: canonical.message.messageId };
   }
 
-  /**
-   * The parent's turn released the loop — retry whatever is still owed.
-   *
-   * This replaces the bus's old habit of inferring that transition from its
-   * own state. A message stored mid-turn but never injected (queue drop, ack
-   * failure, a turn that ended first) keeps its token, and this is the moment
-   * it becomes deliverable.
-   */
+  // Turn settlement retries owed delivery after the loop releases its lease.
   notifyTurnSettled(parentSessionId: string): void {
     this.drain(parentSessionId);
   }
 
-  /**
-   * The one wake trigger. Idle delivery, turn end, and wake completion all
-   * funnel here; none of them decides for itself whether to wake.
-   *
-   * Deliberately does NOT peek the mailbox: a non-empty mailbox cannot tell
-   * "work nobody has tried to deliver" apart from "work the last wake already
-   * tried and could not consume". Only the token carries that distinction, and
-   * spending it before dispatch is what bounds the wake. The cost of that
-   * choice is stated plainly: a wake whose turn refuses the entry (a
-   * fail-closed mailbox turn, a stop reason that withholds the
-   * acknowledgement) does not retry, and the entry waits for the next real
-   * trigger — a later delivery, or the mailbox fold on the user's next turn.
-   * Re-arming on non-consumption instead is precisely the infinite wake loop
-   * this design exists to prevent.
-   *
-   * @returns true when this call dispatched a wake.
-   */
+  /** Spend a dirty token before waking; never re-arm from unconsumed mailbox contents.
+   * Refused entries wait for a new delivery or the next manual turn. */
   private drain(parentSessionId: string): boolean {
     const input = this.wakeDirty.get(parentSessionId);
     if (input === undefined) return false;
 
     const refusals = this.wakeRefusalReasons(parentSessionId);
-    // `turn-active` alone never blocks: the host handler's first action is to
-    // await the live turn/session lease, so dispatching now is how an overflow
-    // during a running turn avoids degrading to manual-only. Every other
-    // refusal — including `wake-in-flight`, whose completion re-drains — means
-    // this call must not dispatch.
+    // Active turns do not block lease-aware dispatch; every other refusal does.
     const blocking = refusals.filter((reason) => reason !== "turn-active");
     if (blocking.length > 0) {
-      // HARD refusals (flag-off / session-mismatch / handler-unregistered)
-      // leave the message sitting until the user's next manual turn — the
-      // silent stall the field hit — so they are logged loudly. A held token
-      // is not lost: the next drain trigger re-evaluates it.
+      // Audit hard refusals; retain their token for re-evaluation on the next trigger.
       this.audit(
         blocking.every((reason) => SOFT_WAKE_REFUSALS.has(reason)) ? "info" : "warn",
         input,
@@ -466,13 +399,9 @@ export class A2ASubAgentMessageBus {
       return false;
     }
     const handler = this.wakeHandler;
-    // Unreachable in practice — `wakeRefusalReasons` already reported a null
-    // handler above — but the narrowing is what lets the call below be typed.
     if (handler === null) return false;
 
-    // Spend the token BEFORE dispatch. Deliveries that arrive while the wake
-    // runs set a fresh one and are picked up by the completion drain below;
-    // a wake that consumed nothing leaves the map empty and stops.
+    // Spend before dispatch; deliveries arriving during the wake mint the next token.
     this.wakeDirty.delete(parentSessionId);
     this.wakeInFlight.add(parentSessionId);
     try {
@@ -484,9 +413,7 @@ export class A2ASubAgentMessageBus {
           this.drain(parentSessionId);
         });
     } catch {
-      // A handler that throws before returning its promise never attached the
-      // cleanup above. Leaving the in-flight mark would refuse every future
-      // drain for this parent — now the only delivery path there is.
+      // Synchronous handler throws must clear in-flight state or every future drain is blocked.
       this.wakeInFlight.delete(parentSessionId);
       this.wakeDirty.set(parentSessionId, input);
       this.audit("warn", input, "wake-failed");
@@ -520,23 +447,11 @@ export class A2ASubAgentMessageBus {
   }
 
   private wakeFlagEnabled(): boolean {
-    // `?? false` only guards the optional `features` type; loadSettings
-    // materializes the block on every path. Collapses once AppSettings makes
-    // `features` required (follow-up).
+    // Settings materialize features; the default guards only its optional type.
     return this.deps.settingsService.get("features")?.subAgentAutonomousWake ?? false;
   }
 
-  /**
-   * Every reason wake is currently refused for this parent; empty = wake.
-   *
-   * Exists because the field failure mode of this gate is SILENCE: a child
-   * result reached the mailbox ("stored" audit) and nothing woke the parent,
-   * and the audit trail could not say which of the five conditions failed —
-   * the flag, a session mismatch, a missing handler, an active turn, or an
-   * in-flight wake. The refusal branch now names its reasons (see the
-   * mailbox-disposition audit below), turning the next occurrence from
-   * archaeology into a log line.
-   */
+  /** Report every wake refusal so durable messages cannot stall without an audit reason. */
   private wakeRefusalReasons(parentSessionId: string): string[] {
     const reasons: string[] = [];
     if (!this.wakeFlagEnabled()) {

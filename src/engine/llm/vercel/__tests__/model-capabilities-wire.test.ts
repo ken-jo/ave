@@ -93,8 +93,7 @@ describe("image capability at the wire boundary", () => {
   });
 
   it("refuses images on a resolved route that states no modalities, without a second catalog match", async () => {
-    // The catalog lists gpt-4o with image input; matching it again here would
-    // let images through on a route whose resolution stated nothing.
+    // Unstated route image support must not be re-inferred from the catalog name.
     const fixture = wireFixture();
     await collectStreamEvents(fixture.provider.streamTurn(request("gpt-4o", {
       messages: IMAGE_MESSAGES, modelCapabilities: {},
@@ -195,8 +194,7 @@ describe("tool capability at the wire boundary", () => {
   });
 
   it("keeps tools on direct calls to a same-name alias at another host", async () => {
-    // The catalog's gpt-3.5-turbo takes no tools; a gateway's model of that name is
-    // not that entry, under the same endpoint-identity rule as its output limit.
+    // A gateway alias does not establish the catalog model tool capability.
     const fetchResponse = vi.fn<typeof fetch>(async () => new Response("refused", { status: 400 }));
     const provider = new VercelUnifiedProvider("openai", "fixture-key", "https://gateway.invalid/v1", fetchResponse);
     await collectStreamEvents(provider.streamTurn(request("gpt-3.5-turbo", { tools: TOOLS })));

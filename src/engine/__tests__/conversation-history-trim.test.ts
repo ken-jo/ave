@@ -1,11 +1,4 @@
-/**
- * ConversationHistory — Issue #902 tool_result size cap chokepoint.
- *
- * Verifies that `.append` and `.restore` are the single chokepoint that
- * marks over-cap tool_result messages with `meta.truncated`, so every
- * append site (and every rehydrated jsonl row) is protected without
- * per-call-site wiring.
- */
+// Append and restore both enforce the tool-result size cap.
 import { describe, expect, it } from "vitest";
 import { ConversationHistory } from "../conversation-history.js";
 import { MAX_TOOL_RESULT_LINES } from "../../shared/tool-result-trim.js";
@@ -27,8 +20,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
     const msg = h.getMessages()[0] as Extract<GenericMessage, { role: "tool_result" }>;
     expect(msg.meta?.truncated).toBeDefined();
     expect(msg.meta!.truncated!.originalLines).toBe(MAX_TOOL_RESULT_LINES + 50);
-    // Content stays raw in-memory — wire-serialize swaps to stub only on
-    // send/save, not on append. This keeps UI / inspection paths intact.
+    // Keep content raw in memory for inspection; stub it only for sending or saving.
     expect(msg.content).toBe(OVERSIZE_CONTENT);
   });
 
@@ -73,8 +65,6 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
   });
 
   it("restore marks meta.truncated on rehydrated oversized tool_result", () => {
-    // Simulates loading a session jsonl that pre-dates the cap (or was
-    // written before the cap tightened) — restore re-checks every row.
     const h = new ConversationHistory();
     h.restore([
       { role: "user", content: "hi" },
@@ -98,9 +88,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
   });
 
   it("restore strips forged meta.serializedStub and re-derives from content (jsonl tamper defense)", () => {
-    // Adversarial jsonl: sub-cap content but claims `serializedStub: true`
-    // (which `wire-serialize` would otherwise honour as "already stubbed,
-    // skip"). Restore must strip the forged flag.
+    // Restore must strip forged serializedStub flags so they cannot bypass the cap.
     const h = new ConversationHistory();
     h.restore([
       { role: "user", content: "hi" },
@@ -114,7 +102,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
         toolUseId: "t1",
         toolName: "bash",
         content: SMALL_CONTENT,
-        meta: { serializedStub: true }, // forged
+        meta: { serializedStub: true },
       },
     ]);
     const tr = h
@@ -124,8 +112,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
   });
 
   it("restore re-marks oversized content even if forged meta.truncated claims smaller size", () => {
-    // Adversarial: oversize content but jsonl claims truncated with tiny
-    // numbers. Restore must re-measure, overwriting forged values.
+    // Restore must re-measure size rather than trust persisted truncation metadata.
     const h = new ConversationHistory();
     h.restore([
       { role: "user", content: "hi" },
@@ -141,7 +128,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
         content: OVERSIZE_CONTENT,
         meta: {
           truncated: {
-            originalLines: 5, // forged tiny value
+            originalLines: 5,
             originalTokens: 5,
             originalBytes: 5,
             trimmedAt: "1999-01-01T00:00:00.000Z",
@@ -157,12 +144,7 @@ describe("ConversationHistory — Issue #902 tool_result cap", () => {
   });
 
   it("restore preserves truncated marker on re-rehydrate (re-stamps trimmedAt — recompute invariant)", () => {
-    // Round-1 introduced `restore({ recompute: true })` so jsonl tampering of
-    // host-attributed meta cannot bypass the cap. A consequence is that
-    // trimmedAt is *re-stamped* on every restore — that is intentional
-    // (the timestamp records when the host *most recently* enforced the
-    // cap, not when it was first observed). What must be invariant across
-    // re-restore is the *fact of truncation* + the *original size facts*.
+    // Restore re-stamps enforcement time; truncation and original size must remain invariant.
     const h = new ConversationHistory();
     h.append({ role: "user", content: "hi" });
     h.append({

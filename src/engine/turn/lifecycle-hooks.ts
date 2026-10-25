@@ -1,10 +1,3 @@
-/**
- * Script-hook lifecycle dispatch helpers.
- *
- * `fireLifecycleEvent` (NON-BLOCKING, observe-only, fail-soft) and
- * `fireUserPromptSubmit` (BLOCKING, FAIL-CLOSED). Extracted verbatim from
- * `conversation-loop.ts`; fail-closed / fail-soft semantics are unchanged.
- */
 import type { LifecycleHookEvent } from "../../hooks/script-hook-types.js";
 import { stopHookBlockFeedback } from "../../hooks/hook-contract.js";
 import type { ConversationLoopDeps } from "./types.js";
@@ -26,9 +19,7 @@ export async function fireLifecycleEvent(
       await manager.runLifecycleEvent(
         event,
         sessionIdOverride ?? sessionId,
-        // Lifecycle events are session-scoped, not tied to a single user input;
-        // attribute to the canonical "unknown" hook origin like other
-        // non-user-keyboard dispatches (no enrollment/mutation path here).
+        // Session lifecycle hooks use unknown origin and cannot enroll or mutate trust.
         "unknown",
         payload,
       );
@@ -39,11 +30,7 @@ export async function fireLifecycleEvent(
     }
 }
 
-/**
- * Stop/SubagentStop at a clean end of a run. Fail-soft like
- * {@link fireLifecycleEvent}, but returns a deliberate block's feedback so the
- * caller can continue the run; a failure or dispatch error ends it normally.
- */
+/** Stop feedback may continue a clean run; unexpected errors remain fail-soft and end it normally. */
 export async function fireContinuableStop(
   deps: ConversationLoopDeps,
   sessionId: string,
@@ -70,21 +57,17 @@ export async function fireUserPromptSubmit(
   sessionIdOverride?: string,
 ): Promise<{ decision: "allow" | "deny"; reason: string }> {
     const manager = deps.scriptHookManager;
-    // No manager ⇒ no hooks.json ⇒ proceed exactly as today.
     if (!manager) return { decision: "allow", reason: "no script hook manager" };
     try {
       const result = await manager.runUserPromptSubmit(
         sessionIdOverride ?? sessionId,
-        // The prompt's input origin is propagated into the payload; for the
-        // hook trustOrigin we attribute to "unknown" like other non-keyboard
-        // dispatches (no enrollment/mutation path through this event).
+        // Preserve input origin in the payload; hook trust origin stays unknown without enrollment rights.
         "unknown",
         payload,
       );
       return { decision: result.decision, reason: result.reason };
     } catch (err) {
-      // FAIL-CLOSED: a blocking event must DENY on an unexpected error — the
-      // turn is refused rather than silently allowed.
+      // Blocking prompt hooks must deny on unexpected errors.
       const message = errorMessage(err);
       log.error(
         `UserPromptSubmit dispatch threw — failing closed (deny): ${message}`,

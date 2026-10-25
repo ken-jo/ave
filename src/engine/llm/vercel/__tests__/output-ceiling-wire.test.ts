@@ -60,15 +60,13 @@ async function collectRequest(
   overrides: { outputTokenLimit?: number; thinkingBudgetTokens?: number; enableThinking?: boolean; catalogModel?: string } = {},
   toolSchemas: ToolSchema[] = [],
 ) {
-  // What the conversation loop sends: the block with its effective output
-  // limit (requested, clamped to the model's ceiling) and the budget bounded to it.
   const block = getLlmVendorSettings({ [vendor]: { model, enableThinking: true, thinkingBudgetTokens: 10_000,
     ...(vendor === "claude" ? { catalogModel: NUMERIC_CATALOG_KEY } : {}), ...overrides } }, vendor);
   const output = resolveOutputTokenLimit({ vendor, model, requested: requestedLlmOutputTokenLimit(block) });
   return collectInternalRequest(vendor, model, apiRoundLlmSettings(block, output, "none"), toolSchemas);
 }
 
-/** Raw internal generation can use protocol capabilities outside user settings. */
+// Internal generation may use protocol capabilities outside user settings.
 async function collectInternalRequest(
   vendor: "openai-compatible" | "claude",
   model: string,

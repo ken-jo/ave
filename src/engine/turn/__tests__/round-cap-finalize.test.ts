@@ -45,7 +45,6 @@ describe("finalizeAfterRoundCap", () => {
     const params = (p as unknown as { streamTurn: { mock: { calls: unknown[][] } } })
       .streamTurn.mock.calls[0][0] as Record<string, unknown>;
     expect(params.tools).toBeUndefined();
-    // Bounded so a runaway completion cannot follow a budget exhaustion.
     expect(params.outputTokenLimit).toBeGreaterThan(0);
   });
 
@@ -111,14 +110,11 @@ describe("resolveRoundCapText", () => {
   });
 
   it("falls back to the last assistant message when finalize failed", () => {
-    // A real partial answer beats a synthetic notice, so the pre-existing
-    // behaviour is preserved whenever finalize could not produce text.
+    // Preserve a real partial answer when finalization cannot produce replacement text.
     expect(resolveRoundCapText(null, history, "notice")).toBe("partial answer");
   });
 
   it("uses the notice only when there is no assistant text at all", () => {
-    // The tool-only final round — the case that used to read as an agent
-    // stopping silently.
     expect(resolveRoundCapText(null, [{ role: "user", content: "q" }], "notice"))
       .toBe("notice");
   });

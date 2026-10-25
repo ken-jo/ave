@@ -9,7 +9,6 @@ import { estimateMessagesTokens, estimateTokens } from "./auto-compact.js";
 import { isNonNegativeSafeInteger } from "../shared/safe-integer.js";
 
 export interface RequestInputProjection extends ProviderRequestInputProjection {
-  /** Full provider request input projection: system prompt + wire messages + exposed tool schemas. */
   totalTokens: number;
   systemPromptTokens: number;
   messageTokens: number;
@@ -37,13 +36,7 @@ function isValidProviderRequestInputProjection(value: unknown): value is Request
     && totalTokens === systemPromptTokens + messageTokens + toolSchemaTokens;
 }
 
-/**
- * Engine-side input projection SOT.
- *
- * Renderer cannot know the final system prompt, active tool schemas, or
- * provider-wire tool_result stubbing. ConversationLoop must therefore compute
- * context pressure from the same request parts sent to the provider.
- */
+// Compute pressure in the engine from the exact prompt, wire messages, and exposed schemas sent.
 export function estimateRequestInputProjection(
   input: RequestInputProjectionInput,
   provider?: Pick<LLMProvider, "projectRequestInput"> & Partial<Pick<LLMProvider, "vendor">>,
@@ -52,15 +45,12 @@ export function estimateRequestInputProjection(
     const providerProjection = provider?.projectRequestInput?.(input);
     if (isValidProviderRequestInputProjection(providerProjection)) return providerProjection;
   } catch {
-    // Projection is advisory. A provider hook must not widen failures into
-    // preflight or compaction control flow.
+    // Projection hooks are advisory and must not introduce preflight or compaction failures.
   }
   const systemPromptTokens = input.systemPrompt.trim().length > 0
     ? estimateTokens(JSON.stringify({ role: "system", content: input.systemPrompt }))
     : 0;
-  // Providers with a separate transport own their projection above. API-key
-  // routes carry live tool-result images in the selected wire representation;
-  // the shared estimate counts those images and excludes compacted stubs.
+  // Independent transports own projection; shared API estimates count live images, never compacted stubs.
   const messageTokens = estimateMessagesTokens(input.messages, provider?.vendor);
   const toolSchemaTokens = input.toolSchemas.length > 0
     ? estimateTokens(JSON.stringify({ tools: input.toolSchemas }))

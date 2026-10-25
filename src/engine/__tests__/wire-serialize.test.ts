@@ -1,7 +1,3 @@
-/**
- * wire-serialize tests — `prepareMarkedToolResultsForWire` 가 marked tool_result content 를 stub
- * 으로 변환하면서 memory 의 verbatim 입력을 mutate 하지 않는지 검증.
- */
 import { describe, it, expect } from "vitest";
 import type { GenericMessage } from "../llm/types.js";
 import { prepareMarkedToolResultsForWire } from "../wire-serialize.js";
@@ -14,7 +10,7 @@ describe("prepareMarkedToolResultsForWire", () => {
       { role: "tool_result", toolUseId: "t1", toolName: "search", content: "raw output 200 chars".repeat(20) },
     ];
     const out = prepareMarkedToolResultsForWire(messages);
-    expect(out).toBe(messages); // reference-equal — no allocation
+    expect(out).toBe(messages);
   });
 
   it("replaces marked tool_result content and excludes host metadata from the request", () => {
@@ -31,10 +27,9 @@ describe("prepareMarkedToolResultsForWire", () => {
     ];
     const out = prepareMarkedToolResultsForWire(messages);
 
-    expect(out).not.toBe(messages); // new array
+    expect(out).not.toBe(messages);
     expect(out).toHaveLength(messages.length);
 
-    // tool_result 이 stub 으로 변환됨
     const wireToolResult = out[1];
     expect(wireToolResult.role).toBe("tool_result");
     if (wireToolResult.role === "tool_result") {
@@ -46,12 +41,10 @@ describe("prepareMarkedToolResultsForWire", () => {
       expect(wireToolResult.meta).toBeUndefined();
     }
 
-    // 입력 array 의 verbatim message 는 mutate 되지 않음 (memory 보존)
     const memoryToolResult = messages[1];
     if (memoryToolResult.role === "tool_result") {
       expect(memoryToolResult.content).toBe(verbatim);
       expect(memoryToolResult.content.length).toBe(verbatim.length);
-      // 원본 meta 에는 serializedStub 가 없음 (입력 객체 mutate 안 함)
       expect(memoryToolResult.meta?.serializedStub).toBeUndefined();
     }
   });
@@ -64,14 +57,13 @@ describe("prepareMarkedToolResultsForWire", () => {
         toolUseId: "t1",
         toolName: "search",
         content: "verbatim short content",
-        // no meta — should not be transformed
       },
       {
         role: "tool_result",
         toolUseId: "t2",
         toolName: "edit",
         content: "another verbatim — no compactedAt",
-        meta: { lock: true }, // lock set but no compactedAt
+        meta: { lock: true },
       },
     ];
     const out = prepareMarkedToolResultsForWire(messages);
@@ -104,7 +96,7 @@ describe("prepareMarkedToolResultsForWire", () => {
   });
 
   it("false-positive guard — tool output starting with stub prefix still converted when serializedStub not set", () => {
-    // 도구 출력이 우연히 stub prefix 로 시작해도, serializedStub flag 가 없으면 올바르게 stub 변환
+    // Stub-like content without serializedStub metadata is still unprocessed tool output.
     const trickContent = "[tool_result stripped: this is real tool output, not a stub]";
     const messages: GenericMessage[] = [
       {
@@ -113,14 +105,12 @@ describe("prepareMarkedToolResultsForWire", () => {
         toolName: "search",
         content: trickContent,
         meta: { compactedAt: "2026-05-08T00:00:00.000Z" },
-        // serializedStub 미설정 — 아직 stub 화 안 됨
       },
     ];
     const out = prepareMarkedToolResultsForWire(messages);
-    expect(out).not.toBe(messages); // 새 array — 변환 발생
+    expect(out).not.toBe(messages);
     const wireMsg = out[0];
     if (wireMsg.role === "tool_result") {
-      // content 가 새 stub 으로 교체됨 (origLen 이 trickContent.length 기반)
       expect(wireMsg.content).toContain(`origLen=${trickContent.length}`);
       expect(wireMsg.meta).toBeUndefined();
     }
@@ -131,7 +121,7 @@ describe("prepareMarkedToolResultsForWire", () => {
       {
         role: "user",
         content: "verbatim user message",
-        meta: { compactedAt: "2026-05-08T00:00:00.000Z" }, // even with compactedAt, user role not transformed
+        meta: { compactedAt: "2026-05-08T00:00:00.000Z" },
       },
       {
         role: "assistant",
@@ -148,8 +138,8 @@ describe("prepareMarkedToolResultsForWire", () => {
     ];
     const out = prepareMarkedToolResultsForWire(messages);
 
-    expect(out[0].content).toBe("verbatim user message"); // user verbatim
-    expect(out[1].content).toBe("verbatim assistant message"); // assistant verbatim
+    expect(out[0].content).toBe("verbatim user message");
+    expect(out[1].content).toBe("verbatim assistant message");
     const wireToolResult = out[2];
     if (wireToolResult.role === "tool_result") {
       expect(wireToolResult.content).toContain("[tool_result stripped:");

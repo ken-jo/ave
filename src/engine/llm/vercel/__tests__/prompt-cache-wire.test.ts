@@ -1,10 +1,4 @@
-/**
- * Prompt-prefix cache markers, read off the bytes the adapter hands to
- * `fetch`: where the breakpoints land, that request-only text is never inside
- * the cached prefix, that the count stays within the provider's limit, that
- * no vendor receives two consecutive user messages, and that the openai slots
- * receive the conversation key instead.
- */
+// Cache only reusable prefixes, respect breakpoint limits, and preserve role alternation.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { forbidAmbientFetch } from "../../../../__tests__/support/network-fetch-stubs.js";
 import type { LLMVendor } from "../../../../shared/llm-vendor-defaults.js";
@@ -21,10 +15,8 @@ const TURN_CONTEXT = "<turn-context>\nTime: 2026-10-15T09:30+09:00\n</turn-conte
 
 const USER: GenericMessage = { role: "user", content: "Open the report." };
 
-/** Round 0 of a turn: the user's message carries the turn context inside it. */
 const OPENING_ROUND: GenericMessage[] = appendRequestOnlyText([USER], [TURN_CONTEXT]);
 
-/** Round 1: the same user message, now without request-only text, then a tool round. */
 const TOOL_ROUND: GenericMessage[] = [
   USER,
   { role: "assistant", content: "", toolCalls: [{ id: "toolu_01", name: "read_file", input: {} }] },
@@ -48,7 +40,6 @@ async function sentBody(
     promptCacheKey: "session-fixture",
     ...overrides,
   })) {
-    // Drain: the stream ends with the refusal.
   }
   expect(fetchResponse).toHaveBeenCalled();
   return JSON.parse(String(fetchResponse.mock.calls[0]![1]!.body)) as Record<string, unknown>;
@@ -115,8 +106,7 @@ describe("prompt-prefix cache breakpoints", () => {
     const next = await sentBody("claude", "claude-haiku-4-5");
     const [openingUser] = messageBlocks(opening) as [Block[]];
     const [nextUser] = messageBlocks(next) as [Block[]];
-    // The block the opening round cached is the first block of the next round,
-    // unchanged; the turn context that followed it is simply absent.
+    // The next round reuses the cached content block without its request-only turn context.
     const strip = ({ cache_control: _c, ...rest }: Block) => rest;
     expect(strip(nextUser[0]!)).toEqual(strip(openingUser[0]!));
     expect(opening.system).toEqual(next.system);

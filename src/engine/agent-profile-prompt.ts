@@ -8,10 +8,7 @@ export interface AgentProfilePromptSource {
 const AGENT_PROFILE_FENCE_PATTERN = /<(\s*\/?\s*ave-agent-(?:profile|task)[^>]*)>/gi;
 const ZWSP = "\u200b";
 
-/**
- * Render a loaded agent profile and its task as separate, fence-safe
- * prompt sections. Profile and task content cannot close or open either fence.
- */
+/** Fence profile and task separately so neither can escape its prompt section. */
 export function renderAgentProfilePrompt(
   profile: AgentProfilePromptSource,
   taskInstructions: string,

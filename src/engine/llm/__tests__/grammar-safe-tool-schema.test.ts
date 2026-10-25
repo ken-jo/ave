@@ -1,13 +1,4 @@
-/**
- * Pins the spawn/resume payload parity property this transform exists for.
- *
- * A fresh spawn sends the builtin surface; a resume forces the whole FROZEN
- * tool scope (every plugin/MCP tool recorded at spawn) back into the request.
- * That asymmetry is why a `pattern` shorthand living in one plugin schema takes
- * down resumes only. These tests assert the two payloads agree on the field
- * that broke — every `pattern` reaching the wire is grammar-translatable —
- * and that the expansion is an identity on the regex language.
- */
+// Spawn and frozen-scope resume must emit equivalent grammar-safe schema patterns.
 import { describe, it, expect } from "vitest";
 import {
   expandRegexShorthandClasses,
@@ -15,7 +6,6 @@ import {
 } from "../grammar-safe-tool-schema.js";
 import type { ToolSchema } from "../types.js";
 
-/** The shorthands whose verbatim emission breaks a GBNF/xgrammar compiler. */
 const GRAMMAR_HOSTILE_ESCAPE_RE = /\\[dDwWsS]/;
 
 function collectPatterns(node: unknown, out: string[] = []): string[] {
@@ -53,8 +43,7 @@ describe("expandRegexShorthandClasses", () => {
   });
 
   it("leaves a negated shorthand inside a class alone rather than inverting it", () => {
-    // A complement cannot be spliced into a member list; rewriting it to the
-    // positive body would match the exact opposite set.
+    // Negated shorthand cannot become a positive member list without inverting the match.
     expect(expandRegexShorthandClasses("^[\\D]$")).toBe("^[\\D]$");
   });
 
@@ -65,8 +54,7 @@ describe("expandRegexShorthandClasses", () => {
   });
 
   it("does not treat an escaped bracket as a class delimiter", () => {
-    // `\[` must not open a class, or the following `\d` would be spliced
-    // as a bare body and silently change meaning.
+    // Escaped brackets must not open a class and change shorthand expansion.
     expect(expandRegexShorthandClasses("^\\[\\d$")).toBe("^\\[[0-9]$");
   });
 
@@ -102,8 +90,6 @@ describe("toGrammarSafeToolSchemas", () => {
   });
 
   it("rewrites patterns nested under array items", () => {
-    // The exact shape of portal_booking_read/portal_booking_write, which is what the
-    // grammar compiler refused.
     const schemas: ToolSchema[] = [
       {
         name: "portal_booking_read",
@@ -121,7 +107,6 @@ describe("toGrammarSafeToolSchemas", () => {
     expect(collectPatterns(out[0]!.inputSchema)).toEqual([
       "^(?:[0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{8})$",
     ]);
-    // The input schema is not mutated in place.
     expect(collectPatterns(schemas[0]!.inputSchema)[0]).toContain("\\d");
   });
 
@@ -149,8 +134,7 @@ describe("toGrammarSafeToolSchemas", () => {
   });
 
   it("leaves no grammar-hostile escape in a resume-shaped (full frozen scope) payload", () => {
-    // Spawn sends builtins; resume forces the whole persisted scope back in.
-    // Both must satisfy the same wire invariant.
+    // Spawn and resume must enforce the same wire schema invariant.
     const spawnSurface: ToolSchema[] = [
       { name: "read_file", description: "d", inputSchema: objectSchema({ path: { type: "string" } }) },
     ];

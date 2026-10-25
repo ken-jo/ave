@@ -1,12 +1,4 @@
-/**
- * A turn is observable: the branches it took reach the caller as decisions,
- * the counts reach the turn summary, and — when boot configured a tracer — the
- * whole turn is one span with the tool calls nested inside it.
- *
- * The privacy line is asserted here rather than assumed: a span carries the
- * SIZE of a tool result, never the result. A trace leaves the machine; the
- * transcript does not.
- */
+// Exported traces may contain result sizes, never tool output.
 import { describe, expect, it, vi } from "vitest";
 import {
   InMemorySpanExporter,
@@ -35,7 +27,6 @@ class ScriptedProvider implements LLMProvider {
   }
 }
 
-/** One tool round then a clean answer — the shape every assertion here needs. */
 function toolThenAnswer(): StreamEvent[][] {
   return [
     [
@@ -167,8 +158,6 @@ describe("ConversationLoop — turn tracing", () => {
     expect(turnSpan!.attributes["ave.turn.tool_count"]).toBe(1);
     expect(turnSpan!.attributes["ave.decision.tool_batch"]).toBe(1);
 
-    // Everything an exporter would write out — every span's name, attributes
-    // and events — carries no tool output.
     const exported = JSON.stringify(spans.map((span) => ({
       name: span.name,
       attributes: span.attributes,

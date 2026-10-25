@@ -60,8 +60,7 @@ describe("ConversationTurnRegistry", () => {
     current = false;
     registry.invalidateStale();
     expect(abortController.signal.aborted).toBe(true);
-    // The shared activity lease remains live until the aborted execution settles;
-    // clearing it early could admit a second mutation while the first unwinds.
+    // Retain the activity lease until aborted execution settles to prevent overlapping mutations.
     expect(registry.hasActiveTurn("tailnet-turn-stale")).toBe(true);
   });
 });

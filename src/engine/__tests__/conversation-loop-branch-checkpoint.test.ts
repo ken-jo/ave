@@ -1,13 +1,3 @@
-/**
- * C1 gap-lock — ConversationLoop.branchFromCheckpoint invalid-checkpoint paths.
- *
- * `branchFromCheckpoint` forks a new session from a numbered compaction
- * checkpoint. The three guard clauses that THROW on malformed input had no
- * coverage; this file locks each one against the CURRENT implementation:
- *   1. checkpoint number not present in session metadata
- *   2. checkpoint present but no persisted pre-compact snapshot
- *   3. snapshot shorter than the checkpoint's messageCountAtTrigger
- */
 import { describe, expect, it, vi } from "vitest";
 
 import { ConversationLoop, type ConversationLoopDeps } from "../conversation-loop.js";

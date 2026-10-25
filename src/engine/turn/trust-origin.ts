@@ -1,10 +1,3 @@
-/**
- * Tool trust-origin helpers.
- *
- * Pure functions that derive the {@link ToolTrustOrigin} for a turn and its
- * subsequent rounds, plus the permission user-intent summary. Extracted from
- * `conversation-loop.ts` — no `this` dependency.
- */
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
 import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
 import { stagedOriginForInput } from "../../shared/staged-origins.js";
@@ -13,24 +6,8 @@ import type { ToolTrustOrigin } from "../../tools/types.js";
 import type { RationaleEligibilityProvenance } from "../../tools/pipeline/rationale-control.js";
 import type { ToolResult, ToolUseBlock } from "../../tools/executor.js";
 
-/**
- * Untrusted material the host itself folded into the TURN TEXT, which therefore has to
- * be recognized from the text rather than from the content parts.
- *
- * Both entries exist for the same reason: a payload that arrived as an attachment can
- * end up inside the message body, and the taint has to survive that move. A paste is
- * inlined by the composer at send time; a resource fence is folded by
- * `continueFromLastUserTurn`, which joins every text part into the prompt body when a
- * turn is replayed by Retry or continue-last-user.
- *
- * Deriving taint from the MATERIAL rather than from the packaging is the same lesson the
- * per-turn resource bound learned: a check that reads the shape a caller happened to
- * choose answers a different question on the next caller. Missing it here is not a
- * cosmetic slip — `llm-tool-arg` is the UNTAINTED bucket, so a replayed resource turn
- * would tell the Layer-5 reviewer that server-authored text was ordinary
- * model-generated input, write that verdict into the untainted cache partition, and
- * label the approval dock's trust badge with it.
- */
+// Derive taint from pasted and fenced resource material after replay folds attachments into text.
+// Otherwise server-authored content enters the untainted reviewer and cache partition.
 const INLINE_PASTED_TEXT_RE = /(^|\n)-{5} Pasted text #\d+ \(\d+ lines\) -{5}\n/;
 
 const FILE_CONTENT_RESULT_TOOLS = new Set([
@@ -49,22 +26,17 @@ export function initialToolTrustOrigin(inputOrigin: ChatInputOrigin, turnInput: 
   if (inputOrigin === "agent-message") {
     return "agent-message";
   }
-  // Every STAGED origin (plugin overlay trigger, MCP App `ui/message`, MCP server
-  // prompt) keeps its OWN provenance through the tool layer — none is the user's
+  // Preserve staged-origin provenance through tools; it never becomes keyboard-authored input.
   if (inputOrigin === "surface-user" || inputOrigin === "tailnet-surface" || inputOrigin === "platform-bridge") {
     return inputOrigin;
   }
-  // keyboard. Resolved from the registry rather than an if/else chain: the chain's
-  // default was `llm-tool-arg`, the UNTAINTED bucket, so a newly registered origin
-  // that nobody remembered to branch on would have been laundered into "ordinary
-  // model-generated tool arg" with no taint at all.
+  // Resolve registered origins centrally so newly added kinds cannot default to untainted arguments.
   if (stagedOriginForInput(inputOrigin)) {
     return inputOrigin as ToolTrustOrigin;
   }
   return "llm-tool-arg";
 }
 
-/** Project the monotonic trust-origin SOT into rationale provenance. */
 export function rationaleProvenanceFor(
   startedFromUserKeyboard: boolean,
   current: ToolTrustOrigin,

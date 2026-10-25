@@ -1,17 +1,5 @@
-/**
- * Tool-exposure metrics + provider-request diagnostics.
- *
- * `buildToolExposureMetrics` and `buildProviderRequestDiagnostics`, extracted
- * from `conversation-loop.ts` with their private source-count helpers.
- *
- * MODEL EXPOSURE: everything counted here is what the model is actually shown,
- * because both inputs (`getToolSchemasForScope` / `getToolCatalogForScope`) run
- * through the registry's ONE model-exposure boundary (`getModelVisibleTools` →
- * `isModelExposedTool`). MCP Apps app-only tools (`_meta.ui.visibility: ["app"]`)
- * are registered — their card's call must run under the gate — but never exposed,
- * so they are absent from these metrics on BOTH arms (plugin loopback + external
- * MCP server) without this module needing a filter of its own.
- */
+// Exposure metrics use the model-visible registry on both schema and catalog paths.
+// Registered app-only tools must neither appear nor count toward model exposure.
 import { isLLMVendor, type GenericMessage, type ToolSchema } from "../llm/types.js";
 import type { ToolRegistry } from "../../tools/registry.js";
 import type { ChatInputOrigin } from "../../shared/chat-origin.js";
@@ -56,9 +44,7 @@ export function buildToolExposureMetrics(
       if (entry.source === "plugin") deferredCatalogSourceCounts.plugin += 1;
       if (entry.source === "mcp") deferredCatalogSourceCounts.mcp += 1;
     }
-    // Deferral effectiveness — only plugin/MCP tools are deferral-eligible;
-    // builtins always load so they must not enter the ratio. The denominator
-    // is the full deferral-eligible universe (loaded + still-deferred).
+    // Deferral ratio includes loaded and deferred plugin/MCP tools, never always-loaded builtins.
     const deferralEligibleLoadedCount = loadedToolSourceCounts.plugin + loadedToolSourceCounts.mcp;
     const deferralEligibleTotal = deferralEligibleLoadedCount + catalogEntries.length;
     const deferredLoadedRatio =

@@ -5,12 +5,7 @@ import type { ConversationLoop } from "../conversation-loop.js";
 import type { SubAgentMessageMailbox } from "../subagent-message-mailbox.js";
 import { A2A_ROLE_AGENT } from "../../shared/a2a.js";
 
-/**
- * The wake drain has ONE invariant: the per-parent dirty token, spent before
- * dispatch, is the progress guarantee. These tests pin the two halves of it —
- * a wake that consumes nothing must stop, and every trigger that legitimately
- * owes a delivery must still reach exactly one wake.
- */
+// Spend the per-parent dirty token before dispatch; an unconsumed mailbox entry must not trigger another wake.
 const PARENT = "parent-session";
 
 function makeMessage(messageId = "message-1") {
@@ -31,7 +26,6 @@ function delivery(messageId?: string): DeliverToParentInput {
   };
 }
 
-/** Flush enough microtask turns for any detached drain chain to settle. */
 async function settleDetachedWork(): Promise<void> {
   for (let i = 0; i < 6; i += 1) await Promise.resolve();
 }
@@ -45,7 +39,6 @@ interface GuidanceCallbacks {
 
 interface DrainFixture {
   bus: A2ASubAgentMessageBus;
-  /** Callbacks the loop received for the most recent queued guidance. */
   lastGuidance: () => GuidanceCallbacks | undefined;
 }
 
@@ -102,12 +95,9 @@ describe("wake drain", () => {
   });
 
   it("does not loop on a poisoned entry the woken turn cannot consume", async () => {
-    // The failure this exists to prevent: the wake runs, the entry survives
-    // (refused turn / failed acknowledge / fail-closed mailbox turn), and a
-    // mailbox-driven recheck wakes the parent again — forever.
+    // A surviving mailbox entry must not cause an endless wake loop.
     const peek = vi.fn(async () => entries);
-    // Consumes nothing — recorded rather than asserted inside the handler,
-    // whose rejection the bus would swallow into a "wake-failed" audit.
+    // Record failures outside the handler because the bus swallows handler rejections.
     const mailboxSizeDuringWake: number[] = [];
     const wake = vi.fn(async () => {
       mailboxSizeDuringWake.push(entries.length);
@@ -126,8 +116,7 @@ describe("wake drain", () => {
     expect(mailboxSizeDuringWake).toEqual([1]);
     expect(entries).toHaveLength(1);
 
-    // A turn-settled notification is not a second chance either: the token was
-    // already spent, and only a NEW delivery may mint another one.
+    // Turn settlement cannot renew a spent token; only a new delivery can.
     bus.notifyTurnSettled(PARENT);
     await settleDetachedWork();
     expect(wake).toHaveBeenCalledTimes(1);
@@ -144,17 +133,13 @@ describe("wake drain", () => {
       queueGuidance: () => "queued",
     });
 
-    // Accepted into the running turn's guidance queue, so the delivery reports
-    // "queued" and requests no wake.
     await expect(bus.deliverToParent(delivery())).resolves.toMatchObject({
       ok: true,
       disposition: "queued",
     });
     expect(wake).not.toHaveBeenCalled();
 
-    // The turn ends without ever reaching a round boundary and without firing a
-    // drop disposition (the queue was detached by a crashing turn's cleanup).
-    // The turn-settled hook is the only thing left that can deliver.
+    // A crashing turn can detach guidance without a drop callback; settlement must deliver it.
     activeTurn = false;
     bus.notifyTurnSettled(PARENT);
     await settleDetachedWork();
@@ -172,7 +157,6 @@ describe("wake drain", () => {
       wake,
       hasActiveTurn: () => activeTurn,
       queueGuidance: () => "queued",
-      // The running turn consumed the entry at its round boundary.
       acknowledge: async () => {
         entries.pop();
         return 1;
@@ -186,8 +170,7 @@ describe("wake drain", () => {
     await settleDetachedWork();
     expect(entries).toHaveLength(0);
 
-    // The delivery is done. Waking here would take a real turn lease to look at
-    // an empty mailbox — and would do it after every injected A2A message.
+    // Consumed guidance must not acquire another turn lease for an empty mailbox.
     activeTurn = false;
     bus.notifyTurnSettled(PARENT);
     await settleDetachedWork();
@@ -206,8 +189,7 @@ describe("wake drain", () => {
     });
     expect(wake).toHaveBeenCalledTimes(1);
 
-    // Both of these land while the first wake is still in flight and mint or
-    // find the same single token.
+    // Overlapping deliveries share one token while a wake is in flight.
     await expect(bus.deliverToParent(delivery("message-2"))).resolves.toMatchObject({
       disposition: "mailbox",
     });
@@ -218,7 +200,6 @@ describe("wake drain", () => {
     wakeResolvers.shift()?.();
     await vi.waitFor(() => expect(wake).toHaveBeenCalledTimes(2));
 
-    // One token, one extra wake — the overlapping triggers do not each buy one.
     wakeResolvers.shift()?.();
     await settleDetachedWork();
     expect(wake).toHaveBeenCalledTimes(2);
@@ -242,8 +223,7 @@ describe("wake drain", () => {
       disposition: "queued",
     });
 
-    // The user navigates away before the turn settles. Waking now would run a
-    // turn against a session that never asked for this child's message.
+    // Navigation must not wake a session that did not request the message.
     activeSession = "other-session";
     activeTurn = false;
     bus.notifyTurnSettled(PARENT);
@@ -251,8 +231,7 @@ describe("wake drain", () => {
     expect(wake).not.toHaveBeenCalled();
     expect(auditInputs(audit).at(-1)).toContain("mailbox-no-wake:session-mismatch");
 
-    // Fail-closed is a hold, not a discard: the token still buys a wake once
-    // the parent session is active again.
+    // Inactive sessions hold their token until they become active again.
     activeSession = PARENT;
     bus.notifyTurnSettled(PARENT);
     await settleDetachedWork();

@@ -1,20 +1,5 @@
-/**
- * Durable per-child store for parent directives the child has not read yet.
- *
- * A directive is stored BEFORE any attempt to hand it to a running child, and
- * removed only when the child actually consumed it. That ordering is the whole
- * point: a child whose turn ends before the guidance reaches a round boundary
- * keeps the directive for its next resume instead of losing it to an in-memory
- * queue that the turn's cleanup discards. It is the same durability rule the
- * A2A mailboxes follow — acknowledge on consumption, never on enqueue.
- *
- * Kept separate from `A2AAgentMessageMailbox` rather than folded into it: every
- * invariant there is keyed on a CHILD sender (envelope hop accounting, tree
- * budget, sender-title canonicalization, peer re-resolution on peek). A parent
- * has no childSessionId, so sharing that store would mean a sender-kind branch
- * in each of those checks — four fail-open surfaces added to the path that
- * carries sibling messages, to save one small file.
- */
+// Persist parent directives before delivery and acknowledge only on consumption.
+// Keep parent directives separate from child-sender hop accounting and tree budgets.
 import { randomUUID } from "node:crypto";
 import type { FeatureNamespaceHandle } from "../main/storage/feature-namespace.js";
 import { GUIDE_MAX_CHARS } from "./turn/guidance-limits.js";
@@ -86,14 +71,7 @@ function normalizeEntry(value: unknown): ParentDirectiveEntry | null {
   };
 }
 
-/**
- * Rebuild the state from disk, dropping anything that fails its own shape.
- *
- * The per-child cap is applied HERE as well as on append, so a hand-edited or
- * partially-written file can never hand a child more directives than the live
- * path would have accepted. Oldest entries win: they are the ones the parent
- * has been waiting longest to have read.
- */
+// Revalidate shape and per-child caps on load; retain oldest pending directives first.
 function normalizeState(raw: unknown): {
   state: PersistedParentDirectives;
   requiresCleanup: boolean;
@@ -125,7 +103,6 @@ function normalizeState(raw: unknown): {
   };
 }
 
-/** Durable parent → child directive queue, keyed by recipient child session. */
 export class ParentDirectiveMailbox {
   private statePromise: Promise<PersistedParentDirectives> | null = null;
   private mutationTail: Promise<void> = Promise.resolve();
@@ -138,9 +115,7 @@ export class ParentDirectiveMailbox {
       .readJson<unknown>(DIRECTIVE_FILE, { version: DIRECTIVE_VERSION, entries: [] })
       .then(async (raw) => {
         const normalized = normalizeState(raw);
-        // A file that needed repair is rewritten immediately; a failure to do so
-        // must not be swallowed, or the next writer would base its state on
-        // bytes this process already decided were invalid.
+        // Persist repairs immediately and propagate failures so later writes cannot reuse rejected bytes.
         if (normalized.requiresCleanup) {
           await this.namespace.writeJson(DIRECTIVE_FILE, normalized.state);
         }
@@ -189,13 +164,7 @@ export class ParentDirectiveMailbox {
     });
   }
 
-  /**
-   * Pending directives for one child, oldest first.
-   *
-   * `originSessionId` is a filter, not a hint: the drain site knows which parent
-   * the child belongs to from host-written metadata, and an entry naming a
-   * different origin is never delivered on that authority.
-   */
+  /** Drain oldest first only for the origin authorized by host-written child metadata. */
   async peek(
     childSessionId: string,
     originSessionId: string,
@@ -220,7 +189,6 @@ export class ParentDirectiveMailbox {
     });
   }
 
-  /** Drop everything addressed to a child that can no longer read it. */
   discardForChild(childSessionId: string): Promise<number> {
     return this.mutate((state) => {
       const before = state.entries.length;

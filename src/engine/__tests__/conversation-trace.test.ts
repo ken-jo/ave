@@ -1,10 +1,3 @@
-/**
- * K4: §4.5 11-step conversation trace — instrumentation smoke test.
- *
- * Goals:
- *  - runTurn() 한 턴이 11 step canonical 이름을 모두 emit
- *  - 파일 기반 tracer 생성 시 JSONL 유효성
- */
 import { describe, expect, it } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -256,7 +249,6 @@ describe("ConversationTracer — §4.5 11-step", () => {
     const tracer = createTracer("s", { enabled: false });
     expect(tracer.enabled).toBe(false);
     expect(tracer.filePath).toBeUndefined();
-    // does not throw
     tracer.step("REQUEST_ENTRY");
   });
 });

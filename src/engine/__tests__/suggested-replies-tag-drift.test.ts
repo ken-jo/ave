@@ -1,20 +1,4 @@
-/**
- * A one-character deviation in the tag must not put raw markup on screen.
- *
- * Observed: the model emitted `< suggested_replies>` — a space between the
- * bracket and the name. Matching was literal, so the opening tag was never
- * found: the streaming filter passed the block straight through, and the user
- * saw the markup, the bullet list and the trailing `</suggested_replies>`
- * rendered as message text instead of getting the ghost suggestion.
- *
- * The failure mode matters more than the typo. Tag spelling is model output —
- * i.e. it drifts — so exact-match parsing turns a cosmetic deviation into a
- * visible defect. Degrading to "no suggestions" is acceptable; leaking the
- * block is not.
- *
- * These cover all three consumers, because a spelling one accepts and another
- * leaks is the same bug with extra steps.
- */
+// Tolerate suggestion-tag spelling drift across all consumers without leaking markup.
 import { describe, expect, it } from "vitest";
 
 import {
@@ -23,7 +7,6 @@ import {
   stripSuggestedReplies,
 } from "../suggested-replies.js";
 
-/** The exact drift seen in the wild, plus the neighbouring shapes. */
 const DRIFTED_OPEN = [
   "< suggested_replies>",
   "<suggested_replies >",
@@ -54,8 +37,7 @@ describe("suggested-replies tag drift", () => {
     const raw = `answer text\n\n${block(open, "</suggested_replies>")}`;
     const stripped = stripSuggestedReplies(raw);
     expect(stripped).toBe("answer text");
-    // Nothing tag-shaped may survive into ~/.ave/sessions, or it re-feeds to
-    // the LLM as context every turn.
+    // Suggestion markup must not persist and replay into later model context.
     expect(stripped).not.toMatch(/suggested_replies/);
   });
 
@@ -63,22 +45,16 @@ describe("suggested-replies tag drift", () => {
     const filter = createStreamingFilter();
     const visible =
       filter.feed("answer text\n\n") + filter.feed(block(open, "</suggested_replies>"));
-    // Asserted on content, not exact trailing whitespace: prose emitted in an
-    // EARLIER chunk is already gone by the time the tag arrives, so the
-    // newline-trim only reaches text in the same chunk. That is pre-existing
-    // behaviour, identical with the literal tag, and not what this is testing.
+    // Earlier emitted chunks cannot be trimmed retroactively; compare content, not trailing whitespace.
     expect(visible).toContain("answer text");
     expect(visible).not.toMatch(/suggested_replies|first reply/);
     expect(filter.finish().suggestedReply).toBe("first reply");
   });
 
   it("holds back a drifted tag split across chunks", () => {
-    // The part a tolerant regex alone does NOT fix: if the filter cannot tell
-    // that "< sugg" might still become a tag, it emits the fragment and only
-    // swallows the rest — so the user sees a stray "< sugg" on screen.
+    // Buffer partial tag prefixes so later recognition cannot leave a leaked opening fragment.
     const filter = createStreamingFilter();
     let visible = filter.feed("answer text\n\n< sugg");
-    // The fragment must NOT have been emitted — that is the whole point.
     expect(visible).not.toContain("<");
     visible += filter.feed("ested_replies>\n- only reply\n</suggested_replies>");
     expect(visible).toContain("answer text");
@@ -87,15 +63,14 @@ describe("suggested-replies tag drift", () => {
   });
 
   it("does not hold back ordinary text that merely starts with a bracket", () => {
-    // The tolerance must not swallow prose. `<b` cannot grow into the tag.
+    // Tolerant matching must not swallow ordinary markup such as <b.
     const filter = createStreamingFilter();
     const visible = filter.feed("compare <b> and <i>");
     expect(visible).toBe("compare <b> and <i>");
   });
 
   it("does not buffer without bound after a stray bracket", () => {
-    // A `<` followed by a wall of whitespace must not make the filter hold the
-    // rest of the turn hostage.
+    // Bound whitespace after < so a partial tag cannot hold the rest of the stream.
     const filter = createStreamingFilter();
     const visible = filter.feed(`start <${" ".repeat(200)}not a tag`);
     expect(visible).toContain("start");
