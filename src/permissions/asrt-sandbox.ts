@@ -1,6 +1,7 @@
 
 
 import { spawn } from "node:child_process";
+import { containsGlobCharsWin, globPatternBaseDir, normalizePathForSandbox, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
@@ -985,12 +986,13 @@ function windowsMachineRoots(): string[] {
 function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
   if (process.platform !== "win32") return;
   for (const grant of grants) {
-    // srt-win expands `*`/`?` grants when it stamps, so refuse a pattern whose literal base already reaches a machine root. A trailing `**` also matches the base itself.
-    const wildcard = grant.search(/[*?]/);
-    const base = wildcard === -1 ? grant : /[\\/]$/.test(grant.slice(0, wildcard)) ? grant.slice(0, wildcard) : dirname(grant.slice(0, wildcard));
+    // Judge a pattern by the base srt-win walks, using ASRT's own normalizer, predicate and parser. A `**` tail also matches the base itself.
+    const normalized = normalizePathForSandbox(grant);
+    const pattern = containsGlobCharsWin(normalized);
+    const base = pattern ? globPatternBaseDir(toForwardSlashes(normalized)).replace(/^([A-Za-z]:)?$/, "$1/").replace(/\//g, "\\") : grant;
     for (const root of windowsMachineRoots()) {
       if (!isGrantPathWithin(base, root)) continue;
-      if (wildcard === -1 || !isGrantPathWithin(root, base) || grant.slice(wildcard).includes("**")) {
+      if (!pattern || !isGrantPathWithin(root, base) || normalized.includes("**")) {
         throw new Error(`Windows write grant ${grant} contains machine root ${root}`);
       }
     }

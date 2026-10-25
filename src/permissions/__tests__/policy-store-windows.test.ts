@@ -95,6 +95,17 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
       .toThrow(`Windows write grant ${pattern} contains machine root ${process.env.ProgramData!}`);
   });
 
+  it("refuses a write pattern whose character class spells a machine root", () => {
+    const pattern = join(root, "[m]achine", "*");
+    expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [pattern] }))
+      .toThrow(`Windows write grant ${pattern} contains machine root ${process.env.ProgramData!}`);
+  });
+
+  it("does not read the extended-length prefix as a wildcard", () => {
+    const grant = `\\\\?\\${join(root, "work")}`;
+    expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [grant] })).not.toThrow();
+  });
+
   it("refuses a recursive write pattern rooted at a machine root", () => {
     const pattern = join(process.env.ProgramData!, "**");
     expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [pattern] }))
