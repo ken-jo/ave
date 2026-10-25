@@ -17,7 +17,7 @@ import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
-import { globMatch } from "../lib/glob-matcher.js";
+import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
 import { llmRouteBaseUrls } from "../shared/llm-vendor-defaults.js";
 import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPolicy, getRuntimeSensitiveKeyPaths, MAX_WALK_UP, SENSITIVE_PATH_ENTRIES } from "./sensitive-paths.js";
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
@@ -1059,9 +1059,22 @@ export function buildPerCommandSandboxCustomConfig(
   return { filesystem: Object.freeze(fs) as FilesystemConfig };
 }
 
+/** Remembered exclusion answers per invocation; past it, answers are recomputed. */
+const MAX_GIT_EXCLUSION_ANSWERS = 65_536;
+
 /** Cleanup cannot move host entries hidden or made read-only by this policy. */
 function gitQuarantineExclusions(filesystem: Partial<FilesystemConfig>, floor: readonly string[]): (path: string, includesChildren?: boolean) => boolean {
-  const normalize = (path: string): string => resolvePhysicalFilesystemPath(expandLeadingTilde(path), process.cwd(), MAX_WALK_UP);
+  // The floor, read masks and write denies repeat many of the same paths;
+  // resolve each spelling once for this build.
+  const normalized = new Map<string, string>();
+  const normalize = (path: string): string => {
+    let physical = normalized.get(path);
+    if (physical === undefined) {
+      physical = resolvePhysicalFilesystemPath(expandLeadingTilde(path), process.cwd(), MAX_WALK_UP);
+      normalized.set(path, physical);
+    }
+    return physical;
+  };
   const protectedReads = floor.map(normalize);
   const readMasks = spelledPathEntries(filesystem.denyRead ?? [], "denyRead").map(normalize);
   const writeRoots = spelledPathEntries(filesystem.allowWrite ?? [], "allowWrite").map(normalize);
@@ -1073,24 +1086,57 @@ function gitQuarantineExclusions(filesystem: Partial<FilesystemConfig>, floor: r
       throw new Error("Linux Git quarantine cannot represent a filesystem deny pattern");
     }
   }
-  const covers = (pattern: string, path: string): boolean => /[*?]/u.test(pattern)
-    ? readDenyCoversPath(pattern, path, true) : isGrantPathWithin(pattern, path);
+  // The cleanup asks this for every scanned directory and candidate, against
+  // every pattern, so each glob compiles once here rather than per ancestor
+  // per call (readDenyCoversPath's per-call compile made a few dozen entries
+  // cost seconds). Same matches as readDenyCoversPath(pattern, path, true).
+  const globCovers = new Map<string, (path: string) => boolean>();
+  for (const pattern of [...protectedReads, ...readMasks, ...writeDenies.filter(entry => !entry.literal).map(entry => entry.path)]) {
+    if (!/[*?]/u.test(pattern) || globCovers.has(pattern)) continue;
+    const match = compileGlobMatcher(pattern);
+    globCovers.set(pattern, (path) => {
+      for (let candidate = path; ; candidate = dirname(candidate)) {
+        if (match(candidate) || match(`${candidate}/`)) return true;
+        if (dirname(candidate) === candidate) return false;
+      }
+    });
+  }
+  // Every pattern above is an absolute normalized path, so off Windows the
+  // grant test is a prefix test; isGrantPathWithin re-resolves both sides.
+  const within = process.platform === "win32" ? isGrantPathWithin : (root: string, path: string): boolean =>
+    path === root || path.startsWith(root.endsWith(sep) ? root : `${root}${sep}`);
+  const covers = (pattern: string, path: string): boolean => {
+    const glob = globCovers.get(pattern);
+    return glob ? glob(path) : within(pattern, path);
+  };
   const intersects = (pattern: string, path: string): boolean => {
     if (covers(pattern, path)) return true;
     const wildcard = pattern.search(/[*?\[\]]/u);
-    if (wildcard < 0) return isGrantPathWithin(path, pattern);
+    if (wildcard < 0) return within(path, pattern);
     const literalPrefix = pattern.slice(0, wildcard);
     const prefix = literalPrefix.endsWith("/") ? literalPrefix.replace(/\/+$/u, "") || "/" : dirname(literalPrefix);
-    return isGrantPathWithin(path, prefix) || isGrantPathWithin(prefix, path);
+    return within(path, prefix) || within(prefix, path);
   };
-  return (path, includesChildren = false) => {
+  const excluded = (path: string, includesChildren: boolean): boolean => {
     const matches = includesChildren ? intersects : covers;
     if (protectedReads.some(denied => matches(denied, path))) return true;
     if (readMasks.some(denied => matches(denied, path)
-      && !writeRoots.some(root => covers(denied, root) && isGrantPathWithin(root, path)))) return true;
+      && !writeRoots.some(root => covers(denied, root) && within(root, path)))) return true;
     return writeDenies.some(denied => denied.literal
-      ? isGrantPathWithin(denied.path, path) || (includesChildren && isGrantPathWithin(path, denied.path))
+      ? within(denied.path, path) || (includesChildren && within(path, denied.path))
       : matches(denied.path, path));
+  };
+  // The policy is fixed for the invocation and the answer depends on the path
+  // string alone, so the before and after sweeps share one answer per path.
+  const answers = new Map<string, boolean>();
+  return (path, includesChildren = false) => {
+    const normalized = process.platform === "win32" ? path : resolve(path);
+    const key = `${includesChildren ? "1" : "0"}${normalized}`;
+    const cached = answers.get(key);
+    if (cached !== undefined) return cached;
+    const answer = excluded(normalized, includesChildren);
+    if (answers.size < MAX_GIT_EXCLUSION_ANSWERS) answers.set(key, answer);
+    return answer;
   };
 }
 
