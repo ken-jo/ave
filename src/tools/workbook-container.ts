@@ -2,7 +2,7 @@ import type { PreviewDocumentLimits } from "../shared/preview-document.js";
 import { TableDocumentError } from "./table-document-error.js";
 import { verifyZipInflateLimits } from "./zip-inflate-guard.js";
 
-const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
+export const CFB_MAGIC = [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1] as const;
 const ODS_MIMETYPE = "application/vnd.oasis.opendocument.spreadsheet";
 const WORKBOOK_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml";
 const WORKSHEET_CONTENT_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
@@ -427,7 +427,7 @@ export function prepareWorkbookContainer(
   }
   const parts = new Map<string, Buffer>();
   const xmlParts = new Map<string, Buffer>();
-  const verdict = verifyZipInflateLimits(bytes, limits, (name, data) => {
+  const verdict = verifyZipInflateLimits(bytes, limits, { onEntry: (name, data) => {
     if (PACKAGE_PARTS.has(name)) parts.set(name, data);
     if (VML_PART_NAME.test(name)) refuseXmlDeclarations(data);
     if (!XML_PART_NAME.test(name)) return;
@@ -441,7 +441,7 @@ export function prepareWorkbookContainer(
         && XML_TARGET_RELATIONSHIP_TYPES.has(tag.attributes.get("type") ?? "")
         && !XML_PART_NAME.test(tag.attributes.get("target") ?? "")) refuse("XML relationship targets a non-XML part");
     });
-  });
+  } });
   if (!verdict.ok) {
     if (verdict.reason === "encrypted") throw new TableDocumentError("encrypted", verdict.detail);
     if (verdict.reason === "corrupt") refuse(verdict.detail);

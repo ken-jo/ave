@@ -73,16 +73,15 @@ function fakeAuditLogger() {
 }
 
 function createTestAutoUpdater(
-  testDeps: Omit<AutoUpdaterDeps, "auditLogger" | "getWindows" | "getDialogParent"> & {
-    auditLogger?: AuditLogger;
-    // The single open main window most tests need.
-    mainWindow: BrowserWindow;
-  },
+  mainWindow: BrowserWindow,
+  updater: UpdaterLike,
+  deps: Partial<Omit<AutoUpdaterDeps, "getWindows" | "getDialogParent" | "updaterFactory">> = {},
 ) {
-  const { mainWindow, ...deps } = testDeps;
   return createAutoUpdater({
     getWindows: () => [mainWindow],
     getDialogParent: () => mainWindow,
+    isEnabled: () => true,
+    updaterFactory: () => updater,
     // Stub signing and guide opening so unsigned runners can exercise self-install; fallback tests override these seams.
     canSelfInstall: () => true,
     openExternal: () => {},
@@ -102,11 +101,7 @@ describe("auto-updater", () => {
   it("does not check when disabled", async () => {
     const { win } = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: win,
-      isEnabled: () => false,
-      updaterFactory: () => u
-    });
+    const svc = createTestAutoUpdater(win, u, { isEnabled: () => false });
     await svc.triggerCheck();
     expect(u.checks).toBe(0);
   });
@@ -114,11 +109,7 @@ describe("auto-updater", () => {
   it("checks and broadcasts available state without downloading", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     expect(u.checks).toBe(1);
     // User-gated download contract: detection must NOT auto-download.
@@ -171,11 +162,7 @@ describe("auto-updater", () => {
     u.checkForUpdates = async () => {
       throw new Error("ENOTFOUND");
     };
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await expect(svc.triggerCheck()).resolves.toBeUndefined();
     warn.mockRestore();
   });
@@ -183,11 +170,7 @@ describe("auto-updater", () => {
   it("start() is idempotent and does not stack timers", () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => false, // disabled so initial triggerCheck is a no-op
-      updaterFactory: () => u
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { isEnabled: () => false }); // disabled so initial triggerCheck is a no-op
     svc.start();
     svc.start();
     svc.start();
@@ -199,11 +182,7 @@ describe("auto-updater", () => {
   it("emits downloaded state on update-downloaded with version", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "9.9.9" });
     const last = fw.sent[fw.sent.length - 1]!;
@@ -216,11 +195,7 @@ describe("auto-updater", () => {
   it("translates download-progress events into downloading state with percent", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-available", { version: "2.0.0" });
     u.emit("download-progress", { percent: 42.7, transferred: 100, total: 1000 });
@@ -234,11 +209,7 @@ describe("auto-updater", () => {
   it("downloadNow rejects when current state is not 'available'", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     // No update-available emitted yet — state is still { kind: "idle" }.
     const result = await svc._testOnly.downloadNow();
@@ -250,11 +221,7 @@ describe("auto-updater", () => {
   it("installNow rejects when current state is not 'downloaded'", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-available", { version: "3.0.0" });
     // Still in "available" — install must reject (download not finished).
@@ -267,11 +234,7 @@ describe("auto-updater", () => {
   it("installNow reports not-downloaded before plugin install interlock state", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-available", { version: "3.0.0" });
 
@@ -302,11 +265,7 @@ describe("auto-updater", () => {
   it("installNow invokes quitAndInstall when update is downloaded", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
     const result = await svc._testOnly.installNow();
@@ -318,11 +277,7 @@ describe("auto-updater", () => {
   it("installNow rejects duplicate install attempts while updater handoff is in progress", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
 
@@ -338,11 +293,7 @@ describe("auto-updater", () => {
   it("installNow rejects while a plugin install lifecycle is in progress", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
 
@@ -375,12 +326,7 @@ describe("auto-updater", () => {
       throw new Error("quit failed");
     };
     const opened: string[] = [];
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      openExternal: (url) => opened.push(url),
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { openExternal: (url) => opened.push(url) });
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
     const result = await svc._testOnly.installNow();
@@ -394,13 +340,7 @@ describe("auto-updater", () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
     const opened: string[] = [];
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      canSelfInstall: () => false,
-      openExternal: (url) => opened.push(url),
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { canSelfInstall: () => false, openExternal: (url) => opened.push(url) });
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
     const result = await svc._testOnly.installNow();
@@ -415,10 +355,7 @@ describe("auto-updater", () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
     let skippedVersion: string | undefined;
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
+    const svc = createTestAutoUpdater(fw.win, u, {
       getSkippedVersion: () => skippedVersion,
       setSkippedVersion: async (version) => {
         skippedVersion = version;
@@ -448,12 +385,7 @@ describe("auto-updater", () => {
     // host compares against its own version instead of trusting the feed.
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      getRunningVersion: () => "0.9.0",
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { getRunningVersion: () => "0.9.0" });
     await svc.triggerCheck();
 
     u.emit("update-available", { version: "0.8.0" });
@@ -466,12 +398,7 @@ describe("auto-updater", () => {
     // "Not strictly newer" is the rule, not "not older": re-offering the build already installed is the same dead-end for the user.
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      getRunningVersion: () => "0.9.0",
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { getRunningVersion: () => "0.9.0" });
     await svc.triggerCheck();
 
     u.emit("update-available", { version: "0.9.0" });
@@ -483,12 +410,7 @@ describe("auto-updater", () => {
     // Both offers reach the user through the same broadcast, so the comparison lives there rather than on the available event alone.
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      getRunningVersion: () => "0.9.0",
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { getRunningVersion: () => "0.9.0" });
     await svc.triggerCheck();
 
     u.emit("update-downloaded", { version: "0.8.0" });
@@ -501,12 +423,7 @@ describe("auto-updater", () => {
     // not one to put in front of the user.
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      getRunningVersion: () => "unknown",
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { getRunningVersion: () => "unknown" });
     await svc.triggerCheck();
 
     u.emit("update-available", { version: "9.9.9" });
@@ -517,12 +434,7 @@ describe("auto-updater", () => {
   it("still offers a version that is genuinely newer than the running build", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      getRunningVersion: () => "0.9.0",
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { getRunningVersion: () => "0.9.0" });
     await svc.triggerCheck();
 
     u.emit("update-available", { version: "0.9.1" });
@@ -534,13 +446,7 @@ describe("auto-updater", () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
     const audit = fakeAuditLogger();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      auditLogger: audit.logger,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      confirmInstallForTest: async () => true,
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { auditLogger: audit.logger, confirmInstallForTest: async () => true });
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
 
@@ -557,12 +463,7 @@ describe("auto-updater", () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
     const audit = fakeAuditLogger();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      auditLogger: audit.logger,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { auditLogger: audit.logger });
     await svc.triggerCheck();
     u.emit("update-available", { version: "3.0.0" });
 
@@ -577,12 +478,7 @@ describe("auto-updater", () => {
   it("install IPC owns native confirmation and does not install when canceled", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      confirmInstallForTest: async () => false,
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { confirmInstallForTest: async () => false });
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
 
@@ -596,12 +492,7 @@ describe("auto-updater", () => {
   it("install IPC applies the update only after trusted sender and main confirmation", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-      confirmInstallForTest: async () => true,
-    });
+    const svc = createTestAutoUpdater(fw.win, u, { confirmInstallForTest: async () => true });
     await svc.triggerCheck();
     u.emit("update-downloaded", { version: "3.0.0" });
 
@@ -618,11 +509,7 @@ describe("auto-updater", () => {
     u.downloadUpdate = async () => {
       throw new Error("ENETUNREACH");
     };
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     u.emit("update-available", { version: "4.0.0" });
     const result = await svc._testOnly.downloadNow();
@@ -635,11 +522,7 @@ describe("auto-updater", () => {
   it("drops download-progress events when state is neither 'downloading' nor 'available'", async () => {
     const fw = fakeWindow();
     const u = fakeUpdater();
-    const svc = createTestAutoUpdater({
-      mainWindow: fw.win,
-      isEnabled: () => true,
-      updaterFactory: () => u,
-    });
+    const svc = createTestAutoUpdater(fw.win, u);
     await svc.triggerCheck();
     // State is still idle — a stray progress event (delta probe, blockmap fetch) MUST NOT promote the badge to "downloading" with version="" because the
     // tooltip would render "v 다운로드 중 — N%" (broken).

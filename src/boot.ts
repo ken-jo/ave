@@ -119,6 +119,7 @@ import { snapshotA2ARemoteGates } from "./main/a2a-remote-gates.js";
 import { createRemoteA2AActionController } from "./main/remote-a2a-action-controller.js";
 import { buildSingleFlightAgentActionApprover } from "./permissions/agent-action-approver.js";
 import { PluginBundleLifecycle } from "./plugins/plugin-bundle-lifecycle.js";
+import { configureChatGptPlanRuntime } from "./main/chatgpt-plan/runtime.js";
 const log = createLogger("ave");
 
 /**
@@ -848,6 +849,25 @@ export async function bootstrap(
   // Subscription-authenticated reviewers run before conversation wiring, so
   // construct the one main-owned provider factory here and share it with both
   // the reviewer and all conversation-loop variants below.
+  // ChatGPT plan usage keeps its account record in the encrypted secret store and sends every request through the
+  // host network stack behind its own egress allowlist. Configured before the subscription service is first created.
+  configureChatGptPlanRuntime({
+    secrets: settingsService,
+    networkFetch: host.networkFetch,
+    onEvent: (event) => {
+      try {
+        ctx.bootAuditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: "subscription-runtime",
+          type: event.failure ? "warn" : "info",
+          // Codes only: the session event carries no token, URL or account detail.
+          input: JSON.stringify({ provider: "chatgpt-plan", event: event.event, ...(event.failure ? { failure: event.failure } : {}) }),
+        });
+      } catch {
+        // Auditing never changes a session outcome.
+      }
+    },
+  });
   ctx.subscriptionProviderFactory = createSubscriptionChatLoopBindings({
     shellOpenExternal: (url) => requireDesktopHost(host).shellOpenExternal(url),
     auditLogger: ctx.bootAuditLogger,

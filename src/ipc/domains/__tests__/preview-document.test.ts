@@ -306,6 +306,7 @@ describe("preview:read-document handler", () => {
     const res = await readDocument(OK_FRAME, join(root, "data", "people.csv"));
     if (!res.ok) throw new Error(`expected ok, got ${res.error}`);
     expect(res.document.format).toBe("csv");
+    if (!("sheet" in res.document)) throw new Error("Expected a table preview.");
     expect(res.document.sheet.rows).toEqual([["name", "age"], ["alice", "30"], ["bob", "41"]]);
     expect(JSON.stringify(res)).not.toContain("content");
   });
@@ -313,6 +314,7 @@ describe("preview:read-document handler", () => {
   it("returns the requested workbook sheet and the tab list", async () => {
     const res = await readDocument(OK_FRAME, join(root, "data", "book.xlsx"), 1);
     if (!res.ok) throw new Error(`expected ok, got ${res.error}`);
+    if (!("sheet" in res.document)) throw new Error("Expected a table preview.");
     expect(res.document.sheetNames).toEqual(["Sales", "Notes"]);
     expect(res.document.sheet).toMatchObject({ index: 1, name: "Notes", rows: [["note"]] });
   });
@@ -338,8 +340,8 @@ describe("preview:read-document handler", () => {
 
   it("rejects bad arguments and non-table files", async () => {
     expect(await readDocument(OK_FRAME, "")).toMatchObject({ ok: false, error: "not-a-file" });
-    expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"), -1)).toMatchObject({ ok: false, error: "sheet-not-found" });
-    expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"), "0")).toMatchObject({ ok: false, error: "sheet-not-found" });
+    expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"), -1)).toMatchObject({ ok: false, error: "invalid-index" });
+    expect(await readDocument(OK_FRAME, join(root, "data", "people.csv"), "0")).toMatchObject({ ok: false, error: "invalid-index" });
     expect(await readDocument(OK_FRAME, join(root, "notes.txt"))).toMatchObject({ ok: false, error: "unsupported-format" });
     expect(await readDocument(OK_FRAME, join(root, "data", "missing.csv"))).toMatchObject({ ok: false, error: "read-failed" });
     expect(await readDocument(OK_FRAME, join(root, "data"))).toMatchObject({ ok: false, error: "unsupported-format" });

@@ -82,6 +82,14 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
+function readyClientHarness() {
+  return clientHarness((child, args) => {
+    if (args[0] === "auth") child.send(auth);
+    else { child.send(init()); child.send(result()); }
+    child.close();
+  });
+}
+
 async function paths() {
   const root = mkdtempSync(join(tmpdir(), "ave-claude-runtime-"));
   roots.push(root);
@@ -716,11 +724,7 @@ describe("Claude Code CLI discovery", () => {
   });
 
   it("requires fresh admission when the qualified source changes", async () => {
-    const h = await clientHarness((child, args) => {
-      if (args[0] === "auth") child.send(auth);
-      else { child.send(init()); child.send(result()); }
-      child.close();
-    });
+    const h = await readyClientHarness();
     await expect(h.client.verifiedRuntime()).rejects.toMatchObject({ code: "claude-code-runtime-unverified" });
     await h.client.verify();
     await expect(h.client.verifiedRuntime()).resolves.toMatchObject({ executable: h.executable });
@@ -731,11 +735,7 @@ describe("Claude Code CLI discovery", () => {
   });
 
   it("does not require a complete help inventory or a model response before chat", async () => {
-    const h = await clientHarness((child, args) => {
-      if (args[0] === "auth") child.send(auth);
-      else { child.send(init()); child.send(result()); }
-      child.close();
-    });
+    const h = await readyClientHarness();
     await h.client.verify();
     expect(h.probes).not.toContainEqual(["--help"]);
     expect(h.calls.every((call) => call.args[0] === "auth")).toBe(true);
@@ -762,11 +762,7 @@ describe("Claude Code CLI discovery", () => {
   });
 
   it("refuses the next turn when the verified file is replaced during a session", async () => {
-    const h = await clientHarness((child, args) => {
-      if (args[0] === "auth") child.send(auth);
-      else { child.send(init()); child.send(result()); }
-      child.close();
-    });
+    const h = await readyClientHarness();
     await h.client.verify();
     const executable = await h.client.verifiedRuntime();
     const runtime = new ClaudeCodeConversationRuntime({ ...h.client.getRuntimePaths(), ...h,

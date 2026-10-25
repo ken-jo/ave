@@ -561,6 +561,7 @@ export const CHANNELS = {
     subscriptionStartLogin: "ave:settings:subscription:start-login",
     subscriptionOpenLoginBrowser: "ave:settings:subscription:open-login-browser",
     subscriptionCancelLogin: "ave:settings:subscription:cancel-login",
+    subscriptionAcknowledgeNotice: "ave:settings:subscription:acknowledge-notice",
     subscriptionLogout: "ave:settings:subscription:logout",
     subscriptionListModels: "ave:settings:subscription:list-models",
     subscriptionUseForChat: "ave:settings:subscription:use-for-chat",
@@ -729,9 +730,9 @@ export const CHANNELS = {
   },
   preview: {
     readFile: "ave:preview:read-file",
-    // Table documents (csv/tsv/xlsx/xls/ods): main parses with the same read
-    // guard as readFile and returns a bounded grid of display strings — never
-    // the file bytes. INTERNAL: absent from PUBLIC_CHANNELS.
+    // Documents use readFile's authority and an isolated parser. Returns a
+    // bounded sheet or page, never source bytes. The index selects a sheet
+    // for table formats or a page for presentations/PDF. INTERNAL.
     readDocument: "ave:preview:read-document",
   },
   workspace: {

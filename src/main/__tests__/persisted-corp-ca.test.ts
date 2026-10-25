@@ -1,3 +1,4 @@
+import { writeSettingsFile } from "./support/settings-file.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 // Boot reads must recover UI-saved settings before asynchronous bootstrap.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -66,11 +67,7 @@ describe("readPersistedCorpCaConfigSync", () => {
 
   it("still lets a deployment launcher pin the values through the environment", () => {
     // A managed deployment sets these before the app starts; the profile must not quietly win over them.
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { corpCaEnabled: true, corpCaCommonName: "Acme Root CA" } }),
-      "utf-8",
-    );
+    writeSettingsFile(userDataPath, { system: { corpCaEnabled: true, corpCaCommonName: "Acme Root CA" } });
 
     expect(
       readPersistedCorpCaConfigSync(userDataPath, {

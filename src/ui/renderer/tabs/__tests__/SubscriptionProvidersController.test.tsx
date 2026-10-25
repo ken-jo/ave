@@ -11,6 +11,7 @@ import type {
 } from "../../../../shared/subscription-runtime.js";
 import type { AppSettings, AveApi } from "../../types.js";
 import { useSubscriptionProviders } from "../SubscriptionProvidersController.js";
+import { SUBSCRIPTION_RUNTIME_DESCRIPTORS } from "../../../../shared/subscription-runtime.js";
 import { SubscriptionAuthControls } from "../SubscriptionProvidersSection.js";
 
 /** Render the subscription state hook with its section to verify the composed model-chooser boundary. */
@@ -252,7 +253,8 @@ describe("SubscriptionProvidersController", () => {
     await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenCalledWith("codex"));
 
     act(() => emitStatusUpdated?.({ provider: "codex", revision: 1 }));
-    await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenCalledTimes(5));
+    // One initial read per runtime, then the invalidated Codex re-read.
+    await waitFor(() => expect(subscriptionRuntimeStatus).toHaveBeenCalledTimes(SUBSCRIPTION_RUNTIME_DESCRIPTORS.length + 1));
     await waitFor(() => {
       expect(screen.getByTestId("subscription-state:codex")).toHaveTextContent("connected");
     });

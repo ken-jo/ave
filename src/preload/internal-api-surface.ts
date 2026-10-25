@@ -243,6 +243,8 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(CHANNELS.settings.subscriptionOpenLoginBrowser, provider),
   subscriptionCancelLogin: async (provider: unknown) =>
     ipcRenderer.invoke(CHANNELS.settings.subscriptionCancelLogin, provider),
+  subscriptionAcknowledgeNotice: async (provider: unknown) =>
+    ipcRenderer.invoke(CHANNELS.settings.subscriptionAcknowledgeNotice, provider),
   subscriptionLogout: async (provider: unknown) =>
     ipcRenderer.invoke(CHANNELS.settings.subscriptionLogout, provider),
   subscriptionListModels: async (provider: unknown) =>

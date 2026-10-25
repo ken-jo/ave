@@ -1,9 +1,8 @@
+import { RuntimeProcessFixture as FakeRuntimeProcess } from "./support/runtime-process.js";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
-import { EventEmitter } from "node:events";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
-import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRecordedSpawn } from "../../__tests__/test-helpers.js";
 import {
@@ -20,18 +19,6 @@ import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 type Spawn = NonNullable<AcpSubscriptionRuntimeClientOptions["spawn"]>;
 
-class FakeRuntimeProcess extends EventEmitter {
-  readonly stdin = new PassThrough();
-  readonly stdout = new PassThrough();
-  readonly stderr = new PassThrough();
-  pid = -1;
-  exitCode: number | null = null;
-  killed = false;
-  kill = vi.fn((_signal?: NodeJS.Signals | number) => {
-    this.killed = true;
-    return true;
-  });
-}
 
 interface LoginHarness {
   client: AcpSubscriptionRuntimeClient;
@@ -44,17 +31,38 @@ interface LoginHarness {
 const harnesses: LoginHarness[] = [];
 const TEST_RUNTIME_PARENT = tmpdir();
 
-function createLoginHarness(
-  provider: "kimi-code" | "grok-build" = "kimi-code",
-  resolveExecutable?: AcpSubscriptionRuntimeClientOptions["resolveExecutable"],
-): LoginHarness {
-  const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-subscription-client-"));
+function runtimeDirectories(prefix: string) {
+  const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, prefix));
   const runtimeHome = join(runtimeRoot, "home");
   const workspaceDir = join(runtimeRoot, "workspace");
   const runtimeTempDir = join(runtimeRoot, "temporary");
   mkdirSync(runtimeHome);
   mkdirSync(workspaceDir);
   mkdirSync(runtimeTempDir);
+  return { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir };
+}
+
+function probeSpawn(versionChild: FakeRuntimeProcess, probeChild: FakeRuntimeProcess, version: string) {
+  const spawnCalls: LoginHarness["spawnCalls"] = [];
+  const spawn: Spawn = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    if (spawnCalls.length === 1) {
+      queueMicrotask(() => {
+        versionChild.stdout.write(version);
+        versionChild.emit("close", 0);
+      });
+      return versionChild as unknown as ChildProcess;
+    }
+    return probeChild as unknown as ChildProcess;
+  };
+  return { spawnCalls, spawn };
+}
+
+function createLoginHarness(
+  provider: "kimi-code" | "grok-build" = "kimi-code",
+  resolveExecutable?: AcpSubscriptionRuntimeClientOptions["resolveExecutable"],
+): LoginHarness {
+  const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-acp-subscription-client-");
 
   const child = new FakeRuntimeProcess();
   const spawnCalls: LoginHarness["spawnCalls"] = [];
@@ -148,13 +156,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
 
   });
   it("opens the ACP authentication probe over a bidirectional JSONL pipe", async () => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-auth-probe-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-acp-auth-probe-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
     const probeRequests: Array<{ id: number; method: string }> = [];
@@ -181,18 +183,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
         }
       }
     });
-    const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
-    const spawn: Spawn = (command, args, options) => {
-      spawnCalls.push({ command, args, options });
-      if (spawnCalls.length === 1) {
-        queueMicrotask(() => {
-          versionChild.stdout.write("kimi 1.2.3\n");
-          versionChild.emit("close", 0);
-        });
-        return versionChild as unknown as ChildProcess;
-      }
-      return probeChild as unknown as ChildProcess;
-    };
+    const { spawnCalls, spawn } = probeSpawn(versionChild, probeChild, "kimi 1.2.3\n");
     const client = new AcpSubscriptionRuntimeClient({
       provider: "kimi-code",
       runtimeHome,
@@ -233,13 +224,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     { label: "reverse request", method: "session/request_permission", sendsDenial: true },
     { label: "non-string method envelope", method: 7, sendsDenial: false },
   ])("fails closed when a numeric $label ID collides with the pending auth request", async ({ method, sendsDenial }) => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-acp-auth-reverse-request-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-acp-auth-reverse-request-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
     const probeWrites: Array<Record<string, unknown>> = [];
@@ -264,18 +249,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
         }
       }
     });
-    const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
-    const spawn: Spawn = (command, args, options) => {
-      spawnCalls.push({ command, args, options });
-      if (spawnCalls.length === 1) {
-        queueMicrotask(() => {
-          versionChild.stdout.write("kimi 1.2.3\n");
-          versionChild.emit("close", 0);
-        });
-        return versionChild as unknown as ChildProcess;
-      }
-      return probeChild as unknown as ChildProcess;
-    };
+    const { spawn } = probeSpawn(versionChild, probeChild, "kimi 1.2.3\n");
     const client = new AcpSubscriptionRuntimeClient({
       provider: "kimi-code",
       runtimeHome,
@@ -314,13 +288,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
   });
 
   it("performs the fixed Grok cached-token ACP verification handshake", async () => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-grok-acp-auth-probe-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-grok-acp-auth-probe-");
     const versionChild = new FakeRuntimeProcess();
     const probeChild = new FakeRuntimeProcess();
     const probeRequests: Array<{ id: number; method: string; params: unknown }> = [];
@@ -347,18 +315,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
         }
       }
     });
-    const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
-    const spawn: Spawn = (command, args, options) => {
-      spawnCalls.push({ command, args, options });
-      if (spawnCalls.length === 1) {
-        queueMicrotask(() => {
-          versionChild.stdout.write("grok-build 1.2.3\n");
-          versionChild.emit("close", 0);
-        });
-        return versionChild as unknown as ChildProcess;
-      }
-      return probeChild as unknown as ChildProcess;
-    };
+    const { spawnCalls, spawn } = probeSpawn(versionChild, probeChild, "grok-build 1.2.3\n");
     const client = new AcpSubscriptionRuntimeClient({
       provider: "grok-build",
       runtimeHome,
@@ -416,13 +373,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
   });
 
   it("fails closed before ACP authentication for Grok Build below the governed minimum", async () => {
-    const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-grok-minimum-version-"));
-    const runtimeHome = join(runtimeRoot, "home");
-    const workspaceDir = join(runtimeRoot, "workspace");
-    const runtimeTempDir = join(runtimeRoot, "temporary");
-    mkdirSync(runtimeHome);
-    mkdirSync(workspaceDir);
-    mkdirSync(runtimeTempDir);
+    const { runtimeRoot, runtimeHome, workspaceDir, runtimeTempDir } = runtimeDirectories("ave-grok-minimum-version-");
     const versionChild = new FakeRuntimeProcess();
     const spawnCalls: Array<{ command: string; args: ReadonlyArray<string>; options: SpawnOptions }> = [];
     const spawn: Spawn = (command, args, options) => {

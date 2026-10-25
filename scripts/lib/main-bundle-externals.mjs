@@ -7,6 +7,9 @@ export const MAIN_BUNDLE_EXTERNALS = [
   "node-pty",
   // The decoder resolves its native addon and codec libraries from real packages.
   "sharp",
+  // Page decoding resolves its worker and native drawing backend from packages.
+  "pdfjs-dist",
+  "@napi-rs/canvas",
   "@sentry/electron",
   "fsevents",
   // Worker-based logging resolves transport files from real packages; keep its dependency tree external.

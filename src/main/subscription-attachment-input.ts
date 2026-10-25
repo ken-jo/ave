@@ -8,7 +8,7 @@ import {
 import { MCP_RESOURCE_ATTACHMENTS_PER_TURN } from "../shared/mcp-resource-bounds.js";
 import { normalizeMultimodalTokenEstimateDimension } from "../shared/multimodal-token-estimate.js";
 import type { SubscriptionImageAttachmentLimits } from "../shared/subscription-runtime.js";
-import type { UserContentPart } from "../engine/llm/types.js";
+import type { StreamEvent, UserContentPart } from "../engine/llm/types.js";
 
 // Original image bytes accepted by a subscription runtime's verified native transport. Generic file payloads deliberately do not belong here: normal Ave
 // file attachments are paths plus the governed read-tool flow, not an unreviewed binary-upload parity promise.
@@ -59,6 +59,30 @@ export class SubscriptionAttachmentTransportError extends Error {
     super(code);
     this.name = "SubscriptionAttachmentTransportError";
   }
+}
+
+export const SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED = "subscription-attachments-not-supported";
+export const SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE = "subscription-attachment-too-large";
+export const SUBSCRIPTION_ATTACHMENT_UNAVAILABLE = "The selected subscription runtime cannot send this attachment.";
+const SUBSCRIPTION_ATTACHMENT_TOO_LARGE = "The selected subscription runtime cannot send an attachment this large.";
+
+/** The fixed, renderer-safe error every subscription transport reports for an attachment it refused locally. */
+export function subscriptionAttachmentTransportFailure(
+  failure: SubscriptionAttachmentTransportError,
+): Extract<StreamEvent, { type: "error" }> {
+  const tooLarge = failure.code === "subscription-attachment-too-large";
+  const code = tooLarge ? SUBSCRIPTION_ATTACHMENT_INPUT_TOO_LARGE : SUBSCRIPTION_ATTACHMENT_INPUT_REJECTED;
+  return {
+    type: "error",
+    error: tooLarge ? SUBSCRIPTION_ATTACHMENT_TOO_LARGE : SUBSCRIPTION_ATTACHMENT_UNAVAILABLE,
+    classification: code,
+    providerError: {
+      origin: "unknown",
+      statusCode: 400,
+      providerCode: code,
+      messagePreview: tooLarge ? "subscription attachment input too large" : "subscription attachment input rejected",
+    },
+  };
 }
 
 function normalizedMimeType(value: unknown): string | null {

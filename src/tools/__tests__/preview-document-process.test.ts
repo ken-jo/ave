@@ -8,6 +8,8 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { buildPreviewDocumentRuntime } from "../../__tests__/support/preview-document-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { cyclicWorkbook, offsetWorkbook } from "../../__tests__/support/table-document-fixtures.js";
+import { pdfFixture, presentationFixture } from "../../__tests__/support/page-document-fixtures.js";
+import type { PreviewPageFormat } from "../../shared/preview-page-document.js";
 import { PREVIEW_DOCUMENT_LIMITS, type PreviewDocumentFormat } from "../../shared/preview-document.js";
 import { asarCliPath } from "../../../test/scripts/gate-script-runner.js";
 
@@ -83,6 +85,15 @@ async function runProbe(program: string): Promise<Record<string, number>> {
 }
 
 describe("isolated table parsing", () => {
+  it.each([["pptx", presentationFixture], ["pdf", pdfFixture]] as const)("loads a real %s page through the split child", async (format, fixture) => {
+    const slot = await acquireParseSlot(`page-test:${format}`);
+    try {
+      const document = await slot.parse(fixture(), format as PreviewPageFormat, 0);
+      expect(document).toMatchObject({ format, totalPages: 2, page: { index: 0 } });
+      expect(document.page.paragraphs.join(" ")).toContain(format === "pdf" ? "First PDF page" : "First & safe");
+    } finally { slot.release(); }
+    expect(getManagedChildProcessCount()).toBe(0);
+  });
   it("returns only the bounded display model from a real split child bundle", async () => {
     const document = await parseTableDocumentIsolated(Buffer.from("a,b\n1,2"), "csv", 0);
     expect(document.sheet.rows).toEqual([["a", "b"], ["1", "2"]]);
@@ -243,7 +254,9 @@ describe("isolated table parsing", () => {
     await expect(parseTableDocumentIsolated(Buffer.alloc(PREVIEW_DOCUMENT_LIMITS.maxFileBytes + 1), "csv", 0))
       .rejects.toMatchObject({ code: "too-large" });
     await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", Number.NaN))
-      .rejects.toMatchObject({ code: "sheet-not-found" });
+      .rejects.toMatchObject({ code: "invalid-index" });
+    await expect(parseTableDocumentIsolated(Buffer.from("a"), "csv", -1))
+      .rejects.toMatchObject({ code: "invalid-index" });
     expect(getManagedChildProcessCount()).toBe(0);
   });
 

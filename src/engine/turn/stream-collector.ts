@@ -26,7 +26,7 @@ export interface StreamCollectParams {
   toolSchemas: ToolSchema[];
   // Sampling stays provider-owned; resolved output and thinking controls remain separate from stream presentation.
   llmSettings: Pick<StreamTurnParams,
-    "thinkingBudgetTokens" | "requestedThinkingBudgetTokens" | "outputTokenLimit"
+    "thinkingBudgetTokens" | "requestedThinkingBudgetTokens" | "reasoningEffort" | "outputTokenLimit"
     | "requestedOutputTokenLimit" | "outputCeiling" | "outputCeilingSource" | "catalogModel" | "modelCapabilities"
   > & {
     streamSmoothing: "none" | "word" | "char";
@@ -135,6 +135,7 @@ export async function collectRoundStream(
       ...(llmSettings.modelCapabilities === undefined ? {} : { modelCapabilities: llmSettings.modelCapabilities }),
       ...(llmSettings.requestedOutputTokenLimit === undefined ? {} : { requestedOutputTokenLimit: llmSettings.requestedOutputTokenLimit }),
       ...(llmSettings.requestedThinkingBudgetTokens === undefined ? {} : { requestedThinkingBudgetTokens: llmSettings.requestedThinkingBudgetTokens }),
+      ...(llmSettings.reasoningEffort === undefined ? {} : { reasoningEffort: llmSettings.reasoningEffort }),
       ...(llmSettings.catalogModel === undefined ? {} : { catalogModel: llmSettings.catalogModel }),
       ...(params.onRequestControls === undefined ? {} : { onRequestControls: params.onRequestControls }),
       abortSignal,
