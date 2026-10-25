@@ -76,9 +76,14 @@ export function PlanUsageComposerControls() {
     const take = (settings: AppSettings) => {
       if (!cancelled) setState(planComposerState(settings));
     };
-    const api = getApi();
-    void api.getSettings().then(take).catch(() => { /* the controls stay hidden */ });
-    const unsubscribe = api.onSettingsUpdated(take);
+    let unsubscribe = () => {};
+    try {
+      const api = getApi();
+      void api.getSettings().then(take).catch(() => { /* the controls stay hidden */ });
+      unsubscribe = api.onSettingsUpdated(take);
+    } catch {
+      // A surface without the renderer api (a preview, a tour fixture) has no runtime to describe: stay hidden.
+    }
     return () => { cancelled = true; unsubscribe(); };
   }, []);
 

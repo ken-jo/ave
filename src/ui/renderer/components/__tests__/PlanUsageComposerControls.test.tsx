@@ -15,8 +15,12 @@ const onSettingsUpdated = vi.fn((cb: (settings: AppSettings) => void) => {
   broadcast = cb;
   return () => { broadcast = null; };
 });
+let apiReady = true;
 vi.mock("../../api-client.js", () => ({
-  getApi: () => ({ getSettings, updateSettings, onSettingsUpdated, openExternalUrl }),
+  getApi: () => {
+    if (!apiReady) throw new Error("aveApi not initialized");
+    return { getSettings, updateSettings, onSettingsUpdated, openExternalUrl };
+  },
 }));
 
 function planSettings(model: string, speed?: "instant" | "medium" | "high"): AppSettings {
@@ -40,6 +44,7 @@ beforeEach(() => {
   updateSettings.mockReset();
   openExternalUrl.mockClear();
   broadcast = null;
+  apiReady = true;
 });
 
 describe("PlanUsageComposerControls", () => {
@@ -48,6 +53,13 @@ describe("PlanUsageComposerControls", () => {
     render(<PlanUsageComposerControls />);
     expect(await screen.findByTestId("iab-status-plan-in-use")).toHaveTextContent(t("subscriptionProvidersSection.chatgptPlanInUse"));
     expect(screen.getByTestId("iab-status-plan-speed")).toHaveAttribute("data-speed", "medium");
+  });
+
+  it("renders nothing, without throwing, on a surface that has no renderer api", () => {
+    apiReady = false;
+    const { container } = render(<PlanUsageComposerControls />);
+    expect(container).toBeEmptyDOMElement();
+    expect(getSettings).not.toHaveBeenCalled();
   });
 
   it("renders nothing on an API key or the Codex CLI", async () => {
