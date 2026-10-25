@@ -1,30 +1,5 @@
-/**
- * A workspace terminal tab's egress ask, EXECUTED (proxy-egress design F, PR 5
- * acceptance): the real ASRT proxy in boot's network shape (non-strict,
- * nothing pre-allowed), the real ask callback and grant store, the real
- * `spawnTerminal` (node-pty, the terminal wrap, its per-invocation listener),
- * and `curl` typed into the tab's shell.
- *
- *   - Allow: the tab's banner is asked (origin terminal, its tab id, This tab
- *     offered), curl gets the page, and This tab covers the next curl without
- *     another banner. Closing the tab drops the grant.
- *   - Allow once: that one curl gets the page; the next curl asks again.
- *   - This tab is the tab's own: another tab asks, and so does a new shell in
- *     the same tab after `exit` (the grant ended with the old shell).
- *   - Deny: curl fails.
- *   - No answer: the banner's deadline denies and curl fails.
- *
- * The destination is a real public HTTPS host (example.com, through a CONNECT
- * tunnel), so the banner offers every scope. A server on this machine cannot
- * stand in for it: a loopback literal skips the proxy (ASRT's NO_PROXY) and
- * is refused by the sandbox, and a name resolving to this host is refused by
- * the proxy's resolved-address guard before any ask. The local and
- * unverified classes are covered by the unit tests (egress-ask.test.ts).
- * Without a route to the host the cases are skipped with that reason; where a
- * confinement job requires them (AVE_REQUIRE_SANDBOX_CASES=1) the precondition
- * case fails with one plain "network unreachable" message instead, and the
- * cases themselves are skipped rather than failing one by one.
- */
+// Exercise real proxy, grant store, terminal spawn, and shell traffic against public HTTPS. Local destinations bypass or fail the proxy guard; required
+// jobs fail the network precondition instead of repeating case failures.
 import { afterEach, beforeEach, describe, expect, it, type TestContext } from "vitest";
 import { existsSync, mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -67,7 +42,7 @@ const OTHER_TAB = "terminal:0e9a5c11-2";
 const BODY = "Example Domain";
 
 let dir: string | undefined;
-/** Each tab's output since the test began. */
+// Each tab's output since the test began.
 const outputs = new Map<string, string>();
 let stopReleaseListener: (() => void) | undefined;
 
@@ -79,8 +54,7 @@ async function requireNativeCase(context: TestContext): Promise<void> {
     if (sandboxCasesRequired()) throw new Error(`AVE_REQUIRE_SANDBOX_CASES=1 but ${CURL} is missing`);
     context.skip(`${CURL} is missing`);
   }
-  // Control: unconfined, this machine reaches the host at all. Where it does
-  // not, the precondition case below reports it; the cases have nothing to measure.
+  // Control: unconfined, this machine reaches the host at all. Where it does not, the precondition case below reports it; the cases have nothing to measure.
   if (!(await hostReachable())) context.skip(NETWORK_UNREACHABLE);
 }
 
@@ -114,10 +88,7 @@ interface Harness {
   readonly grants: EgressGrantStore;
 }
 
-/**
- * Boot's network shape with this test's answers in place of the window: the
- * same callback the app installs, over a grant store in a temp directory.
- */
+// Boot's network shape with this test's answers in place of the window: the same callback the app installs, over a grant store in a temp directory.
 async function startSandbox(
   answer: (request: EgressApprovalRequest) => Promise<EgressApprovalAnswer>,
   terminalAskTimeoutMs?: number,
@@ -147,8 +118,7 @@ async function startSandbox(
   });
   setShellSandboxRequestedAtBoot(true);
   await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: false }, callback);
-  // What boot publishes once ASRT is up (sandbox-init.ts): the terminal only
-  // opens on a host that contains filesystem and process.
+  // What boot publishes once ASRT is up (sandbox-init.ts): the terminal only opens on a host that contains filesystem and process.
   setActiveSandboxCapability({
     kind: "asrt",
     confidence: "verified",
@@ -167,7 +137,7 @@ async function openTab(tabId = TAB): Promise<void> {
   expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
 }
 
-/** Type `curl` into the tab and wait for its exit status line. */
+// Type `curl` into the tab and wait for its exit status line.
 async function curlInTab(marker: string, tabId = TAB, timeoutMs = 60_000): Promise<{ status: number; text: string }> {
   const output = (): string => outputs.get(tabId) ?? "";
   const start = output().length;
@@ -175,8 +145,7 @@ async function curlInTab(marker: string, tabId = TAB, timeoutMs = 60_000): Promi
   const pattern = new RegExp(`${marker}=(\\d+)`, "u");
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    // The echoed command line holds `${marker}=$?`; only the shell's own
-    // output carries a number after the `=`.
+    // The echoed command line holds `${marker}=$?`; only the shell's own output carries a number after the `=`.
     const match = pattern.exec(output().slice(start));
     if (match !== null) return { status: Number(match[1]), text: output().slice(start) };
     if (Date.now() > deadline) throw new Error(`no ${marker} line in the tab's output:\n${output().slice(start).slice(-2000)}`);
@@ -224,8 +193,7 @@ describe.runIf(nativePlatform)("workspace terminal egress banner (native, design
       expect(askedTabs()).toEqual([TAB]);
       expect((await curlInTab("ISO_3", OTHER_TAB)).status).toBe(0);
       expect(askedTabs()).toEqual([TAB, OTHER_TAB]);
-      // `exit` ends the tab's shell and its grants; the respawned shell (same
-      // tab id) is a new invocation and is asked again.
+      // `exit` ends the tab's shell and its grants; the respawned shell (same tab id) is a new invocation and is asked again.
       writeTerminal(TAB, "exit\r");
       await expect.poll(() => harness.grants.listTab().map((grant) => grant.tabId), { timeout: 15_000 }).toEqual([OTHER_TAB]);
       await expect.poll(async () => (await spawnTerminal({ tabId: TAB, cols: 160, rows: 40, ownerWindowId: null })).ok, { timeout: 15_000 }).toBe(true);

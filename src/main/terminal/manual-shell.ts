@@ -2,7 +2,7 @@ import { isAbsolute, win32 } from "node:path";
 
 export interface ManualShellLaunch { readonly command: string; readonly args: string[] }
 
-/** Native interactive argv, independent of the command tool's POSIX resolver. */
+// Native interactive argv, independent of the command tool's POSIX resolver.
 export function resolveManualShell(
   platform: NodeJS.Platform = process.platform,
   env: NodeJS.ProcessEnv = process.env,

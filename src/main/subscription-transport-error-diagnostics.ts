@@ -1,13 +1,4 @@
-/**
- * Safe recovery and failure metadata from an authenticated subscription transport.
- *
- * Remote runtimes are allowed to return arbitrary error text, which can contain
- * user content, paths, account information, or credentials. This module may
- * inspect a narrowly bounded portion of that response to recognize the three
- * recoveries Ave supports, but it never returns server text or unrecognised
- * fields. Closed transport facts describe other failures without enabling new
- * recoveries. The result is suitable for `StreamEvent.providerError`.
- */
+// Remote error text may contain secrets; inspect only bounded known patterns and emit closed safe metadata, never server text.
 import { constants } from "node:os";
 import {
   PROVIDER_RPC_OPERATIONS,
@@ -29,7 +20,7 @@ const TRANSPORT_KINDS: readonly ProviderTransportDiagnostics["kind"][] = [
   "server", "model", "unknown",
 ];
 
-/** Copy only closed labels and bounded process facts; never copy runtime text. */
+// Copy only closed labels and bounded process facts; never copy runtime text.
 function normalizeTransportDiagnostics(value: unknown): ProviderTransportDiagnostics | undefined {
   if (!isRecord(value)) return undefined;
   const { phase, kind, operation, statusCode, exitCode, signal } = value;
@@ -61,13 +52,7 @@ export function subscriptionTransportFailure(
 
 const MAX_REMOTE_DIAGNOSTIC_TEXT_LENGTH = 8_192;
 const MAX_RATE_LIMIT_VALUE = 1_000_000_000_000;
-/**
- * Charset a tool name quoted in REMOTE error text may be echoed with. This is
- * an external boundary, not the host's tool-name rule: the runtime names
- * whatever function its own side rejected (which may be a provider-namespaced
- * `ns.tool`, hence the dot), and the match is only ever echoed into a bounded
- * `messagePreview` — never resolved against the registry.
- */
+// Remote diagnostic tool names may be namespaced; echo only into bounded previews and never resolve them through the host registry.
 const REMOTE_ERROR_TOOL_NAME_ECHO_CHARSET = "[A-Za-z0-9_.-]{1,128}";
 const REMOTE_ERROR_TOOL_NAME_ECHO = new RegExp(`^${REMOTE_ERROR_TOOL_NAME_ECHO_CHARSET}$`, "u");
 const SCHEMA_SIGNAL = /invalid[_ -]function[_ -]parameters|invalid schema for (?:function|tool)/iu;
@@ -77,7 +62,7 @@ const CONTEXT_SIGNAL = /context[_ -]?(?:length|window)|maximum context length|pr
 const TPM_SIGNAL = /tokens?[_ -]?(?:per[_ -]?minute|per min)|\btpm\b/iu;
 const RATE_LIMIT_SIGNAL = /rate[_ -]?limit|too many requests|\b429\b/iu;
 
-/** An error may carry this private, pre-sanitized diagnostic between main-process layers. */
+// An error may carry this private, pre-sanitized diagnostic between main-process layers.
 export interface SubscriptionTransportDiagnosticError extends Error {
   readonly providerError?: ProviderErrorDiagnostics;
 }
@@ -191,10 +176,7 @@ function rateLimitDiagnostics(
   return result;
 }
 
-/**
- * Project the exact recovery cases that the engine can act on. When a failure
- * phase is supplied, other errors retain diagnostic facts with no new recovery.
- */
+// Project the exact recovery cases that the engine can act on. When a failure phase is supplied, other errors retain diagnostic facts with no new recovery.
 export function projectSubscriptionTransportErrorDiagnostics(
   error: unknown,
   phase?: "rpc-response" | "turn-completion",
@@ -250,7 +232,7 @@ export function projectSubscriptionTransportErrorDiagnostics(
   return subscriptionTransportFailure({ phase, kind, ...(statusCode === undefined ? {} : { statusCode }) });
 }
 
-/** Revalidate an error-carried diagnostic before it crosses another local layer. */
+// Revalidate an error-carried diagnostic before it crosses another local layer.
 export function projectedSubscriptionTransportDiagnosticsFromError(
   error: unknown,
 ): ProviderErrorDiagnostics | undefined {

@@ -7,7 +7,7 @@ import { PRIVATE_DIR_MODE, PRIVATE_FILE_MODE } from "../lib/atomic-file.js";
 // Keep ownership until the OS process exits, including after a cleanup timeout.
 let processLock: Database.Database | undefined;
 
-/** A kernel-backed exclusive transaction survives event-loop pauses. */
+// A kernel-backed exclusive transaction survives event-loop pauses.
 export async function acquireHostInstanceLock(): Promise<void> {
   if (processLock) throw new Error("host-already-running");
   const namespace = openFeatureNamespace("host-runtime");
@@ -16,8 +16,7 @@ export async function acquireHostInstanceLock(): Promise<void> {
     throw new Error("host-ownership-directory-not-private");
   }
   const path = join(directory, "instance.sqlite");
-  // SQLite's lifetime lock must keep this inode: replacing it with an atomic
-  // writer would let a second host lock a different file at the same path.
+  // SQLite's lifetime lock must keep this inode: replacing it with an atomic writer would let a second host lock a different file at the same path.
   const descriptor = openSync(path, "a", PRIVATE_FILE_MODE);
   try {
     if (process.platform !== "win32") fchmodSync(descriptor, PRIVATE_FILE_MODE);

@@ -1,9 +1,7 @@
 import { isPackagedForbiddenEnvVar } from "../boot/dev-flags.js";
 
 export function shouldScrubPackagedEnvKey(key: string): boolean {
-  // Older launch environments can still carry legacy credential and
-  // private-topology variables into child processes. Keep this namespace as a
-  // one-way scrub tombstone.
+  // Older launch environments can still carry legacy credential and private-topology variables into child processes. Keep this namespace as a one-way scrub tombstone.
   return isPackagedForbiddenEnvVar(key) || key.startsWith("AVE_DEMO_");
 }
 

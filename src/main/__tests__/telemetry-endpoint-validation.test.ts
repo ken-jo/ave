@@ -1,12 +1,3 @@
-/**
- * M2 — Telemetry endpoint URL validation.
- *
- * Locks in the guardrails:
- *   - only https:// is accepted
- *   - host must be in the (default or env-override) allowlist
- *   - localhost is rejected in packaged builds
- *   - invalid endpoint → one audit warn + session-disabled (no retry)
- */
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_TELEMETRY_ALLOWLIST,
@@ -61,9 +52,7 @@ describe("validateTelemetryEndpoint — schemes", () => {
 
 describe("validateTelemetryEndpoint — allowlist", () => {
   it("rejects production-style hosts when env override is missing (default = localhost only)", () => {
-    // The corp telemetry hostname is no longer hardcoded. Production
-    // builds inject `AVE_TELEMETRY_ALLOWLIST`; without it, only
-    // localhost passes (and only in non-packaged mode).
+    // The corp telemetry hostname is no longer hardcoded. Production builds inject `AVE_TELEMETRY_ALLOWLIST`; without it, only localhost passes (and only in non-packaged mode).
     expect(
       validateTelemetryEndpoint("https://telemetry.example.com/x", { isPackaged: true }).valid,
     ).toBe(false);
@@ -266,11 +255,8 @@ describe("TelemetryService — isActive() + audit on invalid endpoint", () => {
   });
 });
 
-/**
- * The settings surface shows this list so the endpoint field is usable. It has
- * to be the list actually enforced — a second, drifting parse would tell the
- * user a host is allowed and then reject it.
- */
+// The settings surface shows this list so the endpoint field is usable. It has to be the list actually enforced — a second, drifting parse would tell
+// the user a host is allowed and then reject it.
 describe("telemetryAllowedHosts", () => {
   it("falls back to the default allowlist when the variable is unset", () => {
     expect(telemetryAllowedHosts({})).toEqual([...DEFAULT_TELEMETRY_ALLOWLIST]);

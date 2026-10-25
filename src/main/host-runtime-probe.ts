@@ -7,7 +7,7 @@ import { resolveStdioSpawnCommand } from "../mcp/mcp-client.js";
 import { configureHostResources, type HostResources } from "./host-resources.js";
 import { resolveBundledUvBinaryPath } from "./uv-runtime.js";
 
-/** Exercise the same packaged resource resolvers without starting host services. */
+// Exercise the same packaged resource resolvers without starting host services.
 export function probeHostRuntimeResources(resources: HostResources) {
   configureHostResources(resources);
   const uvRuntimeDir = mkdtempSync(join(tmpdir(), "ave-runtime-check-"));

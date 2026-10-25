@@ -1,15 +1,4 @@
-/**
- * SessionGoalStore — the goal one chat session is working towards, keyed by
- * ChatSession id so renderer pushes route to the right tile. Sibling of
- * SessionTasksStore: the tasks are the steps, the goal is what the steps are
- * for and what keeps the session going after a turn ends.
- *
- * Durability: the goal is a field of the session's metadata sidecar
- * (`<id>.meta.json`), written through {@link SessionGoalPersistence} on every
- * mutation and read back lazily the first time a session is read after boot.
- * The revival counter lives inside that record, so a restart continues the
- * same budget instead of granting a fresh one.
- */
+// Persist every goal mutation and its revival counter in the session sidecar so restart cannot grant fresh budget.
 import { createLogger } from "../lib/logger.js";
 import {
   MAX_SESSION_GOAL_CHARS,
@@ -20,13 +9,12 @@ const log = createLogger("ave");
 
 export type SessionGoalListener = (sessionId: string, goal: SessionGoal | null) => void;
 
-/** Where a session's goal lives when this process is not holding it. */
 export interface SessionGoalPersistence {
   load(sessionId: string): SessionGoal | null;
   save(sessionId: string, goal: SessionGoal | null): Promise<void>;
 }
 
-/** Goal text that names no goal — empty, blank, or past the stored bound. */
+// Goal text that names no goal — empty, blank, or past the stored bound.
 export class SessionGoalTextError extends Error {
   constructor(message: string) {
     super(message);
@@ -34,7 +22,7 @@ export class SessionGoalTextError extends Error {
   }
 }
 
-/** A status change asked of a session that has no goal to change. */
+// A status change asked of a session that has no goal to change.
 export class SessionGoalMissingError extends Error {
   constructor() {
     super("this session has no goal yet: set one first");
@@ -69,16 +57,7 @@ export class SessionGoalStore {
     return held === null ? null : { ...held };
   }
 
-  /**
-   * Upsert: no goal yet sets one with a fresh budget, an existing goal has its
-   * text replaced and its revival counter kept. Registering a new text does
-   * not refund rounds already spent — the budget belongs to the session, not
-   * to the wording of the goal.
-   *
-   * The result is always `running`: naming an objective is an instruction to
-   * work on it. A caller that means "register this but do not start" says so
-   * with the `pause` verb, which is applied after this one.
-   */
+  // Replacing goal text preserves spent revival budget; upsert starts running and an explicit pause may follow.
   set(sessionId: string, text: string): Promise<SessionGoal> {
     const normalized = normalizeText(text);
     const held = this.current(sessionId);
@@ -96,11 +75,8 @@ export class SessionGoalStore {
     return this.commit(sessionId, next);
   }
 
-  /**
-   * `resume` on a goal whose budget is already spent would be a resume that
-   * revives nothing, so it extends the ceiling by one more allowance — the
-   * same answer the user gives the chip when it asks whether to continue.
-   */
+  // `resume` on a goal whose budget is already spent would be a resume that revives nothing, so it extends the ceiling by one more allowance — the same
+  // answer the user gives the chip when it asks whether to continue.
   resume(sessionId: string): Promise<SessionGoal> {
     const held = this.require(sessionId);
     const ceiling = held.round >= held.ceiling
@@ -130,11 +106,8 @@ export class SessionGoalStore {
     });
   }
 
-  /**
-   * Spend one revival. Persisted BEFORE the revival turn runs, so a turn that
-   * crashes or is interrupted still consumed its round — the alternative is a
-   * failing goal that revives forever.
-   */
+  // Spend one revival. Persisted BEFORE the revival turn runs, so a turn that crashes or is interrupted still consumed its round — the alternative is a
+  // failing goal that revives forever.
   recordRevival(sessionId: string): Promise<SessionGoal> {
     const held = this.require(sessionId);
     return this.commit(sessionId, {
@@ -144,7 +117,7 @@ export class SessionGoalStore {
     });
   }
 
-  /** Manual dismiss: drop the goal (memory + sidecar) and emit the absence. */
+  // Manual dismiss: drop the goal (memory + sidecar) and emit the absence.
   async clear(sessionId: string): Promise<void> {
     await this.persistence.save(sessionId, null);
     this.sessions.set(sessionId, null);
@@ -170,11 +143,7 @@ export class SessionGoalStore {
     return loaded;
   }
 
-  /**
-   * Sidecar first, memory second: a failed write leaves the held goal as it
-   * was, so the chip's round count never runs ahead of what a restart brings
-   * back.
-   */
+  // Sidecar first, memory second: a failed write leaves the held goal as it was, so the chip's round count never runs ahead of what a restart brings back.
   private async commit(sessionId: string, next: SessionGoal): Promise<SessionGoal> {
     await this.persistence.save(sessionId, next);
     this.sessions.set(sessionId, next);

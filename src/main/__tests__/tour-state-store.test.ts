@@ -11,19 +11,7 @@ import {
 } from "../tour-state-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
-/**
- * Tutorial-C — `~/.ave/onboarding/tour-state.json` storage tests.
- *
- * Validates the Storage Namespace per Feature contract (project CLAUDE.md):
- *   - File lives under `~/.ave/onboarding/` — not at root.
- *   - Directory mode 0o700, file mode 0o600 (POSIX; mode bits are not
- *     enforced on Windows, so the mode check skips when `process.platform`
- *     is `"win32"`).
- *   - Read-never-throws: corrupt JSON / missing file → DEFAULT_TOUR_STATE.
- *   - `markScenarioComplete` is idempotent.
- *   - `dismissScenario` records `dismissedAt` but does NOT add to
- *     `completedScenarios`.
- */
+// POSIX mode checks are skipped on Windows, where these mode bits are not enforced.
 describe("tour-state-store", () => {
   let prevAveHome: string | undefined;
   let tempDir: string;
@@ -78,8 +66,7 @@ describe("tour-state-store", () => {
     const file = join(dir, "tour-state.json");
     expect(statSync(dir).isDirectory()).toBe(true);
     expect(statSync(file).isFile()).toBe(true);
-    // The file body is the persisted JSON — smoke check that writes
-    // land in the namespace directory and nothing else.
+    // The file body is the persisted JSON — smoke check that writes land in the namespace directory and nothing else.
     const parsed = JSON.parse(readFileSync(file, "utf-8")) as unknown;
     expect(parsed).toEqual(DEFAULT_TOUR_STATE);
   });

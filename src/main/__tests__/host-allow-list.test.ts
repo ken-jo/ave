@@ -1,10 +1,3 @@
-/**
- * Unit tests for `host-allow-list.ts` — the shared suffix-match helper
- * that gates `openAuthPartitionViewer` navigation and (eventually) other
- * partition-bound surfaces. These tests are the security boundary for
- * issue #649's allow-list — every regression here would mean a phishing
- * navigation can land inside a plugin auth partition.
- */
 import { describe, expect, it } from "vitest";
 
 import {
@@ -95,10 +88,8 @@ describe("normalizeAllowedHosts", () => {
     });
   });
 
-  // The list mirrored by the host's plugin-manifest.schema.json `not.enum`
-  // gate. Drift would mean a manifest passes AJV at publish but throws at
-  // plugin load. If you change this list, update the host schema in
-  // lockstep; plugins refresh their vendored copy at an app release tag.
+  // The list mirrored by the host's plugin-manifest.schema.json `not.enum` gate. Drift would mean a manifest passes AJV at publish but throws at plugin
+  // load. If you change this list, update the host schema in lockstep; plugins refresh their vendored copy at an app release tag.
   it.each([
     "com", "net", "org", "kr", "co.kr", "or.kr", "go.kr",
     "io", "ai", "dev", "app",
@@ -106,9 +97,8 @@ describe("normalizeAllowedHosts", () => {
     expect(() => normalizeAllowedHosts([suffix])).toThrow(/public-suffix/);
   });
 
-  // Defense-in-depth against IDN homoglyph phishing: the host schema rejects
-  // `xn--*` at publish time, host normalizer rejects at load time. Both
-  // layers required — a hand-edited manifest bypasses schema validation.
+  // Defense-in-depth against IDN homoglyph phishing: the host schema rejects `xn--*` at publish time, host normalizer rejects at load time. Both layers
+  // required — a hand-edited manifest bypasses schema validation.
   it("refuses IDN-punycode labels (xn--*) — homoglyph risk", () => {
     expect(() => normalizeAllowedHosts(["xn--80ak6aa92e.com"])).toThrow(
       /punycode/,
@@ -149,9 +139,7 @@ describe("urlHostMatchesAllowList — dot-boundary suffix-match", () => {
   });
 
   it("does NOT match a domain that merely ends with the literal suffix", () => {
-    // The classic typosquat — string-endsWith would say yes, but dot-boundary
-    // rejects it because `webmail.example.com.attacker.com` is not under
-    // `webmail.example.com`.
+    // The classic typosquat — string-endsWith would say yes, but dot-boundary rejects it because `webmail.example.com.attacker.com` is not under `webmail.example.com`.
     expect(
       urlHostMatchesAllowList("webmail.example.com.attacker.com", allow),
     ).toBe(false);

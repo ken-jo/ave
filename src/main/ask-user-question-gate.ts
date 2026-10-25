@@ -1,14 +1,4 @@
-/**
- * AskUserQuestionGate — main-process broker for the `ask_user_question`
- * tool. The tool execution awaits a Promise; this gate sends a FIFO question
- * payload to the renderer's non-modal composer dock via
- * `ave:ask-user-question:request` and resolves on submit or dismiss.
- *
- * Mirrors {@link ApprovalGate} structurally but does NOT enforce permission
- * policy — the question is rendered as a chat-side card, not a modal,
- * because the tool itself is "ask the user" intent. A 5-minute timeout
- * resolves to `{ dismissed: true }`.
- */
+// FIFO questions appear in the composer dock; this broker does not enforce permission policy.
 import { randomUUID } from "node:crypto";
 import type { WebContents } from "electron";
 import type { NotificationService } from "./notification-service.js";
@@ -20,81 +10,55 @@ import {
 import { t } from "../i18n/index.js";
 const log = createLogger("ave");
 
-/**
- * One question inside a multi-question request. The card surfaces these as
- * a paginated form (1 of N), then a final confirmation page so the user
- * can review every answer before sending.
- */
+// Multi-question cards paginate answers and show a final review page.
 export interface AskUserQuestionItem {
   question: string;
-  /**
-   * Up to 3 visible choices, each ≤ 20 Korean chars. Empty only when
-   * `allowFreeText` is set — every question must offer at least one way to
-   * answer, and a free-text field is one.
-   */
+  // Up to 3 visible choices, each ≤ 20 Korean chars. Empty only when `allowFreeText` is set — every question must offer at least one way to answer, and a
+  // free-text field is one.
   choices: string[];
-  /** Index of the model's top recommendation in `choices` (0 or 1 across the array). */
+  // Index of the model's top recommendation in `choices` (0 or 1 across the array).
   recommendedIndex?: number;
-  /** Indices in `choices` of secondary recommendations (disjoint with recommendedIndex). */
+  // Indices in `choices` of secondary recommendations (disjoint with recommendedIndex).
   altIndices?: number[];
   allowMultiple?: boolean;
-  /**
-   * Render a free-text field as the last answer row. This is the only way a
-   * typed answer exists: a choice label is a button, so a model that wants
-   * typing has to ask for the field rather than name it in `choices`.
-   */
+  // Render a free-text field as the last answer row. This is the only way a typed answer exists: a choice label is a button, so a model that wants typing
+  // has to ask for the field rather than name it in `choices`.
   allowFreeText?: boolean;
-  /** Placeholder for the free-text field (≤ 40 chars). Only read when `allowFreeText`. */
+  // Placeholder for the free-text field (≤ 40 chars). Only read when `allowFreeText`.
   placeholder?: string;
-  /** Confirm-step row label override (≤ 10 Korean chars). Falls back to a truncated question. */
+  // Confirm-step row label override (≤ 10 Korean chars). Falls back to a truncated question.
   summaryHint?: string;
 }
 
 export interface AskUserQuestionRequest {
   id: string;
-  /**
-   * The conversation whose turn asked. The request travels on a WINDOW channel
-   * and a window now holds several conversations side by side, so the card can
-   * only reach the right one if the request names it. Without it every tile
-   * draws the same card, and whichever tile the user answers resolves the gate
-   * — leaving the asking tile holding a prompt that can never be answered.
-   */
+  // Window-wide requests must name the asking conversation so only its tile draws and resolves the card.
   sessionId: string;
   questions: AskUserQuestionItem[];
   createdAt: number;
 }
 
-/** One answer inside a multi-question response. */
+// One answer inside a multi-question response.
 export interface AskUserQuestionAnswer {
-  /** Single-select selected label. Mutually exclusive with `choices`. */
+  // Single-select selected label. Mutually exclusive with `choices`.
   choice?: string;
-  /**
-   * Multi-select selected labels (only present when the question was
-   * declared `allowMultiple: true`). Always a fresh array in request order;
-   * empty array is normalized to undefined upstream.
-   */
+  // Multi-select selected labels (only present when the question was declared `allowMultiple: true`). Always a fresh array in request order; empty array
+  // is normalized to undefined upstream.
   choices?: string[];
-  /**
-   * What the user typed, present only for a question that declared
-   * `allowFreeText`. Kept in its own field rather than folded into
-   * `choice`/`choices` so the reader of the result can always tell a label
-   * the model itself wrote from text the user typed.
-   */
+  // What the user typed, present only for a question that declared `allowFreeText`. Kept in its own field rather than folded into `choice`/`choices` so
+  // the reader of the result can always tell a label the model itself wrote from text the user typed.
   freeText?: string;
 }
 
 export interface AskUserQuestionResponse {
   requestId: string;
-  /**
-   * Per-question answers, in the same order as the request's `questions`.
-   * Length matches `questions.length` when the card is confirmed.
-   */
+  // Per-question answers, in the same order as the request's `questions`. Length matches `questions.length` when the card is confirmed.
   answers?: AskUserQuestionAnswer[];
-  /** Card-level dismissal — every question abandoned at once. */
+  // Card-level dismissal — every question abandoned at once.
   dismissed?: boolean;
 }
 
-/** 1–4 questions per card. Cap is shared between tool input validation and gate. */
+// 1–4 questions per card. Cap is shared between tool input validation and gate.
 export const MAX_QUESTIONS_PER_CARD = 4;
 
 export const IPC_ASK_USER_QUESTION_REQUEST = "ave:ask-user-question:request";
@@ -102,21 +66,11 @@ export const IPC_ASK_USER_QUESTION_RESPOND = "ave:ask-user-question:respond";
 
 interface PendingEntry {
   request: AskUserQuestionRequest;
-  /**
-   * Every renderer the card reached: the one it was sent to, plus each one
-   * that read it back through {@link AskUserQuestionGate.listPending}. When
-   * the question ends — answered in any of them, cancelled or timed out — all
-   * of them are told, so no copy is left on screen as a dead card.
-   */
+  // Every renderer the card reached: the one it was sent to, plus each one that read it back through {@link AskUserQuestionGate.listPending}. When the
+  // question ends — answered in any of them, cancelled or timed out — all of them are told, so no copy is left on screen as a dead card.
   deliveredTo: Set<WebContents>;
   resolve: (response: AskUserQuestionResponse) => void;
-  /**
-   * Centralized teardown — clears the timer, removes the abort listener,
-   * and removes this entry from the `pending` map. Called from every
-   * terminal path (timeout, abort, send-failure, IPC resolve, disposeAll)
-   * so a long-lived `AbortController` reused across multiple sequential
-   * questions never leaks listeners.
-   */
+  // Every terminal path clears timer, abort listener, and pending state to prevent leaks on reused controllers.
   cleanup: () => void;
 }
 
@@ -126,8 +80,7 @@ function normalizeQuestion(value: unknown): AskUserQuestionItem | null {
   if (typeof question.question !== "string" || question.question.trim().length === 0) return null;
   const allowFreeText = question.allowFreeText === true;
   if (!Array.isArray(question.choices) || question.choices.length > 3) return null;
-  // A question with neither chips nor a typed field renders with no answer at
-  // all, leaving the user only the skip button.
+  // A question with neither chips nor a typed field renders with no answer at all, leaving the user only the skip button.
   if (question.choices.length === 0 && !allowFreeText) return null;
   if (
     question.choices.some(
@@ -195,9 +148,8 @@ function normalizeResponse(
     const answer = response.answers[index];
     if (!answer || typeof answer !== "object" || Array.isArray(answer)) return null;
 
-    // Typed text is bound to the request the same way a label is: it is
-    // admissible only where the question asked for the field, so a renderer
-    // cannot invent an answer channel the model never opened.
+    // Typed text is bound to the request the same way a label is: it is admissible only where the question asked for the field, so a renderer cannot invent
+    // an answer channel the model never opened.
     let freeText: string | undefined;
     if (answer.freeText !== undefined) {
       if (question.allowFreeText !== true) return null;
@@ -235,29 +187,13 @@ function normalizeResponse(
 }
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
-/**
- * Per-session cap on concurrent pending questions. Without this, a
- * misbehaving assistant could chain many `ask_user_question` calls in one
- * turn and bury the renderer in cards. 5 is generous for legitimate
- * workflows (decision tree branches) and tight enough that abuse is
- * obvious.
- */
+// Per-session cap on concurrent pending questions. Without this, a misbehaving assistant could chain many `ask_user_question` calls in one turn and bury
+// the renderer in cards. 5 is generous for legitimate workflows (decision tree branches) and tight enough that abuse is obvious.
 const MAX_CONCURRENT_PENDING = 5;
-/**
- * M2: the event a renderer listens for to drop a card that can no longer be
- * answered. Sent to every renderer the card reached whenever the question
- * ends — answered (in this window or another), cancelled, or timed out — so a
- * copy re-fetched into a second window never stays on screen as a dead card.
- */
+// Notify every renderer when a question ends so copies in other windows cannot remain answerable.
 export const IPC_ASK_USER_QUESTION_TIMEOUT = "ave:ask-user-question:timeout";
 
-/**
- * Resolved lazily on every send so dev-mode reloads (which destroy the old
- * webContents) and closed windows don't strand the gate on a stale reference.
- * Given the asking conversation, boot resolves the main window showing that
- * session, else the primary (or most recently focused) live main window
- * (`resolveSessionMainWindowContents` in `src/main/app-state.ts`).
- */
+// Resolve live webContents for each send, preferring the asking session’s window, then primary or last-focused main window.
 export type WebContentsResolver = (sessionId: string) => WebContents | null;
 
 export class AskUserQuestionGate {
@@ -273,22 +209,17 @@ export class AskUserQuestionGate {
   ) {
     this.timeoutMs = timeoutMs;
     this.notificationService = notificationService;
-    // Accept either a direct WebContents (legacy/tests) or a resolver
-    // function. Direct WebContents is wrapped so the rest of the gate
-    // talks to one shape.
+    // Accept either a direct WebContents (legacy/tests) or a resolver function. Direct WebContents is wrapped so the rest of the gate talks to one shape.
     this.resolveWebContents = typeof webContents === "function"
       ? (webContents as WebContentsResolver)
       : () => (webContents.isDestroyed() ? null : webContents);
   }
 
   ask(input: {
-    /**
-     * 1–4 questions to ask in a single composer-dock card. Anything outside that
-     * range is rejected up-front so the renderer never has to defend
-     * against malformed multi-question shapes.
-     */
+    // 1–4 questions to ask in a single composer-dock card. Anything outside that range is rejected up-front so the renderer never has to defend against
+    // malformed multi-question shapes.
     questions: AskUserQuestionItem[];
-    /** Conversation the asking turn belongs to; routes the card to its tile. */
+    // Conversation the asking turn belongs to; routes the card to its tile.
     sessionId: string;
     abortSignal?: AbortSignal;
   }): Promise<AskUserQuestionResponse> {
@@ -322,13 +253,9 @@ export class AskUserQuestionGate {
     if (input.abortSignal?.aborted) {
       return Promise.resolve({ requestId: req.id, dismissed: true });
     }
-    // Issue #260 — fire system notification at the entry of the wait. If
-    // the window is focused this becomes an in-app toast; otherwise an OS
-    // notification surfaces the question while the user is in another app.
     try {
-      // For a single question we surface the prompt verbatim; for a
-      // multi-question card we surface the count + first prompt so the
-      // OS-toast preview is informative but not flooded.
+      // For a single question we surface the prompt verbatim; for a multi-question card we surface the count + first prompt so the OS-toast preview is
+      // informative but not flooded.
       const previewBody =
         req.questions.length === 1
           ? req.questions[0].question
@@ -344,24 +271,22 @@ export class AskUserQuestionGate {
     }
     return new Promise<AskUserQuestionResponse>((resolve) => {
       const deliveredTo = new Set<WebContents>([wc]);
-      // Tell every renderer the card reached — and whichever renderer shows
-      // the session by now — that it is no longer answerable, so each drops
-      // its copy. Best-effort: a renderer may be tearing down.
+      // Tell every renderer the card reached — and whichever renderer shows the session by now — that it is no longer answerable, so each drops its copy.
+      // Best-effort: a renderer may be tearing down.
       const announceStale = () => {
-        // Nothing here may throw: the caller resolves the gate right after,
-        // and a throw would leave the asking turn waiting forever.
+        // Nothing here may throw: the caller resolves the gate right after, and a throw would leave the asking turn waiting forever.
         const targets = new Set<WebContents | null>(deliveredTo);
         try {
           targets.add(this.resolveWebContents(req.sessionId));
         } catch {
-          /* resolver failed — the renderers it reached are still told */
+          // resolver failed — the renderers it reached are still told
         }
         for (const target of targets) {
           try {
             if (!target || target.isDestroyed()) continue;
             target.send(IPC_ASK_USER_QUESTION_TIMEOUT, { requestId: req.id });
           } catch {
-            /* renderer may be tearing down — best-effort */
+            // renderer may be tearing down — best-effort
           }
         }
       };
@@ -376,9 +301,7 @@ export class AskUserQuestionGate {
             resolve({ requestId: req.id, dismissed: true });
           }
         : null;
-      // Every terminal path (answer, timeout, abort, send failure, dispose)
-      // runs this once, so every copy of the card is taken down whichever
-      // way the question ended.
+      // Every terminal path (answer, timeout, abort, send failure, dispose) runs this once, so every copy of the card is taken down whichever way the question ended.
       let settled = false;
       const cleanup = () => {
         this.pending.delete(req.id);
@@ -423,13 +346,7 @@ export class AskUserQuestionGate {
     this.pending.clear();
   }
 
-  /**
-   * The questions still waiting for an answer, exactly as they were sent. A
-   * renderer that loads after a question went out — the window that drew it
-   * closed, and another window now shows the asking session — reads these
-   * once and draws the ones its tiles own; otherwise the turn would sit out
-   * the full timeout against a card nobody can see.
-   */
+  // Late-loading renderers replay pending questions for their owned sessions so window closure cannot strand the turn.
   listPending(recipient?: WebContents): AskUserQuestionRequest[] {
     const entries = [...this.pending.values()];
     // The reader now holds a copy of each card; it is told when they end.

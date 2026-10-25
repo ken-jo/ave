@@ -1,8 +1,4 @@
 import { terminalSessionFixture } from "../../../__tests__/support/terminal-session-fixtures.js";
-/**
- * Command blocks parsed from a terminal's output stream: OSC 133 boundaries,
- * the Enter-split fallback, chunk splits, text normalization and the bounds.
- */
 import { describe, expect, it } from "vitest";
 import {
   TerminalBlockTracker,
@@ -20,15 +16,10 @@ const ESC = "\u001b";
 const BEL = "\u0007";
 const osc = (body: string, terminator: "bel" | "st" = "bel"): string =>
   `${ESC}]${body}${terminator === "bel" ? BEL : `${ESC}\\`}`;
-/** This terminal's marker nonce, as the shell integration would carry it. */
 const NONCE = "0123456789abcdef0123456789abcdef";
-/** The B token the test prompts announce in their P marker. */
 const PROMPT_TOKEN = "b0b1b2b3b4b5b6b7b8b9babbbcbdbebf";
-/**
- * An authenticated OSC 133 marker: its fields, then the nonce. A P marker
- * also announces the prompt's B token, and B carries that token instead of
- * the nonce (the prompt string prints it).
- */
+// An authenticated OSC 133 marker: its fields, then the nonce. A P marker also announces the prompt's B token, and B carries that token instead of the
+// nonce (the prompt string prints it).
 const mark = (fields: string, terminator: "bel" | "st" = "bel"): string => {
   if (fields === "B") return osc(`133;B;${PROMPT_TOKEN}`, terminator);
   let announced = fields;
@@ -39,7 +30,7 @@ const mark = (fields: string, terminator: "bel" | "st" = "bel"): string => {
   return osc(`133;${announced};${NONCE}`, terminator);
 };
 
-/** One prompt-command-output-finish cycle, as the generated zsh rc emits it. */
+// One prompt-command-output-finish cycle, as the generated zsh rc emits it.
 function cycle(command: string, output: string, exit: number, cwd = "/work"): string {
   return [
     mark(`P;Cwd=${encodeURIComponent(cwd).replace(/%2F/gu, "/")};Keys=emacs;Paste=1`),
@@ -194,9 +185,8 @@ describe("TerminalBlockTracker — OSC 133", () => {
 
   it("reads bash readline's wrap placeholder (\" \" CR at the right margin) as no part of the edit line", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
-    // The bytes the ubuntu-24.04 runner's bash 5.2 echoed for a paste that
-    // ended at column 100: an 85-column prompt, the pasted line in standout,
-    // then a blank on the next row and a return to its start.
+    // The bytes the ubuntu-24.04 runner's bash 5.2 echoed for a paste that ended at column 100: an 85-column prompt, the pasted line in standout, then a
+    // blank on the next row and a return to its start.
     const prompt = "runner@runnervm4yw5a:/tmp/ave-test-1001/t-HDkvJN/pty-linux-sandbox-pHo2zN/workspace$ ";
     expect(prompt.length + "echo still-here".length).toBe(100);
     tracker.recordOutput(`${mark("D;0")}${mark("P;Cwd=/work;Keys=emacs;Paste=1")}${mark("A")}\u001b[?2004h${prompt}${mark("B")}`);
@@ -661,8 +651,7 @@ describe("prompt state (whether a command may be typed now)", () => {
     const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true, now: () => clock });
     tracker.recordOutput(prompt());
     expect(tracker.promptState()).toBe("ready");
-    // An ESC (a pending prefix, or vi command mode) echoes nothing, yet
-    // changes what typed text does: the prompt stays taken however long it waits.
+    // An ESC (a pending prefix, or vi command mode) echoes nothing, yet changes what typed text does: the prompt stays taken however long it waits.
     tracker.recordInput("\u001b");
     expect(tracker.promptState()).toBe("pending-input");
     clock += USER_INPUT_QUIET_MS * 10;
@@ -764,8 +753,7 @@ describe("prompt state (whether a command may be typed now)", () => {
     const unsubscribe = tracker.subscribe(() => seen.push(tracker.promptState()));
     expect(tracker.nextBlockId()).toBe(1);
     tracker.recordOutput(cycle("make", "built\r\n", 0));
-    // P, A, B, C, D: one notification per marker.
-    // Between A and B of its first prompt the shell is still starting.
+    // P, A, B, C, D: one notification per marker. Between A and B of its first prompt the shell is still starting.
     expect(seen).toEqual(["between-prompts", "shell-starting", "ready", "command-running", "between-prompts"]);
     expect(tracker.nextBlockId()).toBe(2);
     tracker.recordExit();

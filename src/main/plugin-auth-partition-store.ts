@@ -1,29 +1,12 @@
-/**
- * PluginAuthPartitionStore — persist observed `persist:plugin-auth:<pluginId>*`
- * partition names to disk so uninstall can wipe partitions created in PRIOR app
- * sessions (issue #748).
- *
- * File: `~/.ave/plugins/auth-partitions.json`
- * Format: `{ "partitions": { "<pluginId>": ["persist:plugin-auth:<pluginId>", ...] } }`
- *
- * Design:
- * - Atomic write (tmp → rename) with mode 0o600, dir 0o700.
- * - AVE_HOME env override flows through `aveHome()`.
- * - Corrupt / unreadable JSON → throws immediately with a descriptive error.
- *   Caller (boot.ts) logs to audit and re-throws — no silent empty-set fallback.
- * - An EMPTY file reads as "no data", like a missing one. On Windows the
- *   sandbox's write deny (`srt-win acl stamp`) creates each missing deny
- *   target as an empty placeholder file, and this file is one of them.
- * - One serial mutation queue owns both writes and deletes. Every caller's
- *   promise settles only after its exact snapshot mutation reaches disk.
- */
+// Persist observed auth partitions so uninstall can clear names created in prior sessions; serialize writes and deletes together. Corrupt data throws;
+// empty files count as absent because Windows confinement may create deny-target placeholders.
 import { readdir, readFile, unlink } from "node:fs/promises";
 import { basename, dirname, resolve } from "node:path";
 import { aveHome } from "../shared/ave-home.js";
 import { writeFileAtomicAtPath } from "./storage/feature-namespace.js";
 import { isMissingPathError } from "../lib/atomic-file.js";
 
-/** Shape written to disk. */
+// Shape written to disk.
 interface PartitionsFile {
   partitions: Record<string, string[]>;
 }
@@ -48,20 +31,14 @@ function isPartitionsFile(value: unknown): value is PartitionsFile {
   return true;
 }
 
-/** The sandbox's empty deny placeholder (see the header): no data yet. */
+// The sandbox's empty deny placeholder (see the header): no data yet.
 function isPlaceholder(raw: string): boolean {
   return raw.trim() === "";
 }
 
-// ---------------------------------------------------------------------------
-// Serial mutation queue
-//
-// Invariant: at most one `doActualWrite` is executing at any time.
-// Writes and deletes share this queue so an older observed-partition snapshot
-// cannot race a durable uninstall deletion or overwrite an unrelated plugin.
-// ---------------------------------------------------------------------------
+// Serialize writes and deletes together so stale snapshots cannot race uninstall deletion or overwrite unrelated plugins.
 
-/** Serial promise chain; never rejects (errors propagate via the returned promise). */
+// Serial promise chain; never rejects (errors propagate via the returned promise).
 let _mutationChain: Promise<void> = Promise.resolve();
 
 function enqueueMutation(operation: () => Promise<void>): Promise<void> {
@@ -70,7 +47,7 @@ function enqueueMutation(operation: () => Promise<void>): Promise<void> {
   return result;
 }
 
-/** Deep-clone a partition map into a plain PartitionsFile object. */
+// Deep-clone a partition map into a plain PartitionsFile object.
 function snapshotMap(partitions: ReadonlyMap<string, ReadonlySet<string>>): PartitionsFile {
   const data: PartitionsFile = { partitions: {} };
   for (const [pluginId, set] of partitions) {
@@ -79,40 +56,17 @@ function snapshotMap(partitions: ReadonlyMap<string, ReadonlySet<string>>): Part
   return data;
 }
 
-/**
- * Execute a single disk write for `snapshot` through the shared atomic-write
- * authority ({@link writeFileAtomicAtPath}): 0o700 dir, 0o600 file, random
- * staging name with `O_CREAT|O_EXCL`, and — the guarantee this store's own
- * "atomic write" comment claimed but the prior `writeFile`+`rename` did not
- * deliver — an fsync of the staged bytes and the parent directory before the
- * caller's promise settles.
- */
+// Use shared atomic writes with random exclusive staging, private modes, and fsync before the mutation promise settles.
 async function doActualWrite(snapshot: PartitionsFile): Promise<void> {
   await writeFileAtomicAtPath(filePath(), `${JSON.stringify(snapshot, null, 2)}\n`);
 }
 
-/**
- * For test isolation only — resets module-level write queue state.
- * @internal
- */
+// For test isolation only — resets module-level write queue state. @internal
 export function __resetWriteQueueForTest(): void {
   _mutationChain = Promise.resolve();
 }
 
-// ---------------------------------------------------------------------------
-// Public API
-// ---------------------------------------------------------------------------
-
-/**
- * Read persisted partitions from disk.
- *
- * Returns `null` when the file does not exist (first boot after upgrade — no
- * data to restore, which is correct: no prior sessions tracked anything).
- *
- * Throws if the file exists but contains corrupt / unexpected JSON so the
- * caller can log to audit and surface the error rather than silently losing
- * historical partition data.
- */
+// Missing files return null; corrupt or unexpected data throws so partition history cannot disappear silently.
 export async function readPersistedPluginAuthPartitions(): Promise<
   Record<string, string[]> | null
 > {
@@ -146,12 +100,8 @@ export async function readPersistedPluginAuthPartitions(): Promise<
   return parsed.partitions;
 }
 
-/**
- * Atomically persist the current in-memory partition map to disk.
- *
- * The map is deep-cloned synchronously before this function returns, then its
- * exact snapshot is written in serial order with deletes.
- */
+// Atomically persist the current in-memory partition map to disk. The map is deep-cloned synchronously before this function returns, then its exact
+// snapshot is written in serial order with deletes.
 export function writePersistedPluginAuthPartitions(
   partitions: ReadonlyMap<string, ReadonlySet<string>>,
 ): Promise<void> {
@@ -159,11 +109,7 @@ export function writePersistedPluginAuthPartitions(
   return enqueueMutation(() => doActualWrite(snapshot));
 }
 
-/**
- * Remove a single plugin's entry from the persisted file.
- * Used during uninstall — after in-memory state is cleared, purge disk record.
- * No-ops silently when the file does not exist.
- */
+// Purge persisted auth after in-memory uninstall cleanup; a missing file is already clean.
 export async function deletePersistedPluginAuthPartitions(pluginId: string): Promise<void> {
   return enqueueMutation(async () => {
     const path = filePath();
@@ -198,10 +144,7 @@ export async function deletePersistedPluginAuthPartitions(pluginId: string): Pro
   });
 }
 
-/**
- * Clean up any stale `.tmp` files left by a previous crash mid-write.
- * Call once at startup, before the first read.
- */
+// Clean up any stale `.tmp` files left by a previous crash mid-write. Call once at startup, before the first read.
 export async function cleanupStaleTmpFiles(): Promise<void> {
   const path = filePath();
   const dir = dirname(path);
@@ -213,11 +156,11 @@ export async function cleanupStaleTmpFiles(): Promise<void> {
         .filter((entry) => entry.startsWith(prefix) && entry.endsWith(".tmp"))
         .map((entry) =>
           unlink(resolve(dir, entry)).catch(() => {
-            /* best-effort */
+            // best-effort
           }),
         ),
     );
   } catch {
-    /* readdir throws if dir absent — safe to ignore on first boot */
+    // readdir throws if dir absent — safe to ignore on first boot
   }
 }

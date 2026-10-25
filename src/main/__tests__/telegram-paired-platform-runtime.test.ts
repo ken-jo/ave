@@ -28,10 +28,6 @@ function envelope(senderId = OWNER_ID): PlatformBridgeVerifiedEnvelope {
   };
 }
 
-/**
- * Mirrors the production derivations so the fixture can name an actor and a
- * conversation the way the durable store would.
- */
 function actorDigestFor(actorSecret: string, userId: string): string {
   return createHmac("sha256", actorSecret)
     .update("ave/telegram-platform-bridge/actor/v1\0", "utf8")
@@ -55,9 +51,9 @@ interface Harness {
   readonly ownerActorDigest: string;
   current: string;
   paired: string | null;
-  /** conversationDigest → approval scope, for the paired actor only. */
+  // conversationDigest → approval scope, for the paired actor only.
   readonly approvals: Map<string, string>;
-  /** Plaintext of the shared conversation, as the durable store would answer. */
+  // Plaintext of the shared conversation, as the durable store would answer.
   bound: string | null;
 }
 
@@ -102,16 +98,13 @@ function harness(): Harness {
   };
 }
 
-/**
- * Share one conversation, the way the durable store records it: a grant keyed
- * by digest, plus the plaintext binding the router reads back.
- */
+// Share one conversation, the way the durable store records it: a grant keyed by digest, plus the plaintext binding the router reads back.
 function approve(h: Harness, conversationId: string, scope: string): void {
   h.approvals.set(conversationDigestFor(conversationId), scope);
   h.bound = conversationId;
 }
 
-/** Stop sharing whatever is shared, leaving the pairing in place. */
+// Stop sharing whatever is shared, leaving the pairing in place.
 function revokeShare(h: Harness): void {
   h.approvals.clear();
   h.bound = null;
@@ -141,9 +134,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
   it("binds the conversation that was shared, not the one on screen", () => {
     const h = harness();
     approve(h, CONVERSATION_A, "scope-a");
-    // A grant left over for another conversation, and the owner looking at it.
-    // A router that asked "is the CURRENT conversation approved?" would answer
-    // yes here and re-point the surface at a conversation nobody shared last.
+    // A grant left over for another conversation, and the owner looking at it. A router that asked "is the CURRENT conversation approved?" would answer yes
+    // here and re-point the surface at a conversation nobody shared last.
     h.approvals.set(conversationDigestFor(CONVERSATION_B), "scope-b");
     h.current = CONVERSATION_B;
 
@@ -172,9 +164,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     approve(h, CONVERSATION_A, "scope-a");
     const route = h.runtime.routeForEnvelope(envelope())!;
 
-    // A durable binding is still not background execution: with the shared
-    // conversation off screen nothing runs, and the caller answers the paired
-    // owner with the control notice instead.
+    // A durable binding is still not background execution: with the shared conversation off screen nothing runs, and the caller answers the paired owner
+    // with the control notice instead.
     h.current = CONVERSATION_B;
     expect(h.runtime.isRouteCurrent(route)).toBe(false);
     expect(h.runtime.routeForEnvelope(envelope())).toBeNull();
@@ -192,9 +183,8 @@ describe("createTelegramPairedPlatformRuntime", () => {
     const routeBoundToA = h.runtime.routeForEnvelope(envelope())!;
     expect(h.runtime.isRouteCurrent(routeBoundToA)).toBe(true);
 
-    // The owner moves on: A's approval is revoked and B is approved instead.
-    // A fence that asked "is the CURRENT conversation approved?" would answer
-    // yes here and keep flushing A's projection into Telegram.
+    // The owner moves on: A's approval is revoked and B is approved instead. A fence that asked "is the CURRENT conversation approved?" would answer yes
+    // here and keep flushing A's projection into Telegram.
     h.approvals.delete(conversationDigestFor(CONVERSATION_A));
     approve(h, CONVERSATION_B, "scope-b");
     h.current = CONVERSATION_B;
@@ -287,8 +277,7 @@ describe("createTelegramPairedPlatformRuntime", () => {
       ...base,
       authority: {} as unknown as TelegramPairedRouteAuthority,
     })).toThrow("telegram-paired-platform-runtime-invalid");
-    // An authority that cannot name the durable binding is refused at
-    // construction rather than silently routing by whatever is on screen.
+    // An authority that cannot name the durable binding is refused at construction rather than silently routing by whatever is on screen.
     expect(() => createTelegramPairedPlatformRuntime({
       ...base,
       authority: {

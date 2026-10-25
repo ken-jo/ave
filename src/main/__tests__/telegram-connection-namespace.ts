@@ -1,15 +1,4 @@
-/**
- * Shared fixture for the Telegram connection tests.
- *
- * The store and the owner service both need a real file layer — atomic tmp +
- * rename, 0o700 directories, 0o600 files — rooted at a throwaway directory, so
- * their tests exercise the actual persistence path rather than a mock of it.
- *
- * They also need the same conversation-digest derivation. Production wires one
- * function into both the store and the service and the store refuses a grant
- * whose two derivations disagree, so a second copy here would test a shape the
- * app never runs.
- */
+// Use the real atomic file layer and one shared digest derivation so fixtures match production grant validation.
 import { createHash } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -19,11 +8,7 @@ import {
   type FeatureNamespaceHandle,
 } from "../storage/feature-namespace.js";
 
-/**
- * Bot-scoped exactly like `telegramConversationDigest`, so an approval cannot
- * survive being re-pointed at a different bot. The store re-runs this on every
- * read to decide whether a stored plaintext conversation id is real.
- */
+// Digests are bot-scoped so approval cannot survive switching bots.
 export function conversationDigestFor(botFingerprint: string, conversationId: string): string {
   return createHash("sha256").update("conversation", "utf8").update("\0", "utf8")
     .update(botFingerprint, "utf8").update("\0", "utf8")

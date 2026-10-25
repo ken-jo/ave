@@ -1,9 +1,4 @@
-/**
- * Main-process composition for explicit Tailnet pairing and scoped sharing.
- *
- * The actor HMAC key uses the host's encrypted storage. Pairing records
- * themselves contain only digests and opaque ids.
- */
+// The actor key stays encrypted; persisted pairing records contain only digests and opaque IDs.
 import type { SecretStore } from "../audit/hmac-chain.js";
 import { createHostSecretStore } from "../audit/host-secret-store.js";
 import type { SecretEncryption } from "../data/secret-document-store.js";
@@ -25,9 +20,9 @@ export interface TailnetPairedSharingRuntime {
 
 export interface CreateTailnetPairedSharingRuntimeOptions {
   readonly getCurrentConversationId: () => string;
-  /** Test-only injection; production uses the host's encrypted storage. */
+  // Test-only injection; production uses the host's encrypted storage.
   readonly secretStore?: SecretStore;
-  /** Test-only store options; production uses the encrypted-feature namespace. */
+  // Test-only store options; production uses the encrypted-feature namespace.
   readonly storeOptions?: CreateTailnetPairingShareStoreOptions;
   readonly encryption: SecretEncryption;
 }

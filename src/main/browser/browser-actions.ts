@@ -1,21 +1,5 @@
-/**
- * Page actions of the agent browser tools, carried out in main over the
- * guest's own DevTools protocol session (`webContents.debugger`).
- *
- * Loaded on first use (browser-tools.ts imports it dynamically), so none of
- * this sits in the main process's initial bundle.
- *
- * WHAT IS NOT HERE, ON PURPOSE. No script evaluation, no cookies or storage,
- * no network bodies, no downloads, only picker-approved file uploads: every CDP method used is
- * an Accessibility, DOM, Input or Page call. `browser-tools-source.test.ts`
- * holds these modules to that list. An agent click is not a user gesture
- * either: a download it triggers still goes through the side browser's native
- * Save dialog and rate limit.
- *
- * SENSITIVE FIELDS. Typing into a password, payment-card (`autocomplete=cc-*`)
- * or one-time-code field is refused; the user types those. The page decides
- * how its fields are labelled, so this is defense in depth, not a boundary.
- */
+// Lazy-loaded page actions use allow-listed CDP methods; uploads require picker approval and downloads still require native Save. Refuse password, card,
+// and OTP fields as defense in depth; page-supplied labels are not a security boundary.
 import { stageBrowserUpload, type BrowserUploadPickerRequest, type BrowserUploadResult, type BrowserUploadSelection } from "./browser-upload.js";
 import type { WebContents } from "electron";
 import type { BrowserActionTab, BrowserPageActions } from "../../tools/browser-tools.js";
@@ -35,7 +19,7 @@ import {
 
 const attached = new WeakMap<WebContents, Promise<CdpSession>>();
 
-/** The guest's CDP session, attached on first use and kept for the guest's life. */
+// The guest's CDP session, attached on first use and kept for the guest's life.
 async function cdpFor(guest: WebContents, signal: AbortSignal, onTrackingStarted: () => void): Promise<CdpSession> {
   throwIfAborted(signal);
   const existing = attached.get(guest);
@@ -83,8 +67,6 @@ async function fullTree(cdp: CdpSession): Promise<AXNode[]> {
   return result.nodes ?? [];
 }
 
-// ── snapshot / screenshot / wait ─────────────────────────────────────────
-
 export async function snapshot(
   target: ActionTarget,
   options: { interactive?: boolean; delta?: boolean },
@@ -118,11 +100,8 @@ export async function snapshot(
   }) };
 }
 
-/**
- * A tab that is not shown paints no frames, and Page.captureScreenshot then
- * never answers (seen in the real app: a hidden side-panel tab hung until the
- * host's 120s ceiling). Bound it and say what to do instead.
- */
+// A tab that is not shown paints no frames, and Page.captureScreenshot then never answers (seen in the real app: a hidden side-panel tab hung until the
+// host's 120s ceiling). Bound it and say what to do instead.
 const SCREENSHOT_MAX_MS = 10_000;
 
 export async function screenshot(
@@ -175,7 +154,7 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-/** Wait for `text` to appear on the page, or for `timeMs`. */
+// Wait for `text` to appear on the page, or for `timeMs`.
 async function waitFor(
   target: ActionTarget,
   options: { text?: string; timeMs?: number },
@@ -198,13 +177,8 @@ async function waitFor(
   }
 }
 
-// ── refs ──────────────────────────────────────────────────────────────────
-
-/**
- * The live DOM node a ref names. Fails clearly when the ref is from another
- * tab or page, or its element is gone; follows a re-render that replaced the
- * element with an identical one (same role and accessible name, unique).
- */
+// The live DOM node a ref names. Fails clearly when the ref is from another tab or page, or its element is gone; follows a re-render that replaced the
+// element with an identical one (same role and accessible name, unique).
 export async function resolveRef(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs): Promise<number> {
   const entry = refs.get(ref);
   if (!entry || entry.tabId !== target.tabId) {
@@ -242,8 +216,6 @@ async function nodeRoleAndName(cdp: CdpSession, backendNodeId: number): Promise<
   }
 }
 
-// ── click / type / keys ───────────────────────────────────────────────────
-
 async function centerOf(cdp: CdpSession, backendNodeId: number): Promise<{ x: number; y: number }> {
   await cdp.send("DOM.scrollIntoViewIfNeeded", { backendNodeId });
   return visibleCenter(cdp, backendNodeId);
@@ -261,7 +233,7 @@ export async function click(target: ActionTarget, ref: string, refs: BrowserRefT
 }
 
 const FOCUS_POLL_MS = 50;
-/** How long one press waits for focus before pressing again. */
+// How long one press waits for focus before pressing again.
 const FOCUS_PRESS_WAIT_MS = 500;
 const FOCUS_MAX_MS = 3_000;
 
@@ -276,14 +248,7 @@ async function pollUntil<T>(signal: AbortSignal, maxMs: number, probe: () => Pro
   }
 }
 
-/**
- * Press into the page until it holds keyboard focus. The press moves focus to
- * the guest asynchronously, and the app can take it back (an approval card
- * closing returns focus to the composer); key or text input sent to a page
- * without focus is dropped without an error. So: press, wait for the
- * accessibility tree to report the page focused, press again if it does not,
- * and fail clearly when it never does.
- */
+// Synthesized keyboard input silently drops without page focus; press, await accessibility focus, retry, then fail if focus never arrives.
 async function pressForFocus(target: ActionTarget, x: number, y: number): Promise<void> {
   const started = Date.now();
   while (Date.now() - started < FOCUS_MAX_MS) {
@@ -295,13 +260,7 @@ async function pressForFocus(target: ActionTarget, x: number, y: number): Promis
 
 const RELEASE_MAX_MS = 1_000;
 
-/**
- * Run an action that may take the page's keyboard focus, and give focus back
- * afterwards, whether the action succeeds or fails, when the page did not
- * hold it before. Waits (bounded) until the page has let go. Individual native
- * events carry their attribution; genuine intervention still cancels while
- * focus is being restored.
- */
+// Restore focus after success or failure when the page did not initially own it; bounded restoration must still honor genuine user intervention.
 async function withPageFocus<T>(target: ActionTarget, act: () => Promise<T>): Promise<T> {
   const hadFocus = await pageHasFocus(target.cdp);
   try {
@@ -324,7 +283,7 @@ async function pressAt(target: ActionTarget, x: number, y: number, finish = (dis
   });
 }
 
-/** Why a field is refused for agent typing, or null when it is not sensitive. */
+// Why a field is refused for agent typing, or null when it is not sensitive.
 export function sensitiveFieldReason(attributes: Readonly<Record<string, string>>): string | null {
   if ((attributes.type ?? "").trim().toLowerCase() === "password") return "a password field";
   const tokens = (attributes.autocomplete ?? "").toLowerCase().split(/\s+/).filter(Boolean);
@@ -358,12 +317,7 @@ export async function type(
     const { x, y } = await centerOf(target.cdp, backendNodeId);
     throwIfAborted(target.signal);
     await target.injectInput(() => withPageFocus(target, async () => {
-      // Click into the field first: the page drops synthesized
-      // key and text input for a page that does not hold focus (focus emulation,
-      // Page.bringToFront and webContents.focus() do not give it while the app
-      // window is in the background); a press on the page does. Focus can still
-      // move away between the press and the text, so the field's value is read
-      // back from the accessibility tree and the typing repeated if it missed.
+      // Press to acquire real guest focus, then verify the field value and retry typing if focus moved; focus emulation cannot replace the press.
       for (let attempt = 1; ; attempt++) {
         await pressForFocus(target, x, y);
         await target.cdp.send("DOM.focus", { backendNodeId });
@@ -392,11 +346,8 @@ function collapse(text: string): string {
   return text.replace(/\s+/g, " ").trim();
 }
 
-/**
- * The field's current value as the accessibility tree reports it, whitespace
- * collapsed like the snapshot's; null when the node reports no value at all
- * (some editors), where typing cannot be checked.
- */
+// The field's current value as the accessibility tree reports it, whitespace collapsed like the snapshot's; null when the node reports no value at all
+// (some editors), where typing cannot be checked.
 async function fieldValue(cdp: CdpSession, backendNodeId: number): Promise<string | null> {
   const result = await cdp.send("Accessibility.getPartialAXTree", { backendNodeId, fetchRelatives: false }) as { nodes?: AXNode[] };
   const node = result.nodes?.find((candidate) => candidate.backendDOMNodeId === backendNodeId) ?? result.nodes?.[0];
@@ -405,7 +356,7 @@ async function fieldValue(cdp: CdpSession, backendNodeId: number): Promise<strin
   return collapse(String(raw));
 }
 
-/** The keys `browser_press_key` may press. */
+// The keys `browser_press_key` may press.
 const PRESSABLE_KEYS: Readonly<Record<string, { code: string; keyCode: number; text?: string }>> = {
   Enter: { code: "Enter", keyCode: 13, text: "\r" },
   Tab: { code: "Tab", keyCode: 9 },
@@ -437,24 +388,21 @@ async function dispatchKey(cdp: CdpSession, key: string): Promise<void> {
   await cdp.send("Input.dispatchKeyEvent", { type: "keyUp", key: domKey, code: spec.code, windowsVirtualKeyCode: spec.keyCode });
 }
 
-/** Roles a click activates: pressing Enter or Space into them after the click would activate them again. */
+// Roles a click activates: pressing Enter or Space into them after the click would activate them again.
 const ACTIVATED_BY_CLICK: ReadonlySet<string> = new Set([
   "button", "link", "checkbox", "radio", "switch", "tab", "option",
   "menuitem", "menuitemcheckbox", "menuitemradio", "treeitem",
 ]);
 
-/** Whether the page holds keyboard focus: the accessibility tree marks its root focused. */
+// Whether the page holds keyboard focus: the accessibility tree marks its root focused.
 async function pageHasFocus(cdp: CdpSession): Promise<boolean> {
   const nodes = await fullTree(cdp);
   return nodes.some((node) => node.role?.value === "RootWebArea"
     && (node.properties ?? []).some((property) => property.name === "focused" && property.value?.value === true));
 }
 
-/**
- * Press `key`. With `ref`, click into that element first (as `type` does);
- * without one, the key goes to what the page has focused, and fails clearly
- * when the page holds no focus (a synthesized key would be dropped silently).
- */
+// Press `key`. With `ref`, click into that element first (as `type` does); without one, the key goes to what the page has focused, and fails clearly
+// when the page holds no focus (a synthesized key would be dropped silently).
 export async function pressKey(target: ActionTarget, key: string, ref: string | undefined, refs: BrowserRefTable = browserRefs): Promise<void> {
   return withGuardedAction(target, async (target) => {
     throwIfAborted(target.signal);
@@ -488,7 +436,7 @@ export async function pressKey(target: ActionTarget, key: string, ref: string | 
   });
 }
 
-/** Move over one live, main-document ref. */
+// Move over one live, main-document ref.
 export async function hover(target: ActionTarget, ref: string, refs: BrowserRefTable = browserRefs): Promise<void> {
   return withGuardedAction(target, async (target) => {
     const id = await resolveRef(target, ref, refs);
@@ -498,7 +446,7 @@ export async function hover(target: ActionTarget, ref: string, refs: BrowserRefT
   });
 }
 
-/** Drag between visible endpoints, serialized with all other window gestures. */
+// Drag between visible endpoints, serialized with all other window gestures.
 export async function drag(target: ActionTarget, sourceRef: string, targetRef: string, refs: BrowserRefTable = browserRefs): Promise<void> {
   return withGuardedAction(target, async (target) => {
     if (!target.mouseDrag) throw new BrowserActionError("drag-unavailable", "native pointer delivery cannot be verified for this tab");
@@ -519,12 +467,10 @@ export async function drag(target: ActionTarget, sourceRef: string, targetRef: s
         const captured = expectsHtmlDrag
           ? await pollUntil(target.signal, 1_000, () => Promise.resolve(receipt.intercepted())) : receipt.intercepted();
         if (expectsHtmlDrag && !captured) throw new BrowserActionError("drag-not-intercepted", "the page did not provide a native drag payload; no drop was sent");
-        // Interception and its source drag end BEFORE the destination can
-        // receive a drop. A failed teardown is therefore safe to retry.
+        // Interception and its source drag end BEFORE the destination can receive a drop. A failed teardown is therefore safe to retry.
         if (captured) await target.cdp.send("Input.cancelDragging");
         else {
-          // Keep interception armed through ordinary release: a late native
-          // HTML5 drag must be captured, never delivered as an unchecked drop.
+          // Keep interception armed through ordinary release: a late native HTML5 drag must be captured, never delivered as an unchecked drop.
           await target.finishWithInput(() => target.cdp.send("Input.dispatchMouseEvent", { type: "mouseReleased", ...end, button: "left", buttons: 0, clickCount: 1 }));
           if (receipt.intercepted()) throw new BrowserActionError("drag-not-intercepted", "the native drag payload arrived too late; no destination drop was sent");
         }
@@ -606,7 +552,7 @@ function nativeOptions(node: SelectNode | undefined): { id: number; value: strin
   return options;
 }
 
-/** Keyboard-only selection with a final live option/value and AX check. */
+// Keyboard-only selection with a final live option/value and AX check.
 export async function select(target: ActionTarget, ref: string, value: string, refs: BrowserRefTable = browserRefs): Promise<void> {
   return withGuardedAction(target, async (target) => {
     const id = await resolveRef(target, ref, refs);
@@ -624,8 +570,7 @@ export async function select(target: ActionTarget, ref: string, value: string, r
       if (!(await pollUntil(target.signal, FOCUS_MAX_MS, async () => (await pageHasFocus(target.cdp)) || undefined))) {
         throw new BrowserActionError("no-focus", "the page did not take keyboard focus; nothing was selected");
       }
-      // No activating input is marked complete: a navigation during any key
-      // must remain a failure rather than being accepted as final selection.
+      // No activating input is marked complete: a navigation during any key must remain a failure rather than being accepted as final selection.
       await dispatchKey(target.cdp, "Home");
       for (let step = 0; step < index; step++) await dispatchKey(target.cdp, "ArrowDown");
       await dispatchKey(target.cdp, "Enter");
@@ -692,9 +637,7 @@ export async function upload(
   return result;
 }
 
-// ── navigate ──────────────────────────────────────────────────────────────
-
-/** What navigation needs of a guest. Production passes Electron `WebContents`. */
+// What navigation needs of a guest. Production passes Electron `WebContents`.
 export interface NavigableGuest {
   loadURL(url: string): Promise<void>;
   getURL(): string;
@@ -703,11 +646,8 @@ export interface NavigableGuest {
   stop(): void;
 }
 
-/**
- * Load `url` in the tab, refusing a main-frame redirect to any origin other
- * than `approvedOrigin`: the user approved that origin, not wherever the
- * server sends the tab next.
- */
+// Load `url` in the tab, refusing a main-frame redirect to any origin other than `approvedOrigin`: the user approved that origin, not wherever the
+// server sends the tab next.
 export async function navigate(
   guest: NavigableGuest,
   url: string,
@@ -754,7 +694,7 @@ export async function navigate(
   return { url: guest.getURL() };
 }
 
-/** What settling needs of a guest. Production passes Electron `WebContents`. */
+// What settling needs of a guest. Production passes Electron `WebContents`.
 export interface LoadingGuest {
   getURL(): string;
   isLoading(): boolean;
@@ -763,10 +703,7 @@ export interface LoadingGuest {
 const SETTLE_POLL_MS = 100;
 const SETTLE_MAX_MS = 15_000;
 
-/**
- * Wait for a just-opened tab's first page: a URL committed and nothing
- * loading. Bounded; a page still loading at the bound is returned as is.
- */
+// Wait for a just-opened tab's first page: a URL committed and nothing loading. Bounded; a page still loading at the bound is returned as is.
 export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = SETTLE_MAX_MS): Promise<{ url: string }> {
   const started = Date.now();
   for (;;) {
@@ -778,15 +715,13 @@ export async function settle(guest: LoadingGuest, signal: AbortSignal, maxMs = S
   }
 }
 
-// ── production adapter ────────────────────────────────────────────────────
-
-/** What the adapter needs of the tab registry. */
+// What the adapter needs of the tab registry.
 interface InputAttribution {
   withAgentInput<T>(guestId: number, inject: () => Promise<T>): Promise<T>;
   releaseFocus(guestId: number): void;
   focusGuest(guestId: number): Promise<void>;
   documentChanged(guestId: number): void;
-  /** Record the touch input every guest of `guestId`'s window reports until `stop`. */
+  // Record the touch input every guest of `guestId`'s window reports until `stop`.
   watchTouches(guestId: number): TouchWatch;
   armMouse(guestId: number, input: { type: "mouseDown" | "mouseUp"; x: number; y: number; button: "left"; clickCount: 1 }): void;
   watchWheel(guestId: number): { delivery(): { started: boolean; ended: boolean; elsewhere: number }; stop(): void };
@@ -798,52 +733,28 @@ interface TouchWatch {
   stop(): void;
 }
 
-/**
- * The screen position of the content area of the window that hosts `guest`,
- * or null when the guest has no live host window. Production reads the
- * owning BrowserWindow's content bounds.
- */
+// The screen position of the content area of the window that hosts `guest`, or null when the guest has no live host window. Production reads the owning
+// BrowserWindow's content bounds.
 export type HostContentOrigin = (guest: WebContents) => { x: number; y: number; windowId: number } | null;
 
-/** How long a pointer move may take to be reported back before a tap is refused. */
+// How long a pointer move may take to be reported back before a tap is refused.
 const POINTER_ECHO_MAX_MS = 1_000;
-/** How long one pointer or touch dispatch may take; healthy ones return in milliseconds. */
+// How long one pointer or touch dispatch may take; healthy ones return in milliseconds.
 const INPUT_DISPATCH_MAX_MS = 3_000;
-/**
- * How long one press may hold its window: every protocol call it makes, the
- * guard's reads included, and its delivery check share this budget. Its
- * closing touch cancel, if needed, has its own dispatch budget after it.
- */
+// How long one press may hold its window: every protocol call it makes, the guard's reads included, and its delivery check share this budget. Its
+// closing touch cancel, if needed, has its own dispatch budget after it.
 const PRESS_MAX_MS = 5_000;
-/** How long the tap derived from a press may take to be reported back. */
+// How long the tap derived from a press may take to be reported back.
 const TAP_ECHO_MAX_MS = 1_000;
 const TAP_POLL_MS = 20;
 
-/**
- * ONE TOUCH SEQUENCE PER WINDOW. A touch sent through a page's own protocol
- * session is still routed by its window's one touch sequence (measured with
- * two pages in one window): a lone sequence reaches the page that sent it, but
- * a touch start sent while another page's sequence is open joins that
- * sequence and lands in the other page, and a sequence left open (a start
- * without its end) leaves later touches of another page undelivered, its
- * dispatch unanswered, and that page taking no touch again. So each press
- * runs alone in its window, from its pointer move to its derived tap, and a
- * press that started always ends.
- */
+// Serialize the entire touch sequence per window and always end a started press; overlapping page sessions join the same native sequence.
 const windowPresses = new Map<number, Promise<void>>();
 
-/**
- * Windows whose touch path is wedged: a press's sequence stayed open because
- * the page did not acknowledge its touch start or end, and the closing touch
- * cancel did not come back either. Until that page acknowledges the cancel,
- * or navigates, or goes away, a touch any other page of the window sends
- * would join the open sequence and be delivered into that page when it
- * wakes (measured), so every press in the window is refused without
- * dispatching anything.
- */
+// Refuse every press in a window while a prior touch cancel is unacknowledged; a queued touch could otherwise land in the wrong page.
 const wedgedWindows = new Map<number, symbol>();
 
-/** Name `windowId` wedged until `cancelled` settles or `guest` navigates or goes away. */
+// Name `windowId` wedged until `cancelled` settles or `guest` navigates or goes away.
 function markWedged(windowId: number, guest: WebContents, cancelled: Promise<unknown>): void {
   const mark = Symbol("wedged");
   wedgedWindows.set(windowId, mark);
@@ -887,11 +798,8 @@ async function aloneInWindow<T>(windowId: number, signal: AbortSignal, run: () =
   }
 }
 
-/**
- * `call`, or a clear failure once `ms` pass or `signal` aborts. Inside a press
- * every protocol call is bounded this way: a page that stops answering must
- * not hold its window's press lock (and every other page's press) with it.
- */
+// `call`, or a clear failure once `ms` pass or `signal` aborts. Inside a press every protocol call is bounded this way: a page that stops answering must
+// not hold its window's press lock (and every other page's press) with it.
 function within<T>(call: Promise<T>, ms: number, signal?: AbortSignal): Promise<T> {
   // A call that loses the race still settles later; nobody awaits it then.
   call.catch(() => undefined);
@@ -916,17 +824,10 @@ function within<T>(call: Promise<T>, ms: number, signal?: AbortSignal): Promise<
   });
 }
 
-/**
- * The press reached this page and only this page. Touch echoes carry no
- * point (measured), so the point itself rests on the offset measured from
- * the pointer move's echo inside the same press; what is confirmed here is
- * the recipient: this page reported the marked touch start and end and the
- * tap derived from them, and no other page of the window took a touch.
- */
+// Touch echoes carry no point; derive coordinates from the pointer-move echo and confirm only this page received the marked start, end, and tap.
 async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTap: boolean, deadline: number): Promise<void> {
   const until = Math.min(Date.now() + TAP_ECHO_MAX_MS, deadline);
-  // Judge once this page's sequence is complete (or never will be): its
-  // derived tap arrives after the touch end.
+  // Judge once this page's sequence is complete (or never will be): its derived tap arrives after the touch end.
   let delivery = watch.delivery();
   while (!(delivery.started && delivery.ended && (delivery.tapped || !requireTap)) && Date.now() < until) {
     await sleep(TAP_POLL_MS, signal);
@@ -944,31 +845,16 @@ async function confirmDelivery(watch: TouchWatch, signal: AbortSignal, requireTa
   }
 }
 
-/**
- * TOUCH COORDINATES. For a page shown in a `<webview>`, the protocol takes a
- * mouse event's point in the page's own viewport but a touch event's point in
- * the hosting window's content area (measured: a tap at the page point of a
- * button landed on the page root; the same point offset by the page's place in
- * the window pressed the button). The guard checks every input against the
- * page point, so the point is only moved here, at the native boundary.
- *
- * Where the page sits is measured, not reported by the renderer: the pointer
- * move sent before every press comes back as a native input event carrying
- * both the page point and its screen point, and the host window's content
- * origin turns the screen point into the window point.
- */
+// CDP mouse coordinates are guest-relative but touch coordinates are window-relative; translate only at the native boundary.
+// Measure the offset from native pointer echoes and the host content origin, never renderer-reported geometry.
 function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContentOrigin) {
   let offset: { x: number; y: number } | null = null;
   type PointerEcho = { type?: string; x?: number; y?: number; globalX?: number; globalY?: number };
   return {
-    /**
-     * Before a pointer move is sent: listen for its native echo. `settle`,
-     * after the send, learns the page's offset in its window from it.
-     */
+    // Before a pointer move is sent: listen for its native echo. `settle`, after the send, learns the page's offset in its window from it.
     watch(method: string, params: Record<string, unknown> | undefined): { settle(): Promise<void>; stop(): void } | null {
       if (method !== "Input.dispatchMouseEvent" || params?.type !== "mouseMoved") return null;
-      // Each pointer move measures afresh: an echo that never comes must
-      // leave no earlier offset behind for the press that follows.
+      // Each pointer move measures afresh: an echo that never comes must leave no earlier offset behind for the press that follows.
       offset = null;
       const point = { x: params.x, y: params.y };
       let onInput: ((event: unknown, input: PointerEcho) => void) | undefined;
@@ -999,7 +885,7 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
         },
       };
     },
-    /** A touch event's page points as window points; a clear refusal when never measured. */
+    // A touch event's page points as window points; a clear refusal when never measured.
     placed(method: string, params: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
       if (method !== "Input.dispatchTouchEvent") return params;
       const points = (params?.touchPoints as Array<{ x: number; y: number }> | undefined) ?? [];
@@ -1013,7 +899,7 @@ function createTouchPlacement(guest: WebContents, hostContentOrigin: HostContent
   };
 }
 
-/** One live registry tab and the signal that cancels its action. */
+// One live registry tab and the signal that cancels its action.
 type LiveTab = BrowserActionTab<WebContents>;
 
 async function targetFor(live: LiveTab, attribution: InputAttribution, hostContentOrigin: HostContentOrigin, input = false): Promise<ActionTarget> {
@@ -1129,9 +1015,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
           try {
             result = await run();
           } catch (err) {
-            // A press whose end went out and then changed the document is a
-            // completed effect (the action guard decides); it still must have
-            // reached this page and no other.
+            // A press whose end went out and then changed the document is a completed effect (the action guard decides); it still must have reached this page and no other.
             if (touchEnded && err instanceof BrowserActionError && err.code === "document-changed") {
               await confirmDelivery(watch, new AbortController().signal, false, deadline);
             }
@@ -1142,8 +1026,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
         } finally {
           pressDeadline = null;
           if (touchOpen) {
-            // The one dispatch made after a failure, past the document checks:
-            // it presses nothing, it only ends the window's open sequence.
+            // The one dispatch made after a failure, past the document checks: it presses nothing, it only ends the window's open sequence.
             touchOpen = false;
             const cancelled = session.send("Input.dispatchTouchEvent", { type: "touchCancel", touchPoints: [] });
             const closed = await within(cancelled, INPUT_DISPATCH_MAX_MS).then(() => true, (err: unknown) =>
@@ -1236,15 +1119,13 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
           state.stop();
           try {
             let clean = true;
-            // Only the private, same-action entered target may be cancelled.
-            // After drop dispatch, acknowledgement loss is never retry-safe.
+            // Only the private, same-action entered target may be cancelled. After drop dispatch, acknowledgement loss is never retry-safe.
             if (state.destination && !state.dropSent) {
               const destination = state.destination;
               await within(session.send("Input.dispatchDragEvent", { type: "dragCancel", ...destination }), INPUT_DISPATCH_MAX_MS)
                 .catch(() => { clean = false; });
             }
-            // Cleanup uses the original session even after document/user
-            // cancellation. Neither command can create a destination effect.
+            // Cleanup uses the original session even after document/user cancellation. Neither command can create a destination effect.
             if (mouseOpen || state.enabled) {
               if (!state.dropped) await within(session.send("Input.cancelDragging"), INPUT_DISPATCH_MAX_MS).then(() => { mouseOpen = false; }, () => { clean = false; });
               if (state.enabled) await within(session.send("Input.setInterceptDrags", { enabled: false }), INPUT_DISPATCH_MAX_MS).then(() => { state.enabled = false; }, () => { clean = false; });
@@ -1288,7 +1169,7 @@ async function targetFor(live: LiveTab, attribution: InputAttribution, hostConte
   };
 }
 
-/** The approved load may change documents; caller and control cancellation still stop it. */
+// The approved load may change documents; caller and control cancellation still stop it.
 function navigationLifecycle(live: LiveTab, guest: WebContents): { signal: AbortSignal; stop(): void } {
   throwIfAborted(live.signal);
   const controller = new AbortController();
@@ -1307,8 +1188,7 @@ function navigationLifecycle(live: LiveTab, guest: WebContents): { signal: Abort
     unwatch();
     const changed = () => {
       if (signal.reason instanceof BrowserDocumentChangedError && !live.callerSignal?.aborted && valid()) {
-        // The registry installs the new document controller after aborting the
-        // previous one. Observe that controller at the next microtask boundary.
+        // The registry installs the new document controller after aborting the previous one. Observe that controller at the next microtask boundary.
         queueMicrotask(() => { if (!stopped) { if (valid()) watch(live.tab.actions.signal); else destroyed(); } });
       } else controller.abort(signal.reason);
     };
@@ -1325,10 +1205,7 @@ function navigationLifecycle(live: LiveTab, guest: WebContents): { signal: Abort
   } };
 }
 
-/**
- * The page actions over real guests, as browser-tools.ts calls them. `origin`
- * is the tools' own origin rule, passed in so both sides use one definition.
- */
+// The page actions over real guests, as browser-tools.ts calls them. `origin` is the tools' own origin rule, passed in so both sides use one definition.
 export function createBrowserPageActions(
   attribution: InputAttribution,
   originOf: (url: string) => string | null,

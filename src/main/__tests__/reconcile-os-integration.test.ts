@@ -1,18 +1,4 @@
-/**
- * E4 cluster-review §6a — boot reconcile wiring fires a notification on a
- * startup-launch conflict.
- *
- * `reconcileOsIntegrationOnBoot` is the extracted `main()` wiring. This proves
- * the boot path surfaces a failed login-item registration to the user (the same
- * No-Fallback contract the settings.update IPC path has), without needing a full
- * `main()` startup. Also asserts a global-shortcut conflict stays notified via
- * reconcileGlobalShortcuts and the boot reconcile is UNCONDITIONAL (no signature
- * gate — it is the first sync of OS state to persisted settings).
- *
- * MUTATION CONTRACT:
- *  - Dropping the notifyStartupLaunchFailureIfNeeded call makes the conflict
- *    test fail (a silently-failed auto-launch would ship).
- */
+// Boot reconciliation must always run and surface startup-launch and shortcut conflicts.
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {

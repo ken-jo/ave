@@ -1,17 +1,4 @@
-/**
- * Build an Edge-flavoured UA string aligned with the current Chromium major.
- *
- * Microsoft AAD's KMSI ("Stay signed in?") gating treats UAs containing
- * `Electron/...` as embedded browsers and refuses to issue the persistent
- * `ESTSAUTHPERSISTENT` cookie — which is why even after a successful login,
- * reopening webmail.example.com asks the user to sign in again. Mimicking Edge
- * (the `Edg/<major>` token) puts us back on the supported-browser path.
- *
- * Shared by the two remote-browsing sessions: the external-link viewer
- * (`link-window-service.ts`) and the in-app side browser
- * (`side-browser-webview.ts`), where Google sign-in rejects the same
- * embedded-browser UA.
- */
+// Embedded-browser user agents prevent persistent sign-in; use a supported browser token aligned with the Chromium major.
 export function buildPersistentBrowserUserAgent(input?: {
   chromiumVersion?: string;
   platform?: NodeJS.Platform;

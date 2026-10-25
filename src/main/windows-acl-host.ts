@@ -1,25 +1,21 @@
 import type { ChildProcess } from "node:child_process";
 
-// This module has no runtime imports. Test fixtures load it from inside a
-// mocked `node:child_process` factory, which must not cycle back through it.
+// This module has no runtime imports. Test fixtures load it from inside a mocked `node:child_process` factory, which must not cycle back through it.
 
-/** The host exits after this long without a request; the next one starts a fresh host. */
+// The host exits after this long without a request; the next one starts a fresh host.
 export const WINDOWS_ACL_HOST_IDLE_MS = 30_000;
 
-/** One request line. Paths and SIDs are data the host decodes, never script text. */
+// One request line. Paths and SIDs are data the host decodes, never script text.
 export interface WindowsAclRequest {
   readonly id: number;
   readonly paths: readonly string[];
   readonly capSids: readonly string[];
   readonly skipPackage: boolean;
-  /**
-   * Make the current account the owner of every path before reading it. The
-   * host takes the owner from its own token; a request never names one.
-   */
+  // Make the current account the owner of every path before reading it. The host takes the owner from its own token; a request never names one.
   readonly setOwner: boolean;
 }
 
-/** The fixed process a host runs: the script travels in `args`, never in a request. */
+// The fixed process a host runs: the script travels in `args`, never in a request.
 export interface WindowsAclHostLaunch {
   readonly command: string;
   readonly args: readonly string[];
@@ -31,22 +27,16 @@ export interface WindowsAclLimits {
   readonly maxBytes: number;
 }
 
-/**
- * Writes one request line and resolves with its reply after the matching end
- * marker, unparsed. The caller validates the reply and discards refusals.
- */
+// Writes one request line and resolves with its reply after the matching end marker, unparsed. The caller validates the reply and discards refusals.
 export interface WindowsAclTransport {
   request(request: WindowsAclRequest, launch: WindowsAclHostLaunch, limits: WindowsAclLimits): Promise<string>;
-  /** Kill the host, if any; idempotent. The next request starts a fresh host. */
+  // Kill the host, if any; idempotent. The next request starts a fresh host.
   discard(): void;
 }
 
 export type WindowsAclHostSpawn = (command: string, args: readonly string[], options: WindowsAclHostLaunch["options"]) => ChildProcess;
 
-/**
- * Fixtures install a request-level transport through the guarded setter.
- * Product callers can only read the seam.
- */
+// Fixtures install a request-level transport through the guarded setter. Product callers can only read the seam.
 let transportOverride: WindowsAclTransport | undefined;
 export const windowsAclTransportSeam = Object.freeze({
   get override(): WindowsAclTransport | undefined { return transportOverride; },
@@ -57,11 +47,8 @@ export function _setWindowsAclTransportForTest(transport: WindowsAclTransport | 
   transportOverride = transport;
 }
 
-/**
- * A host process failure: timeout, oversized reply, exit, error output,
- * extra output or a failed write. Callers see it as they saw a failed probe
- * process before, not as an access-rule refusal.
- */
+// A host process failure: timeout, oversized reply, exit, error output, extra output or a failed write. Callers see it as they saw a failed probe
+// process before, not as an access-rule refusal.
 export class WindowsAclHostError extends Error {
   constructor(message: string) {
     super(message);
@@ -82,29 +69,25 @@ interface PendingRequest {
 
 const MAX_ERROR_OUTPUT_CHARS = 1024;
 
-/** JSON with every non-ASCII code unit escaped, so the host's input code page cannot alter a path. */
+// JSON with every non-ASCII code unit escaped, so the host's input code page cannot alter a path.
 function asciiJson(value: unknown): string {
   return JSON.stringify(value).replace(/[^\x00-\x7e]/g, (unit) => `\\u${unit.charCodeAt(0).toString(16).padStart(4, "0")}`);
 }
 
-/** Pipes are sockets in a real child; they must not keep the parent alive either. */
+// Pipes are sockets in a real child; they must not keep the parent alive either.
 function unrefStream(stream: object | null): void {
   const unref: unknown = stream ? Reflect.get(stream, "unref") : undefined;
   if (typeof unref === "function") unref.call(stream);
 }
 
-/**
- * One long-lived ACL host process. It starts lazily, answers one request at a
- * time, exits after {@link WINDOWS_ACL_HOST_IDLE_MS} idle, and never keeps the
- * parent alive. Any failure kills it and rejects the request in flight; there
- * is no retry, and the next request starts a fresh host.
- */
+// Serialize lazy host requests; idle shutdown must not keep the parent alive.
+// Any failure kills the host and rejects the active request without retry; the next request starts fresh.
 export class WindowsAclHost implements WindowsAclTransport {
   private child: ChildProcess | undefined;
   private launchKey: string | undefined;
   private pending: PendingRequest | undefined;
   private idleTimer: NodeJS.Timeout | undefined;
-  /** Hosts this instance has started; tests read it to tell reuse from a fresh start. */
+  // Hosts this instance has started; tests read it to tell reuse from a fresh start.
   starts = 0;
 
   constructor(private readonly spawnHost: WindowsAclHostSpawn, private readonly idleMs = WINDOWS_ACL_HOST_IDLE_MS) {}
@@ -200,8 +183,7 @@ export class WindowsAclHost implements WindowsAclTransport {
         }
         pending.reply = line;
       } else {
-        // Do not settle on the reply newline: the end marker bounds the
-        // response even when an extra line arrives in a later pipe chunk.
+        // Do not settle on the reply newline: the end marker bounds the response even when an extra line arrives in a later pipe chunk.
         if (line !== pending.endMarker || buffered.length !== 0) {
           this.fail(child, new WindowsAclHostError("Windows ACL host wrote more than one reply"));
           return;

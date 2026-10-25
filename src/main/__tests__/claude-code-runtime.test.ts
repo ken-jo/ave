@@ -70,8 +70,7 @@ const roots: string[] = [];
 const children: FakeChild[] = [];
 const owners: Array<{ stop(): Promise<void> }> = [];
 beforeEach(() => {
-  // Block the complete tree-kill boundary, not just ChildProcess.kill: fake
-  // children must never trigger native PID discovery or process signalling.
+  // Block the complete tree-kill boundary, not just ChildProcess.kill: fake children must never trigger native PID discovery or process signalling.
   vi.spyOn(managed, "forceKillManagedChildProcess").mockImplementation((child) => { child.kill(); });
   vi.spyOn(managed, "spawnManaged").mockImplementation(() => { throw new Error("Unexpected real process launch"); });
 });
@@ -106,12 +105,8 @@ function isQualificationProbe(args: readonly string[]): boolean {
     || (args.length === 2 && args[0] === "auth" && args[1] === "--help");
 }
 
-/**
- * Fake CLI processes. With `qualification`, the discovery probes
- * (`--bare --version`, `auth --help`) are answered here and recorded in
- * `probes`, so `calls` and `started` describe only the account and chat
- * commands a test drives.
- */
+// Fake CLI processes. With `qualification`, the discovery probes (`--bare --version`, `auth --help`) are answered here and recorded in `probes`, so
+// `calls` and `started` describe only the account and chat commands a test drives.
 function spawnHarness(
   script?: (child: FakeChild, args: readonly string[]) => void,
   qualification?: Qualification,
@@ -166,11 +161,8 @@ async function collect(stream: AsyncIterable<StreamEvent>): Promise<StreamEvent[
   return events;
 }
 
-/**
- * The turn's rejection reason, observed from the moment the turn starts. A
- * test that fails while it drives the fake CLI then reports that failure
- * alone, not also an unawaited assertion or an unhandled turn rejection.
- */
+// The turn's rejection reason, observed from the moment the turn starts. A test that fails while it drives the fake CLI then reports that failure alone,
+// not also an unawaited assertion or an unhandled turn rejection.
 function rejection(turn: Promise<unknown>): Promise<unknown> {
   return turn.then(
     (value) => { throw new Error(`Expected the turn to reject, but it resolved with ${JSON.stringify(value)}`); },
@@ -212,8 +204,7 @@ describe("CLI conversation boundary", () => {
     child.send(init()); child.send(assistant()); child.send(result()); child.close();
     expect(await done).toEqual([{ type: "text_delta", text: "hello" }, { type: "message_complete", stopReason: "end_turn" }]);
     expect(readdirSync(h.runtimeTempDir)).toEqual([]);
-    // A closed root may still own a live descendant group. Its exact handle
-    // must reach the registry, which decides whether a group remains.
+    // A closed root may still own a live descendant group. Its exact handle must reach the registry, which decides whether a group remains.
     expect(managed.forceKillManagedChildProcess).toHaveBeenCalledWith(child, "claude-code-turn-cancel");
   });
 
@@ -384,7 +375,7 @@ describe("CLI conversation boundary", () => {
   });
 });
 
-/** An installed `claude`, and the one place this client is told to look. */
+// An installed `claude`, and the one place this client is told to look.
 function installedCli(root: string, install = true): { executable: string; candidates: () => string[] } {
   const bin = join(root, "bin");
   mkdirSync(bin, { recursive: true });

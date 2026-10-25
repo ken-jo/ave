@@ -1,14 +1,5 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-/**
- * Boot-time hardware-acceleration reader + resolver tests.
- *
- * Two things have to hold for the Settings toggle to mean anything:
- *   1. The reader looks at the same file `SettingsService` writes, so a choice
- *      made in the UI is the one the next launch sees.
- *   2. "Not chosen" stays distinct from "chosen off". Collapsing them would
- *      turn the GPU on for every first-run Windows user — the exact machines
- *      the platform default exists to protect.
- */
+// An unset toggle must remain distinct from explicit false to preserve the first-run Windows GPU default.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -46,9 +37,8 @@ describe("readPersistedHardwareAccelerationSync", () => {
 
   it("reads back what SettingsService wrote", async () => {
     const service = new SettingsService({ encryption: unavailableSecretEncryption, userDataPath });
-    // Spread the live block rather than patching the one field: `patch` types
-    // `system` as the whole `SystemSettings`, and writing the full block is
-    // also what SettingsService itself persists.
+    // Spread the live block rather than patching the one field: `patch` types `system` as the whole `SystemSettings`, and writing the full block is also
+    // what SettingsService itself persists.
     await service.patch({ system: { ...service.get("system"), hardwareAcceleration: false } });
 
     expect(readPersistedHardwareAccelerationSync(userDataPath)).toBe(false);
@@ -79,8 +69,7 @@ describe("readPersistedHardwareAccelerationSync", () => {
       "utf-8",
     );
 
-    // The string "false" is truthy — a coercing reader would turn the GPU ON
-    // for a profile that says the opposite.
+    // The string "false" is truthy — a coercing reader would turn the GPU ON for a profile that says the opposite.
     expect(readPersistedHardwareAccelerationSync(userDataPath)).toBeUndefined();
   });
 
@@ -117,9 +106,8 @@ describe("resolveHardwareAcceleration", () => {
   });
 
   it("treats any other AVE_KEEP_GPU value as unset, not as off", () => {
-    // "0" must not read as "force off": the variable's only documented job is
-    // forcing the GPU on, and a user who saved ON would otherwise find it
-    // silently disabled by a stale shell export.
+    // "0" must not read as "force off": the variable's only documented job is forcing the GPU on, and a user who saved ON would otherwise find it silently
+    // disabled by a stale shell export.
     expect(
       resolveHardwareAcceleration({ setting: true, env: { AVE_KEEP_GPU: "0" }, platform: "win32" }),
     ).toBe(true);

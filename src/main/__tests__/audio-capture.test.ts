@@ -1,12 +1,4 @@
-/**
- * The host's audio capture service.
- *
- * The surface is stubbed rather than real, because what is under test is the
- * CONTRACT — what a caller may ask for, what it is told when it asked for
- * something impossible, and what happens to the one capture slot when a start
- * fails. A real microphone would prove Chromium works and nothing about any
- * of that.
- */
+// The capture surface is simulated to exercise slot ownership and failure contracts without physical audio.
 import { describe, expect, it, vi } from "vitest";
 import {
   AudioCaptureError,
@@ -19,7 +11,6 @@ import {
 
 const GOOD = { sampleRate: 16_000, frameMs: 200, microphone: true, systemAudio: true } as const;
 
-/** A surface whose open/close outcomes the test decides. */
 function stubSurface(
   opened: { microphone: boolean; systemAudio: boolean } = { microphone: true, systemAudio: true },
 ) {
@@ -54,15 +45,12 @@ describe("validateAudioCaptureRequest", () => {
     [{ ...GOOD, microphoneDeviceId: "" }, /non-empty string/u],
     [{ ...GOOD, microphone: false, microphoneDeviceId: "d1" }, /microphone is false/u],
   ])("refuses %o", (request, message) => {
-    // Refused, not clamped. A caller handed a quietly-adjusted sample rate
-    // writes the rate it ASKED for into its own headers and produces audio
-    // that plays at the wrong speed.
+    // Refused, not clamped. A caller handed a quietly-adjusted sample rate writes the rate it ASKED for into its own headers and produces audio that plays at the wrong speed.
     expect(() => validateAudioCaptureRequest(request)).toThrow(message);
   });
 
   it("normalizes an absent device id to null rather than leaving it undefined", () => {
-    // So every downstream reader sees one shape for "the OS default" instead
-    // of two that compare differently.
+    // So every downstream reader sees one shape for "the OS default" instead of two that compare differently.
     expect(validateAudioCaptureRequest(GOOD).microphoneDeviceId).toBeNull();
   });
 });
@@ -89,8 +77,7 @@ describe("AudioCaptureService", () => {
       stubSurface({ microphone: true, systemAudio: false }),
     ).start(GOOD);
 
-    // Asked for both, got one. A caller that cannot see this labels a mic-only
-    // recording as a full one.
+    // Asked for both, got one. A caller that cannot see this labels a mic-only recording as a full one.
     expect(session.opened).toEqual({ microphone: true, systemAudio: false });
   });
 
@@ -112,9 +99,8 @@ describe("AudioCaptureService", () => {
 
     await expect(service.start(GOOD)).rejects.toThrow(/no permission/u);
 
-    // The control, and the reason the slot is claimed before the await rather
-    // than after: a failed start that kept the slot would lock capture out for
-    // the rest of the session with nothing to show for it.
+    // The control, and the reason the slot is claimed before the await rather than after: a failed start that kept the slot would lock capture out for the
+    // rest of the session with nothing to show for it.
     expect(service.busy).toBe(false);
   });
 
@@ -124,8 +110,7 @@ describe("AudioCaptureService", () => {
 
     await expect(service.start(GOOD)).rejects.toThrow(/no audio source/u);
 
-    // Not left running. A session that will only ever deliver silence is worse
-    // than a refusal, because it looks like it is working.
+    // Not left running. A session that will only ever deliver silence is worse than a refusal, because it looks like it is working.
     expect(surface.close).toHaveBeenCalled();
     expect(service.busy).toBe(false);
   });
@@ -141,8 +126,7 @@ describe("AudioCaptureService", () => {
     surface.end({ reason: "surface-lost" });
     await session.stop();
 
-    // A caller that finalises its recording on the first end would corrupt it
-    // on the second.
+    // A caller that finalises its recording on the first end would corrupt it on the second.
     expect(ends).toEqual([{ reason: "sources-lost", detail: "mic unplugged" }]);
     expect(service.busy).toBe(false);
   });
@@ -157,8 +141,7 @@ describe("AudioCaptureService", () => {
     surface.end({ reason: "sources-lost" });
     surface.frame(frameOf(1));
 
-    // Audio after the end would append to a recording the caller has already
-    // written out.
+    // Audio after the end would append to a recording the caller has already written out.
     expect(seen).toEqual([0]);
   });
 

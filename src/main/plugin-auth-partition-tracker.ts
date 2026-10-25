@@ -1,21 +1,13 @@
 const PLUGIN_AUTH_PERSIST_PREFIX = "persist:plugin-auth:";
 const trackedPluginAuthPartitions = new Map<string, Set<string>>();
 
-/**
- * Injected persistence callbacks — set once at boot by
- * `wirePluginAuthPartitionPersistence()`. Tests can inject their own stubs.
- * Keeping them module-level (rather than a class) preserves the existing
- * function-export API that boot.ts and uninstall-lifecycle depend on.
- */
+// Boot injects persistence callbacks before auth windows can open.
 let _persistWrite: ((map: ReadonlyMap<string, ReadonlySet<string>>) => Promise<void>) | null =
   null;
 let _persistDelete: ((pluginId: string) => Promise<void>) | null = null;
 let _persistErrorLog: ((msg: string) => void) | null = null;
 
-/**
- * Wire persistence callbacks at boot. Must be called once before the first
- * `openAuthWindow` invocation. Safe to call multiple times (e.g. in tests).
- */
+// Wire before the first auth window; repeated wiring is supported for tests.
 export function wirePluginAuthPartitionPersistence(opts: {
   write: (map: ReadonlyMap<string, ReadonlySet<string>>) => Promise<void>;
   delete: (pluginId: string) => Promise<void>;
@@ -38,12 +30,8 @@ function pluginIdFromPluginAuthPartition(partition: string): string | null {
   }
 }
 
-/**
- * Seed the in-memory tracker from a previously persisted map (at boot).
- * Existing in-memory entries are merged — this is intentionally additive
- * so that a concurrent early-boot `rememberPluginAuthPartition` call cannot
- * lose a just-observed partition.
- */
+// Seed the in-memory tracker from a previously persisted map (at boot). Existing in-memory entries are merged — this is intentionally additive so that a
+// concurrent early-boot `rememberPluginAuthPartition` call cannot lose a just-observed partition.
 export function seedPluginAuthPartitions(persisted: Record<string, string[]>): void {
   for (const [pluginId, partitions] of Object.entries(persisted)) {
     const current = trackedPluginAuthPartitions.get(pluginId) ?? new Set<string>();
@@ -60,8 +48,7 @@ export function rememberPluginAuthPartition(partition: string): void {
   const current = trackedPluginAuthPartitions.get(pluginId) ?? new Set<string>();
   current.add(partition);
   trackedPluginAuthPartitions.set(pluginId, current);
-  // Fire-and-forget persistence — auth windows are interactive, we must not
-  // delay them. Errors are routed to the injected error logger (audit log).
+  // Fire-and-forget persistence — auth windows are interactive, we must not delay them. Errors are routed to the injected error logger (audit log).
   if (_persistWrite) {
     _persistWrite(trackedPluginAuthPartitions).catch((err) => {
       _persistErrorLog?.(

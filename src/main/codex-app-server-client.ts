@@ -43,25 +43,22 @@ export class CodexAppServerError extends Error {
 }
 
 export interface CodexAppServerClientOptions {
-  /** Opens a trusted ChatGPT/OpenAI URL in the system browser. */
+  // Opens a trusted ChatGPT/OpenAI URL in the system browser.
   openExternal: (url: string) => Promise<void> | void;
-  /** Existing isolated directory owned by the host integration's runtime. */
+  // Existing isolated directory owned by the host integration's runtime.
   runtimeHome: string;
 
-  /** Existing isolated SQLite directory owned by the host integration. */
+  // Existing isolated SQLite directory owned by the host integration.
   sqliteHome: string;
-  /** Existing blank working directory with no project config or rules. */
+  // Existing blank working directory with no project config or rules.
   workspaceDir: string;
-  /** Existing isolated temporary directory; defaults to the isolated home. */
+  // Existing isolated temporary directory; defaults to the isolated home.
   runtimeTempDir?: string;
-  /**
-   * Resolves and qualifies the user's `codex` (see `CodexUserRuntimeLocator`).
-   * There is no default: Ave ships no runtime of its own.
-   */
+  // Resolves and qualifies the user's `codex` (see `CodexUserRuntimeLocator`). There is no default: Ave ships no runtime of its own.
   resolveRuntime: () => Promise<CodexResolvedRuntime>;
-  /** The last version the resolver read, kept in the status projection. */
+  // The last version the resolver read, kept in the status projection.
   lastKnownVersion?: () => string | null;
-  /** Test seam; production always uses managed-child-processes. */
+  // Test seam; production always uses managed-child-processes.
   spawn?: CodexSpawnAppServer;
   clientVersion?: string;
 }
@@ -109,7 +106,7 @@ function blankStatus(runtime: CodexSubscriptionStatus["runtime"]): CodexSubscrip
   return { ...CODEX_SUBSCRIPTION_SIGNED_OUT_STATUS, runtime };
 }
 
-/** The client error a failed resolution stands for; `not-installed` is a status, not an error. */
+// The client error a failed resolution stands for; `not-installed` is a status, not an error.
 function runtimeResolutionError(error: unknown): CodexAppServerError {
   if (error instanceof CodexAppServerError) return error;
   if (!(error instanceof CodexUserRuntimeError)) return new CodexAppServerError("codex-runtime-unavailable");
@@ -125,12 +122,8 @@ function runtimeResolutionError(error: unknown): CodexAppServerError {
   }
 }
 
-/**
- * Main-process adapter for the stable App Server account APIs.
- *
- * The server owns browser callbacks, credential persistence, and token refresh.
- * This client intentionally never reads Codex auth files or token values.
- */
+// Main-process adapter for the stable App Server account APIs. The server owns browser callbacks, credential persistence, and token refresh. This client
+// intentionally never reads Codex auth files or token values.
 export class CodexAppServerClient {
   private readonly openExternal: (url: string) => Promise<void> | void;
   private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
@@ -187,7 +180,7 @@ export class CodexAppServerClient {
     return this.currentStatus();
   }
 
-  /** Returns the in-memory projection only; it never causes token refresh. */
+  // Returns the in-memory projection only; it never causes token refresh.
   getCachedStatus(): CodexSubscriptionStatus {
     return this.currentStatus();
   }
@@ -262,9 +255,8 @@ export class CodexAppServerClient {
   async logout(): Promise<CodexSubscriptionStatus> {
     return this.withLoginLock(async () => {
       await this.ensureStarted();
-      // Do not leave an abandoned login attempt blocking future sign-ins when
-      // the server rejects logout. The account projection remains unchanged
-      // until the parameterless logout request succeeds.
+      // Do not leave an abandoned login attempt blocking future sign-ins when the server rejects logout. The account projection remains unchanged until the
+      // parameterless logout request succeeds.
       this.pendingLogin = null;
       this.completedLoginError = null;
       await this.request("account/logout");
@@ -378,8 +370,7 @@ export class CodexAppServerClient {
     }
     this.accountStatus = blankStatus("ready");
 
-    // Parent IPC owns secure namespace creation; validate the ready paths here
-    // before passing them to the third-party runtime.
+    // Parent IPC owns secure namespace creation; validate the ready paths here before passing them to the third-party runtime.
     const runtimeHome = validateRuntimeDirectory(this.runtimeHome);
     const sqliteHome = validateRuntimeDirectory(this.sqliteHome);
     const workspaceDir = validateRuntimeDirectory(this.workspaceDir);
@@ -425,8 +416,7 @@ export class CodexAppServerClient {
     );
 
     try {
-      // The App Server expects initialized immediately after initialize (the
-      // official quickstart sends both messages back-to-back).
+      // The App Server expects initialized immediately after initialize (the official quickstart sends both messages back-to-back).
       const initialized = this.request("initialize", {
         clientInfo: {
           name: "ave",
@@ -529,9 +519,7 @@ export class CodexAppServerClient {
       return;
     }
     if (isCodexAppServerRequestId(message.id) && typeof message.method === "string") {
-      // This integration never enables external-token auth or experimental host
-      // tools. Decline unexpected server requests rather than inventing a
-      // privileged fallback path.
+      // This integration never enables external-token auth or experimental host tools. Decline unexpected server requests rather than inventing a privileged fallback path.
       this.notifyServerRequestError(message.id, child);
       return;
     }

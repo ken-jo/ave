@@ -25,7 +25,6 @@ import { catalogChatModelIds } from "../../shared/model-catalog/vendor-models.js
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
-
 function fakeCodexClient(): CodexAppServerClient {
   return {
     getStatus: vi.fn(async () => ({
@@ -247,8 +246,7 @@ describe("subscription credentials remain owned by the CLI", () => {
 
   it("signs in only with `claude auth login`: no other login, token or key path is spawned", () => {
     const text = modules.map(source).join("\n");
-    // Trusted launcher arguments precede auth commands; capability probes
-    // read help without opening another authentication path.
+    // Trusted launcher arguments precede auth commands; capability probes read help without opening another authentication path.
     const authCommands = [...text.matchAll(/"auth",\s*"([^"]+)"/gu)].map((match) => match[1]);
     expect(new Set(authCommands)).toEqual(new Set(["login", "logout", "status", "--help"]));
     expect(text).not.toMatch(/setup-token|--api-key|ANTHROPIC_API_KEY\s*[:=]|CLAUDE_CODE_OAUTH_TOKEN\s*[:=]/u);
@@ -268,8 +266,7 @@ describe("subscription credentials remain owned by the CLI", () => {
     }, platform, platform === "win32" ? "C:\\isolated\\claude-tmp" : "/isolated/claude-tmp");
     const leaked = Object.keys(env).filter((key) => /^(ANTHROPIC_|CLAUDE_)/iu.test(key) && key !== "CLAUDE_CONFIG_DIR");
     expect(leaked).toEqual([]);
-    // The one CLAUDE_ variable present is Ave's own: the isolated config dir,
-    // never the user's real one.
+    // The one CLAUDE_ variable present is Ave's own: the isolated config dir, never the user's real one.
     expect(env.CLAUDE_CONFIG_DIR).toBe(home);
     expect(env.HOME).toBe(home);
   });

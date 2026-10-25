@@ -135,8 +135,7 @@ describe("TailnetPairingShareStore", () => {
     });
     expect(store.currentPairing(OTHER_ACTOR)).toBeNull();
 
-    // An approved pairing has no deadline and is still reported: with no share
-    // yet, the owner's browser comes back to the same page.
+    // An approved pairing has no deadline and is still reported: with no share yet, the owner's browser comes back to the same page.
     expect(await store.activatePairing(claim!.pairingId)).toBe(true);
     expect(store.currentPairing(ACTOR)).toMatchObject({ state: "active", expiresAt: null });
 

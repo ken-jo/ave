@@ -1,22 +1,5 @@
-/**
- * HtmlPreview Partition Network Block — defense-in-depth
- *
- * The `ave-render-html` partition carries LLM-authored HTML.
- * A meta CSP already blocks most loads at the renderer level; this adds a
- * main-process webRequest gate so even a CSP bypass cannot exfiltrate data
- * over the network.
- *
- * Allowed: data:, blob:, about:blank (inline content only)
- * Blocked: http, https, file, ftp, and any other scheme
- *
- * ─── Per-server MCP App partition (`ave-mcp-app:<hex(serverId)>`) ────────────
- * MCP App HTML is UNTRUSTED (server-authored), so the partition is deny-by-default
- * and is opened ONLY by the origins that server's own UI resources DECLARED in their
- * `_meta.ui.csp`. It also serves the host-owned sandbox-proxy document and installs
- * the relay preload. Each MCP server gets its OWN partition (#885 b1); everything is
- * installed lazily per-server via `installMcpAppPartitionPolicy` (idempotent), NOT
- * once at boot.
- */
+// The main-process request gate protects LLM-authored HTML even if renderer CSP is bypassed. Untrusted MCP apps use separate lazy per-server partitions,
+// opened only to origins declared by that server’s resources.
 import { createRequire } from "node:module";
 import { normalize } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -33,8 +16,7 @@ import {
 } from "./mcp-app-protocol.js";
 
 const require = createRequire(import.meta.url);
-// This module may be emitted into `dist/src/main/chunks/*.js`; asset paths
-// must stay anchored at the real `dist/src` directory rather than this chunk.
+// This module may be emitted into `dist/src/main/chunks/*.js`; asset paths must stay anchored at the real `dist/src` directory rather than this chunk.
 const pluginShellHtmlPath = normalize(runtimeAssetPath("plugin-ui-shell.html"));
 const pluginShellJsPath = normalize(runtimeAssetPath("plugin-ui-shell.js"));
 const pluginPreloadPath = preloadBundlePath("pluginPreload");
@@ -61,31 +43,12 @@ function installStrictInlineOnly(ses: Electron.Session): void {
   });
 }
 
-/**
- * Network gate for one MCP server's partition — deny-by-default, opened ONLY by the
- * origins that server's own UI resources declared in their `_meta.ui.csp`.
- *
- * It used to be a hardcoded 5-CDN allowlist. That was wrong twice over:
- *  - it GRANTED undeclared hosts (any app could reach jsdelivr/unpkg/… without
- *    declaring them — the spec's No-Loosening MUST says the host MUST NOT allow
- *    undeclared domains); and
- *  - it CANCELLED declared ones (a conformant server's `connectDomains` host was not
- *    in the list, so the CSP would permit the fetch and this gate would silently kill
- *    it — declared network access could never actually work).
- *
- * Now the two layers are in lockstep: the CSP header (per resource) and this gate
- * (per server, the union of that server's declared origins) are both derived from the
- * same sanitized `_meta.ui.csp`. The CSP remains the tighter, per-frame gate.
- */
+// Derive the per-server origin union and per-resource CSP from the same sanitized declarations; CSP remains the tighter frame boundary.
 function installDeclaredOriginGate(ses: Electron.Session, serverId: string): void {
   ses.webRequest.onBeforeRequest((details, callback) => {
     try {
       const url = new URL(details.url);
-      // The host-owned sandbox-proxy document itself. Served exclusively by our own
-      // `protocol.handle`, which fail-closes on an unknown token or an authority that
-      // does not match that token's serverId — so this cannot reach anything the host
-      // did not mint. Without it the gate cancels the proxy navigation and the card
-      // never loads.
+      // Permit the host proxy scheme; its handler rejects unknown tokens or server-authority mismatches.
       if (url.protocol === `${MCP_APP_SCHEME}:`) {
         callback({ cancel: false });
         return;
@@ -106,14 +69,7 @@ function installDeclaredOriginGate(ses: Electron.Session, serverId: string): voi
   });
 }
 
-/**
- * The media kind(s) a permission ask/check is about, normalized to `("video"|"audio")[]`.
- *
- * `setPermissionRequestHandler` details carry `mediaTypes: Array<'video'|'audio'>`;
- * `setPermissionCheckHandler` details carry a single `mediaType: 'video'|'audio'|'unknown'`.
- * Anything else (including `'unknown'`) is dropped, so the caller falls back to the coarse
- * permission-string decision — the strict per-kind grant happens in the request handler.
- */
+// Request handlers carry mediaTypes arrays while check handlers carry one mediaType; drop unknown kinds and enforce strict per-kind grants on requests.
 function extractMediaKinds(details: unknown): ("video" | "audio")[] {
   if (!details || typeof details !== "object") return [];
   const d = details as { mediaTypes?: unknown; mediaType?: unknown };
@@ -125,27 +81,8 @@ function extractMediaKinds(details: unknown): ("video" | "audio")[] {
   return raw.filter((k): k is "video" | "audio" => k === "video" || k === "audio");
 }
 
-/**
- * Powerful-feature gate for one MCP server's partition — DENY-BY-DEFAULT, opened only by
- * what the RENDERING RESOURCE declared in its `_meta.ui.permissions`.
- *
- * This is the single chokepoint where an MCP-app card can be granted a powerful feature
- * (camera / microphone / geolocation), and it is fail-closed at every step (see
- * `isMcpAppPermissionGranted`): a card whose declaration is absent gets nothing, and a
- * feature that card did not declare is denied even if the frame asks for it — including a
- * card that declared only the microphone asking for the camera (the media-kind check).
- *
- * The decision is keyed off the webContents' own URL — the sandbox-proxy URL, whose
- * token main minted TOGETHER WITH the declaration. So the card cannot name its own
- * permissions, and neither can the renderer: the only input is what the resource
- * declared at read time.
- *
- * Both handlers are installed, and they must agree. `setPermissionRequestHandler` answers
- * the ASK (`getUserMedia`, `getCurrentPosition`) and carries the requested media kinds;
- * `setPermissionCheckHandler` answers the synchronous CHECK (`navigator.permissions.query`,
- * and the internal check Chromium makes before some APIs even prompt). Installing only the
- * former leaves the latter at Electron's default, which is not deny-all.
- */
+// Install both permission request and check handlers; each must deny undeclared features using the host-minted proxy token.
+// Camera and microphone require media-kind checks; never accept permissions supplied by a frame or renderer.
 function installDeclaredPermissionGate(ses: Electron.Session): void {
   ses.setPermissionRequestHandler((webContents, permission, callback, details) => {
     callback(isMcpAppPermissionGranted(webContents?.getURL(), permission, extractMediaKinds(details)));
@@ -155,55 +92,14 @@ function installDeclaredPermissionGate(ses: Electron.Session): void {
   );
 }
 
-/**
- * #237 Option B — Plugin webview partition policy.
- *
- * Plugin webviews use `persist:plugin:<slug>` partitions.  They load from a
- * local file:// URL (plugin-ui-shell.html) and execute plugin-bundled JS.
- * We apply a permissive policy that still blocks raw http/https to external
- * hosts that weren't explicitly loaded by the plugin module itself.
- *
- * Allowed: file://, ave-plugin://, data:, blob:, about:
- * Blocked: http, https, ftp, and any other scheme (plugin UI should be
- *   self-contained; network calls go through ave:plugin:call-tool IPC).
- *
- * This function is called once per partition name the first time a webview
- * with that partition is attached.  The caller must pass the partition string
- * exactly as used in the <webview> tag.
- */
-/**
- * Tracked partitions so re-installing the same policy is a no-op. Without
- * this, every webview re-attach (plugin tab switch / re-mount) would
- * stack `onBeforeRequest` handlers on the same session.
- */
+// Block plugin UI network requests; tools use the bridge. Track installed partition policies so reattachment cannot stack handlers.
 const installedPluginPartitions = new Set<string>();
 
-/**
- * Tracked per-server MCP-app partitions (b1). Same idempotency discipline as
- * `installedPluginPartitions`: re-installing the policy for a partition that already
- * has it is a no-op, so a card re-render or presentation change never stacks a second
- * `onBeforeRequest` handler on the same session.
- */
+// Install each server partition policy once so card rerenders cannot stack request handlers.
 const installedMcpAppPartitions = new Set<string>();
 
-/**
- * #885 b1 — lazy per-server MCP-app partition policy. Installs, on
- * `ave-mcp-app:<enc(serverId)>`:
- *   1. the deny-by-default declared-origin network gate,
- *   2. the `ave-mcp-app://` handler serving the sandbox-proxy document with its
- *      per-resource CSP response header, and
- *   3. the host-owned relay preload (via `session.registerPreloadScript`).
- *
- * Called from the `ave:mcp:ui-resource` IPC handler — the single main-side chokepoint
- * every renderer-owned card passes through — BEFORE the resource is
- * read, so all three are present before the webview mounts and issues its first
- * request. Idempotent via `installedMcpAppPartitions`.
- *
- * Fail-closed: a `fromPartition` failure throws (No-Fallback) so the card surfaces an
- * error rather than rendering on an ungated partition. The CSP response header
- * (`shared/mcp-app-csp.ts`) is the primary, per-frame control; this webRequest gate is
- * the coarser per-server floor beneath it.
- */
+// Install network gating, proxy CSP handling, and relay preload before reading a server resource so its first guest request is protected.
+// Partition setup failure throws; never mount a card on an ungated session.
 export function installMcpAppPartitionPolicy(
   serverId: string,
   sessionApi: SessionApi = getElectronSession(),
@@ -215,28 +111,14 @@ export function installMcpAppPartitionPolicy(
   const ses = sessionApi.fromPartition(partitionName);
   installDeclaredOriginGate(ses, serverId);
 
-  // Deny-by-default powerful-feature gate. Installed on the SAME per-server session as
-  // the network gate, so a card cannot reach a feature — or a host — it never declared.
+  // Deny-by-default powerful-feature gate. Installed on the SAME per-server session as the network gate, so a card cannot reach a feature — or a host — it never declared.
   installDeclaredPermissionGate(ses);
 
-  // Serves the host-owned sandbox-proxy document (`ave-mcp-app://…/proxy.html`)
-  // with its Content-Security-Policy RESPONSE HEADER — the envelope the inner app
-  // frame inherits.
+  // Serves the host-owned sandbox-proxy document (`ave-mcp-app://…/proxy.html`) with its Content-Security-Policy RESPONSE HEADER — the envelope the inner app frame inherits.
   installMcpAppProtocolHandler(partitionName, ses);
 
-  // The sandbox-proxy relay preload. As with the plugin partition, a
-  // session-level frame preload
-  // is the ONLY path that works: the `preload=` attribute is silently ignored
-  // when `webpreferences="sandbox=yes"`, and the `will-attach-webview` guards
-  // strip the attribute anyway (they cannot see, and do not affect, session
-  // preloads). Registered here — before any webview for this server begins
-  // loading — because attach-time hooks do not work (see
-  // `boot/steps/plugin-runtime.ts`: `webPreferences.preload` is `undefined` there).
-  //
-  // Host-resolved path only. An MCP server can never nominate a preload — that
-  // would be a Node escape. `runtimeAssetPath` is anchored at `dist/src` even
-  // when this code executes from an esbuild chunk. The modern API runs before
-  // any guest-specified preload.
+  // Register a host-resolved session frame preload before guest loading; sandboxed webviews ignore element preloads and attach hooks strip them.
+  // Servers must never nominate executable preloads; resolve assets independently of bundled chunk depth.
   ses.registerPreloadScript({ type: "frame", filePath: mcpAppPreloadPath });
 }
 
@@ -256,18 +138,13 @@ export function installPluginPartitionPolicy(
   sessionApi: SessionApi = getElectronSession(),
 ): void {
   const ses = sessionApi.fromPartition(partitionName);
-  // Unconditional: the scheme has to be on the session before the partition's
-  // first frame loads, and the root is allowed to arrive later. See
+  // Unconditional: the scheme has to be on the session before the partition's first frame loads, and the root is allowed to arrive later. See
   // `installPluginAssetProtocolHandler`.
   installPluginAssetProtocolHandler(partitionName, ses, options.pluginRoot);
   if (installedPluginPartitions.has(partitionName)) return;
   installedPluginPartitions.add(partitionName);
 
-  // A session-level frame preload is required for sandboxed <webview> — the preload= attribute
-  // alone is silently ignored when webpreferences="sandbox=yes". Electron
-  // requires the preload to be registered on the partition's Session before
-  // the webview begins loading. `runtimeAssetPath` remains correct when this
-  // policy module is emitted to `dist/src/main/chunks/*.js`.
+  // Register the frame preload before sandboxed webviews load; the preload attribute alone is silently ignored.
   ses.registerPreloadScript({ type: "frame", filePath: pluginPreloadPath });
 
   ses.webRequest.onBeforeRequest((details, callback) => {
@@ -291,11 +168,7 @@ export function installPluginPartitionPolicy(
 }
 
 export function installHtmlPreviewPartitionBlock(sessionApi: SessionApi = getElectronSession()): void {
-  // LLM-authored HTML: strict inline-only partition.
-  //
-  // The MCP-app partition policy is NOT installed here — it is a PER-SERVER
-  // partition (b1) installed lazily in the `ave:mcp:ui-resource` chokepoint
-  // via `installMcpAppPartitionPolicy`. There is no bare `ave-mcp-app`
-  // partition anymore.
+  // LLM-authored HTML: strict inline-only partition. The MCP-app partition policy is NOT installed here — it is a PER-SERVER partition (b1) installed
+  // lazily in the `ave:mcp:ui-resource` chokepoint via `installMcpAppPartitionPolicy`. There is no bare `ave-mcp-app` partition anymore.
   installStrictInlineOnly(sessionApi.fromPartition(RENDER_HTML_PARTITION));
 }

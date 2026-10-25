@@ -1,12 +1,4 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-/**
- * Shared fixtures for the Telegram bridge suites. The lifecycle suite
- * (`telegram-bridge-server.test.ts`, mocked projection store) and the egress
- * integration suite (`telegram-egress.integration.test.ts`, real projection
- * chain) drive the same owner-driven connection entry, so the paired-owner
- * identities, the polled text-update wire shape, and the route authority live
- * here once instead of drifting as per-file copies.
- */
 import type { SecretStore } from "../../audit/hmac-chain.js";
 import type { TelegramBotApiResult, TelegramPolledUpdate } from "../telegram-bot-api-client.js";
 import {
@@ -22,7 +14,7 @@ export const BOUND_CONVERSATION = "active-conversation";
 
 export type Batch = TelegramBotApiResult<readonly TelegramPolledUpdate[]>;
 
-/** One polled private text update from the paired owner, as raw wire bytes. */
+// One polled private text update from the paired owner, as raw wire bytes.
 export function textUpdate(updateId: number, text: string): TelegramPolledUpdate {
   return {
     updateId,
@@ -39,7 +31,7 @@ export function textUpdate(updateId: number, text: string): TelegramPolledUpdate
   };
 }
 
-/** One polled inline-keyboard press carrying an opaque token, as raw wire bytes. */
+// One polled inline-keyboard press carrying an opaque token, as raw wire bytes.
 export function callbackUpdate(
   updateId: number,
   data: string,
@@ -58,11 +50,7 @@ export function callbackUpdate(
   };
 }
 
-/**
- * Build the authority a completed owner pairing leaves behind: the digester
- * and runtime must read the SAME secret store so the actor digest agrees, and
- * the owner digest is paired to the bound conversation with a live approval.
- */
+// The fixture and runtime must share secret storage so actor digests agree with the paired conversation approval.
 export function ownerPairedAuthority(secretStore: SecretStore): {
   readonly ownerDigest: string;
   readonly authority: TelegramPairedRouteAuthority;

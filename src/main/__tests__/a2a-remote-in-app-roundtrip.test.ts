@@ -1,51 +1,5 @@
-/**
- * App-complete proof of agent-to-agent messaging between two Ave hosts.
- *
- * Production code on the path: the outbound `A2ARemoteClient` with its durable
- * journal (`A2ARemoteDurableStore`) and the strict pinned HTTPS transport
- * (`createA2AStrictTransport`: address eligibility, single pinned lookup,
- * header and size rules), and the boot-owned remote receiver
- * (`createA2ARemoteRuntime` → `maybeStartRemoteA2AReceiverServer` →
- * `A2AExactReplayHandler` → `A2ASubAgentHandler` → durable task store) on a
- * real loopback listener.
- *
- * Every stand-in, exactly:
- *
- * - outside the app:
- *   - DNS: the transport's `lookup` seam returns a fixed public answer
- *     (`PINNED_PUBLIC_ADDRESS`), or the ineligible answer one case injects;
- *   - the TLS-terminating tunnel in front of the receiver (`trustedTunnel`):
- *     it records the address the transport pinned, then hands the request to
- *     the loopback listener over plain HTTP and surfaces the socket's connect
- *     as the TLS handshake. Certificate validation is therefore not exercised;
- *   - the route control plane (formerly a separate hub service): an in-process resolver
- *     that issues the same no-store snapshot shape;
- *   - the sub-agent's LLM work: a deterministic `LifecycleRunner` at the
- *     runner boundary, so task state transitions are exact;
- * - host services the app would supply:
- *   - Electron `safeStorage`: the `encryption` fake (`sealed:` prefix) both
- *     durable stores seal through;
- *   - the on-disk namespace store: in-memory namespaces (`memoryNamespace`)
- *     for the caller journal, the receiver's remote store and its task store,
- *     kept across the restart cases so recovery reads what was persisted;
- *   - the user's approval prompts: the caller's mutation approver and the
- *     receiver's `agentActionApprover` approve and record every request;
- *   - the caller's authorizer: the production predicate (project, target,
- *     interface) without its depth check, so the depth case proves the
- *     client's own depth-0 hard stop;
- *   - the caller's secret resolver: the bearer comes from memory instead of
- *     the settings secret store, with its zeroize counted;
- *   - the receiver's settings, profile store, session context and audit sink:
- *     plain objects with the fields the receiver reads.
- *
- * The caller's client is constructed directly rather than through
- * `createA2ARemoteRuntime`; the runtime's gate wiring is covered by
- * a2a-remote-gates.test.ts.
- *
- * This replaces the retired packaged-live / external-SDK evidence path: every
- * guarantee here runs in the ordinary vitest suite with no network, secret or
- * external service.
- */
+// Exercises the real pinned transport and loopback receiver; DNS, TLS termination, storage, approvals, and LLM work are simulated. Certificate
+// validation is not exercised; runtime gate wiring is covered separately.
 import { randomUUID } from "node:crypto";
 import { request as httpRequest, type IncomingMessage, type RequestOptions } from "node:http";
 import type { request as httpsRequest } from "node:https";
@@ -91,7 +45,7 @@ const RECEIVER_BEARER = "in-app-receiver-bearer-0123456789abcdef";
 const PROFILE_PATH = "/workspace/receiver/agents/remote-peer.md";
 const HANDLER_ID = deriveA2ALoopbackHandlerId(PROFILE_PATH);
 const INTERFACE_URL = `${RECEIVER_ORIGIN}a2a/${HANDLER_ID}`;
-/** Any globally routable answer: the terminator, not this address, is dialled. */
+// Any globally routable answer: the terminator, not this address, is dialled.
 const PINNED_PUBLIC_ADDRESS = "1.1.1.1";
 const CALLER_PROJECT = "/workspace/caller";
 const TEXT = "text/plain";
@@ -131,7 +85,7 @@ function snapshot(credentialRevisionId: number): A2ARouteSnapshot {
   };
 }
 
-/** Name-keyed in-memory feature namespace; survives "restarts" by reuse. */
+// Name-keyed in-memory feature namespace; survives "restarts" by reuse.
 function memoryNamespace() {
   const files = new Map<string, unknown>();
   return {
@@ -171,11 +125,7 @@ function spawnResult(childSessionId: string, input: Partial<SubAgentSpawnResult>
   };
 }
 
-/**
- * The receiving agent's work, at the runner boundary. Prompts select the
- * lifecycle: complete, ask a question (INPUT_REQUIRED), or keep working until
- * canceled.
- */
+// The receiving agent's work, at the runner boundary. Prompts select the lifecycle: complete, ask a question (INPUT_REQUIRED), or keep working until canceled.
 class LifecycleRunner implements A2ASubAgentLifecycleRunner {
   readonly counts = { spawns: 0, resumes: 0, cancels: 0 };
   readonly prompts: string[] = [];
@@ -243,20 +193,14 @@ class LifecycleRunner implements A2ASubAgentLifecycleRunner {
 
 interface ObservedRequest {
   hostname: string;
-  /** What the transport's one pinned lookup handed the socket. */
+  // What the transport's one pinned lookup handed the socket.
   pinned: { address: string; family: number } | null;
   path: string;
   headers: Record<string, string>;
   body: Buffer;
 }
 
-/**
- * The trusted HTTPS tunnel in front of the receiver. It takes the strict
- * transport's already-pinned request (after its one DNS lookup) and delivers
- * the same method, path, headers and body to the receiver's loopback listener,
- * surfacing the plain socket's connect as the TLS handshake the transport
- * waits for before it commits the body.
- */
+// Simulate TLS termination by forwarding the pinned request to loopback and treating socket connect as the handshake.
 function trustedTunnel(port: () => number, observed: ObservedRequest[]): typeof httpsRequest {
   const forward = (options: RequestOptions, callback?: (response: IncomingMessage) => void) => {
     let pinned: ObservedRequest["pinned"] = null;
@@ -299,7 +243,7 @@ interface Receiver {
   port: number;
   runner: LifecycleRunner;
   approvals: string[];
-  /** The receiver's redacted audit lines; a happy path drops nothing. */
+  // The receiver's redacted audit lines; a happy path drops nothing.
   audits: string[];
   dispose(): Promise<void>;
 }
@@ -395,8 +339,7 @@ function caller(options: {
   const approvals: string[] = [];
   const resolves: number[] = [];
   const zeroized = { count: 0 };
-  // The production authorizer shape (a2a-remote-runtime.ts) minus the depth
-  // check, so the client's own depth-0 hard stop is what the D8 case proves.
+  // The production authorizer shape (a2a-remote-runtime.ts) minus the depth check, so the client's own depth-0 hard stop is what the D8 case proves.
   const authorize = vi.fn((input: { projectRoot: string; targetAgentId: number; interfaceUrl: string }) =>
     input.projectRoot === CALLER_PROJECT && input.targetAgentId === 1 && input.interfaceUrl === INTERFACE_URL);
   const approver: A2ARemoteMutationApprover = {
@@ -563,8 +506,7 @@ describe("A2A agent-to-agent messaging between two in-app Ave hosts", () => {
     expect(w.outbound.approvals).toEqual(["initial-send"]);
     expect(sent.ok && sent.record.stage).toBe("settled");
 
-    // One request, addressed to the snapshot's interface, carrying the
-    // protocol version, the data-plane bearer and the exact-replay activation.
+    // One request, addressed to the snapshot's interface, carrying the protocol version, the data-plane bearer and the exact-replay activation.
     expect(w.observed).toHaveLength(1);
     expect(w.observed[0]).toMatchObject({
       hostname: "receiver-a2a-383a1d70.com",
@@ -734,11 +676,7 @@ describe("A2A agent-to-agent messaging between two in-app Ave hosts", () => {
   });
 
   it("never dials a route whose DNS answer rebinds to a loopback address", async () => {
-    // The receiver really is listening on loopback; a name that resolves there
-    // must not reach it. The transport refuses the answer before any socket.
-    // The client cannot tell a refusal from a lost send by the thrown error, so
-    // it journals the attempt as outcome-unknown (transport-ambiguous) rather
-    // than claiming nothing left.
+    // Reject loopback DNS before opening a socket; journal the failed attempt as outcome-unknown because rejection cannot prove nothing was sent.
     const w = await world({ dnsAnswer: { address: "127.0.0.1", family: 4 } });
     const result = await w.outbound.client.execute(initialSend("rebound", "complete: anything"));
     expect(result).toMatchObject({ ok: false, outcome: "unknown-manual-reconciliation-required" });

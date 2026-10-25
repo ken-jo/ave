@@ -1,10 +1,5 @@
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
-/**
- * The activation is the only place that knows a fatal poll outcome and an
- * owner-initiated disconnect have to converge. Ingress stopping on its own
- * leaves egress attached, so this suite drives the real activation against a
- * rejecting provider and asserts the teardown it is supposed to trigger.
- */
+// Fatal polling and owner disconnect must share teardown so egress cannot outlive ingress.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ConversationSurfaceRuntime } from "../../engine/conversation-surface-runtime.js";
 import type { ConversationCommandPort } from "../conversation-command-port.js";
@@ -30,7 +25,7 @@ import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { forbidAmbientFetch } from "../../__tests__/support/network-fetch-stubs.js";
 
 const BOT_TOKEN = "8112233445:activation-suite-bot-token";
-/** The store only ever holds digests, so the fingerprint is what it is given. */
+// The store only ever holds digests, so the fingerprint is what it is given.
 const BOT_FINGERPRINT = "f".repeat(64);
 
 afterEach(() => {
@@ -51,7 +46,7 @@ async function connectedStore(): Promise<TelegramConnectionStore> {
   return store;
 }
 
-/** An in-memory stand-in for the OS-encrypted store the actor key lives in. */
+// An in-memory stand-in for the OS-encrypted store the actor key lives in.
 function memorySecretStore() {
   const values = new Map<string, string>();
   return {
@@ -62,11 +57,7 @@ function memorySecretStore() {
   };
 }
 
-
-/**
- * Every Bot API call answers 401. `getUpdates` maps that to `unauthorized`,
- * which is the one provider outcome the poller treats as unrecoverable.
- */
+// Every Bot API call answers 401. `getUpdates` maps that to `unauthorized`, which is the one provider outcome the poller treats as unrecoverable.
 function rejectingProvider(): typeof fetch {
   forbidAmbientFetch();
   return vi.fn(async () => new Response(
@@ -75,14 +66,7 @@ function rejectingProvider(): typeof fetch {
   )) as unknown as typeof fetch;
 }
 
-/**
- * Every Bot API call succeeds and the bot has no backlog, which is what the
- * poller sees on an ordinary healthy connection.
- *
- * Polls after the seeding one park until the ingress aborts. An instantly
- * answered long poll would otherwise spin the loop on resolved promises and
- * starve the timers `vi.waitFor` runs on.
- */
+// Park long polls after the seed response until abort; immediate resolved polls starve waitFor timers.
 function emptyProvider(): typeof fetch {
   forbidAmbientFetch();
   let polls = 0;
@@ -103,15 +87,7 @@ function emptyProvider(): typeof fetch {
   }) as unknown as typeof fetch;
 }
 
-/**
- * The real store with named writes broken.
- *
- * The methods are closures rather than prototype members, so a spread keeps
- * every untouched one wired to the same document the assertions read back. That
- * is the point: this is a store that persists everything except what the test
- * breaks, which is what a revoked ACL on the feature directory or a locked file
- * actually produces.
- */
+// Spread closure-backed methods to preserve the real shared document while breaking only selected persistence writes.
 function storeWithFailingWrites(
   store: TelegramConnectionStore,
   ...names: readonly ("recordPollOffset" | "setLastError")[]
@@ -156,11 +132,7 @@ describe("telegram connection activation", () => {
 
       await notifier("998877", "commands-not-supported");
 
-      // The regression: this binding used to be written `async (chatId) => ...`
-      // and call `notify(chatId, "conversation-not-shared")`. A callback
-      // declared with fewer parameters than it is handed is not a type error,
-      // so an owner who was sharing a conversation and sent a slash command
-      // was told they had shared nothing.
+      // Forward the control-notice reason as well as chatId; callbacks with fewer parameters still typecheck.
       expect(notify).toHaveBeenCalledWith("998877", "commands-not-supported");
     });
 
@@ -208,8 +180,7 @@ describe("telegram connection activation", () => {
     });
 
     it("still carries the other notice", async () => {
-      // Non-vacuous: proves the first assertion is about forwarding and not
-      // about a second hardcoded value.
+      // Non-vacuous: proves the first assertion is about forwarding and not about a second hardcoded value.
       const notify = vi.fn(async () => true);
       await createUnroutableNotifier({ notify })("112233", "conversation-not-shared");
       expect(notify).toHaveBeenCalledWith("112233", "conversation-not-shared");
@@ -219,8 +190,7 @@ describe("telegram connection activation", () => {
   it("tears the activation down when the provider rejects the token", async () => {
     const provider = rejectingProvider();
     const store = await connectedStore();
-    // The real teardown, exactly as `main.ts` wires it. A stub would pass even
-    // if the handler and the teardown were waiting on each other, which is the
+    // The real teardown, exactly as `main.ts` wires it. A stub would pass even if the handler and the teardown were waiting on each other, which is the
     // failure this whole path is about.
     const stopBridge = vi.fn(() => stopTelegramBridgeServer("user"));
 
@@ -229,17 +199,14 @@ describe("telegram connection activation", () => {
       expect(store.ownerSnapshot().lastErrorCode).toBe("telegram-bot-token-rejected");
     });
 
-    // The error alone is not the invariant: a bridge that records a fatal code
-    // and keeps its egress channel open still streams assistant text to a phone
+    // The error alone is not the invariant: a bridge that records a fatal code and keeps its egress channel open still streams assistant text to a phone
     // whose messages can no longer arrive.
     await vi.waitFor(() => {
       expect(stopBridge).toHaveBeenCalledTimes(1);
     });
-    // Settling it here rather than leaving it in flight is the deadlock check:
-    // the teardown cannot finish until the poll loop that started it unwinds.
+    // Settling it here rather than leaving it in flight is the deadlock check: the teardown cannot finish until the poll loop that started it unwinds.
     await stopBridge.mock.results[0]?.value;
-    // Throws while anything is still active, so reaching this line is the proof
-    // that the teardown ran to completion rather than merely being started.
+    // Throws while anything is still active, so reaching this line is the proof that the teardown ran to completion rather than merely being started.
     resetTelegramBridgeServerForTests();
   });
 
@@ -254,9 +221,8 @@ describe("telegram connection activation", () => {
       provider,
     ));
 
-    // The write is the only injected callback whose failure used to escape the
-    // loop unclassified: ingress died, nothing was recorded, and the owner
-    // surface went on reading `connected` with egress still attached.
+    // The write is the only injected callback whose failure used to escape the loop unclassified: ingress died, nothing was recorded, and the owner surface
+    // went on reading `connected` with egress still attached.
     await vi.waitFor(() => {
       expect(real.ownerSnapshot().lastErrorCode).toBe("telegram-connection-state-unwritable");
     });
@@ -272,11 +238,7 @@ describe("telegram connection activation", () => {
     const real = await connectedStore();
     const stopBridge = vi.fn(() => stopTelegramBridgeServer("user"));
 
-    // The realistic shape of this failure: a store that cannot take the offset
-    // cannot take the error about it either. Recording it first and awaiting
-    // that write meant the throw skipped the teardown, so the one fatal outcome
-    // that says "nothing this connection learns can be saved" was also the one
-    // that left egress streaming to the phone.
+    // An offset-write failure can also prevent error persistence; teardown must run even if recording that error throws.
     await startTelegramConnectionActivation(activationInput(
       storeWithFailingWrites(real, "recordPollOffset", "setLastError"),
       stopBridge,
@@ -287,8 +249,7 @@ describe("telegram connection activation", () => {
       expect(stopBridge).toHaveBeenCalledTimes(1);
     });
     await stopBridge.mock.results[0]?.value;
-    // Nothing could be written, which is why the teardown is the only honest
-    // signal left rather than a redundant one.
+    // Nothing could be written, which is why the teardown is the only honest signal left rather than a redundant one.
     expect(real.ownerSnapshot().lastErrorCode).toBeNull();
     resetTelegramBridgeServerForTests();
   });
@@ -300,8 +261,7 @@ describe("telegram connection activation", () => {
 
     await startTelegramConnectionActivation(activationInput(store, stopBridge, provider));
 
-    // The control for both cases above: identical wiring, identical provider,
-    // and the only difference is a store that accepts the write.
+    // The control for both cases above: identical wiring, identical provider, and the only difference is a store that accepts the write.
     await vi.waitFor(() => {
       expect(store.pollOffset()).toBe(0);
     });

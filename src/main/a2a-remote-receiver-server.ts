@@ -1,13 +1,5 @@
-/**
- * Independent P4-5 receiver listener.
- *
- * This listener intentionally does not share the ph3/local-API gate or its
- * task namespace. It exposes only the immutable A2A route family on loopback;
- * a separately administered trusted HTTPS tunnel/terminator is responsible
- * for any public ingress. The configured receiver bearer is checked by the
- * transport before the router reads a request body and again by the exact
- * replay handler before execution.
- */
+// Independent loopback receiver with its own gate and task namespace; public ingress requires a trusted HTTPS terminator. Validate the bearer before
+// reading the body and again before exact-replay execution.
 import type { AppServices } from "../boot.js";
 import { isCanonicalA2APublicHttpsOrigin } from "../shared/a2a-public-origin.js";
 import type { LocalApi } from "../api/local-api.js";
@@ -52,7 +44,7 @@ interface RemoteA2AReceiverServerDependencies {
 export interface StartRemoteA2AReceiverServerOptions {
   services: AppServices;
   log?: (message: string) => void;
-  /** @internal deterministic lifecycle injection for unit tests. */
+  // @internal deterministic lifecycle injection for unit tests.
   dependencies?: Partial<RemoteA2AReceiverServerDependencies>;
 }
 
@@ -90,8 +82,7 @@ async function startForBoot(
   generation: number,
 ): Promise<RemoteA2AReceiverServer | null> {
   const remote = receiverRuntime(options.services);
-  // This return must precede secret access, namespace creation, handler
-  // discovery, and listener construction: OFF means exactly zero side effect.
+  // This return must precede secret access, namespace creation, handler discovery, and listener construction: OFF means exactly zero side effect.
   if (!remote) return null;
 
   const deps = dependencies(options.dependencies);
@@ -206,12 +197,8 @@ async function stopForShutdown(): Promise<void> {
   }
 }
 
-/**
- * The loopback port the receiver is bound to right now, or null when it is not
- * running. The port is random per launch, and the external HTTPS tunnel that
- * owns public ingress has to be pointed at it; before this the only place it
- * appeared was a main-process log line.
- */
+// The loopback port the receiver is bound to right now, or null when it is not running. The port is random per launch, and the external HTTPS tunnel
+// that owns public ingress has to be pointed at it; before this the only place it appeared was a main-process log line.
 export function activeRemoteA2AReceiverPort(): number | null {
   return activeReceiver?.server.port ?? null;
 }
@@ -226,7 +213,7 @@ export function stopRemoteA2AReceiverServer(): Promise<void> {
   return tracked;
 }
 
-/** @internal Test-only reset; production uses one immutable boot snapshot. */
+// @internal Test-only reset; production uses one immutable boot snapshot.
 export function resetRemoteA2AReceiverServerForTests(): void {
   if (process.env.NODE_ENV !== "test") {
     throw new Error("a2a-remote-receiver-test-reset-outside-test");
