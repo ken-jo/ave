@@ -319,6 +319,12 @@ export interface RunTurnOptions {
    * surface is showing and the row stored here are the same row.
    */
   userMessageId?: string;
+  /**
+   * Set by SubAgentRunner: a clean end of this child turn dispatches
+   * SubagentStop (which may continue the run) instead of a continuable Stop.
+   * `onDispatched` tells the runner it need not fire its own SubagentStop.
+   */
+  subagentStop?: { agentId?: string; agentType?: string; onDispatched: () => void };
 }
 
 /**

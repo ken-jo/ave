@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "knipVersion": "6.35.1",
+  "knipVersion": "6.42.1",
   "entries": [
     {
       "type": "devDependencies",
@@ -1986,11 +1986,6 @@
       "type": "types",
       "file": "src/shared/a2a.ts",
       "name": "A2AUrlFilePart"
-    },
-    {
-      "type": "types",
-      "file": "src/shared/abortable-deadline.ts",
-      "name": "AbortableDeadlineTerminationReason"
     },
     {
       "type": "types",

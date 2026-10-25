@@ -14,7 +14,7 @@ import {
   sanitizedClaudeCodeEnvironment,
 } from "../claude-code-subscription-client.js";
 import { claudeCodeMcpToolNames } from "../claude-code-conversation-runtime.js";
-import { createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
+import { claimFakeRuntimeDirectories, createSubscriptionRuntimeNamespace as namespace } from "../../__tests__/support/subscription-runtime-namespace.js";
 import { SubscriptionRuntimeService } from "../subscription-runtime-service.js";
 import type { CodexAppServerClient } from "../codex-app-server-client.js";
 import type { AcpSubscriptionRuntimeRegistry } from "../subscription-runtime-service.js";
@@ -117,7 +117,7 @@ describe("claude-code subscription contract", () => {
       stop: vi.fn(async () => undefined),
     } as unknown as ClaudeCodeSubscriptionClient;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
       claudeCodeClient: client,
@@ -149,7 +149,7 @@ describe("claude-code subscription contract", () => {
       stopAll: vi.fn(async () => undefined),
     } as unknown as AcpSubscriptionRuntimeRegistry;
     const service = await SubscriptionRuntimeService.create(async () => undefined, {
-      namespace: namespace(),
+      namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
       codexClient: fakeCodexClient(),
       acpRegistry: registry,
       claudeCodeClient,
@@ -184,7 +184,7 @@ function connectedClaudeClient(): ClaudeCodeSubscriptionClient {
 async function claudeService() {
   const opened: ClaudeCodeConversationRuntimeOptions[] = [];
   const service = await SubscriptionRuntimeService.create(async () => undefined, {
-    namespace: namespace(),
+    namespace: namespace(), claimRuntimeDirectories: claimFakeRuntimeDirectories,
     codexClient: fakeCodexClient(),
     acpRegistry: { stopAll: vi.fn(async () => undefined) } as unknown as AcpSubscriptionRuntimeRegistry,
     claudeCodeClient: connectedClaudeClient(),

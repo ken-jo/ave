@@ -288,17 +288,18 @@ Plugin UI code runs inside host-created shells. The host resolves plugin asset
 URLs, applies theme tokens, and passes a bridge. Plugin code can request host
 operations only through declared capabilities and HostApi methods.
 
-A preload that runs in a sandboxed frame can require only `electron` and the
-Node modules `events`, `timers` and `url`. The sandboxed frames are the floating
-dock window and plugin and MCP app webviews. Anything such a preload would
-resolve from disk, such as the dock's plugin shell and preload URLs, is resolved
-by main and passed as window arguments. Each preload's file and sandbox mode
-come from one table, `src/shared/preload-bundles.json`: windows spread
-`preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and webpack
-builds a preload config per row. `test/scripts/preload-sites.test.ts` reads
-`src` with the TypeScript compiler. It finds windows by their resolved Electron
-type and follows electron through imports, `require` and awaited dynamic
-imports. It holds these sites to the table: window `webPreferences`,
+A preload that runs in a sandboxed frame can require only `electron` (with its
+`electron/renderer` and `electron/common` subpaths), and since Electron 45 it
+runs without `Buffer`, `setImmediate` and `clearImmediate`. The sandboxed frames
+are the floating dock window and plugin and MCP app webviews. Anything such a
+preload would resolve from disk, such as the dock's plugin shell and preload
+URLs, is resolved by main and passed as window arguments. Each preload's file
+and sandbox mode come from one table, `src/shared/preload-bundles.json`: windows
+spread `preloadPreferences(id)`, sessions register `preloadBundlePath(id)`, and
+webpack builds a preload config per row. `test/scripts/preload-sites.test.ts`
+reads `src` with the TypeScript compiler. It finds windows by their resolved
+Electron type and follows electron through imports, `require` and awaited
+dynamic imports. It holds these sites to the table: window `webPreferences`,
 `registerPreloadScript`, guest `sandbox` assignments, and `<webview>`s created
 in JSX, `createElement`, `document.createElement` with `setAttribute`, HTML
 string literals and the HTML sinks `innerHTML`, `outerHTML`,
@@ -307,18 +308,18 @@ string literals and the HTML sinks `innerHTML`, `outerHTML`,
 those sites it refuses what it cannot read: computed keys, spreads whose type
 may carry `webPreferences`, non-literal options or `webpreferences` requests, a
 window class used as a value, subclassed or passed to `Reflect.construct`, a
-dynamic import of electron that is not awaited into a binding, and HTML with
-an interpolated tag name or an interpolation that could carry markup. Code that
+dynamic import of electron that is not awaited into a binding, and HTML with an
+interpolated tag name or an interpolation that could carry markup. Code that
 reaches Electron outside these forms is not checked; the attach guards in main
-are what enforce a guest's preferences. Each window that hosts `<webview>`s sets its guests' preferences in main: the
-main window routes plugin, MCP app and side-browser partitions to their guards
-(`configureMainWindowWebviewAttach`) and refuses any other partition. The
-`build` composite's
-`check-sandboxed-preloads` fails when webpack builds a preload the table does
-not classify, or when a row has no webpack config or asset copy behind it. It
-then checks the built file of each table row: a sandboxed one may require only
-the modules above and may have no chunks. It does not scan `dist/src` for other
-files.
+are what enforce a guest's preferences. Each window that hosts `<webview>`s sets
+its guests' preferences in main: the main window routes plugin, MCP app and
+side-browser partitions to their guards (`configureMainWindowWebviewAttach`) and
+refuses any other partition. The `build` composite's `check-sandboxed-preloads`
+fails when webpack builds a preload the table does not classify, or when a row
+has no webpack config or asset copy behind it. It then checks the built file of
+each table row: a sandboxed one may require only the modules above, may name
+none of the removed globals, and may have no chunks. It does not scan `dist/src`
+for other files.
 
 Every surface that copies theme values follows the theme the host renderer has
 applied, including a theme updated in place under the same id. Plugin webviews
@@ -413,6 +414,12 @@ The conversation loop builds the system prompt, session history, project
 context, memory context, available tools, and provider configuration for each
 turn. It streams model output, collects tool calls, dispatches tool execution,
 and commits turn artifacts back to the session store.
+
+The return-here action can restore conversation, native file-tool edits, or
+both at a durable user-message boundary. The [code rewind design](../design/code-rewind.md)
+owns capture boundaries, conflict refusal, storage limits and untracked effects,
+and compares them with [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing)
+(accessed 2026-10-22).
 
 Important rules:
 
@@ -1960,32 +1967,68 @@ text; production paths remain covered.
 
 An elevated Windows token usually has `BUILTIN\Administrators` (`S-1-5-32-544`)
 as its default owner, so a file or directory the app creates is owned by that
-group rather than by the user. Ownership on Windows follows two rules:
+group rather than by the user. Admission (`assertCodexLocations` in
+`src/main/codex-executable-location.ts`) treats owners in two ways:
 
-1. **Objects the app creates are owned by the current user SID, set when they
-   are created.** The private copy of the Windows sandbox helper is made by
-   `prepareSrtWinExecutable` in `src/permissions/srt-win-integrity.ts`: one
-   PowerShell step protects the directory, creates the empty image and the
-   owner marker inside it, and makes the token user the owner of all three:
-   an owner that is already the token user is kept, `S-1-5-32-544` is
-   replaced, and any other owner refuses without a change. Each owner is then
-   read back. The image's bytes are written only after that step.
-   If it fails, creation is refused and the directory is removed. When
-   `AVE_HOME` or its `secrets` directory does not exist yet,
-   `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
-   create it with the user as owner and an owner-only protected DACL, so no
-   grant for the token's default owner is left behind.
-2. **Roots the app did not create, such as `AVE_HOME`, may be owned by
-   `S-1-5-32-544` only when the current token's default owner is
-   `S-1-5-32-544` and every access entry belongs to the owner or to a trusted
-   system principal.** The app protects such a root, but it does not take
-   ownership of it. `isOwnerOnlyDacl` in `src/shared/ave-home.ts` applies this
-   rule. It takes an elevated Administrators token as its sign that the
-   default owner is `S-1-5-32-544`, and it accepts only the user's own
-   full-control entry.
+1. **Inside a private root, every component must be owned by the current
+   user.** A private root is a directory admitted as `private-directory`: the
+   subscription runtime directories, and the `executable-`, `artifact-` and
+   `probe-` directories and copies made in them. Ownership there is
+   established only through `claimPrivateOwnership`, and through
+   `createPrivateObjects`, `createPrivateDirectories`,
+   `createPrivateDirectory` and `createPrivateTempDirectory`, which create
+   objects and then claim them. A claim asks the resident ACL host to read
+   each owner on the path object itself, without following a reparse point:
+   - an object the user already owns is kept, without asking for
+     `WRITE_OWNER`;
+   - an object owned by `S-1-5-32-544` is given to the user, on a handle that
+     re-reads the owner before it sets it;
+   - an object with any other owner refuses its request, and nothing in that
+     request changes. A claim is sent in requests of at most 128 paths and
+     24,576 characters of JSON-encoded paths. When it spans several requests,
+     the ones already answered keep the owners they set. A refusal still fails
+     the whole claim.
+   The reply must then show the user as every object's owner. When a claim
+   fails, a creating helper removes what it made. The ephemeral `executable-`,
+   `artifact-` and `probe-` directories are created and claimed per run. The
+   ten persistent `subscription-runtimes` directories are claimed every time
+   the subscription service starts. One that an earlier elevated run left
+   owned by `S-1-5-32-544` becomes the user's again; one owned by another
+   account refuses start and is left as it is.
+2. **Outside a private root, the owner must be the current user or a trusted
+   system principal.** This covers a private root's ancestors (among them
+   `AVE_HOME` and `subscription-runtimes`, which admission does not claim) and an executable's location. The trusted principals are SYSTEM
+   (`S-1-5-18`), `S-1-5-32-544` and TrustedInstaller. Admission also accepts
+   the sandbox principals and capability SIDs it identifies. This does not
+   depend on the token's default owner. Write access there is judged by the
+   access entries, not by the owner.
 
-Any other owner is refused. A change to either rule changes the security
-contract for both.
+Two other places create or protect owner-sensitive objects themselves, each
+with its own owner rule:
+
+- **The Windows sandbox helper copy is owned by the current user when it is
+  created.** `prepareSrtWinExecutable` in `src/permissions/srt-win-integrity.ts`
+  runs one PowerShell step that protects the directory, creates the empty image
+  and the owner marker inside it, and makes the token user the owner of all
+  three: an owner that is already the token user is kept, `S-1-5-32-544` is
+  replaced, and any other owner refuses without a change. Each owner is then
+  read back. The image's bytes are written only after that step. If it fails,
+  creation is refused and the directory is removed.
+- **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
+  When `AVE_HOME` or its `secrets` directory does not exist yet,
+  `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
+  create it with the user as owner and an owner-only protected DACL, so no
+  grant for the token's default owner is left behind. An existing `AVE_HOME`
+  the app did not create may be owned by `S-1-5-32-544` only when the current
+  token's default owner is `S-1-5-32-544` and every access entry belongs to the
+  owner or to a trusted system principal. The app protects such a root, but it
+  does not take ownership of it. `isOwnerOnlyDacl` in `src/shared/ave-home.ts`
+  applies this rule. It takes an elevated Administrators token as its sign
+  that the default owner is `S-1-5-32-544`, and it accepts only the user's own
+  full-control entry.
+
+Any other owner is refused. A change to any of these rules changes the security
+contract for all of them.
 
 ## Documentation Language Policy
 

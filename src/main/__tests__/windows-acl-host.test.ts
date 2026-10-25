@@ -27,7 +27,7 @@ function fixture() {
     return child as unknown as ChildProcess;
   });
   hosts.push(host);
-  const request = (id: number) => host.request({ id, paths: [], capSids: [], skipPackage: false }, LAUNCH, LIMITS);
+  const request = (id: number) => host.request({ id, paths: [], capSids: [], skipPackage: false, setOwner: false }, LAUNCH, LIMITS);
   return { host, children, request };
 }
 

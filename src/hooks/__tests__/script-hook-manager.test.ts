@@ -72,9 +72,9 @@ describe("Permission policy P4 ScriptHookManager", () => {
   });
 
   // #811 hooks-on-mcp-calls — a hook with a matcher runs only for matching tools.
-  it("runs a matcher'd hook only for tools whose name matches the glob", async () => {
+  it("runs a matched hook only for tools whose name matches the regex", async () => {
     const m = new ScriptHookManager();
-    m.setTrustedHooks([{ ...hookFixture("pre-deny.sh", "pre"), matcher: "mcp_*" }]);
+    m.setTrustedHooks([{ ...hookFixture("pre-deny.sh", "pre"), matcher: "^mcp_.*$" }]);
 
     // An MCP tool matches `mcp_*` → the deny hook runs.
     const mcpCall = await m.runPreToolUse(

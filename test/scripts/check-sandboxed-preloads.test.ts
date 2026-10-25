@@ -46,7 +46,7 @@ afterEach(() => {
 
 describe("check-sandboxed-preloads", () => {
   it("accepts sandboxed preloads that require only what a sandboxed preload can", () => {
-    const root = createRoot({ dist: { "floating-dock-preload.cjs": 'require("electron"); require("node:url"); require("events"); __webpack_require__(12);\n' } });
+    const root = createRoot({ dist: { "floating-dock-preload.cjs": 'require("electron"); require("electron/renderer"); require("electron/common"); __webpack_require__(12); x.Buffer; ({ setImmediate: 1 }); "clearImmediate";\n' } });
     const result = runGateScript(SCRIPT, root);
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
@@ -62,6 +62,9 @@ describe("check-sandboxed-preloads", () => {
 
   it.each([
     ["plugin-preload.cjs", 'require("fs");\n', 'plugin-preload.cjs: require("fs") — not available'],
+    ["floating-dock-preload.cjs", 'require("events");\n', 'floating-dock-preload.cjs: require("events") — not available'],
+    ["mcp-app-preload.cjs", 'require("node:timers");\n', 'mcp-app-preload.cjs: require("node:timers") — not available'],
+    ["plugin-preload.cjs", 'require("url");\n', 'plugin-preload.cjs: require("url") — not available'],
     ["mcp-app-preload.cjs", 'require("./12.mcp.cjs");\n', 'mcp-app-preload.cjs: require("./12.mcp.cjs") — not available'],
     ["plugin-preload.cjs", 'var chunk = require("./" + __webpack_require__.u(id));\n', 'plugin-preload.cjs: require("./" + __webpack_require__.u(id) — a sandboxed preload cannot load files or chunks'],
   ])("refuses %s requiring a module or file a sandboxed preload cannot load", (name, source, named) => {
@@ -70,12 +73,22 @@ describe("check-sandboxed-preloads", () => {
     expect(result.stderr).toContain(named);
   });
 
+  it.each([
+    ["plugin-preload.cjs", "const bytes = Buffer.from(text);\n", "Buffer"],
+    ["mcp-app-preload.cjs", "setImmediate(flush);\n", "setImmediate"],
+    ["floating-dock-preload.cjs", "var t = ready ? clearImmediate : clearTimeout;\n", "clearImmediate"],
+  ])("refuses %s naming %s, a global Electron 45 took from sandboxed preloads", (name, source, global) => {
+    const result = runGateScript(SCRIPT, createRoot({ dist: { [name]: source } }));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain(`${name}: names ${global}, a global a sandboxed preload no longer has`);
+  });
+
   it("refuses a chunk of a sandboxed preload, and leaves the unsandboxed ones and their chunks free to use Node", () => {
     const chunked = runGateScript(SCRIPT, createRoot({ dist: { "12.floating-dock-preload.cjs": 'require("electron");\n' } }));
     expect(chunked.status).toBe(1);
     expect(chunked.stderr).toContain("12.floating-dock-preload.cjs: a chunk of floating-dock-preload.cjs");
 
-    const host = createRoot({ dist: { "preload.cjs": 'require("node:path"); require("./" + chunk);\n', "176.preload.cjs": 'require("node:crypto");\n', "audio-capture-window-preload.cjs": 'require("node:fs");\n' } });
+    const host = createRoot({ dist: { "preload.cjs": 'require("node:path"); require("./" + chunk); Buffer.from(""); setImmediate(f);\n', "176.preload.cjs": 'require("node:crypto");\n', "audio-capture-window-preload.cjs": 'require("node:fs");\n' } });
     expect(runGateScript(SCRIPT, host).status).toBe(0);
   });
 

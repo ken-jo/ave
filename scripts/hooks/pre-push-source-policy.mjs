@@ -448,19 +448,28 @@ export function readMessageCatalogEntries(text, relativePath) {
   return readMessageCatalogModule(text, relativePath)?.entries ?? null;
 }
 
-/** Read each catalog in one snapshot; a failed session invalidates the whole batch. */
-export function readMessageCatalogEntriesBatch(texts) {
-  const paths = [...texts.keys()];
-  const refused = () => new Map(paths.map((path) => [path, null]));
-  const readableTexts = new Map([...texts].filter(([, text]) =>
-    typeof text === "string" && !/[\u2028\u2029]/u.test(text)));
+/**
+ * readMessageCatalogEntries for many modules at once, keyed by relative path.
+ * Each compiler session is a native child process, so reading the catalog's
+ * ~190 modules one by one costs ~190 process spawns; this parses them all in
+ * one session and validates each module exactly as the single-module reader.
+ */
+export function readMessageCatalogEntriesByPath(texts) {
+  const readable = new Map([...texts].filter(([, text]) => isReadableCatalogText(text)));
+  const sources = parseCatalogSources(readable);
+  return new Map([...texts.keys()].map((path) =>
+    [path, readParsedMessageCatalog(sources?.get(path), path)?.entries ?? null]));
+}
+
+function isReadableCatalogText(text) {
+  return typeof text === "string" && !/[\u2028\u2029]/u.test(text);
+}
+
+function parseCatalogSources(texts) {
   try {
-    return withParsedSourceTexts(readableTexts, (sources) => new Map(paths.map((path) => [
-      path,
-      readParsedMessageCatalogModule(sources.get(path), path)?.entries ?? null,
-    ])));
+    return parseSourceTexts(texts);
   } catch {
-    return refused();
+    return null;
   }
 }
 
@@ -471,18 +480,12 @@ export function readMessageCatalogEntriesBatch(texts) {
  * the full tier; declaration order must never stand in for locale identity.
  */
 function readMessageCatalogModule(text, relativePath) {
-  if (typeof text !== "string" || /[\u2028\u2029]/u.test(text)) return null;
+  if (!isReadableCatalogText(text)) return null;
   const parsePath = relativePath ?? "catalog.ts";
-  let source;
-  try {
-    source = parseSourceTexts(new Map([[parsePath, text]])).get(parsePath);
-  } catch {
-    return null;
-  }
-  return readParsedMessageCatalogModule(source, relativePath);
+  return readParsedMessageCatalog(parseCatalogSources(new Map([[parsePath, text]]))?.get(parsePath), relativePath);
 }
 
-function readParsedMessageCatalogModule(source, relativePath) {
+function readParsedMessageCatalog(source, relativePath) {
   if (!source) return null;
   const fragment = relativePath === undefined
     ? source.statements.filter(ast.isVariableStatement).length === 2

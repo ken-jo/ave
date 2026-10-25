@@ -25,9 +25,10 @@
  *    does not fix this class: an outstanding write of ours could not have
  *    produced the error in the first place.
  *
- * 2. `rmSync`'s own `maxRetries`/`retryDelay` does not cover it. Against a
- *    foreign lock it fails immediately — 0ms, no retry — so the budget it
- *    appears to offer is not applied to this error at all.
+ * 2. Synchronous retry behavior varies across supported runtime versions:
+ *    older versions refuse a foreign lock immediately, while newer versions
+ *    honor the retry budget. Async teardown uses one explicit retry policy
+ *    without blocking the event loop, regardless of the runtime version.
  *
  * Delegates to the production `retryOnTransientFsLock` rather than open-coding
  * a second ladder: that helper owns the retryable codes and the delay curve,

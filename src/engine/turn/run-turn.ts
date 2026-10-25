@@ -6,6 +6,7 @@
  * token-projection fields it reads/writes live on the ConversationLoop
  * instance (via `self`), so turn_summary.tokensIn is computed exactly as before.
  */
+import { markCodeCheckpointUnavailable, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
 import { randomUUID } from "node:crypto";
 // LoopContext — the turn-local mutable carrier these free functions operate
 // on. It IS the ConversationLoop instance: the class owns all turn state and
@@ -33,6 +34,7 @@ import type * as QueryLoopModule from "./query-loop.js";
 import { initialToolTrustOrigin, summarizePermissionUserIntent,
 } from "./trust-origin.js";
 import { projectNextTurnInputTokens } from "../request-input-projection.js";
+import { fireContinuableStop } from "./lifecycle-hooks.js";
 import { normalizeAiSdkUsageForCost } from "../llm/pricing.js";
 import { stripLeadingSlash } from "../../shared/slash-sanitizer.js";
 import { isUserKeyboardOrigin } from "../../shared/chat-origin.js";
@@ -322,7 +324,7 @@ async function runTurnInSpan(
       self.sessionStartFiredFor = effectiveSessionId;
       await self.fireLifecycleEvent(
         "SessionStart",
-        { sessionMeta: self.sessionMetaForLifecycle() },
+        { sessionMeta: self.sessionMetaForLifecycle(), sessionSource: self.sessionSource },
         effectiveSessionId,
       );
     }
@@ -587,7 +589,7 @@ async function runTurnInSpan(
     if (options?.subAgentReport && !options.initialGuidance && inputOrigin === "agent-message") {
       userMeta.subAgentReport = options.subAgentReport;
     }
-    self.history.append({
+    const turnUserMessage = self.history.append({
       role: "user",
       content: userContent,
       ...(Object.keys(userMeta).length > 0 ? { meta: userMeta } : {}),
@@ -673,6 +675,30 @@ async function runTurnInSpan(
     // queryLoop failure; it is never skipped or replaced.
     const { queryLoop } = await import("./query-loop.js");
     let result: Awaited<ReturnType<typeof QueryLoopModule.queryLoop>>;
+    // A top-level turn's clean end runs a continuable Stop; a SubAgentRunner
+    // child's runs SubagentStop. Other nested turns keep observe-only Stop.
+    let stopHookDispatched = false;
+    const subagentStop = options?.subagentStop;
+    const onStopHook = subagentStop || !options?.spawnDepth
+      ? async ({ toolCount, stopHookActive }: { toolCount: number; stopHookActive: boolean }) => {
+          stopHookDispatched = true;
+          if (subagentStop) {
+            subagentStop.onDispatched();
+            return fireContinuableStop(self.deps, self.sessionId, "SubagentStop", {
+              ...(subagentStop.agentId !== undefined ? { agentId: subagentStop.agentId } : {}),
+              ...(subagentStop.agentType !== undefined ? { agentType: subagentStop.agentType } : {}),
+              stopReason: "end_turn",
+              stopHookActive,
+            }, effectiveSessionId);
+          }
+          return fireContinuableStop(self.deps, self.sessionId, "Stop", {
+            stopReason: "end_turn",
+            toolCount,
+            durationMs: Math.max(0, Date.now() - turnStartedAt),
+            stopHookActive,
+          }, effectiveSessionId);
+        }
+      : undefined;
     // Establish per-session ALS context so Gate 4 (plugin-runtime-delegate)
     // can consult the CALLING session's on-demand activation set. The context
     // uses effectiveSessionId (respects sessionIdOverride for sub-agents) and
@@ -680,7 +706,7 @@ async function runTurnInSpan(
     // in-process MCP loopback path (LoopbackTransport → PluginMcpServer →
     // pluginRuntimeToolDelegate). Clearing session B never wipes session A's
     // activation because the Map is keyed per sessionId.
-    result = await sessionContext.run({ sessionId: effectiveSessionId }, () =>
+    const runQuery = () => sessionContext.run({ sessionId: effectiveSessionId }, () =>
       queryLoop(
         self,
         systemPrompt,
@@ -703,9 +729,14 @@ async function runTurnInSpan(
           rolePrompt: options?.rolePrompt,
           onMemoryCaptureTaint: (reason) => memoryCaptureTaint.add(reason),
           memoryQuery: input,
+          ...(onStopHook ? { onStopHook } : {}),
         },
       ),
     );
+    if (self.sessionKind === "subagent") await markCodeCheckpointUnavailable();
+    result = self.deps.disableSessionPersistence || self.sessionKind === "subagent"
+      ? await runQuery()
+      : await withCodeCheckpoint({ sessionId: effectiveSessionId, messageId: turnUserMessage.meta.messageId }, runQuery);
     await finalizeTurnState();
     if (!commitsHostInjectedMessages(result.stopReason) && initialGuidanceId) {
       self.history.removeByHostInjectionId(initialGuidanceId);
@@ -742,9 +773,11 @@ async function runTurnInSpan(
     // ── #811 m2: Stop (NON-BLOCKING) ──
     // Fired when the turn's query loop has resolved, BEFORE the internal
     // post-turn hook chain — a user lifecycle hook must never block the
-    // hardcoded persistence chain (design §1.4). OBSERVE-ONLY: result discarded.
-    // Payload: stopReason, toolCount, durationMs.
-    await self.fireLifecycleEvent(
+    // hardcoded persistence chain (design §1.4). A clean end_turn already
+    // dispatched its continuable stop hook inside queryLoop; a sub-agent's
+    // turn still observes Stop here, as before. Other outcomes are
+    // OBSERVE-ONLY: result discarded. Payload: stopReason, toolCount, durationMs.
+    if (!(stopHookDispatched && result.stopReason === "end_turn" && !subagentStop)) await self.fireLifecycleEvent(
       "Stop",
       {
         ...(result.stopReason !== undefined
@@ -1120,7 +1153,7 @@ async function runTurnInSpan(
         });
         // Notification lifecycle hook (#811) — observe-only; mirrors the
         // turn-end message shown to the user so a hook can react to it.
-        await self.fireLifecycleEvent("Notification", { message: result.text });
+        await self.fireLifecycleEvent("Notification", { message: result.text, notificationType: "agent_completed" });
       } catch {
         // notification failure must never block turn completion
       }

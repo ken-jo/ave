@@ -403,6 +403,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
 
       // ── #811 m2: PostCompact (NON-BLOCKING) ── manual path, after apply.
       await self.fireLifecycleEvent("PostCompact", {
+        reason: "manual",
         messagesBefore: messagesBeforeCount,
         messagesAfter: self.history.getMessages().length,
         tokensBefore,
@@ -815,6 +816,7 @@ export async function runPreflightGuard(
       // Fired AFTER auto-compact applied. OBSERVE-ONLY. Payload: before/after
       // message + token counts. After-counts are read post-mutation.
       await self.fireLifecycleEvent("PostCompact", {
+        reason: "auto-compact",
         messagesBefore: messagesBeforeCount,
         messagesAfter: self.history.getMessages().length,
         tokensBefore,

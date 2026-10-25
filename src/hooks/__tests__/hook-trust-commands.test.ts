@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -28,6 +28,23 @@ afterEach(async () => {
 });
 
 describe("hook trust slash command operations", () => {
+  it.each([false, true])("lists invalid script and config matchers with reasons (quarantined=%s)", async (quarantined) => {
+    writeExecutableHook(hooksDir, "pre-invalid.sh", "#!/bin/sh\n# ave-hook-matcher: *danger*\nexit 0\n");
+    writeFileSync(join(hooksDir, "hooks.json"), JSON.stringify({ hooks: {
+      PreToolUse: [{ matcher: "*danger*", hooks: [{ type: "command", command: "./guard.sh" }] }],
+    } }));
+    if (quarantined) await wireHookSystem(layout);
+    const listed = listHookTrustState(layout);
+    const rows = quarantined ? listed.disabled : listed.active;
+    expect(rows.find((row) => row.fileName === "pre-invalid.sh")?.errors).toEqual([
+      expect.stringMatching(/\*danger\*.*not a valid regular expression.*hook not loaded/),
+    ]);
+    expect(rows.find((row) => row.fileName === "hooks.json")).toMatchObject({
+      entryCount: 0,
+      errors: [expect.stringMatching(/PreToolUse\[0\].matcher.*\*danger\*.*not a valid regular expression.*rejected/)],
+    });
+  });
+
   it("accepts a boot-quarantined hook and updates runtime trust", async () => {
     writeExecutableHook(hooksDir, "pre-demo.sh");
     const boot = await wireHookSystem(layout);

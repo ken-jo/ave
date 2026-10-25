@@ -2633,8 +2633,9 @@ ThemeProvider.tsx (renderer)
   host context 를 만든다. 그래서 앱은 한 테마의 shell 과 다른 테마의 토큰을 함께 받지 않는다.
 - HTML preview 는 스냅샷이다 (§6.6.5).
 
-**sandboxed preload**: sandboxed frame 에서 도는 preload 는 `electron` 과 Node 모듈
-`events`, `timers`, `url` 만 require 할 수 있다. 그런 frame 은 플로팅 독 창, plugin webview,
+**sandboxed preload**: sandboxed frame 에서 도는 preload 는 `electron`(과 그 하위 경로
+`electron/renderer`, `electron/common`)만 require 할 수 있고, Electron 45 부터는 `Buffer`,
+`setImmediate`, `clearImmediate` 전역 없이 돈다. 그런 frame 은 플로팅 독 창, plugin webview,
 MCP 앱 webview 다. 독의 plugin shell / preload URL 처럼 디스크에서 경로를 풀어야 하는 값은
 main 이 풀어 창 인자(`additionalArguments`, `src/shared/floating-dock-args.ts`)로 넘긴다.
 preload 마다 파일과 sandbox 모드는 표 하나(`src/shared/preload-bundles.json`)에서 온다.

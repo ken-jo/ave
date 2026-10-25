@@ -1,14 +1,18 @@
 import { createServer } from "node:net";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, getDefaultSensitiveReadDenyPaths } from "../../permissions/asrt-sandbox.js";
 import {
+  __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
+  setActiveSandboxCapability,
   setPluginWorkerConfinementRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
+import { sandboxConfinementForPlatform } from "../../shared/sandbox-capability-info.js";
 import { sandboxCasesRun } from "../../plugins/isolation/__tests__/sandbox-cases.js";
 import { runOneHookScript } from "../script-hook-runner.js";
 import type { ScriptHookStdin } from "../script-hook-types.js";
@@ -30,6 +34,7 @@ beforeEach(() => setPluginWorkerConfinementRequestedAtBoot(true));
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
   __resetSandboxRequestedAtBootForTest();
+  __resetActiveSandboxCapabilityForTest();
   testHome.path = undefined;
   vi.unstubAllEnvs();
 });
@@ -112,6 +117,35 @@ connection.on('close', () => process.stdout.write(JSON.stringify({ action: 'allo
         // Refused, never read: macOS reports EPERM; bubblewrap's tmpfs mask, ENOENT.
         for (const outcome of reported.neighbourReads) expect(["EPERM", "EACCES", "ENOENT"]).toContain(outcome);
         expect(readFileSync(join(dataDir, "state.json"), "utf8")).toBe("allowed");
+
+        // A user hook is read from its protected configuration directory, with
+        // only that exact script re-allowed and its working directory writable.
+        const userHooks = join(fakeHome, ".config", "ave", "hooks");
+        const workspace = join(root, "workspace");
+        mkdirSync(userHooks, { recursive: true });
+        mkdirSync(workspace);
+        const userScript = join(userHooks, "probe.cjs");
+        const siblingScript = join(userHooks, "sibling.cjs");
+        const escapedScript = join(userHooks, "escaped.cjs");
+        writeFileSync(userScript, readFileSync(script));
+        writeFileSync(siblingScript, NEIGHBOUR);
+        symlinkSync(secret, escapedScript);
+        // A user hook takes the host-shell plan, so it is confined only when
+        // the shell sandbox is requested too, not by worker confinement alone:
+        // publish both as the boot step does for a full mac/linux ASRT.
+        setShellSandboxRequestedAtBoot(true);
+        setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform,
+          reason: "ASRT active for shells", confines: sandboxConfinementForPlatform(process.platform, "full") });
+        const userResult = await runOneHookScript({ id: "user-probe", hookType: "pre", source: "config",
+          hookPath: userScript,
+          command: ["node", userScript, secret, outside, join(workspace, "state.json"), String(address.port),
+            ...neighbours.map((dir) => join(dir, "s")), siblingScript, escapedScript],
+        }, payload, { cwd: workspace, timeoutMs: 4000 });
+        expect(userResult.decision, userResult.reason).toBe("allow");
+        const userReported = JSON.parse(userResult.reason) as { neighbourReads: string[] };
+        expect(userReported).toMatchObject({ read: false, outsideWrite: false, dataWrite: true, socket: false });
+        for (const outcome of userReported.neighbourReads) expect(["EPERM", "EACCES", "ENOENT"]).toContain(outcome);
+        expect(readFileSync(join(workspace, "state.json"), "utf8")).toBe("allowed");
       } finally {
         await new Promise<void>((resolve) => server.close(() => resolve()));
         await cleanupTmpDir(root);

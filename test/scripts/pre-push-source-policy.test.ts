@@ -20,7 +20,7 @@ import {
   isMessageCatalogPath,
   AVE_APP_LOCK_SUITES,
   readMessageCatalogEntries,
-  readMessageCatalogEntriesBatch,
+  readMessageCatalogEntriesByPath,
   RELATED_TEST_BOUND,
   selectFastSourceChecks,
   selectMessageCatalogChecks,
@@ -209,7 +209,8 @@ describe("pre-push fast source tier", () => {
     expect(hook).toContain('"--reporter=json"');
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeGreaterThanOrEqual(0);
     expect(hook.indexOf("getFastSourceRelatedSelection(repoRoot,")).toBeLessThan(hook.indexOf("console.log(describeScopedTier({"));
-    expect(hook).toContain('"run", ...directArgs], dir, withoutGitContext()');
+    // The direct list runs in budgeted chunks (pre-push-argv-budget.test.ts).
+    expect(hook).toContain('runVitestChunks(bun, dir, directArgs, (chunk) => ["run", "test:vitest", "--", "run", ...chunk]);');
     // The skip switch is the shell hook's and keeps its meaning.
     const shellHook = readFileSync(resolve(root, "scripts/hooks/pre-push"), "utf8");
     expect(shellHook).toContain('if [ "${AVE_HOOKS_SKIP:-}" = "1" ] || [ "${SKIP_AVE_HOOKS:-}" = "1" ]; then');
@@ -443,24 +444,36 @@ describe("pre-push message catalog selection", () => {
   });
 
   it("reads every key of the real catalog, and nothing the runtime does not load", () => {
-    const paths = catalogFiles();
-    const barrel = `${MESSAGES}/generated/index.ts`;
-    const texts = new Map([...paths, barrel].map((path) =>
-      [path, readFileSync(resolve(root, path), "utf8")]));
-    const catalogs = readMessageCatalogEntriesBatch(texts);
+    // One compiler session for the whole catalog: each session is a native
+    // child process, and one per module (~190 spawns) timed out under load.
+    const texts = new Map(catalogFiles().map((path) => [path, readFileSync(resolve(root, path), "utf8")]));
+    const byPath = readMessageCatalogEntriesByPath(texts);
+    expect([...byPath.keys()]).toEqual([...texts.keys()]);
     const keys = new Set<string>();
-    for (const path of paths) {
-      const entries = catalogs.get(path);
+    for (const [path, entries] of byPath) {
       expect(entries, path).not.toBeNull();
       for (const key of entries!.keys()) keys.add(key);
     }
     expect([...keys].sort()).toEqual(Object.keys(messages.en).sort());
-    // Barrels must not contribute keys to the catalog snapshot.
-    expect(catalogs.get(barrel)).toBeNull();
-    expect(readMessageCatalogEntries(texts.get(barrel)!)).toBeNull();
-  }, 30_000);
+    // The batch reader validates each module exactly as the single-module reader.
+    for (const path of [`${MESSAGES}/en.ts`, `${MESSAGES}/ko.ts`, `${MESSAGES}/generated/shellExecution.ts`]) {
+      expect(byPath.get(path), path).toEqual(readMessageCatalogEntries(texts.get(path)!, path));
+    }
+    // The barrels carry no keys; the barrel check proves they match the fragments.
+    const barrel = readFileSync(resolve(root, MESSAGES, "generated/index.ts"), "utf8");
+    expect(readMessageCatalogEntries(barrel)).toBeNull();
+    expect(readMessageCatalogEntriesByPath(new Map([
+      [`${MESSAGES}/generated/index.ts`, barrel],
+      [`${MESSAGES}/generated/panel.ts`, "export const en = {"],
+      [`${MESSAGES}/generated/other.ts`, null],
+    ]))).toEqual(new Map([
+      [`${MESSAGES}/generated/index.ts`, null],
+      [`${MESSAGES}/generated/panel.ts`, null],
+      [`${MESSAGES}/generated/other.ts`, null],
+    ]));
+  });
 
-  it("keeps batch catalog results equal to individual reads with mixed valid and refused modules", () => {
+  it("keeps by-path catalog results equal to individual reads with mixed valid and refused modules", () => {
     const texts = new Map<string, string | null>([
       [`${MESSAGES}/en.ts`, 'export const en = { "seed.title": "Seed" } as const;'],
       [`${MESSAGES}/generated/panel.ts`, 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
@@ -470,7 +483,7 @@ describe("pre-push message catalog selection", () => {
       [`${MESSAGES}/generated/absent.ts`, null],
       [`${MESSAGES}/generated/index.ts`, 'export { en } from "./panel.js";'],
     ]);
-    const catalogs = readMessageCatalogEntriesBatch(texts);
+    const catalogs = readMessageCatalogEntriesByPath(texts);
     expect([...catalogs.keys()]).toEqual([...texts.keys()]);
     for (const [path, text] of texts) {
       expect(catalogs.get(path), path).toEqual(readMessageCatalogEntries(text, path));
@@ -487,18 +500,18 @@ describe("pre-push message catalog selection", () => {
     const path = `${MESSAGES}/generated/panel.ts`;
     const alias = `${MESSAGES}/generated/./panel.ts`;
     const text = 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };';
-    expect(readMessageCatalogEntriesBatch(new Map([[path, text], [alias, text]]))).toEqual(new Map([
+    expect(readMessageCatalogEntriesByPath(new Map([[path, text], [alias, text]]))).toEqual(new Map([
       [path, null],
       [alias, null],
     ]));
-    expect(readMessageCatalogEntriesBatch(new Map([[path, text]])).get(path)).toEqual(new Map([
+    expect(readMessageCatalogEntriesByPath(new Map([[path, text]])).get(path)).toEqual(new Map([
       ["panel.title", { en: "Panel", ko: "패널" }],
     ]));
     const restored = text.replaceAll("Panel", "Restored");
-    expect(readMessageCatalogEntriesBatch(new Map([[path, restored]])).get(path)).toEqual(new Map([
+    expect(readMessageCatalogEntriesByPath(new Map([[path, restored]])).get(path)).toEqual(new Map([
       ["panel.title", { en: "Restored", ko: "패널" }],
     ]));
-    expect(readMessageCatalogEntriesBatch(new Map())).toEqual(new Map());
+    expect(readMessageCatalogEntriesByPath(new Map())).toEqual(new Map());
   });
 
   it("refuses catalog shapes whose keys it cannot read", () => {

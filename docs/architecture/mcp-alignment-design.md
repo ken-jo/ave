@@ -369,7 +369,7 @@ were actually implementable once the open decisions were made autonomously:
 - **M8 Apps permission gate DONE** — the host honors `_meta.ui` only from a server
   that advertised `io.modelcontextprotocol/ui` at discovery (pinned to the
   2026-01-26 snapshot). The renderer ui:// iframe CSP is the second layer.
-- **M6 tool-name matcher DONE** — a hook declares `# ave-hook-matcher: <glob>`
+- **M6 tool-name matcher DONE** — a hook declares `# ave-hook-matcher: <matcher>`
   and the dispatcher runs it only for matching tool names (`mcp_*` etc.); with the
   per-request `mcpServerId`/`pluginId` already in stdin+env, a hook can both
   target and decide-by-origin. The broader generic-command-hooks config is a

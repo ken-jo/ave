@@ -128,6 +128,14 @@ describe("each spawn path reads only its own scope's gate", () => {
     expect(text).not.toMatch(/\bisShellSandboxActive\b/);
   });
 
+  it("hooks/script-hook-runner.ts takes a user hook's sandbox from the host-shell plan", () => {
+    // A user hook runs the user's own command: its scope is the host shell,
+    // read through the plan it was admitted under (or the live plan), while a
+    // bundled hook keeps the worker gate checked above.
+    const text = source("hooks/script-hook-runner.ts");
+    expect(text).toMatch(/confinement\s*\?\s*isPluginWorkerConfinementActive\(\)\s*:\s*\(admittedPlan \?\? getHostShellExecutionPlan\(\)\)\.mode === "asrt"/);
+  });
+
   it.each(shellPaths)("%s gates on the shell sandbox, never the raw or worker gate", (file) => {
     const text = source(file);
     expect(text).toMatch(/\bisShellSandboxActive\(\)/);
