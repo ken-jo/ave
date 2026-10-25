@@ -20,6 +20,7 @@ import { egressIdentityStrength, noteAsrtUnixSocketPolicy } from "../egress-iden
 import { maxEgressGrantScope } from "../../shared/sandbox-capability-info.js";
 import { setWorkerEgressAllowlists, workerEgressAllowedDomains } from "../egress-runtime.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { EGRESS_GRANT_SCOPE_LADDERS } from "../../shared/egress-grant-scopes.js";
 
@@ -249,7 +250,7 @@ describe("conversation grants and what a revoke closes", () => {
   });
 });
 
-describe("terminal tab grants", () => {
+describe("terminal tab grants (design F)", () => {
   const TAB = "terminal:0a1b2c3d-1";
   const TERMINAL_LADDER = ["once", "tab", "always"] as const;
   const tabSubject = { token: "5".repeat(32), sessionId: undefined, tabId: TAB, workspaceRoot: undefined, origin: "terminal" as const };
@@ -336,11 +337,12 @@ describe("terminal tab grants", () => {
     expect(await store.matchingScope({ ...tabSubject, token: "a".repeat(32) }, github, matchingScopes)).toBeUndefined();
   });
 
-  it("compares working directories after the sandbox's canonicalizer (symlinks resolved)", async () => {
+  // Directory symlink creation may require a privilege the host does not grant.
+  it.skipIf(!canCreateSymlinks("dir"))("compares working directories after the sandbox's canonicalizer (symlinks resolved)", async () => {
     const real = join(dir, "real-project");
     const link = join(dir, "linked-project");
     mkdirSync(real);
-    symlinkSync(real, link, process.platform === "win32" ? "junction" : "dir");
+    symlinkSync(real, link, "dir");
     const store = new EgressGrantStore(file);
     await store.grant("workspace", ALL, { ...subject, workspaceRoot: link }, github);
     expect(await store.matchingScope({ ...subject, workspaceRoot: real }, github, matchingScopes)).toBe("workspace");
@@ -358,6 +360,53 @@ describe("terminal tab grants", () => {
   });
 });
 
+describe("terminal tab grants in the running process (egress-runtime)", () => {
+  it("lists a tab grant beside the others and drops it when the tab's shell is released", async () => {
+    const { openEgressInvocation } = await import("../egress-invocations.js");
+    const { createEgressAskRuntimeCallback, listEgressGrants, revokeEgressGrant } = await import("../egress-runtime.js");
+    const tabId = "terminal:0a1b2c3d-7";
+    const shell = openEgressInvocation({ kind: "terminal", tabId });
+    const requests: unknown[] = [];
+    const callback = createEgressAskRuntimeCallback({
+      approvalGate: {
+        requestAndWait: async (request) => {
+          requests.push(request);
+          return { requestId: request.id, choice: "allow-once", egressScope: "tab" };
+        },
+      },
+      shellAskEnabled: () => true,
+    });
+    // Both phases of one connection, as the patched ASRT calls them.
+    const ask = async (
+      destination: { host: string; port: number },
+      connection: { attributionKey: string; identity: "listener"; addresses: string[]; resolution: "pinned" },
+    ) => {
+      const { addresses, resolution, ...who } = connection;
+      const byName = await callback(destination, { ...who, phase: "name" });
+      return byName === true ? callback(destination, { ...who, phase: "resolved", addresses, resolution }) : byName;
+    };
+    try {
+      const context = { attributionKey: shell.token, identity: "listener" as const, addresses: ["140.82.112.3"], resolution: "pinned" as const };
+      expect(await ask({ host: "github.com", port: 443 }, context)).toBe(true);
+      expect(requests).toEqual([expect.objectContaining({
+        kind: "egress-host",
+        toolName: "terminal",
+        egressHost: expect.objectContaining({ host: "github.com", port: 443, terminalTabId: tabId, scopes: expect.arrayContaining(["once", "tab"]) }),
+      })]);
+      expect(requests[0]).not.toHaveProperty("sessionId");
+      expect((await listEgressGrants()).filter((grant) => grant.scope === "tab")).toEqual([
+        { scope: "tab", tabId, host: "github.com", port: 443, network: "public", grantedAt: expect.any(String) },
+      ]);
+      // Revoking from Settings works on a tab grant too.
+      await ask({ host: "pypi.org", port: 443 }, { ...context, addresses: ["151.101.0.223"] });
+      expect((await revokeEgressGrant({ scope: "tab", tabId, host: "pypi.org", port: 443 })).removed).toBe(true);
+    } finally {
+      shell.release();
+    }
+    expect((await listEgressGrants()).filter((grant) => grant.scope === "tab")).toEqual([]);
+  });
+});
+
 describe("shell domain grants in the running process", () => {
   it("persists Always for later calls without granting the terminal a destination", async () => {
     const { openEgressInvocation } = await import("../egress-invocations.js");
@@ -372,7 +421,7 @@ describe("shell domain grants in the running process", () => {
       requests.push(request);
       if (request.egressHost?.terminalTabId) return { requestId: request.id, choice: "deny-once" };
       return { requestId: request.id, choice: "allow-once", egressScope: "always" };
-    } } });
+    } }, shellAskEnabled: () => true });
     const destination = { host: "downloads.example.com", port: 443 };
     const target = { scope: "always" as const, origin: "shell" as const, ...destination, network: "public" as const };
     const ask = async (token: string) => {

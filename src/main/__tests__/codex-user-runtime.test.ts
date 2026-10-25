@@ -17,6 +17,7 @@ import {
 import { completeCodexSchemas } from "../../__tests__/support/codex-protocol-schemas.js";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
+import * as executableLocation from "../codex-executable-location.js";
 import { createPrivateDirectories } from "../codex-executable-location.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
@@ -223,7 +224,15 @@ describe("native executable resolution", () => {
     bytes.writeBigUInt64BE(4096n, 16); bytes.writeBigUInt64BE(4096n, 24); bytes.writeUInt32BE(12, 32);
     nativeExecutableBytes("darwin").copy(bytes, 4096);
     const native = writeNativeExecutable(join(root, "codex"), bytes);
-    await expect(resolveCodexNativeExecutable(native, "darwin")).resolves.toBe(native);
+    const candidate = HOST === "win32" ? "/installed/codex" : native;
+    if (HOST === "win32") {
+      // The routing platform requires a POSIX path; its bytes live in the host fixture.
+      const lstat = fs.lstat.bind(fs);
+      vi.spyOn(fs, "lstat").mockImplementation((path) => lstat(String(path) === candidate ? native : path));
+      vi.spyOn(fs, "realpath").mockResolvedValue(native);
+      vi.spyOn(executableLocation, "assertCodexExecutableLocation").mockResolvedValue(undefined);
+    }
+    await expect(resolveCodexNativeExecutable(candidate, "darwin")).resolves.toBe(native);
   });
 });
 

@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { nativeExecutableBytes, normalizeFixtureAncestorPermissions, writeNativeExecutable } from "../../__tests__/support/native-executable.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { copyCodexExecutableArtifact, copyExecutableFile, verifyCodexExecutableArtifact } from "../codex-executable-artifact.js";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
   (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
@@ -141,7 +142,8 @@ describe("private executable artifacts", () => {
     await expect(verifyCodexExecutableArtifact(artifact)).rejects.toThrow("Executable artifact changed");
   });
 
-  it("does not follow an injected destination link or overwrite its target", async () => {
+  // Creating the injected link requires unprivileged symlink support.
+  it.skipIf(!canCreateSymlinks())("does not follow an injected destination link or overwrite its target", async () => {
     const { runtime, source } = fixture();
     const open = fs.open.bind(fs);
     vi.spyOn(fs, "open").mockImplementation(async (...args) => {

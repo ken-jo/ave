@@ -18,9 +18,8 @@ import { spawnTerminal, writeTerminal, resizeTerminal, typeTerminalCommand, veri
  *     NOT spawn a second shell.
  *   - kill / killAll tear down + decrement ASRT state.
  */
-import { egressInvocationOwner, egressInvocationAbortSignal } from "../../../permissions/egress-invocations.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { TerminalTtyHandoff } from "../terminal-tty-handoff.js";
@@ -28,6 +27,7 @@ import { terminalSandboxWindowNotice } from "../terminal-sandbox-policy.js";
 import { t } from "../../../i18n/index.js";
 import type { SandboxCleanupOutcome, SandboxWrapResult } from "../../../permissions/asrt-sandbox.js";
 import type { SandboxGitControlSnapshot } from "../../../permissions/sandbox-write-policy.js";
+import { egressInvocationAbortSignal, egressInvocationOwner } from "../../../permissions/egress-invocations.js";
 
 // ─── ASRT mock — gate + wrap controllable per test ──────────
 let gateActive = true;
@@ -65,6 +65,7 @@ vi.mock("../../../permissions/asrt-sandbox.js", async () => ({
     "../../../permissions/asrt-sandbox.js",
   )).sandboxTempEnvLaunch,
   isAsrtSandboxActive: () => gateActive,
+  isShellSandboxActive: () => gateActive,
   wrapWorkerCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapWorkerCommandMock(command, options), options),
   wrapTerminalCommand: async (command: string, options?: unknown) => withFilesystemPolicy(await wrapTerminalCommandMock(command, options), options),
   cleanupAsrtSandboxAfterCommand: () => cleanupMock(),
@@ -233,6 +234,7 @@ vi.mock("node-pty", () => ({
 import {
   terminalOwnedBy,
   killTerminal,
+  terminalOwnerWindowId,
   killAllTerminals,
   killTerminalsOwnedBy,
   forceKillAllTerminalsForShutdown,
@@ -247,7 +249,7 @@ import {
 // validates a renderer-supplied cwd against it, so the test computes the same.
 import { canonicalizePathForMatch } from "../../../permissions/sensitive-paths.js";
 import { USER_INPUT_QUIET_MS, getWindowTerminalBlockTracker, listTerminalBlockTabs } from "../terminal-blocks.js";
-import { SHELL_INTEGRATION_NONCE_FILE } from "../shell-integration.js";
+import { SHELL_INTEGRATION_NONCE_FILE, TERMINAL_EDIT_LINE_QUERY } from "../shell-integration.js";
 
 /**
  * The marker nonce a spawned terminal's startup file would read: the file in
@@ -555,6 +557,41 @@ describe("pty-manager happy path (fs-contained)", () => {
     expect(result.message).toContain("write access narrowed to project");
     expect(result.message).toContain(t("sandboxPolicy.cleanupPending"));
     expect(lastPty?.killSignals).toContain("SIGKILL");
+  });
+
+  it("wraps the shell under the tab's egress token for the life of the shell", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { commandId: string }];
+    // A minted token, not the tab id: the id the proxy sees is unguessable.
+    expect(options.commandId).toMatch(/^[0-9a-f]{32}$/);
+    expect(egressInvocationOwner(options.commandId)).toEqual({ kind: "terminal", tabId: "terminal:0000000a-1" });
+    lastPty?.emitExit(0);
+    expect(egressInvocationOwner(options.commandId)).toBeUndefined();
+  });
+
+  it("ends the tab's pending egress asks when the tab closes, before its shell has exited", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { commandId: string }];
+    const signal = egressInvocationAbortSignal(options.commandId);
+    expect(signal?.aborted).toBe(false);
+    killTerminal("terminal:0000000a-1");
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("ends them when the shell exits on its own too", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1" });
+    const [, options] = wrapWorkerCommandMock.mock.calls[0] as [string, { commandId: string }];
+    const signal = egressInvocationAbortSignal(options.commandId);
+    lastPty?.emitExit(0);
+    expect(signal?.aborted).toBe(true);
+  });
+
+  it("names the window that owns a live tab (where its egress banner is drawn), and none once it is gone", async () => {
+    await spawnTerminal({ tabId: "terminal:0000000a-1", ownerWindowId: 7 });
+    expect(terminalOwnerWindowId("terminal:0000000a-1")).toBe(7);
+    expect(terminalOwnerWindowId("terminal:0000000a-2")).toBeUndefined();
+    killTerminal("terminal:0000000a-1");
+    expect(terminalOwnerWindowId("terminal:0000000a-1")).toBeUndefined();
   });
 
   it("is idempotent per tab: a second spawn replays the ring and does not start a second shell", async () => {
@@ -1087,8 +1124,9 @@ describe("pty-manager typing an approved agent command", () => {
     pty: FakePty;
     mark: (fields: string) => string;
     prompt: (fields?: string) => string;
+    report: (line: string) => void;
     /** How the fake shell shows a pasted line in its edit line. */
-    shell: { shows: (line: string) => string };
+    shell: { shows: (line: string) => string; reports: (line: string) => string; acknowledges: (line: string) => boolean };
   }> {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
@@ -1101,21 +1139,83 @@ describe("pty-manager typing an approved agent command", () => {
     const mark = (fields: string): string => `\u001b]133;${fields};${nonce}\u0007`;
     // Each prompt announces a fresh B token in P; B carries it, not the nonce.
     let prompts = 0;
+    let token = "";
     const prompt = (fields = ";Keys=emacs;Paste=1;NotFound=0"): string => {
-      const token = `${(++prompts).toString(16).padStart(2, "0")}`.repeat(16);
-      return `${mark("D;0")}${mark(`P;Cwd=/w${fields};B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`;
+      token = `${(++prompts).toString(16).padStart(2, "0")}`.repeat(16);
+      return `${mark("D;0")}${mark(`P;Cwd=/w${fields};Edit=1;B=${token}`)}${mark("A")}% \u001b]133;B;${token}\u0007`;
     };
     const pty = lastPty!;
     // The shell: Ctrl-C at its prompt drops the line and draws a fresh prompt;
     // a paste shows in the edit line (as `shows` renders it).
-    const shell = { shows: (line: string): string => line };
+    const shell = { shows: (line: string): string => line, reports: (line: string): string => line, acknowledges: (_line: string): boolean => true };
+    let editorLine = "";
+    const report = (line: string): void => pty.emitData(mark(`E;Line=${encodeURIComponent(line)};B=${token}`));
     pty.respond = (data) => {
-      if (data === "\u0003") queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      if (data === "\u0003") {
+        editorLine = "";
+        queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      }
       const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(data);
-      if (paste) queueMicrotask(() => pty.emitData(shell.shows(paste[1]!)));
+      if (paste) {
+        editorLine = paste[1]!;
+        queueMicrotask(() => pty.emitData(shell.shows(paste[1]!)));
+      }
+      if (data === TERMINAL_EDIT_LINE_QUERY && shell.acknowledges(editorLine)) {
+        const line = shell.reports(editorLine);
+        queueMicrotask(() => report(line));
+      }
     };
-    return { pty, mark, prompt, shell };
+    return { pty, mark, prompt, shell, report };
   }
+
+  it("does not submit a matching echo when the editor buffer has lost its first character", async () => {
+    const { pty, prompt, shell } = await zshTerminal(3);
+    pty.emitData(prompt());
+    shell.reports = (line) => line.slice(1);
+    await expect(typeTerminalCommand(TAB, 3, "builtin printf approved", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("builtin printf approved"), TERMINAL_EDIT_LINE_QUERY, "\u0003"]);
+    expect(pty.written).not.toContain("\r");
+  });
+
+  it("waits for a fresh editor acknowledgement after paste before submitting", async () => {
+    const { pty, prompt, shell, report } = await zshTerminal(3);
+    pty.emitData(prompt());
+    shell.acknowledges = (line) => line === "";
+    const typing = typeTerminalCommand(TAB, 3, "echo approved", "/w");
+    await expect.poll(() => pty.written.filter((data) => data === TERMINAL_EDIT_LINE_QUERY).length).toBe(2);
+    expect(pty.written).not.toContain("\r");
+    report("echo approved");
+    await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    expect(pty.written.filter((data) => data === "\r")).toHaveLength(1);
+  });
+
+  it("accepts an unchanged actual buffer when its query widget repaints the display", async () => {
+    const { pty, prompt, shell, report } = await zshTerminal(3);
+    pty.emitData(prompt());
+    shell.acknowledges = (line) => line === "";
+    const typing = typeTerminalCommand(TAB, 3, "echo approved", "/w");
+    await expect.poll(() => pty.written.filter((data) => data === TERMINAL_EDIT_LINE_QUERY).length).toBe(2);
+    expect(pty.written).not.toContain("\r");
+    report("echo approved");
+    pty.emitData("\r\u001b[2Capproved");
+    await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
+    expect(pty.written.filter((data) => data === "\r")).toHaveLength(1);
+  });
+
+  it("does not paste into an editor that reports an existing buffer", async () => {
+    const { pty, prompt, shell } = await zshTerminal(3);
+    pty.emitData(prompt());
+    shell.reports = () => "existing text";
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, "\u0003"]);
+  });
+
+  it("sends no query or command to an editor without the owned query binding", async () => {
+    const { pty, prompt } = await zshTerminal(3);
+    pty.emitData(prompt().replace(";Edit=1", ";Edit=0"));
+    await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
+    expect(pty.written).toEqual([]);
+  });
 
   it("aborts between paste and Enter without sending cancellation input to another command", async () => {
     const { pty, prompt } = await zshTerminal(3);
@@ -1127,7 +1227,7 @@ describe("pty-manager typing an approved agent command", () => {
       if (data.startsWith("\u001b[200~")) abort.abort();
     };
     await expect(typeTerminalCommand(TAB, 3, "echo approved", "/w", abort.signal)).resolves.toMatchObject({ ok: false, reason: "aborted" });
-    expect(pty.written).toEqual(["\u0003", PASTE("echo approved")]);
+    expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("echo approved")]);
     writeTerminal(TAB, "echo human\r");
     await Promise.resolve();
     expect(pty.written.at(-1)).toBe("echo human\r");
@@ -1157,13 +1257,13 @@ describe("pty-manager typing an approved agent command", () => {
     // Another window's terminal answers like a missing one.
     await expect(typeTerminalCommand(TAB, 4, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
     await expect(typeTerminalCommand(TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
-    expect(pty.written).toEqual(["\u0003", PASTE("ls -la"), "\r"]);
+    expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls -la"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
     expect(readForegroundMock).toHaveBeenCalledWith(9999);
     // Until the shell starts it, the pasted line sits at the prompt: a second command is refused.
     await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
     pty.emitData(`\r\n${mark("C;cmdline_url=ls%20-la")}total 0\r\n`);
     await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "command-running" });
-    expect(pty.written).toEqual(["\u0003", PASTE("ls -la"), "\r"]);
+    expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls -la"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
     pty.emitExit(0);
     await expect(typeTerminalCommand(TAB, 3, "pwd", "/w")).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
   });
@@ -1174,7 +1274,7 @@ describe("pty-manager typing an approved agent command", () => {
     // A widget that rewrites pasted text (url-quote-magic quoting a URL).
     shell.shows = (line) => line.replace("?", "\\?");
     await expect(typeTerminalCommand(TAB, 3, "curl https://x/?a", "/w")).resolves.toMatchObject({ ok: false, reason: "edit-line-mismatch" });
-    expect(pty.written).toEqual(["\u0003", PASTE("curl https://x/?a"), "\u0003"]);
+    expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("curl https://x/?a"), "\u0003"]);
     // A key the user presses before Enter.
     shell.shows = (line) => line;
     pty.written.length = 0;
@@ -1270,9 +1370,9 @@ describe("pty-manager typing an approved agent command", () => {
     try {
       const { pty, prompt } = await zshTerminal(3);
       pty.emitData(prompt());
+      const respond = pty.respond;
       pty.respond = (data) => {
-        const paste = /^\u001b\[200~(.*)\u001b\[201~$/u.exec(data);
-        if (paste) queueMicrotask(() => pty.emitData(paste[1]!));
+        if (data !== "\u0003") respond?.(data);
       };
       setTimeout(() => pty.emitData(prompt()), at);
       const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
@@ -1303,7 +1403,7 @@ describe("pty-manager typing an approved agent command", () => {
       const typing = typeTerminalCommand(TAB, 3, "ls", "/w");
       await vi.advanceTimersByTimeAsync(2_000);
       await expect(typing).resolves.toEqual({ ok: true, firstBlockId: 1 });
-      expect(pty.written).toEqual(["\u0003", "\u0003", PASTE("ls"), "\r"]);
+      expect(pty.written).toEqual(["\u0003", "\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
     } finally {
       vi.useRealTimers();
     }
@@ -1335,7 +1435,7 @@ describe("pty-manager typing an approved agent command", () => {
       await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toMatchObject({ ok: false, reason: "pending-input" });
       vi.setSystemTime(Date.now() + USER_INPUT_QUIET_MS);
       await expect(typeTerminalCommand(TAB, 3, "ls", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
-      expect(pty.written).toEqual(["\u001b", "\r", "\u0003", PASTE("ls"), "\r"]);
+      expect(pty.written).toEqual(["\u001b", "\r", "\u0003", TERMINAL_EDIT_LINE_QUERY, PASTE("ls"), TERMINAL_EDIT_LINE_QUERY, "\r"]);
     } finally {
       vi.useRealTimers();
     }
@@ -1374,14 +1474,16 @@ describe("pty-manager typing an approved agent command", () => {
     pty.emitData(prompt());
     const real = mkdtempSync(join(tmpdir(), "ave-pty-cwd-"));
     const link = `${real}-link`;
-    symlinkSync(real, link);
+    symlinkSync(real, link, nativePlatform === "win32" ? "junction" : "dir");
     try {
       foregroundReading = { ok: true, foreground: { pid: 9999, command: "zsh", cwd: realpathSync.native(real) } };
       await expect(verifyTerminalShell(TAB, 3, link)).resolves.toEqual({ ok: true, cwd: canonicalizePathForMatch(real) });
       await expect(verifyTerminalShell(TAB, 3, tmpdir())).resolves.toMatchObject({ ok: false, reason: "cwd-mismatch" });
       await expect(verifyTerminalShell(TAB, 4, link)).resolves.toMatchObject({ ok: false, reason: "no-terminal" });
     } finally {
-      rmSync(link, { force: true });
+      // A junction is removed as a directory; rmdir does not follow it.
+      if (nativePlatform === "win32") rmdirSync(link);
+      else rmSync(link, { force: true });
       rmSync(real, { recursive: true, force: true });
     }
   });
@@ -1812,7 +1914,7 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
     }
   });
 
-  async function linuxZsh(): Promise<{ pty: FakePty; prompt: (pid?: string) => string }> {
+  async function linuxZsh(): Promise<{ pty: FakePty; prompt: (pid?: string) => string; report: (line: string) => void }> {
     vi.stubEnv("SHELL", "/bin/zsh");
     try {
       expect((await spawnTerminal({ tabId: LINUX_TAB, ownerWindowId: 3 })).ok).toBe(true);
@@ -1825,7 +1927,8 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
     const pty = lastPty!;
     return {
       pty,
-      prompt: (pid = "3") => `${mark("D;0")}${mark(`P;Cwd=/w;Keys=emacs;Paste=1;NotFound=0;B=${"ab".repeat(16)};Pid=${pid}`)}${mark("A")}% \u001b]133;B;${"ab".repeat(16)}\u0007`,
+      prompt: (pid = "3") => `${mark("D;0")}${mark(`P;Cwd=/w;Keys=emacs;Paste=1;NotFound=0;Edit=1;B=${"ab".repeat(16)};Pid=${pid}`)}${mark("A")}% \u001b]133;B;${"ab".repeat(16)}\u0007`,
+      report: (line) => pty.emitData(mark(`E;Line=${encodeURIComponent(line)};B=${"ab".repeat(16)}`)),
     };
   }
 
@@ -1885,15 +1988,23 @@ describe("pty-manager on Linux: the shell gets a pty of its own inside the sandb
   });
 
   it("types an approved command after Ctrl-C reaches the shell through its own pty", async () => {
-    const { pty, prompt } = await linuxZsh();
+    const { pty, prompt, report } = await linuxZsh();
+    let editorLine = "";
     pty.respond = (data) => {
-      if (data === "\u0003") queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      if (data === "\u0003") {
+        editorLine = "";
+        queueMicrotask(() => pty.emitData(`\r\n${prompt()}`));
+      }
       const paste = /^\u001b\[200~([\s\S]*)\u001b\[201~$/u.exec(data);
-      if (paste) queueMicrotask(() => pty.emitData(paste[1]!));
+      if (paste) {
+        editorLine = paste[1]!;
+        queueMicrotask(() => pty.emitData(editorLine));
+      }
+      if (data === TERMINAL_EDIT_LINE_QUERY) queueMicrotask(() => report(editorLine));
     };
     pty.emitData(prompt());
     await expect(typeTerminalCommand(LINUX_TAB, 3, "ls -la", "/w")).resolves.toEqual({ ok: true, firstBlockId: 1 });
-    expect(pty.written).toEqual(["\u0003", "\u001b[200~ls -la\u001b[201~", "\r"]);
+    expect(pty.written).toEqual(["\u0003", TERMINAL_EDIT_LINE_QUERY, "\u001b[200~ls -la\u001b[201~", TERMINAL_EDIT_LINE_QUERY, "\r"]);
   });
 
   it("judges a reading: the reporting shell, in the foreground, idle, in the very directory", () => {

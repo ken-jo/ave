@@ -34,7 +34,7 @@
     "email": "jo.dreame@gmail.com"
   },
   "engines": {
-    "node": ">=22.4"
+    "node": ">=22.12"
   },
   "main": "dist/src/main/main.js",
   "scripts": {
@@ -235,6 +235,7 @@
       "en-US"
     ],
     "afterPack": "scripts/electron-after-pack.cjs",
+    "afterSign": "scripts/electron-after-sign.cjs",
     "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
     "files": [
       "dist/**/*",
@@ -431,6 +432,7 @@
       ]
     },
     "win": {
+      "signExts": ["!srt-win.exe"],
       "target": [
         "nsis"
       ],
@@ -442,6 +444,14 @@
         {
           "from": "resources/windows-path-kind/${arch}/ave-path-kind.exe",
           "to": "windows-path-kind/${arch}/ave-path-kind.exe"
+        },
+        {
+          "from": "resources/mxc/${arch}/wxc-exec.exe",
+          "to": "mxc/${arch}/wxc-exec.exe"
+        },
+        {
+          "from": "resources/licenses/mxc",
+          "to": "licenses/mxc"
         }
       ]
     },

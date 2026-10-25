@@ -327,7 +327,7 @@ describe("egress ask callback — plugin workers", () => {
     ]);
   });
 
-  it("never lets a shell grant reach a worker", async () => {
+  it("never lets a shell grant reach a worker (I4)", async () => {
     await grants.grant("always", ["once", "conversation", "workspace", "always"], {
       token: SHELL_TOKEN, sessionId: undefined, tabId: undefined, workspaceRoot: undefined, origin: "shell" as const,
     }, { host: "github.com", port: 443 });
@@ -345,7 +345,7 @@ describe("egress ask callback — plugin workers", () => {
   });
 });
 
-describe("egress ask callback — workspace terminal tab", () => {
+describe("egress ask callback — workspace terminal tab (design F)", () => {
   /** Lets the callback's real-I/O steps (the grant file read) run while setTimeout is faked. */
   async function untilAsked(count: number): Promise<void> {
     for (let i = 0; i < 1000 && asked.length < count; i++) await new Promise((resolve) => setImmediate(resolve));
@@ -773,12 +773,10 @@ describe("egress ask callback — shell calls", () => {
     expect(asked).toEqual([]);
   });
 
-  it("forwards background calls to the approval requester and refuses a missing surface", async () => {
+  it("denies a background call nobody can answer (I5) and a host with no approval surface", async () => {
     owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, approvalSurface: "unavailable" } });
     expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN)))
-      .toEqual({ allow: false, reason: "denied by the user" });
-    expect(asked.at(-1)).toMatchObject({ approvalSurface: "unavailable" });
-    asked.length = 0;
+      .toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
     owners.set(SHELL_TOKEN, interactiveShell);
     requesterPresent = false;
     expect(await callback()({ host: "github.com", port: 443 }, listener(SHELL_TOKEN)))
@@ -932,8 +930,8 @@ describe("egress ask callback — local, private and reserved destinations", () 
     expect(await byName(TERMINAL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.askOff });
     askEnabled = true;
     owners.set(SHELL_TOKEN, { ...interactiveShell, context: { ...interactiveShell.context, approvalSurface: "unavailable" } });
-    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: "denied by the user" });
-    expect(asked.at(-1)).toMatchObject({ approvalSurface: "unavailable" });
+    expect(await byName(SHELL_TOKEN, "x.attacker.example")).toEqual({ allow: false, reason: EGRESS_DENY_REASONS.headless });
+    expect(asked).toEqual([]);
   });
 
   it("matches grants by origin in the name phase: a shell's Always grant does not let a terminal through, nor a tab grant a shell", async () => {

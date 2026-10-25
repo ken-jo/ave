@@ -1,6 +1,7 @@
 import type { BootHost } from "./host-runtime.js";
 import type { AppServices, PaneChatLoops } from "./types.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
+import type { WorkerEgressAllowlists } from "../permissions/egress-runtime.js";
 /**
  * BootContext — the accumulator threaded through the boot pipeline (C18).
  *
@@ -176,7 +177,7 @@ export class BootContext {
   /** Cancels the active-LLM wildcard restart debounce during host shutdown. */
   declare disposeRefreshActiveLlmWildcard: () => void;
   declare refreshSandboxNetworkConfig: () => Promise<void>;
-  declare buildSandboxUnionDomains: () => Promise<string[]>;
+  declare buildWorkerEgressAllowlists: () => Promise<WorkerEgressAllowlists>;
 
   // ── Prompt / reviewer wiring ───────────────────────────────────────────────
   declare systemPromptBuilder: SystemPromptBuilder;
@@ -323,7 +324,7 @@ const BOOT_CONTEXT_FIELDS = [
   "refreshActiveLlmWildcard",
   "disposeRefreshActiveLlmWildcard",
   "refreshSandboxNetworkConfig",
-  "buildSandboxUnionDomains",
+  "buildWorkerEgressAllowlists",
   "systemPromptBuilder",
   "subscriptionProviderFactory",
   "mcpAppModelContext",

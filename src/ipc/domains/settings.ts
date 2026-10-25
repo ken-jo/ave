@@ -240,16 +240,16 @@ function normalizeSubscriptionModel(value: unknown): string | undefined | null {
 
 /**
  * The settings shape the renderer sees. Authoritative remote route lineage
- * (`a2aRemote`) is main-only and never projected to the renderer; every other
- * stored field crosses as-is, so the renderer's `AppSettings` is exactly this
- * type.
+ * (`a2aRemote`) is main-only and never projected to the renderer. The upstream
+ * proxy (`upstreamProxy`) crosses only through its own permissions channels;
+ * every other stored field crosses as-is.
  *
  * `activeChatModel` is the one derived field. A vendor block always names a
  * model, so the stored settings cannot say whether chat has a model at all;
  * only main, which holds the secret store, can. Every renderer surface that
  * names the active model reads it from here.
  */
-export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote"> & {
+export type RendererSettingsSnapshot = Omit<AppSettings, "a2aRemote" | "upstreamProxy"> & {
   readonly activeChatModel: ActiveChatModel;
 };
 
@@ -257,7 +257,8 @@ export function rendererSettingsSnapshot(
   settingsService: ActiveChatModelSettingsReader & Pick<SettingsService, "getAll">,
   snapshot: AppSettings = settingsService.getAll(),
 ): RendererSettingsSnapshot {
-  const { a2aRemote: _mainOnly, ...projected } = structuredClone(snapshot);
+  // `upstreamProxy` has its own channels (permissions upstreamProxyGet/Set).
+  const { a2aRemote: _mainOnly, upstreamProxy: _ownChannel, ...projected } = structuredClone(snapshot);
   return { ...projected, activeChatModel: resolveMainActiveChatModel(settingsService) };
 }
 
@@ -851,6 +852,12 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.settings.update, e); return UNAUTHORIZED_FRAME; }
     if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "a2aRemote")) {
       return { ok: false, error: "a2a-remote-settings-main-owned" };
+    }
+    // Where the sandbox egress proxy sends allowed connections: written only
+    // through the permissions upstreamProxySet channel, which validates it and
+    // keeps credentials in the secret store.
+    if (partial && typeof partial === "object" && Object.prototype.hasOwnProperty.call(partial, "upstreamProxy")) {
+      return { ok: false, error: "upstream-proxy-settings-main-owned" };
     }
     // Readable in the renderer snapshot, written only by `loadSettings`: a
     // patch naming it is refused whole, the same way as `a2aRemote`.

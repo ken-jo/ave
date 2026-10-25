@@ -30,6 +30,7 @@ import {
   selectTriggeredLockSuites,
 } from "../../scripts/hooks/pre-push-source-policy.mjs";
 import { messages } from "../../src/i18n/messages/index.js";
+import { parseSourceTexts } from "../../scripts/lib/ts7-ast.mjs";
 import { modifiedEntry as modified } from "../../src/__tests__/support/git-diff-entry.js";
 
 const root = resolve(import.meta.dirname, "../..");
@@ -40,6 +41,24 @@ function added(path: string) {
 function deleted(path: string) {
   return { status: "D", oldMode: "100644", newMode: "000000", path };
 }
+
+describe("pre-push source parsing", () => {
+  it("preserves mixed-case input names when reading virtual source bytes", () => {
+    const path = "src/MixedCase/Panel.ts";
+    const text = 'export const title = "panel.title";';
+    const sources = parseSourceTexts(new Map([[path, text]]));
+    expect([...sources.keys()]).toEqual([path]);
+    expect(sources.get(path)?.text).toBe(text);
+  });
+
+  it("refuses inputs that collide on a case-insensitive host", () => {
+    const sources = parseSourceTexts(new Map([
+      ["src/Panel.ts", 'export const title = "panel.title";'],
+      ["src/panel.ts", 'export const title = "other.title";'],
+    ]));
+    expect(sources.size).toBe(process.platform === "win32" ? 0 : 2);
+  });
+});
 
 describe("test-only diff policy", () => {
   it.each([
@@ -508,6 +527,47 @@ describe("pre-push message catalog selection", () => {
       [`${MESSAGES}/generated/panel.ts`, null],
       [`${MESSAGES}/generated/other.ts`, null],
     ]));
+  });
+
+  it("keeps by-path catalog results equal to individual reads with mixed valid and refused modules", () => {
+    const texts = new Map<string, string | null>([
+      [`${MESSAGES}/en.ts`, 'export const en = { "seed.title": "Seed" } as const;'],
+      [`${MESSAGES}/generated/panel.ts`, 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
+      [`${MESSAGES}/generated/dynamic.ts`, 'export const en = { "panel.title": label("Panel") } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };'],
+      [`${MESSAGES}/generated/broken.ts`, 'export const en = { "panel.title": "unterminated };'],
+      [`${MESSAGES}/generated/separator.ts`, 'export const en = { "panel.title": "Panel\u2028title" } as const;'],
+      [`${MESSAGES}/generated/absent.ts`, null],
+      [`${MESSAGES}/generated/index.ts`, 'export { en } from "./panel.js";'],
+    ]);
+    const catalogs = readMessageCatalogEntriesByPath(texts);
+    expect([...catalogs.keys()]).toEqual([...texts.keys()]);
+    for (const [path, text] of texts) {
+      expect(catalogs.get(path), path).toEqual(readMessageCatalogEntries(text, path));
+    }
+    expect(catalogs.get(`${MESSAGES}/en.ts`)).toEqual(new Map([["seed.title", { en: "Seed" }]]));
+    expect(catalogs.get(`${MESSAGES}/generated/panel.ts`)).toEqual(new Map([["panel.title", { en: "Panel", ko: "패널" }]]));
+    for (const name of ["dynamic", "broken", "separator", "absent", "index"]) {
+      expect(catalogs.get(`${MESSAGES}/generated/${name}.ts`), name).toBeNull();
+    }
+    expect(readMessageCatalogEntries(texts.get(`${MESSAGES}/generated/index.ts`)!)).toBeNull();
+  });
+
+  it("refuses a colliding batch without retaining catalog state for the next snapshot", () => {
+    const path = `${MESSAGES}/generated/panel.ts`;
+    const alias = `${MESSAGES}/generated/./panel.ts`;
+    const text = 'export const en = { "panel.title": "Panel" } as const; export const ko: Record<keyof typeof en, string> = { "panel.title": "패널" };';
+    expect(readMessageCatalogEntriesByPath(new Map([[path, text], [alias, text]]))).toEqual(new Map([
+      [path, null],
+      [alias, null],
+    ]));
+    expect(readMessageCatalogEntriesByPath(new Map([[path, text]])).get(path)).toEqual(new Map([
+      ["panel.title", { en: "Panel", ko: "패널" }],
+    ]));
+    const restored = text.replaceAll("Panel", "Restored");
+    expect(readMessageCatalogEntriesByPath(new Map([[path, restored]])).get(path)).toEqual(new Map([
+      ["panel.title", { en: "Restored", ko: "패널" }],
+    ]));
+    expect(readMessageCatalogEntriesByPath(new Map())).toEqual(new Map());
   });
 
   it("refuses catalog shapes whose keys it cannot read", () => {

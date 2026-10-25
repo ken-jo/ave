@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 /**
  * Issue #28 P1a — rule files (user-global Store A + per-project files in Ave
  * home), corrupt-data handling, Store B coexistence, and the decision path:
@@ -7,6 +8,24 @@ import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vites
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+
+const { projectFixture } = vi.hoisted(() => ({ projectFixture: { root: "" } }));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  const { resolve, sep } = await import("node:path");
+  return {
+    ...actual,
+    // Discover repositories only inside the fixture, independent of host ancestors.
+    existsSync: (path: import("node:fs").PathLike) => {
+      const fold = (value: string) => process.platform === "win32" ? value.toLowerCase() : value;
+      const candidate = fold(resolve(String(path)));
+      const root = fold(resolve(projectFixture.root));
+      if (candidate.endsWith(`${sep}.git`) && !candidate.startsWith(`${root}${sep}`)) return false;
+      return actual.existsSync(path);
+    },
+  };
+});
 
 const TEST_HOME = mkdtempSync(join(tmpdir(), "ave-rules-home-"));
 process.env.AVE_HOME = TEST_HOME;
@@ -41,11 +60,17 @@ import { BashTool } from "../../tools/shell-tools.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 
 let dir: string;
+let fixtureParent: string;
 let permissionsFile: string;
 let project: string;
 
 beforeEach(() => {
-  dir = realpathSync(mkdtempSync(join(tmpdir(), "ave-rules-")));
+  fixtureParent = realpathSync(mkdtempSync(join(tmpdir(), "ave-rules-")));
+  // Exercise an enclosing repository without depending on the host's layout.
+  mkdirSync(join(fixtureParent, ".git"));
+  dir = join(fixtureParent, "fixture");
+  mkdirSync(dir);
+  projectFixture.root = dir;
   permissionsFile = join(dir, "permissions.json");
   project = join(dir, "project");
   mkdirSync(project);
@@ -58,6 +83,7 @@ afterEach(() => {
   vi.unstubAllEnvs();
   rmSync(dir, { recursive: true, force: true });
 });
+afterEach(() => rmSync(fixtureParent, { recursive: true, force: true }));
 afterAll(() => rmSync(TEST_HOME, { recursive: true, force: true }));
 
 const shell = (command: string) => ({ shellExecution: { runsSandboxed: false, sandboxAvailable: true }, ruleSubject: { kind: "shell" as const, dialect: "bash" as const, command } });
@@ -276,7 +302,7 @@ describe("decision path", () => {
     expect(projectRulesLocation(dir, a).identity).not.toBe(projectRulesLocation(dir, b).identity);
   });
 
-  it("project rules follow the shell call's own cwd, resolved with realpath", async () => {
+  it.skipIf(!canCreateSymlinks())("project rules follow the shell call's own cwd, resolved with realpath", async () => {
     // The session runs in repo A; the call runs in a nested repo B, reached
     // through a symlink (inside A, so no out-of-directory grant is involved).
     const repoA = join(dir, "a");

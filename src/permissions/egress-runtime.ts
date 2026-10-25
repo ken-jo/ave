@@ -93,7 +93,7 @@ export function workerEgressAllowedDomains(pluginId: string | undefined): readon
 export interface EgressAskRuntimeDeps {
   readonly approvalGate: Pick<ApprovalGate, "requestAndWait">;
   /** `features.shellEgressAsk`. */
-  readonly shellAskEnabled?: () => boolean;
+  readonly shellAskEnabled: () => boolean;
   readonly permissionManager?: PermissionManager;
 }
 
@@ -107,7 +107,7 @@ export function createEgressAskRuntimeCallback(deps: EgressAskRuntimeDeps): Sand
     abortSignalOf: egressInvocationAbortSignal,
     workerAllowedDomains: workerEgressAllowedDomains,
     grants: egressGrantStore(),
-    shellAskEnabled: deps.shellAskEnabled ?? (() => true),
+    shellAskEnabled: deps.shellAskEnabled,
     requester: () => requester,
     audit: (entry) => {
       emitSandboxAudit(entry).catch((error: unknown) => {

@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
+import { cleanupTmpDir } from "../../src/__tests__/support/tmp-dir-teardown.js";
 import {
   HEADLESS_PACKAGED_MARKER_NAME,
   headlessPackagedMarkerPath,
@@ -39,6 +40,18 @@ it("advertises the packaged permission-audit contracts", async () => {
   ]);
   expect(module.HEADLESS_LAUNCHER).toContain("--disable-warning=UNDICI-EHPA");
   expect(module.HEADLESS_LAUNCHER).toContain('"$@"');
+});
+
+it("accepts only a Node 22 runtime at or above the engines floor", async () => {
+  const module = await import(packager) as { isSupportedHeadlessNodeVersion: (version: string) => boolean };
+  const pkg = JSON.parse(readFileSync(resolve("package.json"), "utf8")) as { engines: { node: string } };
+  expect(pkg.engines.node).toBe(">=22.12");
+  for (const version of ["v22.12.0", "v22.15.1", "v22.20.0"]) {
+    expect(module.isSupportedHeadlessNodeVersion(version), version).toBe(true);
+  }
+  for (const version of ["v22.4.0", "v22.11.9", "v24.20.0", "v20.19.0", "22.12.0", "v22.12"]) {
+    expect(module.isSupportedHeadlessNodeVersion(version), version).toBe(false);
+  }
 });
 
 it.skipIf(process.platform === "win32")("blocks an inherited preload before every native command", async () => {
@@ -158,13 +171,13 @@ function readInventory(root: string) {
     packager, root]);
 }
 
-afterEach(() => {
-  for (const root of roots.splice(0)) {
-    // The packaged marker is 0o444, which Windows records as the read-only
-    // attribute, and a recursive removal there does not clear it.
-    const marker = headlessPackagedMarkerPath(join(root, "app"));
-    if (existsSync(marker)) chmodSync(marker, 0o644);
-    rmSync(root, { recursive: true, force: true });
+afterEach(async () => {
+  const previous = process.noAsar;
+  process.noAsar = true;
+  try {
+    for (const root of roots.splice(0)) await cleanupTmpDir(root);
+  } finally {
+    process.noAsar = previous;
   }
 });
 

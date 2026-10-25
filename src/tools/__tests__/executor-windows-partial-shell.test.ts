@@ -32,7 +32,7 @@ import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxRequestedAtBootForTest,
   setActiveSandboxCapability,
-  setSandboxRequestedAtBoot,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { __resetShellResolverCache } from "../../lib/shell-resolver.js";
@@ -77,7 +77,7 @@ function dynamicShellProbe(execute: (ctx: import("../types.js").ToolExecutionCon
 
 function fullDarwinAsrt(): void {
   setProcessPlatform("darwin");
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({
     kind: "asrt",
     confidence: "verified",
@@ -89,7 +89,7 @@ function fullDarwinAsrt(): void {
 function explicitlySandboxOff(platform: "darwin" | "linux" | "win32"): void {
   setProcessPlatform(platform);
   __resetActiveSandboxCapabilityForTest();
-  setSandboxRequestedAtBoot(false);
+  setShellSandboxRequestedAtBoot(false);
 }
 function gateResolving(
   choice: "allow-once" | "deny-once",
@@ -548,39 +548,81 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(result[0]?.is_error).toBe(true);
   });
-
+  // Design I3 (owner 2026-10-16): a requested-but-unavailable sandbox warns
+  // and continues under the normal rules — reviewer, approval memory and allow
+  // decisions included — exactly like sandbox-off, while the sealed plan keeps
+  // `requested-sandbox-unavailable` so the card, result and audit can say so.
   it.each(["darwin", "linux", "win32"] as const)(
-    "mints and consumes a generic one-shot permit for requested-unavailable %s shells",
+    "routes requested-unavailable %s shells through the normal reviewer lane with the fallback recorded",
     async (platform) => {
       requestedSandboxUnavailable(platform);
       let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
-      let permitConsumed = false;
+      const execute = vi.fn((ctx: import("../types.js").ToolExecutionContext) => {
+        observedPlan = ctx.hostShellExecutionPlan;
+      });
+      const registry = new ToolRegistry();
+      registry.register(shellProbe(execute));
+      const pm = pmReturning({
+        decision: "ask",
+        reason: "reviewer handles this",
+        layer: 6,
+        reviewer: { route: "foreground-auto" },
+      });
+      pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+      let reviewerInput: import("../../permissions/permission-manager.js").ReviewerDispatchInput | undefined;
+      pm.dispatchReviewer = vi.fn(async (_toolName, input) => {
+        reviewerInput = input;
+        return {
+          verdict: { level: "low" as const, reason: "reviewed uncontained shell" },
+          cacheReason: "miss-not-found" as const,
+          outcome: "fresh" as const,
+        };
+      }) as never;
+      const requestAndWait = vi.fn();
+      const result = await new ToolExecutor(
+        registry,
+        undefined,
+        pm,
+        undefined,
+        { requestAndWait } as never,
+      ).executeAll(
+        [{ id: `requested-unavailable-${platform}`, name: "bash", input: { command: "echo reviewed" } }],
+        { sessionId: `requested-unavailable-${platform}`, permissionContext: permissionContext() },
+      );
+
+      expect(pm.dispatchReviewer).toHaveBeenCalledTimes(1);
+      expect(requestAndWait).not.toHaveBeenCalled();
+      expect(execute).toHaveBeenCalledTimes(1);
+      expect(execute.mock.calls[0]?.[0].hostShellExecutionPermit).toBeUndefined();
+      expect(reviewerInput?.hostShellExecutionPlan).toBe(observedPlan);
+      expect(observedPlan).toMatchObject({
+        platform,
+        requestedSandbox: true,
+        mode: "plain",
+        fallbackReason: "requested-sandbox-unavailable",
+        requiresExplicitUserApproval: false,
+        capability: {
+          kind: "none",
+          confines: { filesystem: false, process: false, network: false },
+        },
+      });
+      expect(result[0]?.is_error).toBeUndefined();
+      expect(result[0]?.executionPlan).toMatchObject({ fallbackReason: "requested-sandbox-unavailable" });
+    },
+  );
+
+  it.each(["darwin", "linux", "win32"] as const)(
+    "runs requested-unavailable %s shells on an ordinary allow without a card or permit",
+    async (platform) => {
+      requestedSandboxUnavailable(platform);
+      let observedPlan: import("../../permissions/host-shell-execution-plan.js").HostShellExecutionPlan | undefined;
+      let observedPermit: unknown = "unset";
       const registry = new ToolRegistry();
       registry.register(shellProbe((ctx) => {
         observedPlan = ctx.hostShellExecutionPlan;
-        if (observedPlan === undefined) return;
-        permitConsumed = consumeHostShellExecutionPermit({
-          permit: ctx.hostShellExecutionPermit,
-          plan: observedPlan,
-          toolName: "bash",
-          toolUseId:
-            typeof ctx.metadata.toolUseId === "string"
-              ? ctx.metadata.toolUseId
-              : undefined,
-          command: "echo one-shot",
-          requestedCwd: undefined,
-          executionCwd: ctx.cwd,
-          resolvedCwd: resolveHostShellWorkingDirectory(ctx.cwd, undefined),
-          timeoutSeconds: TOOL_TIMEOUT_POLICY.shellDefaultMs / 1000,
-        executionMode: "default",
-        justification: undefined,
-        runInBackground: false,
-          allowedDirectories: canonicalizeHostShellAllowedDirectories(
-            ctx.extraAllowedDirectories,
-          ),
-        });
+        observedPermit = ctx.hostShellExecutionPermit;
       }));
-      const { gate, send } = gateResolving("allow-once");
+      const { gate, send } = gateResolving("deny-once");
       const result = await new ToolExecutor(
         registry,
         undefined,
@@ -588,21 +630,18 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
         undefined,
         gate,
       ).executeAll(
-        [{ id: `requested-unavailable-allow-${platform}`, name: "bash", input: { command: "echo one-shot" } }],
+        [{ id: `requested-unavailable-allow-${platform}`, name: "bash", input: { command: "echo normal-rules" } }],
         { sessionId: `requested-unavailable-allow-${platform}`, permissionContext: permissionContext() },
       );
 
-      const cards = sentApprovalCards<ApprovalRequest>({ send } as never);
-      expect(cards).toHaveLength(1);
-      const rendererApproval = cards[0]!;
-      expect(rendererApproval.requireExplicit).toBe(true);
-      expect(permitConsumed).toBe(true);
+      expect(sentApprovalCards<ApprovalRequest>({ send } as never)).toHaveLength(0);
+      expect(observedPermit).toBeUndefined();
       expect(observedPlan).toMatchObject({
         platform,
         requestedSandbox: true,
         mode: "plain",
         fallbackReason: "requested-sandbox-unavailable",
-        requiresExplicitUserApproval: true,
+        requiresExplicitUserApproval: false,
       });
       expect(result[0]?.is_error).toBeUndefined();
     },

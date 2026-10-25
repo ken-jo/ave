@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, statSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { lstat, readFile, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -62,6 +63,7 @@ const DESIGN_EXAMPLE = {
 describe("loadMarketplacePolicy", () => {
   it("means no restrictions when the file is missing or has no marketplaces section", async () => {
     expect(await loadMarketplacePolicy(join(dir, "absent.json"))).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path: join(dir, "absent.json") });
+    expect(await loadMarketplacePolicy(join(dir, "absent", "nested", "policy.json"))).toMatchObject({ ok: true, policy: EMPTY_MARKETPLACE_POLICY });
     writeFileSync(path, JSON.stringify({ version: 1, requireExplicitApproval: true, managed: false, updatedAt: "x" }));
     expect(await loadMarketplacePolicy(path)).toEqual({ ok: true, policy: EMPTY_MARKETPLACE_POLICY, path });
   });
@@ -70,12 +72,19 @@ describe("loadMarketplacePolicy", () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
     expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
+    expect(await loadMarketplacePolicy(join(parent, "nested", "policy.json"))).toMatchObject({ ok: false });
   });
 
   it("treats a dangling policy symlink as unreadable rather than unrestricted", async ({ skip }) => {
     requireSymlinkCapability(dir, "file", skip);
     symlinkSync(join(dir, "missing-target.json"), path, "file");
     expect(await loadMarketplacePolicy(path)).toMatchObject({ ok: false });
+  });
+
+  it.skipIf(!canCreateSymlinks(process.platform === "win32" ? "junction" : "dir"))("treats a dangling policy parent as unreadable", async () => {
+    const parent = join(dir, "linked-parent");
+    symlinkSync(join(dir, "missing-parent"), parent, process.platform === "win32" ? "junction" : "dir");
+    expect(await loadMarketplacePolicy(join(parent, "policy.json"))).toMatchObject({ ok: false });
   });
 
   it("reads the design example and keeps a key listed in both lists as required only", async () => {

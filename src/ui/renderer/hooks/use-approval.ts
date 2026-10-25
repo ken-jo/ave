@@ -265,6 +265,9 @@ export function useApproval(): ApprovalQueueApi {
           ...(extras && "elicitationContent" in extras
             ? { elicitationContent: extras.elicitationContent }
             : {}),
+          // The scope an egress-host allow lasts for; the host checks it
+          // against the scopes the card offered.
+          ...(extras?.egressScope !== undefined ? { egressScope: extras.egressScope } : {}),
         });
       } catch (err) {
         // Log only — do NOT re-push. See JSDoc above.
@@ -354,6 +357,15 @@ export interface ApprovalSurfaceContextValue extends ApprovalQueueApi {
 const ApprovalSurfaceContext = createContext<ApprovalSurfaceContextValue | null>(null);
 
 export const ApprovalSurfaceProvider = ApprovalSurfaceContext.Provider;
+
+/**
+ * The approval surface when one is provided, else null. For a view that also
+ * renders outside the app shell (a terminal tab in a test fixture): it draws
+ * no approval UI there, since nothing could answer it.
+ */
+export function useOptionalApprovalSurface(): ApprovalSurfaceContextValue | null {
+  return useContext(ApprovalSurfaceContext);
+}
 
 export function useApprovalSurface(): ApprovalSurfaceContextValue {
   const value = useContext(ApprovalSurfaceContext);

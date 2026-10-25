@@ -13,7 +13,8 @@ vi.mock("../../lib/atomic-file.js", async () => ({
   writeUtf8FileAtomicSync: atomicWriteMock,
 }));
 
-vi.mock("../../lib/with-file-lock.js", () => ({
+vi.mock("../../lib/with-file-lock.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../lib/with-file-lock.js")>()),
   withFileLock: async <T>(_filePath: string, fn: () => Promise<T>): Promise<T> => fn(),
 }));
 

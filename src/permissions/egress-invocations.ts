@@ -71,7 +71,11 @@ type WorkerEgressRole = "plugin-child" | "worker" | "hook" | "mcp-server";
 export interface WorkerEgressOwner {
   readonly kind: "worker";
   readonly role: WorkerEgressRole;
-  /** The owning plugin; undefined for an MCP server no plugin bundles or a user hook. */
+  /**
+   * The owning plugin; undefined for an MCP server no plugin bundles or a user
+   * hook. Without a plugin there is no extension allowlist: such a process may
+   * reach the model endpoints only (`workerEgressAllowedDomains`).
+   */
   readonly pluginId: string | undefined;
   /** The worker's id, the MCP server's id, or a user hook's hashed id. */
   readonly instanceId?: string;

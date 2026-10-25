@@ -5,8 +5,10 @@ import { FitAddon } from "@xterm/addon-fit";
 import type { AveApi } from "../types.js";
 import { useOptionalTheme } from "../theme/ThemeProvider.js";
 import { TerminalBlocksBar } from "./TerminalBlocksBar.js";
+import { TerminalEgressBanner } from "./permissions/TerminalEgressBanner.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
+import { noteTerminalTabLabel } from "../preview/terminal-tab-labels.js";
 import { setTerminalAttended, setTerminalReplaying } from "../preview/terminal-attention.js";
 import { takeRestoredTerminal } from "../preview/main-layout-restore.js";
 import { sameTerminalSession, type TerminalLane, type TerminalSessionRef, type TerminalSessionInfo, type TerminalDataEvent, type TerminalExitEvent } from "../../../shared/terminal-session.js";
@@ -79,6 +81,8 @@ export function PtyTerminalView({
 }) {
   const { t } = useTranslation();
   const mount = useSurfaceMount(props.tabId, location);
+  // The name its egress card in the approval lane and Settings use for it.
+  useEffect(() => noteTerminalTabLabel(props.tabId, props.tabLabel), [props.tabId, props.tabLabel]);
   if (!mount.owned) {
     return (
       <div
@@ -288,6 +292,8 @@ function AttachedPtyTerminal({ api, tabId, tabLabel, onAttachText, initialCwd, a
       className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden bg-background"
       data-testid="chat-side-panel-pty-terminal"
     >
+      {/* A connection this tab's shell opened to a host no grant covers waits here for an answer. */}
+      <TerminalEgressBanner tabId={tabId} />
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-2 py-1 text-xs">
         <div role="group" aria-label={t("ptyTerminal.laneLabel")} className="flex gap-1">
           {(["manual", "agent"] as const).map((choice) => (

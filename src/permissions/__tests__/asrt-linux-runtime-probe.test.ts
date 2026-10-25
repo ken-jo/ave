@@ -20,6 +20,9 @@ import * as bareRepositoryCleanup from "../sandbox-bare-repository-cleanup.js";
 import { openEgressInvocation } from "../egress-invocations.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+
+useVerifiedAveHomePrivacy();
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -33,6 +36,7 @@ const h = vi.hoisted(() => ({
 
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
+    setParentProxyRouter: () => undefined,
     initialize: h.initialize,
     openInvocationListener: h.openInvocationListener,
     closeInvocationListener: h.closeInvocationListener,
@@ -44,6 +48,12 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
 
 vi.mock("node:child_process", () => ({
   spawn: h.spawn,
+}));
+
+vi.mock("../srt-win-integrity.js", () => ({
+  getSrtWinArchitecture: () => "x64",
+  prepareSrtWinExecutable: (source: string) => source,
+  srtWinPrivateDirectories: () => [],
 }));
 
 import {
@@ -446,6 +456,7 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
         env: { ASRT_PROBE_ENV: "configured" },
         shell: false,
         stdio: "ignore",
+        windowsHide: true,
       },
     );
     const spawnedBwrapCommand = h.spawn.mock.calls[0]?.[1]?.[1];

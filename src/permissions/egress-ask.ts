@@ -1,13 +1,49 @@
 /**
- * Decide sandbox egress by the host-owned invocation identity. Shell destinations
- * require an existing grant or the host approval requester; background and auto
- * requests reach that requester's reviewer lane. Terminal destinations use
- * their own grants and owning-tab approval banner. Workers use their plugin/model
- * destinations.
+ * The egress ask callback: the one gate between a sandboxed process and a
+ * host that no configured rule allows (design B, PR 4).
  *
- * A connection is checked by name before DNS, then against the resolved addresses
- * before dialing. A grant applies only to the approved destination network class.
- * Unattributed requests and callback failures return a denial with a clear reason.
+ * ASRT runs with `strictAllowlist: false` and an empty `allowedDomains`, so
+ * every connection a sandboxed process opens through the proxy reaches this
+ * callback. It decides by who opened the connection:
+ *
+ *   | Who (by the invocation's identity)       | Decision                                               |
+ *   |------------------------------------------|--------------------------------------------------------|
+ *   | no identity, an unknown token, or (macOS/Linux) an identity the listener does not vouch for | deny, "unattributed connection" |
+ *   | plugin worker, host its extension declares (or the model endpoint) | allow                          |
+ *   | plugin worker, any other host            | deny, never asks, never sees a shell grant (I4)        |
+ *   | shell or terminal, host a grant covers   | allow                                                  |
+ *   | shell, asks turned off                   | deny                                                   |
+ *   | shell, nobody can answer (background)    | deny (I5)                                              |
+ *   | shell, otherwise                         | ask; allow only on an explicit allow                   |
+ *   | terminal, asks turned off                | deny                                                   |
+ *   | terminal, otherwise                      | ask in the tab's banner; deny after 120 s unanswered   |
+ *
+ * A terminal is always in the foreground (design F): the person who typed the
+ * command is at the tab. Its second scope is "This tab" where a shell call's
+ * is "This conversation" (`EGRESS_GRANT_SCOPE_LADDERS`); the destination
+ * classes cap both the same way (`egressScopesForNetwork`).
+ *
+ * It is asked twice per connection (ASRT patch, name-first decisions). The
+ * name phase sees the destination as named, before anything is resolved or
+ * routed: every refusal the table above can reach without an address ends
+ * there, so a destination that will be refused costs no DNS query and no
+ * proxy lookup, and an interactive ask (card or banner) happens by name.
+ * Only a name-phase allow leads to the resolved phase, which sees the
+ * addresses (or that the upstream proxy resolves the name) and re-checks the
+ * destination's class: a person's answer given for one class (say, public)
+ * becomes a grant only if the destination turned out to be that class;
+ * otherwise they are asked again with what it really is (this machine or a
+ * private network, or unverified). Grants are matched by origin in both
+ * phases (a shell grant never covers a terminal, nor the reverse). Only final
+ * decisions are audited.
+ *
+ * It fails closed: anything that throws is a deny, and only the literal
+ * `true` allows (ASRT 0.0.80 reads every other value as a deny, and
+ * `{ allow: false, reason }` as a deny with that reason, which ASRT records in
+ * its violation store and the deny monitor writes to the audit log).
+ *
+ * Every decision also writes an `egress-decision` audit row saying how it was
+ * reached.
  */
 import type { SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import { matchesDomainPatternWithPort } from "@anthropic-ai/sandbox-runtime/dist/sandbox/domain-pattern.js";
@@ -45,7 +81,7 @@ export interface EgressShellApprovalRequest extends EgressApprovalRequestCommon 
 }
 
 /** A workspace terminal tab's ask, in the banner of that tab. */
-interface EgressTerminalApprovalRequest extends EgressApprovalRequestCommon {
+export interface EgressTerminalApprovalRequest extends EgressApprovalRequestCommon {
   readonly origin: "terminal";
   readonly tabId: string;
 }
@@ -61,7 +97,7 @@ interface EgressApprovalRequestCommon {
   readonly abortSignal: AbortSignal | undefined;
 }
 
-/** How long a terminal tab's banner holds a connection before it is denied. */
+/** How long a terminal tab's banner holds a connection before it is denied (design F). */
 const TERMINAL_EGRESS_ASK_TIMEOUT_MS = 120_000;
 
 /** What the person answered. A deny carries why (their choice, a timeout, no surface). */
@@ -104,6 +140,7 @@ export const EGRESS_DENY_REASONS = {
   workerOffList: "not on the extension's network allowlist",
   terminalTimeout: "network approval timed out: nobody answered the terminal tab's banner within 120 seconds",
   askOff: "host is not on the allow list (network asks are off)",
+  headless: "host needs approval; unavailable in background run",
   noSurface: "host needs approval; no approval surface is available",
   failed: "network approval failed",
   reserved: "link-local, metadata, unspecified, multicast and broadcast addresses are never reachable from the sandbox",
@@ -391,6 +428,9 @@ export function createEgressAskCallback(deps: EgressAskDeps): SandboxAskCallback
           }
           if (!deps.shellAskEnabled()) return { owner, decision: deny("policy", EGRESS_DENY_REASONS.askOff) };
           // A terminal is always in the foreground lane; a shell call says.
+          if (owner.kind === "shell" && owner.context.approvalSurface !== "interactive") {
+            return { owner, decision: deny("policy", EGRESS_DENY_REASONS.headless) };
+          }
           const answer = await ask(token, owner, destination, network, strength);
           if (answer === ASK_AGAIN) continue;
           if (!answer.allow) return { owner, decision: answer.decision };

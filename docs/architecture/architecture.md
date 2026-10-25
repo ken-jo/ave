@@ -1587,6 +1587,29 @@ the invocation by such processes; these temporal and failed-cleanup risks are
 defined by the
 [same policy](permission-policy-design.md#os-shell-sandbox-policy).
 
+Two ASRT 0.0.80 rules shape what a confined command can do:
+
+- Linux: a sandboxed command cannot create a user namespace or a mount
+  namespace of its own. The seccomp helper refuses those calls. Where the
+  helper is not in the chain, bubblewrap 0.8 or later is passed
+  `--disable-userns`. The helper is out of the chain whenever a worker control
+  socket is registered, because that turns on `allowAllUnixSockets`. So
+  anything that sandboxes itself that way fails inside Ave's sandbox:
+  Chromium's or Electron's namespace sandbox, rootless podman or buildah, a
+  nested bubblewrap, `unshare -U`. Plugin workers are not affected, because
+  they run as Node through `ELECTRON_RUN_AS_NODE` and start no Chromium
+  sandbox. Ave does not set `allowNestedUserNamespaces`. The wrap hardener
+  (`linux-sandbox-wrap.ts`) accepts only the bubblewrap options its arity table
+  lists. `linux-sandbox-wrap.test.ts` fails when the installed wrapper gains an
+  option the table does not list.
+- Windows: ASRT ranks the filesystem lists in JavaScript before `srt-win` sees
+  them. A write grant at or beneath a `denyWrite` path is handed to `srt-win`
+  as a read grant, and a grant at or beneath a `credentials.files` entry is
+  dropped. So a workspace or plugin root under one of Ave's write-floor paths
+  is read-only on Windows too, as it already is on macOS and Linux.
+  `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
+  covers only the `srt-win` Rust sources.
+
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,
@@ -1648,6 +1671,206 @@ The plugin effect provider requires a host-owned `Tool.workerId` and a matching
 Ordinary in-process plugin tools, degraded hosts, and sandbox-off hosts keep
 the known-safe pre-exec ask path.
 
+Every ASRT wrap carries an egress token as its `commandId`
+(`src/permissions/egress-invocations.ts`): one per Bash or PowerShell tool
+call, one per workspace terminal shell (for the life of its tab's shell), and
+one per confined plugin process — plugin child, worker, bundled hook, bundled
+MCP stdio server. The token is 16 random bytes, maps to its owner only while
+the process lives, and is never written down. ASRT records each proxy refusal
+under it; the deny monitor (`src/permissions/egress-deny-monitor.ts`),
+subscribed at boot before the proxy starts, turns each
+`deny network-outbound` (or `http-request`, `socks-tunnel`) line into one
+sandbox audit row with an `egress_attempted, blocked: true` event and the
+owner's identity, or `unattributed` for a key no live invocation holds. A
+proxy deny line of an unexpected shape (ASRT's `malformed host` refusals keep
+whatever host the process sent) still becomes a row, with the remainder as its
+host, no port and the reason `unparsed deny line`. Host, method, URL and
+reason are DLP-masked, since the confined process chooses them; rows are
+neither sampled nor dropped, so their volume is bounded only by the refused
+process's connection rate and lifetime. The shell tools append ASRT's
+`<sandbox_violations>` block to their output so the model reads why a host
+failed, and Settings → Permissions → Network lists the last 24 hours of
+refusals from that audit channel.
+
+The token is a label; what identifies an invocation to the policy is the
+channel its connections arrive on (`src/permissions/egress-identity.ts`). On
+macOS and Linux every wrap first opens its own proxy front end
+(`SandboxManager.openInvocationListener`, part 3 of the carried 0.0.80 bun
+patch): a loopback port that the wrap's Seatbelt profile alone may reach, or a
+socket path bound into that wrap's bwrap in place of the shared bridge socket.
+A connection that arrives there reaches the ask callback with
+`identity: "listener"`, and the callback (`src/permissions/egress-ask.ts`)
+denies anything that did not, so a token read off another process opens
+nothing. On Linux every lane socket and every proxy backend socket lives in
+one private 0700 directory, and each wrap mounts a tmpfs over that directory
+and binds back only its own lane socket, so no wrap can see another's socket
+even when `allowAllUnixSockets` lifts the AF_UNIX block (as registering a
+worker socket directory does). On macOS `allowAllUnixSockets` would expose the
+shared bridge socket, so while it is set shell and extension identity is
+`shared`. The proxy refuses a destination that is a proxy front end's port on
+this host, so one invocation cannot hop onto another's listener. The
+callback is asked in two phases (part 5 of the patch). The name phase comes
+before anything is resolved or routed, so every refusal the name alone
+decides (unattributed, a worker off its list, asks off, nobody to ask, a
+reserved literal) costs no DNS query and no proxy lookup: the
+proxy's lookup is the sandbox's only resolver, and a refused
+`<data>.attacker.example` must not reach the zone's server. An interactive
+card (or a terminal tab's banner) is shown by name, using the class implied by
+the literal address or local-network name, otherwise provisionally `public`.
+Its answer is held, not granted; grants are matched by origin and network class
+in both phases. Only after that provisional allow is the destination name
+resolved once, and refused when any address is
+loopback, reserved or this host's; the resolved phase sees the addresses, an
+answer given on a card for one class (say public) becomes a grant only when
+the destination turned out to be that class (otherwise the card is shown
+again with what it is), and the connection is pinned to them (a direct dial does not
+resolve again; through an upstream HTTP(S) proxy the CONNECT names the
+address, trying each in turn, not the name), so DNS rebinding cannot move it
+afterwards. A name this host cannot resolve (owner decision 2026-10-19), and
+a plain-HTTP request by name through an upstream (its absolute-form target
+names the host, which the upstream resolves, so it cannot be pinned), is
+refused without an upstream; through a remote upstream it is forwarded by name and the callback
+is told `resolution: "upstream"`, which Ave treats as `unverified` (at most
+This conversation, a card note that the proxy decides the address,
+persistent grants ignored); through an upstream on this host (loopback,
+`localhost`-style names, or one of this host's addresses, e.g. cntlm or px)
+it is refused with a reason, unless the trusted `upstreamProxy.resolvesNames`
+setting gives that upstream the remote treatment, which accepts the residual
+risk that the local proxy resolves the name to this host after the check.
+
+Where the upstream comes from (owner decision 2026-10-20) is the main-owned
+`upstreamProxy` setting (Settings → Permissions → OS Tool Sandbox; written
+only through the permissions `upstreamProxySet` channel, refused by
+`settings:update`, absent from the renderer snapshot; manual credentials in
+the secret store, bound to the proxy's scheme, canonical host and effective
+port: sent only to it, and removed, with a notice, when any of those changes).
+An explicitly written port is preserved before URL normalization; only an
+omitted port defaults to 1080 for HTTP or 443 for HTTPS. A scheme-less proxy
+URL means HTTP. "Use system settings" (the default) takes the app
+process's own `HTTPS_PROXY`/`HTTP_PROXY`/`ALL_PROXY`/`NO_PROXY` (either case,
+lowercase first) when any is set, and otherwise the OS configuration through
+Chromium's `session.resolveProxy` (macOS system settings, Windows
+WinINET/WinHTTP, Linux environment/GNOME/KDE, PAC and WPAD); "Manual" is a
+URL plus a bypass list; "Off" is direct. `NO_PROXY` and the manual bypass list
+follow [current curl master `lib/proxy.c`](https://github.com/curl/curl/blob/master/lib/proxy.c):
+comma-separated domains, IP literals and CIDR ranges, with optional spaces or tabs
+around entries. Spaces alone do not separate entries. Older versions differ:
+[curl 8.7.1 `lib/noproxy.c`](https://github.com/curl/curl/blob/curl-8_7_1/lib/noproxy.c)
+accepts space-separated entries and has different IPv6 CIDR matching, including
+`/0` and prefixes that end within a byte. A bare domain or
+one leading dot matches the domain and its subdomains; `*.` has no wildcard
+meaning. Only the raw complete value `*`, without surrounding whitespace,
+bypasses everything, not a `*` token in a longer list. Entries do not support
+`host:port`; IPv6 entries are unbracketed.
+This host's own destinations remain direct under the separate local-routing
+policy. Because a PAC script can answer
+differently per destination and with a fallback list, the carried patch's
+part 4 replaces ASRT's single static `parentProxy` with a route hook
+(`SandboxManager.setParentProxyRouter`, implemented in
+`src/permissions/upstream-proxy.ts`): asked once per destination decision
+with the canonical host, port and scheme, after the name phase and before
+the resolved phase; every
+answered route is judged as above (a pinned name goes as its vetted literal,
+an unresolvable name skips direct routes and untrusted proxies on this host,
+a route naming one of the proxy's own listeners is dropped and every proxy
+socket is checked against them), and the connection tries the kept routes in
+order, handing over only on a connection failure: every upstream HTTP response
+is final, including non-2xx. A non-2xx CONNECT answer refuses with
+"upstream proxy refused the connection (HTTP <status>)"; a plain-HTTP response
+is relayed unchanged except 407. Neither another address on the same route
+nor a later proxy or DIRECT retries an HTTP response. A 407 refuses with
+"upstream proxy requires authentication" (Basic
+credentials from a `user:pass@` URL are sent; NTLM/Kerberos need a local
+helper such as cntlm or px plus the `resolvesNames` opt-in, which covers a
+proxy named in Settings or the environment and never one a PAC or WPAD answer
+names, since that answer is network input). `resolveProxy` runs at most four
+evaluations at once. SOCKS entries
+are skipped with an `egress-route` audit row (ASRT has no SOCKS client); an
+answer with nothing usable refuses, never falls back to direct. Answers are
+cached per (scheme, host, port) for 45 s (Electron has no proxy-change
+event); an upstream proxy settings write advances the routing generation, clears the cache
+and closes every open sandbox connection (`closeAllInvocationConnections`,
+direct ones included). Pending approval, DNS and route decisions capture that
+generation and check it immediately before any direct or upstream dial,
+including after asynchronous proxy preparation. A stale attempt replans its
+routes under the current generation; an allowed decision is reused only for
+the same destination class, and a changed class is asked again. A denial
+remains final, and repeated configuration churn fails closed. Changes apply
+without a restart and no tunnel outlives the setting that routed it.
+Sandboxed processes see only Ave's per-invocation proxy in their
+environment, never the upstream or its credentials. An ended
+invocation's macOS port stays bound, refusing connections, for 30 minutes,
+longer while its process group still runs, and its number is never reused. A wrap with `network.allowLocalBinding` is
+refused, and Ave never sets it. The macOS profile also denies process-info on other processes and
+the `kern.procargs` sysctls, and each non-PTY wrap starts in its own session
+(node-pty already starts one), so a sandboxed process cannot read another
+process's environment.
+
+To regenerate `patches/@anthropic-ai%2Fsandbox-runtime@0.0.80.patch`, save its
+explanatory preamble (everything before the first `diff --git`) and run
+`bun patch @anthropic-ai/sandbox-runtime@0.0.80`. Edit the installed package's
+`dist`, save a copy outside the checkout for comparison, then run
+`bun patch --commit node_modules/@anthropic-ai/sandbox-runtime`. Restore the
+updated preamble ahead of the generated diff and run `bun install --lockfile-only`
+to refresh or verify lockfile metadata for the final patch. In a disposable
+clean checkout with the revised manifest, lockfile and patch, run
+`bun install --frozen-lockfile`, then
+`diff -r <saved-dist> node_modules/@anthropic-ai/sandbox-runtime/dist`;
+no differences prove the patch reproduces the edited distribution.
+
+ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
+every connection: a plugin worker reaches its own extension's declared
+domains and the configured model endpoints, nothing else, and is never asked;
+a Bash or PowerShell call reaches a host a grant covers, and otherwise
+the person is asked on the approval dock (Deny, Allow once, This
+conversation, This workspace, Always); a workspace terminal tab (always in
+the foreground) reaches a host a grant covers, and otherwise the person is
+asked in a banner in that tab, drawn only in, fetched by and answered from
+the window that owns the tab (Deny, Allow once, This tab, Always: a
+terminal's Allow once lets that one connection through and is never held;
+"This tab" takes the place of "This conversation" and lasts until the tab's
+shell exits, including an exit followed by a respawn; terminals have no
+This workspace, since every tab runs in the app's one default workspace,
+which agent shell calls share). Every grant is bound to its origin (`shell` or
+`terminal`) and destination network class (`public`, `local` or `unverified`),
+for Allow once, conversation, tab, workspace and Always scopes. Matching,
+listing, use tracking and revocation preserve both fields, so neither another
+origin nor another class can reuse it. Settings shows the origin and preserves
+the class when revoking. A replan to a
+different class requires a fresh warning and decision before connecting.
+Working directories are compared after `canonicalizePathForMatch`. The
+connection is held while the banner is up and denied after 120 s without an
+answer, or at once when the tab closes; connections from one tab to one
+destination share one banner row. While no view of the tab is mounted the
+ask is drawn on the focused pane's lane instead
+(`src/ui/renderer/components/permissions/TerminalEgressBanner.tsx`).
+`src/permissions/egress-grants.ts` holds the grants, the persistent ones in
+`<AVE_HOME>/permissions/shell-egress-hosts.json`, revocable in Settings →
+Permissions → Network. Version-1 stored grants without `network` match only
+`public`; a valid recorded class is honored and an invalid explicit class is
+rejected. Only `public` destinations are eligible for persistent grants
+(This workspace and Always); recording a class does not extend that eligibility.
+A background call nobody can answer, asks turned off
+(`features.shellEgressAsk`), or an unreadable grant file is a refusal.
+Destinations are classed by `egressDestinationNetwork()` on the host and every
+address it resolved to, most restrictive first: link-local, cloud metadata,
+unspecified, multicast and broadcast addresses are refused without asking;
+loopback, `localhost`/`*.localhost`, local-network names (`*.local`,
+`*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`), RFC1918, CGNAT, ULA
+and site-local addresses are offered at most This conversation (a terminal:
+This tab), with a local-network warning on the card, and persistent grants
+never apply to them. Only the desktop window
+answers an egress ask; an answer from any other surface leaves it pending. Conversation and
+tab grants are listed and revocable in Settings too, and revoking a grant closes the
+connections it let through that are still open. Each decision, including a
+refusal the proxy made before asking, writes an `egress-decision` sandbox audit
+row. Where `egressIdentityStrength() === "shared"` (the Windows shared proxy,
+or macOS with `allowAllUnixSockets`), both new approvals and reused grants stop
+at This conversation (a terminal: This tab). Persistent grants remain stored
+when the channel becomes shared, but cannot authorize it; they apply again
+when the channel is strong. Grant lookup filters eligible scopes before
+selecting the narrowest match.
+
 `spawnWorker` is the only host primitive that can establish that worker-backed
 plugin substrate. macOS and Linux workers use an ASRT-wrapped Unix-domain-socket
 control path. Windows workers keep TCP control, but their filesystem access is
@@ -1657,6 +1880,139 @@ through srt-win. The holder command must be launched through a pinned System32
 binary and its lifecycle is part of the worker's confinement proof: if the
 holder exits or errors, the host must revoke grants, unmark the worker, and
 terminate the wrapped worker.
+
+### Windows agent shells in Microsoft Execution Containers
+
+By owner decision (2026-10-19, proxy-egress PR 9) a Bash or PowerShell tool
+command on Windows runs in its own Microsoft Execution Containers (MXC)
+BaseContainer where the host offers one. Ave ships only the MIT-licensed
+`wxc-exec.exe` launcher from `@microsoft/mxc-sdk` 1.0.0 at
+`<resources>/mxc/<arch>/wxc-exec.exe` (x64, arm64), staged at build time by
+`scripts/fetch-mxc.mjs` against `src/permissions/mxc-launcher-pins.json` (the
+npm tarball's sha512, each launcher's sha256). Ave does not load the SDK's
+JavaScript: its Windows stdio path needs Node 24.21, newer than the Node
+Electron bundles. Each command spawns `wxc-exec.exe --config-base64 <request>`
+from the launcher's own directory (`mxc-windows.ts`, `mxc-shell-launch.ts`);
+no administrator rights or UAC prompt are needed per run or at install.
+
+The package's other binaries are not shipped because Ave never takes their
+paths: `winhttp-proxy-shim.exe` is the elevated, UAC-raising proxy fallback of
+the AppContainer tier, which MXC refuses for `runtimeConfig.networkProxy` with
+egress deny + ingress allow (the only shape Ave sends; boot also requires the
+dry run to select `base-container`); `plm.exe` is the elevated tracing helper
+behind `telemetry`, which Ave never enables; `wslcsdk.dll` and the daemon and
+host-prep binaries serve the WSL-container, Windows Sandbox, isolation-session
+and AppContainer+DACL backends. Every PR 9 measurement ran the launcher alone
+in its directory.
+
+- **Detection.** On the boot path the launcher's sha256 must match the pin,
+  `--probe` must report the `base-container` tier, and `--dry-run` of a request
+  shaped like a real one (loopback proxy, default-deny egress, no DACL
+  fallback) must pass. ASRT then starts as if MXC were available, and MXC is
+  `checking`: after boot, off the critical path, System32 Windows PowerShell
+  5.1 must start (`exit 0`) in a real container of that shape (reduced
+  caller-owned environment, proxy mode; a cold start can take tens of
+  seconds). Until it settles, shells take the approved-host route and Settings
+  says the check is running; when it passes the record switches to MXC, unless
+  something re-recorded it meanwhile. Detection reads what the launcher does,
+  not the build number: identity-less loopback proxying needs PSEC 1.1 in MXC
+  1.0.0. Any failure leaves the shells on the approved-host route with its
+  reason in Settings (a proxy-only boot keeps its proxy). A PowerShell start that
+  fails with `STATUS_DLL_INIT_FAILED` (`0xC0000142`), which a non-interactive
+  session such as SSH causes, is reported as `unverified-session`, not as MXC.
+- **Integrity.** Detection hashes the launcher at boot, and the first command
+  hashes it again before its launch; that result is cached for the process. A
+  mismatch at boot leaves the shells off MXC (`launcher-mismatch`); at launch
+  it fails the command closed. This assumes the per-machine installer
+  (`nsis.perMachine`): the file lives where only administrators can write, so
+  the signed-in user cannot swap it after the check. A source checkout's
+  `resources/` is user-writable; that is a developer setup.
+- **Boot plan** (`windows-sandbox-plan.ts`). MXC and srt-win are independent.
+  With MXC, shells run in containers whether or not srt-win is installed;
+  without srt-win, ASRT starts as the proxy only (`windows.externalConfinement`,
+  patch part 3, which also skips the srt-win dependency check `initialize()`
+  runs first), the process-wide capability confines nothing, and extensions
+  run unconfined with a boot warning. Measured on a host without srt-win: the
+  patched proxy starts, an srt-win wrap is refused, a container reaches an
+  allowed host through its listener and the proxy, and a refused host is
+  recorded under that invocation's token only. Without MXC, shells keep the
+  approved host route. Without either, the gate degrades as before. The
+  workspace terminal never runs in MXC (it is the user's surface, and MXC ends
+  background descendants with the command), and reads only the process-wide
+  capability.
+- **Filesystem.** The per-command ASRT lists are ranked for MXC
+  (`rankMxcFilesystem`): the protected read floor drops grants not under a
+  pierce, a write grant under a `denyWrite` path becomes read-only, a deny
+  strictly inside a grant becomes an explicit `denied` entry when the path
+  exists, and grants that do not exist are dropped. Measured: a more specific
+  grant wins over a denied parent, a missing `denied` file path still blocks its
+  creation, and a missing `readonly` directory does not block its creation, so
+  a `denyWrite` path that does not exist is written as `denied`.
+- **Outbound connections and identity.** Each command gets its own loopback
+  proxy listener (`egress-invocation-listener.ts`). The container's only
+  outbound connection path is that port: MXC's per-container WFP filter, with
+  `egress.default: "deny"` and `hostLoopback: "allow"`. The listener forwards
+  to ASRT's proxy and stamps the command's egress token on every request it
+  forwards, replacing any `Proxy-Authorization` the client sent, so refusals
+  are attributed to the command that made them. It refuses loopback and
+  unspecified destinations in any numeric spelling, IPv4-mapped and
+  IPv4-compatible IPv6 included. Measured on Windows 11 26H2 (build 26300): a
+  container reached its own port, and could not reach another command's port,
+  another loopback listener, `localhost` or an external address directly
+  (`1.1.1.1:443`, `8.8.8.8:53`); a forged identity was replaced by the
+  listener's; a container could not terminate a host process of the same user;
+  and when its process timeout fires or `wxc-exec.exe` is killed, every process
+  in the container ends with it. Shell egress identity is therefore
+  `kernel-channel`; extension identity stays `shared`.
+  `egressGrantScopesFor` applies `maxEgressGrantScope` (`kernel-channel` →
+  `always`, `shared` → `conversation`) to both approval choices and grant
+  reuse. Origin and destination class further limit the scopes; terminal
+  tabs and extensions keep their own policy.
+- **DNS is not confined.** Name resolution goes through the host's DNS client
+  service, outside the container's WFP filter: inside a container
+  `example.com` resolved and an unknown name came back NXDOMAIN (measured), so
+  the query left the host. A command can therefore carry data out to an
+  external authoritative DNS server by looking up names it chooses under a
+  domain that server answers for, without touching the proxy: an exfiltration
+  channel the proxy never sees. Settings says so.
+- **Inbound.** Proxy mode requires `ingress.default: "allow"`, which grants
+  the container `privateNetworkClientServer`, and MXC documents that its proxy
+  mapping does not complete the host-loopback ingress contract. Measured with
+  Windows Firewall on and its default inbound action: a container could bind a
+  listener, and no connection reached it from the host's loopback, LAN, WSL or
+  Tailscale addresses, from another machine, or from another container. That
+  rests on the firewall's default inbound block, not on Ave's request.
+- **UI.** Containers run with `ui.disable: false` (PowerShell 5.1 does not
+  start without Win32k), clipboard `none` and input injection off. A contained
+  process can still open windows on the user's desktop and so could draw a
+  fake dialog; MXC's docs call this "not the lockdown the schema's default
+  implies". A window from a shell command is not trusted UI.
+- **Shells.** PowerShell runs as System32 Windows PowerShell 5.1 with
+  `-EncodedCommand`. Git Bash cannot start in a container: MSYS2 is denied the
+  named-object directory it creates at startup (`0xC0000022`, in every
+  session), so a sandboxed Bash command is refused with guidance to use the
+  PowerShell tool or an approved host run, and the shell-environment prompt
+  tells the model the same. Inside a container `cmd.exe` answers "Access is
+  denied" for an unquoted absolute program path (`C:\Windows\System32\whoami.exe`,
+  any casing) while the quoted path and a bare name found on `PATH` run
+  (measured); the PowerShell launch quotes its path and is started by the
+  launcher itself, not by `cmd.exe`. .NET Framework's `Invoke-WebRequest`
+  ignores the injected `HTTP(S)_PROXY` variables and fails closed.
+- **Settings.** Permissions shows the substrate chosen for shells and
+  extensions, the MXC unavailable reason with the Windows build, the Bash
+  limit, the DNS channel, and that extensions share one proxy identity.
+
+Not covered: plugin workers stay on srt-win. MXC's proxy mode forbids direct
+egress rules, so the TCP worker control channel cannot reach a container; a
+container worker needs a stdio control path or control over its own proxy
+port. Windows PowerShell 5.1 and Node inside a container start only in an
+interactive session: in the SSH session-0 window station both fail with
+`0xC0000142`, which detection reports as `unverified-session`. An
+interactive-session probe (2026-10-16) ran both with `ui.disable: false`, which
+the containers use. The PR 9 measurements ran `cmd.exe`, `curl.exe` and a
+native probe from session 0 through the same request builder and listener;
+the PowerShell 5.1 launch itself awaits an interactive-session run (owner
+checklist in PR #22).
 
 ## Security And Audit
 
@@ -1707,15 +2063,46 @@ group rather than by the user. Admission (`assertCodexLocations` in
    account refuses start and is left as it is.
 2. **Outside a private root, the owner must be the current user or a trusted
    system principal.** This covers a private root's ancestors (among them
-   `AVE_HOME` and `subscription-runtimes`, which `mkdir` creates and nothing
-   claims) and an executable's location. The trusted principals are SYSTEM
+   `AVE_HOME` and `subscription-runtimes`, which admission does not claim) and an executable's location. The trusted principals are SYSTEM
    (`S-1-5-18`), `S-1-5-32-544` and TrustedInstaller. Admission also accepts
    the sandbox principals and capability SIDs it identifies. This does not
    depend on the token's default owner. Write access there is judged by the
    access entries, not by the owner.
 
-Any other owner is refused. A change to either rule changes the security
-contract for both.
+Two other places create or protect owner-sensitive objects themselves, each
+with its own owner rule:
+
+- **The Windows sandbox helper copy is created with its final security
+  descriptor.** `prepareSrtWinExecutable` in
+  `src/permissions/srt-win-integrity.ts` picks a random, unpublished
+  `ave-srt-win-` name, and one PowerShell step creates the directory there with
+  the token user as owner and a protected DACL: full control for the user,
+  read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
+  already at that path, a link included, refuses creation. The empty image and
+  the owner marker are then created new inside it, each with its own
+  descriptor, and each owner is read on the handle that created the file. No
+  step changes the owner or DACL of an object that already exists. The image's
+  bytes are written only after that step. If it fails, the step removes what it
+  made; a later failure removes the copy without following a link.
+- **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
+  When `AVE_HOME` or its `secrets` directory does not exist yet,
+  `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
+  create it with the user as owner and an owner-only protected DACL, so no
+  grant for the token's default owner is left behind. Before it changes an
+  existing directory's DACL, the step refuses a link or junction and an owner
+  this rule does not accept, and nothing inside a refused directory is
+  touched; the permission command then acts on a link itself (`icacls /L`),
+  never on its target. An existing `AVE_HOME` the app did not create may be
+  owned by `S-1-5-32-544` only when the current token's default owner is
+  `S-1-5-32-544`. Its DACL must then be protected and hold exactly one entry,
+  the user's own full-control grant, inherited by files and folders and not
+  itself inherited; no system principal is granted. The app protects such a
+  root, but it does not take ownership of it. `isOwnerOnlyDacl` in
+  `src/shared/ave-home.ts` applies this rule. It takes an elevated
+  Administrators token as its sign that the default owner is `S-1-5-32-544`.
+
+Any other owner is refused. A change to any of these rules changes the security
+contract for all of them.
 
 ## Documentation Language Policy
 

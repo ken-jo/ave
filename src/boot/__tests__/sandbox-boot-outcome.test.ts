@@ -21,6 +21,7 @@ import {
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
+  subscribe: vi.fn(),
   checkDeps: vi.fn(),
   isProbeError: vi.fn(),
   isMacProbeError: vi.fn(),
@@ -33,6 +34,12 @@ vi.mock("electron", () => ({
 
 vi.mock("../../lib/logger.js", () => ({
   createLogger: vi.fn(() => h.logger),
+}));
+
+// A Windows host without Microsoft Execution Containers: the srt-win degrade
+// this suite pins is the row of the Windows plan where neither substrate runs.
+vi.mock("../../permissions/mxc-windows.js", () => ({
+  detectHostMxcPrerequisites: async () => ({ state: "unavailable", reason: "tier-unsupported", windowsBuild: null, detail: "test host" }),
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
@@ -52,15 +59,17 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
       return root;
     },
     initializeAsrtSandbox: h.initialize,
-    subscribeAsrtViolations: async () => () => undefined,
+    subscribeAsrtViolations: h.subscribe,
     useAppOwnedSandboxTempRoot: () => "/tmp/ave-test-sandbox-tmp",
     checkAsrtDependencies: h.checkDeps,
     isAsrtLinuxRuntimeProbeError: h.isProbeError,
     isAsrtMacRuntimeProbeError: h.isMacProbeError,
+    closeAllEgressConnections: () => 0,
   };
 });
 
 import { initSandboxGate } from "../steps/sandbox-init.js";
+import { SrtWinIntegrityError } from "../../permissions/srt-win-integrity.js";
 import {
   __resetActiveSandboxCapabilityForTest,
   __resetSandboxBootOutcomeForTest,
@@ -80,6 +89,8 @@ beforeEach(() => {
   __resetSandboxRequestedAtBootForTest();
   __resetSandboxBootOutcomeForTest();
   h.initialize.mockReset();
+  h.subscribe.mockReset();
+  h.subscribe.mockResolvedValue(() => {});
   h.checkDeps.mockReset();
   h.isProbeError.mockReset();
   h.isMacProbeError.mockReset();
@@ -99,6 +110,17 @@ afterEach(() => {
 });
 
 describe("boot sandbox outcome", () => {
+  it.each([
+    ["srt-win-not-found", "windows-sandbox-missing"],
+    ["srt-win-integrity-mismatch", "windows-sandbox-integrity-failed"],
+  ] as const)("preserves %s through the dependency check and a wrapped cause at boot", async (code, cause) => {
+    setProcessPlatform("win32");
+    const dependencyFailure = new Error("Dependency preparation failed", { cause: new SrtWinIntegrityError(code) });
+    h.checkDeps.mockResolvedValue({ errors: [dependencyFailure.message], warnings: [], dependencyFailure });
+    await initSandboxGate(harness.context(true));
+    expect(getSandboxBootOutcome()).toMatchObject({ action: "degrade", causes: [cause] });
+    expect(h.initialize).not.toHaveBeenCalled();
+  });
   it("is null before the gate has run, which is not the same as off", () => {
     expect(getSandboxBootOutcome()).toBeNull();
   });
@@ -119,6 +141,7 @@ describe("boot sandbox outcome", () => {
       reason: "degrade-windows-not-installed",
       onSignal: "default-settings",
       dependencyErrors: [depError],
+      causes: ["windows-setup-incomplete"],
     });
   });
 
@@ -130,6 +153,35 @@ describe("boot sandbox outcome", () => {
       reason: "gate-off",
       onSignal: "off",
       dependencyErrors: [],
+      causes: [],
+    });
+  });
+
+  it("classifies each missing Linux dependency so the permission card can name it", async () => {
+    h.checkDeps.mockResolvedValue({
+      errors: ["bubblewrap (bwrap) not installed", "socat not executable at /opt/bin/socat"],
+      warnings: [],
+    });
+
+    await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+
+    expect(getSandboxBootOutcome()).toMatchObject({
+      action: "degrade",
+      reason: "degrade-default-cannot-activate",
+      causes: ["missing-bwrap", "missing-socat"],
+    });
+  });
+
+  it("names a Linux runtime-probe failure apart from a generic start failure", async () => {
+    h.initialize.mockRejectedValue(new Error("probe exited 1"));
+    h.isProbeError.mockReturnValue(true);
+
+    await expect(initSandboxGate(harness.context(true))).resolves.toBeUndefined();
+
+    expect(getSandboxBootOutcome()).toMatchObject({
+      action: "degrade",
+      reason: "degrade-linux-runtime-probe-failed",
+      causes: ["linux-runtime-probe-failed"],
     });
   });
 
@@ -143,6 +195,7 @@ describe("boot sandbox outcome", () => {
       action: "abort",
       onSignal: "explicit-env",
       dependencyErrors: ["missing bwrap"],
+      causes: ["dependency-check-failed"],
     });
   });
 
@@ -154,6 +207,7 @@ describe("boot sandbox outcome", () => {
     expect(getSandboxBootOutcome()).toMatchObject({
       action: "degrade",
       dependencyErrors: ["wrapper refused to start"],
+      causes: ["init-failed"],
     });
   });
 
@@ -176,6 +230,30 @@ describe("boot sandbox outcome", () => {
     expect(audited.outcome).toBe(surfaced?.action);
     expect(audited.reason).toBe(surfaced?.reason);
     expect(audited.onSignal).toBe(surfaced?.onSignal);
+  });
+
+  it("subscribes the proxy-deny monitor before the sandbox proxy starts, and only when it activates", async () => {
+    const order: string[] = [];
+    h.subscribe.mockImplementation(async () => { order.push("subscribe"); return () => {}; });
+    h.initialize.mockImplementation(async () => { order.push("initialize"); });
+
+    await initSandboxGate(harness.context(true));
+
+    expect(getSandboxBootOutcome()?.action).toBe("activate");
+    expect(order).toEqual(["subscribe", "initialize"]);
+    // Every connection is decided per invocation: no shared allow-list, and
+    // the ask callback (extension allowlist, grants, prompt) for each one.
+    expect(h.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({ allowedDomains: [], strictAllowlist: false }),
+      expect.any(Function),
+    );
+    expect(h.initialize.mock.calls[0]).toHaveLength(2);
+
+    order.length = 0;
+    __resetSandboxBootOutcomeForTest();
+    __resetSandboxRequestedAtBootForTest();
+    await initSandboxGate(harness.context(false));
+    expect(order).toEqual([]);
   });
 
   it("does not let a caller mutate the sealed outcome", async () => {

@@ -8,6 +8,7 @@ import { useSandboxCapability } from "../use-sandbox-capability.js";
 const CAPABILITY: SandboxCapabilityInfo = {
   platform: "darwin", enabled: false, available: true, kind: "full", reason: "",
   confines: { filesystem: false, process: false, network: false },
+  shell: { state: "off", setting: false, envForced: false, causes: [] },
 };
 
 describe("useSandboxCapability", () => {

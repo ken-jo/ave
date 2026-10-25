@@ -16,7 +16,8 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { cleanupTmpDir, removeLinkOnly } from "../../src/__tests__/support/tmp-dir-teardown.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -37,7 +38,8 @@ beforeAll(() => {
   checkout = join(scratch, "checkout");
   mkdirSync(checkout);
   for (const name of LINKED) {
-    symlinkSync(join(APP_ROOT, name), join(checkout, name), name.includes(".") ? "file" : "junction");
+    if (process.platform === "win32" && name.includes(".")) copyFileSync(join(APP_ROOT, name), join(checkout, name));
+    else symlinkSync(join(APP_ROOT, name), join(checkout, name), name.includes(".") ? "file" : "junction");
   }
 
   descendantPlugin = join(scratch, "descendant-plugin");
@@ -137,16 +139,8 @@ afterAll(async () => {
   }
   // The links go first, one by one and never recursively: a recursive removal
   // follows a Windows junction into the checkout it points at.
-  for (const name of LINKED) unlinkSync(join(checkout, name));
-  for (;;) {
-    try {
-      rmSync(scratch, { recursive: true, force: true });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EPERM" || Date.now() >= deadline) throw error;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
-  }
+  for (const name of LINKED) removeLinkOnly(join(checkout, name));
+  await cleanupTmpDir(scratch);
 });
 
 function validate(pluginDir: string, env: NodeJS.ProcessEnv, timeout = 60_000) {

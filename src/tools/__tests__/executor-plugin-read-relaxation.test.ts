@@ -53,6 +53,8 @@ import {
   setActiveSandboxCapability,
   unmarkPluginWorkerWrapped,
   __resetActiveSandboxCapabilityForTest,
+  __resetSandboxRequestedAtBootForTest,
+  setShellSandboxRequestedAtBoot,
 } from "../../permissions/sandbox-capability.js";
 
 // ─── Helpers ─────────────────────────────────────────
@@ -664,8 +666,12 @@ describe("plugin read-relaxation — confines-aware via the active-capability SO
   beforeEach(() => {
     __resetActiveSandboxCapabilityForTest();
   });
+  // The host-shell view of the capability exists only while the shell
+  // sandbox was requested at boot.
+  beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   it("active capability filesystem-contained (mac/linux full-confine) → relaxed (NO modal, tool runs)", async () => {
@@ -1052,8 +1058,12 @@ describe("plugin read auto-allow coupling — confines-aware via the active-capa
   beforeEach(() => {
     __resetActiveSandboxCapabilityForTest();
   });
+  // The host-shell view of the capability exists only while the shell
+  // sandbox was requested at boot.
+  beforeEach(() => setShellSandboxRequestedAtBoot(true));
   afterEach(() => {
     __resetActiveSandboxCapabilityForTest();
+    __resetSandboxRequestedAtBootForTest();
   });
 
   it("active capability filesystem-contained (mac/linux full-confine) → plugin read auto-allows (NO modal)", async () => {

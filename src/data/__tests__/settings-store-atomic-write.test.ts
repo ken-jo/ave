@@ -161,6 +161,7 @@ describe("settings persistence", () => {
         .toThrowError(expect.objectContaining({ code: "lease-audience-denied" }));
     }
   });
+
   it.skipIf(process.platform === "win32")("lets an existing reader finish the previous complete settings while publishing the next version", async () => {
     const path = settingsFilePath(root);
     const before = readFileSync(path, "utf8");

@@ -22,6 +22,7 @@ import {
   DEFAULT_WINDOWS_PROXY_PORT_RANGE,
   getVendoredSrtWinExePath,
   getDefaultSensitiveWriteDenyPaths,
+  getVerifiedSrtWinExePath,
   hasPerExecFilesystemAllowGrants,
 } from "../asrt-sandbox.js";
 import {
@@ -36,7 +37,7 @@ import { buildSandboxedChildEnv } from "../../tools/safe-env.js";
 import {
   DEFAULT_WINDOWS_PROXY_PORT_RANGE as ASRT_PROXY_PORT_RANGE,
 } from "@anthropic-ai/sandbox-runtime";
-import { parseWindowsBinShell } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { parseWindowsBinShell, rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { setProcessPlatform as forcePlatform } from "../../__tests__/test-helpers.js";
 
 const ORIGINAL_PLATFORM = process.platform;
@@ -58,6 +59,26 @@ describe("windows sandbox — mirrored constants pinned against ASRT", () => {
     ]);
   });
 
+  // ASRT 0.0.80 (#686) ranks the Windows lists in JavaScript before srt-win
+  // sees them: a write grant at or beneath a denyWrite is handed over as a read
+  // grant, and a grant at or beneath a credential file entry is dropped. The
+  // srt-win drift guard (NSIS smoke test) pins only the Rust side, so this pins
+  // the JS side: a change in either rank fails here instead of silently changing
+  // what a Windows workspace or plugin root under a write deny can do.
+  it("rankWindowsFsAccess keeps denyWrite over allowWrite and credentials over every grant", () => {
+    const ranked = rankWindowsFsAccess({
+      allowRead: ["C:/read-denied/inside"],
+      allowWrite: ["C:/write-denied/sub", "C:/free", "C:/credential/inside"],
+      denyRead: ["C:/read-denied"],
+      denyWrite: ["C:/write-denied"],
+      credentialDeny: ["C:/credential"],
+    });
+    expect(ranked.grantWrite).toEqual(["C:/free"]);
+    expect(ranked.grantRead).toEqual(["C:/read-denied/inside", "C:/write-denied/sub"]);
+    expect(ranked.denyWrite).toEqual(["C:/write-denied"]);
+    expect(ranked.denyRead).toEqual(expect.arrayContaining(["C:/read-denied", "C:/credential"]));
+    expect([...ranked.grantRead, ...ranked.grantWrite]).not.toContain("C:/credential/inside");
+  });
 });
 
 describe("windows sandbox — buildSandboxConfig emits the windows section on win32", () => {
@@ -70,7 +91,8 @@ describe("windows sandbox — buildSandboxConfig emits the windows section on wi
     // ASRT 0.0.67: srt-win path is REQUIRED (no implicit vendored resolution).
     // buildSandboxConfig must emit it from the SoT so SandboxManager.initialize
     // can spawn the backend instead of throwing at runtime.
-    expect(config.windows?.srtWin?.path).toBe(getVendoredSrtWinExePath());
+    expect(config.windows?.srtWin?.path).toBe(getVerifiedSrtWinExePath());
+    expect(config.windows?.srtWin?.path).not.toBe(getVendoredSrtWinExePath());
   });
 
   it("honors a trusted non-default proxyPortRange on win32 (enterprise install)", () => {

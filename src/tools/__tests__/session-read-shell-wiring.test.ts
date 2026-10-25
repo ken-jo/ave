@@ -6,7 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { buildPerCommandSandboxCustomConfig, getBuiltinShellSessionReadPolicy, getDefaultSensitiveReadDenyPaths, wrapToolCommand } from "../../permissions/asrt-sandbox.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import {
+  __resetActiveSandboxCapabilityForTest,
+  __resetSandboxRequestedAtBootForTest,
+  setActiveSandboxCapability,
+  setShellSandboxRequestedAtBoot,
+} from "../../permissions/sandbox-capability.js";
 import { getConfiguredSessionReadPolicy } from "../../permissions/sensitive-paths.js";
 import { sessionStorePath } from "../../shared/session-store-path.js";
 import { PowerShellTool, spawnWithSandbox } from "../shell-tools.js";
@@ -57,17 +62,19 @@ beforeEach(() => {
   mkdirSync(cwd); mkdirSync(sessions, { recursive: true });
   vi.stubEnv("HOME", root);
   vi.stubEnv("AVE_HOME", profile);
-  setSandboxRequestedAtBoot(true);
+  setShellSandboxRequestedAtBoot(true);
   setActiveSandboxCapability({
     kind: "asrt", confidence: "verified", platform: process.platform,
     reason: "Controlled wrapper fixture",
     confines: { filesystem: true, process: true, network: true },
   });
+  setShellSandboxRequestedAtBoot(true);
   vi.clearAllMocks();
 });
 afterEach(async () => {
   setProcessPlatform(hostPlatform);
   __resetActiveSandboxCapabilityForTest();
+  __resetSandboxRequestedAtBootForTest();
   vi.unstubAllEnvs();
   await cleanupTmpDir(root);
 });

@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -171,7 +172,7 @@ describe("project root authorization under the exclusive workload-broker route",
     expect(sessionBoundProjectRootMatches(null, "/app")).toBe(false);
   });
 
-  it("matches a bound root byte-for-byte or as a default-workspace alias on the host", () => {
+  it.skipIf(!canCreateSymlinks())("matches a bound root byte-for-byte or as a default-workspace alias on the host", () => {
     const alias = join(root, "workspace-alias");
     symlinkSync(workspace, alias);
     expect(sessionBoundProjectRootMatches(workspace, workspace)).toBe(true);
@@ -181,7 +182,7 @@ describe("project root authorization under the exclusive workload-broker route",
     expect(sessionBoundProjectRootMatches(null, workspace)).toBe(false);
   });
 
-  it("resolves a symlink alias of the default workspace to the default project, not a fallback", () => {
+  it.skipIf(!canCreateSymlinks())("resolves a symlink alias of the default workspace to the default project, not a fallback", () => {
     const alias = join(root, "workspace-link");
     symlinkSync(workspace, alias);
     expect(isAuthorizedWorkspaceProjectRoot(alias)).toBe(true);

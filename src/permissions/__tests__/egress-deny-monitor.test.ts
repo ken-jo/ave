@@ -8,6 +8,9 @@
  * what the monitor is tested against.
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { SandboxViolationStore } from "@anthropic-ai/sandbox-runtime";
 import {
   parseEgressDenyLine,
@@ -23,6 +26,8 @@ import {
   type EgressInvocationOwner,
 } from "../egress-invocations.js";
 import type { SandboxEgressDecisionAuditEntry, SandboxEgressDenyAuditEntry } from "../../audit/sandbox-audit.js";
+import { emitSandboxAudit, readRecentSandboxEgressDenials } from "../../audit/sandbox-audit-sink.js";
+import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { TEST_SHELL_EGRESS_CONTEXT } from "../../__tests__/support/egress-fixture.js";
 
 /** What ASRT puts in `encodedCommand` for a key (`encodeSandboxedCommand`). */
@@ -225,5 +230,38 @@ describe("startEgressDenyMonitor", () => {
       capability: () => ({ kind: "asrt", confidence: "verified" }),
     });
     expect(() => deny(store, "deny network-outbound x.example:443 (domain not allowed)", undefined)).not.toThrow();
+  });
+});
+
+describe("readRecentSandboxEgressDenials", () => {
+  it("returns the denies of the last 24 h from the sandbox channel, newest first", async () => {
+    const home = mkdtempSync(join(tmpdir(), "egress-deny-audit-"));
+    vi.stubEnv("AVE_HOME", home);
+    try {
+      const store = new SandboxViolationStore();
+      const stop = await startEgressDenyMonitor({
+        subscribe: async (listener) => store.subscribe(listener),
+        emit: emitSandboxAudit,
+        capability: () => ({ kind: "asrt", confidence: "verified" }),
+      });
+      const shell = invocation({ kind: "shell", toolName: "bash", toolUseId: "toolu_03", context: TEST_SHELL_EGRESS_CONTEXT });
+      const now = new Date();
+      store.addViolation({ line: "deny network-outbound older.example:443 (domain not allowed)", encodedCommand: encode(shell.token), timestamp: new Date(now.getTime() - 60_000) });
+      store.addViolation({ line: "deny network-outbound newer.example:443 (domain not allowed)", encodedCommand: encode(shell.token), timestamp: now });
+      stop();
+      // The sink appends asynchronously.
+      await vi.waitFor(async () => {
+        expect(await readRecentSandboxEgressDenials({ now })).toHaveLength(2);
+      });
+      // A tool-execution row and a torn last line on the same channel are skipped.
+      writeFileSync(join(home, "audit", `${now.toISOString().slice(0, 10)}.sandbox.jsonl`),
+        `{"timestamp":"${now.toISOString()}","tool":{}}\n{"entryKind":"egress-deny",`, { flag: "a" });
+      const rows = await readRecentSandboxEgressDenials({ now: new Date(now.getTime() + 1) });
+      expect(rows.map((row) => row.deny.host)).toEqual(["newer.example", "older.example"]);
+      expect(rows[0]!.invocation).toEqual({ kind: "shell", toolName: "bash", toolUseId: "toolu_03" });
+      expect(await readRecentSandboxEgressDenials({ now: new Date(now.getTime() + 25 * 3_600_000) })).toEqual([]);
+    } finally {
+      await cleanupTmpDir(home);
+    }
   });
 });

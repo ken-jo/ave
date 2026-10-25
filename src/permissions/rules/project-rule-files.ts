@@ -17,6 +17,7 @@ import { caseFoldForMatch } from "../sensitive-paths.js";
 import type { ScopedPermissionRuleError } from "../../shared/permissions-events.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { PermissionRulesFileCorruptError, inertRulePatterns, invalidJsonDetail, validateRuleList } from "./rule-files.js";
+import { withShellPolicyMutation } from "../shell-policy-handoff.js";
 
 
 export interface ProjectRulesFile {
@@ -177,21 +178,23 @@ export async function updateProjectRulesFile(
   location: ProjectRulesLocation,
   mutator: (file: ProjectRulesFile) => void,
 ): Promise<ProjectRulesFile> {
-  await mkdir(dirname(location.filePath), { recursive: true, mode: PRIVATE_DIR_MODE });
-  return withFileLock(location.filePath, async () => {
-    const existing = await readProjectRulesFile(location);
-    const file: ProjectRulesFile = existing ?? {
-      version: 1,
-      projectRoot: location.projectRoot,
-      rules: [],
-      updatedAt: new Date().toISOString(),
-    };
-    const inert = inertRulePatterns(existing?.rules);
-    mutator(file);
-    file.rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, keepInertWildcards: inert });
-    file.updatedAt = new Date().toISOString();
-    writeUtf8FileAtomicSync(location.filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
-    return file;
+  return withShellPolicyMutation(async () => {
+    await mkdir(dirname(location.filePath), { recursive: true, mode: PRIVATE_DIR_MODE });
+    return withFileLock(location.filePath, async () => {
+      const existing = await readProjectRulesFile(location);
+      const file: ProjectRulesFile = existing ?? {
+        version: 1,
+        projectRoot: location.projectRoot,
+        rules: [],
+        updatedAt: new Date().toISOString(),
+      };
+      const inert = inertRulePatterns(existing?.rules);
+      mutator(file);
+      file.rules = validateRuleList(location.filePath, file.rules, { specifiersOnly: true, keepInertWildcards: inert });
+      file.updatedAt = new Date().toISOString();
+      writeUtf8FileAtomicSync(location.filePath, `${JSON.stringify(file, null, 2)}\n`, 0o600);
+      return file;
+    });
   });
 }
 

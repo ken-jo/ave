@@ -8,13 +8,6 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "code-restore-conflict": "codeRewind.conflict",
   "invalid-rewind-mode": "codeRewind.invalidMode",
   // ── Trust / intent gate ──
-  "egress-grant-store-unreadable": "egressApprovalCard.storeUnreadable",
-  "invalid-egress-grant-destination": "formatIpcError.invalidInput",
-  "invalid-egress-grant-scope": "formatIpcError.invalidInput",
-  "invalid-egress-grant-workspace": "formatIpcError.invalidInput",
-  "invalid-egress-grant-conversation": "formatIpcError.invalidInput",
-  "invalid-egress-grant-tab": "formatIpcError.invalidInput",
-  "invalid-egress-grant-origin": "formatIpcError.invalidInput",
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",
   "process-entry-unconfined": "formatIpcError.processEntryUnconfined",
@@ -231,6 +224,22 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
 
   // ── Deferred queue lifecycle ──
   "not-found": "formatIpcError.notFound",
+  // ── Shell egress grants (ave:permissions:egress-grant*) ──
+  "egress-grant-store-unreadable": "formatIpcError.egressGrantStoreUnreadable",
+  "invalid-egress-grant-scope": "formatIpcError.invalidEgressGrantScope",
+  "invalid-egress-grant-destination": "formatIpcError.invalidEgressGrantDestination",
+  "invalid-egress-grant-workspace": "formatIpcError.invalidEgressGrantWorkspace",
+  "invalid-egress-grant-conversation": "formatIpcError.invalidEgressGrantConversation",
+  "invalid-egress-grant-tab": "formatIpcError.invalidEgressGrantTab",
+  "invalid-egress-grant-origin": "formatIpcError.invalidEgressGrantOrigin",
+  // ── Upstream proxy (ave:permissions:upstream-proxy-*, settings:update) ──
+  "invalid-upstream-proxy-mode": "formatIpcError.invalidUpstreamProxyMode",
+  "invalid-upstream-proxy-resolves-names": "formatIpcError.invalidUpstreamProxyResolvesNames",
+  "invalid-upstream-proxy-bypass": "formatIpcError.invalidUpstreamProxyBypass",
+  "invalid-upstream-proxy-url": "formatIpcError.invalidUpstreamProxyUrl",
+  "upstream-proxy-socks-unsupported": "formatIpcError.upstreamProxySocksUnsupported",
+  "upstream-proxy-url-required": "formatIpcError.upstreamProxyUrlRequired",
+  "upstream-proxy-settings-main-owned": "formatIpcError.upstreamProxySettingsMainOwned",
   // A terminal tab driven from a window other than the one that started its shell.
   "not-owner": "formatIpcError.notOwner",
   "stale-terminal-session": "formatIpcError.staleTerminalSession",

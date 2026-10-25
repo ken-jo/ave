@@ -1,3 +1,4 @@
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
@@ -44,7 +45,7 @@ describe("ensureAveScratchDir", () => {
     expect(verifyAveScratchDir(path)).toEqual({ ok: true, path });
   });
 
-  it("reports rather than adopts a pre-existing symbolic link at the scratch path", () => {
+  it.skipIf(!canCreateSymlinks())("reports rather than adopts a pre-existing symbolic link at the scratch path", () => {
     const root = freshRoot();
     const target = join(root, "elsewhere");
     mkdirSync(target, { mode: 0o700 });

@@ -42,6 +42,7 @@ import type {
 import type { SrtWinSpawn } from "@anthropic-ai/sandbox-runtime";
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
+import { prepareSrtWinExecutable, SrtWinIntegrityError } from "./srt-win-integrity.js";
 import { createRequire } from "node:module";
 import { dirname, win32 as win32Path } from "node:path";
 import {
@@ -75,7 +76,7 @@ type VerifyWindowsWfpEgressFn = (opts?: {
   readonly srtWin?: SrtWinSpawn;
 }) => Promise<unknown>;
 
-// ASRT 0.0.76: the install is ASYNC (installWindowsSandboxAsync) and takes an
+// ASRT 0.0.80: the install is ASYNC (installWindowsSandboxAsync) and takes an
 // explicit srt-win spawn descriptor. Keeping it async is what unfreezes the main
 // process during the modal UAC wait (issue #1608 class).
 type InstallWindowsSandboxAsyncFn = (opts: {
@@ -136,12 +137,12 @@ function resolveAsrtPackageRoot(): string {
  * descriptor built from the srt-win path SoT
  * ({@link getVendoredSrtWinExePath} in asrt-sandbox.ts).
  */
-async function loadSrtWin(): Promise<{
+async function loadSrtWin(runtime?: typeof import("@anthropic-ai/sandbox-runtime")): Promise<{
   mod: typeof import("@anthropic-ai/sandbox-runtime");
   srtWin: SrtWinSpawn;
 }> {
-  const mod = await import("@anthropic-ai/sandbox-runtime");
-  const srtWin = mod.resolveSrtWin({ path: getVendoredSrtWinExePath() });
+  const mod = runtime ?? await import("@anthropic-ai/sandbox-runtime");
+  const srtWin = mod.resolveSrtWin({ path: prepareSrtWinExecutable(getVendoredSrtWinExePath()) });
   return { mod, srtWin };
 }
 
@@ -344,7 +345,7 @@ export async function resolveAsrtWindowsReady(
   if (isAsrtWindowsReady(userState, wfpState)) return true;
   if (userState !== "ready" || wfpState !== "cannot-read") return false;
 
-  // ASRT 0.0.76 reports `cannot-read` when BFE enumeration is admin-gated.
+  // ASRT 0.0.80 reports `cannot-read` when BFE enumeration is admin-gated.
   // The non-elevated readiness proof is behavioral WFP egress verification.
   try {
     await verifyWindowsWfpEgress({
@@ -381,8 +382,40 @@ export async function readAsrtWindowsStatus(): Promise<SandboxWindowsStatusInfo>
     };
   }
 
-  const { mod, srtWin } = await loadSrtWin();
-  // ASRT 0.0.76: ONE `srt-win status` spawn returns BOTH the sandbox-user and
+  const { getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } = await import("../shared/ave-home.js");
+  const failure = getAveHomePrivacyFailure();
+  if (failure !== undefined) {
+    return {
+      applicable: true,
+      userState: null,
+      wfpState: null,
+      ready: false,
+      homePrivacyError: { path: failure.failedPath ?? failure.home, category: failure.category, extraPrincipals: failure.extraPrincipals,
+        approvedForSession: areExtensionsWithoutIsolationApproved() },
+      instructions: "",
+    };
+  }
+  const mod = await import("@anthropic-ai/sandbox-runtime");
+  let srtWin: SrtWinSpawn;
+  try {
+    ({ srtWin } = await loadSrtWin(mod));
+  } catch (error) {
+    if (!(error instanceof SrtWinIntegrityError) &&
+        (!(error instanceof mod.WindowsSandboxError) || error.code !== "srt_win_not_found")) {
+      throw error;
+    }
+    // Missing external helper/configuration is expected in proxy-only mode.
+    // Its absence says nothing about provisioned user/WFP state or MXC shells.
+    return {
+      applicable: true,
+      userState: null,
+      wfpState: null,
+      ready: false,
+      helperError: error instanceof SrtWinIntegrityError ? error.code : "srt-win-not-found",
+      instructions: mod.windowsInstallInstructions(undefined),
+    };
+  }
+  // ASRT 0.0.80: ONE `srt-win status` spawn returns BOTH the sandbox-user and
   // WFP state (checkWindowsSandboxStatusAsync), non-blocking — replaces the two
   // separate synchronous user + wfp probes.
   const { user, wfp } = await mod.checkWindowsSandboxStatusAsync({ srtWin });
@@ -439,10 +472,10 @@ export async function installAsrtWindowsSandbox(
     ({ mod, srtWin } = await loadSrtWin());
     runtime = dependencies.loadRuntime ? await dependencies.loadRuntime() : mod;
   } catch (error) {
-    return failedInstall(error, "unexpected");
+    return failedInstall(error, error instanceof SrtWinIntegrityError ? error.code : "unexpected");
   }
 
-  // ASRT 0.0.76: the install is ASYNC — the modal UAC prompt is still shown, but
+  // ASRT 0.0.80: the install is ASYNC — the modal UAC prompt is still shown, but
   // the main-process event loop stays live (spinners/timers keep running) rather
   // than freezing for the full consent wait (issue #1608 class). The srt-win
   // descriptor is explicit (no implicit vendored fallback since 0.0.67).
@@ -461,7 +494,7 @@ export async function installAsrtWindowsSandbox(
         log.warn({ errorCode: error.code, err: error }, "Windows sandbox install timed out; result unconfirmed");
         return { outcome: "timed-out" };
       }
-      // install_ambient_failed (ASRT 0.0.76 exit 17) lands here too: the WFP
+      // install_ambient_failed (ASRT 0.0.80 exit 17) lands here too: the WFP
       // filters and the sandbox user may both be in place, but the ambient
       // write-deny stamps on the stock world-writable system directories did
       // not. Treating that as installed would be dishonest in the dangerous

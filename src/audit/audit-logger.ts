@@ -367,8 +367,9 @@ export interface AuditSearchFilter {
  * DEDICATED `<date>.sandbox-gate.jsonl` channel (mirrors the channel-separation
  * convention of `*.permission-shadow.jsonl` / `*.sandbox.jsonl`). This lets the
  * real-world sandbox activation success / degrade / abort / skip rates be
- * read per platform. Platform defaults live in settings-defaults. Plain JSONL,
- * separate from the HMAC-chained
+ * read per platform for the people who run with `osToolSandbox` (on by default
+ * on macOS/Linux) or turn `pluginWorkerConfinement` on (off by default
+ * everywhere — see settings-defaults). Plain JSONL, NOT the HMAC-chained
  * audit-grade channel.
  */
 export interface SandboxGateAuditEntry {
@@ -379,8 +380,9 @@ export interface SandboxGateAuditEntry {
   platform: NodeJS.Platform;
   /**
    * Which on-signal drove the gate decision:
-   *   - `explicit-env`     — `AVE_SANDBOX_ENABLED=1` (deliberate, fail-closed).
-   *   - `default-settings` — the `osToolSandbox` setting / shipped default.
+   *   - `explicit-env`     — `AVE_SANDBOX_ENABLED=1` or `AVE_PLUGIN_WORKER_CONFINEMENT=1`
+   *                          (deliberate, fail-closed).
+   *   - `default-settings` — the `osToolSandbox` or `pluginWorkerConfinement` setting / shipped default.
    *   - `off`              — neither signal on (gate off → skip).
    */
   onSignal: "explicit-env" | "default-settings" | "off";

@@ -39,6 +39,12 @@ vi.mock("node:child_process", () => ({
     execFileSyncMock(cmd, args, opts),
 }));
 
+// Lifecycle fixtures intercept the launch; real image verification has native tests.
+vi.mock("../../permissions/srt-win-integrity.js", async (original) => ({
+  ...await original<typeof import("../../permissions/srt-win-integrity.js")>(),
+  assertSrtWinSpawnIntegrity: vi.fn(),
+}));
+
 const SANDBOX_HOME = "/tmp/ave-sandbox-home-test";
 const sandboxHomeCleanupMock = vi.fn();
 vi.mock("../../permissions/sandbox-process-home.js", () => ({
@@ -78,7 +84,9 @@ vi.mock("../../permissions/asrt-sandbox.js", async () => {
     typeof import("../../permissions/asrt-sandbox.js")
   >("../../permissions/asrt-sandbox.js");
   return {
+    assertExtensionStartAllowed: actual.assertExtensionStartAllowed,
     isAsrtSandboxActive: () => gateActive,
+    isPluginWorkerConfinementActive: () => gateActive,
     wrapWorkerCommand: (command: string, options?: unknown) =>
       wrapWorkerCommandMock(command, options),
     cleanupAsrtSandboxAfterCommand: () => cleanupMock(),

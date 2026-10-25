@@ -49,7 +49,9 @@ import { canonicalizePathForMatch, caseFoldForMatch } from "../permissions/sensi
 import { isPathWithin } from "../plugins/plugin-storage-containment.js";
 import { getHostShellExecutionPlan, getIssuedHostShellExecutionPlanGeneration, getSandboxGeneration, isIssuedHostShellExecutionPlan } from "../permissions/sandbox-capability.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
-import { cleanupAsrtSandboxAfterCommand, isAsrtSandboxActive } from "../permissions/asrt-sandbox.js";
+import {
+  assertExtensionStartAllowed, cleanupAsrtSandboxAfterCommand, isPluginWorkerConfinementActive,
+} from "../permissions/asrt-sandbox.js";
 import { createSandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import type { EgressInvocation, WorkerEgressOwner } from "../permissions/egress-invocations.js";
 import {
@@ -300,10 +302,24 @@ export async function runOneHookScript(
   }
 
   assertManagedChildProcessAdmissionOpen("hook:script");
+  if (confinement) {
+    try {
+      assertExtensionStartAllowed();
+    } catch (error) {
+      return deny(`sandbox unavailable: ${(error as Error).message}`);
+    }
+  }
   let cleanupWrap: (() => void) | undefined;
   let wrappedEgress: EgressInvocation | undefined;
   let windowsSpawn: WindowsBundledSpawn | undefined;
-  const sandboxEnabled = admittedPlan ? admittedPlan.mode === "asrt" : isAsrtSandboxActive();
+  // Each hook reads its own scope's gate (sandbox-scope-gates.test.ts). A
+  // bundled hook is an extension process: it is confined only while
+  // plugin-worker confinement is active. A user hook runs the user's own
+  // command, so it takes the host-shell plan: the one it was admitted under,
+  // or the live plan when no admission ran.
+  const sandboxEnabled = confinement
+    ? isPluginWorkerConfinementActive()
+    : (admittedPlan ?? getHostShellExecutionPlan()).mode === "asrt";
   const scriptAnchor = resolveScriptAnchor(runnable.command);
   const canonicalAnchor = scriptAnchor === null ? undefined : resolve(canonicalizePathForMatch(resolve(cwd, scriptAnchor)));
   // Only an exact script inside the protected hook directory gets a read
@@ -399,6 +415,7 @@ export async function runOneHookScript(
     let child: ChildProcess;
     try {
       child = windowsSpawn?.child ?? spawn(spawnCmd, spawnArgs, {
+        windowsHide: true,
         cwd,
         // Forward only the stripped environment and host-owned hook variables.
         env: spawnEnv,

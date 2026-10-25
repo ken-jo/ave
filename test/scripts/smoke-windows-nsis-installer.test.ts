@@ -1670,14 +1670,21 @@ describe("Windows NSIS installer smoke contracts", () => {
       dependencies?: Record<string, string>;
       build?: { nsis?: { deleteAppDataOnUninstall?: boolean } };
     };
-    // Direct backend CLI calls are outside compiler coverage. Runtime upgrades
-    // must recheck acl recover --force, uninstall, cancellation exit 10, and
-    // ambient-deny cleanup without --keep-user (the installer never passes it).
-    // Verified for 0.0.80: the production source delta from 0.0.76 only merges
-    // ACL batch targets (source subtree e29778f -> 2d21779; Cargo.toml and
-    // Cargo.lock unchanged). Recovery, uninstall and cancellation are unchanged.
-    // Ambient cleanup remains best effort; failed paths stay recorded for retry.
-    // Bump this guard only after source or native CLI verification.
+    // Deliberate drift guard: installer.nsh drives srt-win.exe directly
+    // (`acl recover --force`, then `uninstall`), a CLI contract no type checker
+    // covers. An ASRT bump must re-verify against the newly vendored binary that
+    // both subcommands still exist, that `uninstall` still reports user
+    // cancellation as exit 10, and that the teardown still clears everything the
+    // install stamped — 0.0.73 added ambient write-deny stamps on the stock
+    // world-writable system dirs, which `uninstall` removes (and `--keep-user`
+    // deliberately keeps, a flag this installer does not pass). Verified for
+    // 0.0.80: 0.0.75 through 0.0.79 build srt-win.exe from the same Rust sources
+    // (upstream `vendor/srt-win-src/src` e29778f, `Cargo.toml` 8493e7d and
+    // `Cargo.lock` aa84cda). 0.0.80 (`src` 2d21779, same `Cargo.toml` and
+    // `Cargo.lock`) changes one function, by one commit (#656): a batch of ACE
+    // targets is merged per (path, kind) so a path in both deny lists keeps its
+    // read deny. `acl recover`, `uninstall` and its exit codes are untouched.
+    // Bump this only together with that check.
     expect(packageJson.dependencies?.["@anthropic-ai/sandbox-runtime"]).toBe(
       "0.0.80",
     );

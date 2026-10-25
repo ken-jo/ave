@@ -58,7 +58,8 @@ import {
   trackManagedChildProcess,
 } from "../main/managed-child-processes.js";
 import {
-  isAsrtSandboxActive,
+  isPluginWorkerConfinementActive,
+  assertExtensionStartAllowed,
   cleanupAsrtSandboxAfterCommand,
 } from "../permissions/asrt-sandbox.js";
 import { bundledWrappedEnv, spawnWindowsBundledProcess, wrapBundledCommand } from "../sandbox/wrap-bundled-command.js";
@@ -2167,7 +2168,8 @@ class StdioTransport implements McpTransport {
     // hands the server to the host's stdio relay under a held ACL grant
     // (openWrappedWindows).
     // Gate OFF ⇒ the plain spawn below is UNCHANGED.
-    if (isAsrtSandboxActive()) {
+    assertExtensionStartAllowed();
+    if (isPluginWorkerConfinementActive()) {
       try {
         await this.openWrapped(spawnCommand, baseEnv);
         return;
@@ -2209,7 +2211,7 @@ class StdioTransport implements McpTransport {
    * This is a deny-list of known-sensitive subpaths, NOT a read-allow jail:
    * ASRT's read model is deny-only, so a path not on the list stays
    * readable (the worker still needs cwd / its sandbox root / tmp). Network
-   * egress is governed by the invocation-attributed worker callback. Only invoked when {@link isAsrtSandboxActive}.
+   * egress is governed by the invocation-attributed worker callback. Only invoked when {@link isPluginWorkerConfinementActive}.
    */
   private async openWrapped(
     spawnCommand: { command: string; args: string[] },

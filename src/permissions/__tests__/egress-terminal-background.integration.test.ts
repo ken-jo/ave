@@ -62,7 +62,7 @@ describe.skipIf(shouldSkipNativeSandboxTests())("terminal background egress thro
     // Even a host present in both worker sources must still ask in the terminal.
     setWorkerEgressAllowlists({ byExtension: new Map([["fixture-plugin", ["127.0.0.1"]]]), modelEndpointHosts: ["127.0.0.1"] });
     useAppOwnedSandboxTempRoot();
-    callback = vi.fn(createEgressAskRuntimeCallback({ approvalGate: gate }));
+    callback = vi.fn(createEgressAskRuntimeCallback({ approvalGate: gate, shellAskEnabled: () => true }));
     await initializeRequiredSandbox({ allowedDomains: [] }, callback);
     setActiveSandboxCapability({
       kind: "asrt", confidence: "verified", platform: process.platform,

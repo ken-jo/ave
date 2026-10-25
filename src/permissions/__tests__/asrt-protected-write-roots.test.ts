@@ -37,6 +37,10 @@ import {
   wrapToolCommand,
 } from "../asrt-sandbox.js";
 import { spawnConfinedChild } from "../confined-child.js";
+import {
+  __resetSandboxRequestedAtBootForTest,
+  setPluginWorkerConfinementRequestedAtBoot,
+} from "../sandbox-capability.js";
 import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
@@ -309,7 +313,8 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
   });
 });
 
-describe("a confined child cannot reach user data through a grant", () => {
+// These live probes require POSIX shells and per-process filesystem isolation.
+describe.skipIf(hostPlatform === "win32")("a confined child cannot reach user data through a grant", () => {
   let root: string;
   let userData: string;
   let partitions: string;
@@ -349,9 +354,13 @@ describe("a confined child cannot reach user data through a grant", () => {
     writeFileSync(join(userData, "Cookies"), SECRET);
     writeFileSync(join(partitions, "cookie"), SECRET);
     await initializeAsrtSandbox({ allowedDomains: [], strictAllowlist: true, userDataDir: userData, denyRead: [customDeny] });
+    // The confined-child and bundled wraps below serve extension processes,
+    // which are wrapped only while plugin-worker confinement was requested.
+    setPluginWorkerConfinementRequestedAtBoot(true);
   });
 
   afterAll(async () => {
+    __resetSandboxRequestedAtBootForTest();
     if (isAsrtSandboxActive()) await resetAsrtSandbox();
     if (!sandboxRuns) return;
     if (previousAveHome === undefined) delete process.env.AVE_HOME;

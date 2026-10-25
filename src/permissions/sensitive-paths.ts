@@ -203,6 +203,15 @@ export const SENSITIVE_PATH_ENTRIES: readonly SensitiveEntry[] = Object.freeze([
   { anchor: "home", segments: [".docker", "config.json"], kind: "file", why: "Docker registry credentials" },
   { anchor: "home", segments: [".npmrc"], kind: "file", why: "npm registry auth token" },
   { anchor: "home", segments: [".netrc"], kind: "file", why: "generic machine credentials" },
+  { anchor: "home", segments: [".curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: ["_curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: ["curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: [".config", "curlrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "home", segments: [".wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  // Windows wget reads wget.ini beside its executable; the host guard matches it anywhere.
+  { anchor: "home", segments: ["wget.ini"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "root", segments: ["etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
+  { anchor: "root", segments: ["usr", "local", "etc", "wgetrc"], kind: "file", why: "automatic transfer options can redirect file access" },
   { anchor: "home", segments: [".pgpass"], kind: "file", why: "PostgreSQL credentials" },
   // ── Keychains, keyrings and password managers ───────────────────────
   // `Library/Keychains` and `Library/Cookies` were once a recorded sandbox

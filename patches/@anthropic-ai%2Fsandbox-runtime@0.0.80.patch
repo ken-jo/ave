@@ -1,4 +1,4 @@
-Two backports and eight host additions onto @anthropic-ai/sandbox-runtime 0.0.80.
+Two backports and eight Ave additions onto @anthropic-ai/sandbox-runtime 0.0.80.
 Drop each part when a released version carries it, and the whole patch (and
 the patchedDependencies entry in package.json) when all are released and Ave
 pins that version.
@@ -172,16 +172,20 @@ the installed package.
    remain unclaimed: that identity was not recorded. Debug logging reports
    the target for inspection instead of risking removal of a replacement.
 
-9. Non-device write roots come only from host policy; device-only runtime defaults remain.
+8. Caller-owned writes: default write paths contain only device paths. All
+   filesystem write roots come from caller policy.
 
-8. Per-invocation Unix socket denial overrides worker socket grants for shell commands.
+9. Unix socket denial (Ave): `WrapWithSandboxOptions.denyUnixSockets` refuses
+   Unix sockets for one invocation, overriding shared worker socket grants
+   for shell commands.
 
-10. Linux mandatory Git controls are mounted read-only only when they exist.
-    Missing controls stay absent during preparation; the host quarantines newly
-    created metadata after execution. Other mandatory missing-path denies remain.
+10. Linux mandatory Git controls (Ave) are mounted read-only only when they
+    exist. Missing controls stay absent during preparation; the host
+    quarantines newly created metadata after execution. Other mandatory
+    missing-path denies remain.
 
 diff --git a/dist/index.d.ts b/dist/index.d.ts
-index 46dc2732e..8a03e5670 100644
+index 46dc2732e7bb6af64d3ceec733c3acf1ec8e85f0..8a03e567036ea348165ebdc5821f3b0b6aafc178 100644
 --- a/dist/index.d.ts
 +++ b/dist/index.d.ts
 @@ -1,9 +1,9 @@
@@ -197,7 +201,7 @@ index 46dc2732e..8a03e5670 100644
  export type { SandboxViolationEvent } from './sandbox/macos-sandbox-utils.js';
  export { type SandboxDependencyCheck, LinuxSandboxProfileError, type LinuxSandboxProfileErrorCode, } from './sandbox/linux-sandbox-utils.js';
 diff --git a/dist/sandbox/http-proxy.d.ts b/dist/sandbox/http-proxy.d.ts
-index bb9071e3a..8eebf8ec4 100644
+index bb9071e3ab671dd5424e1cbca4e026a7f85688f1..8eebf8ec4a00944e3f17defc63c73900230d873f 100644
 --- a/dist/sandbox/http-proxy.d.ts
 +++ b/dist/sandbox/http-proxy.d.ts
 @@ -8,7 +8,7 @@ import { type TunnelTimeouts } from './tls-terminate-proxy.js';
@@ -260,7 +264,7 @@ index bb9071e3a..8eebf8ec4 100644
       * Per-session bearer token. When set, every CONNECT and absolute-URI
       * request must carry `Proxy-Authorization: Basic
 diff --git a/dist/sandbox/http-proxy.js b/dist/sandbox/http-proxy.js
-index 7ad12c3c8..638a2d66d 100644
+index 7ad12c3c8529987ba0a045103b8b30be09df0c99..638a2d66d315042991d73fb53d8430688c9dc50c 100644
 --- a/dist/sandbox/http-proxy.js
 +++ b/dist/sandbox/http-proxy.js
 @@ -15,7 +15,7 @@ const ALLOWLIST_DENY = [
@@ -472,7 +476,7 @@ index 7ad12c3c8..638a2d66d 100644
                  if (res.destroyed || req.socket.destroyed) {
                      // Client went away during the dial.
 diff --git a/dist/sandbox/linux-sandbox-utils.d.ts b/dist/sandbox/linux-sandbox-utils.d.ts
-index 53c4a2643..3a43a5fd7 100644
+index 53c4a26438ebb3658b6ec0c64a28580f6010f407..3a43a5fd751742ffb876783aeba73f18f0d4ed69 100644
 --- a/dist/sandbox/linux-sandbox-utils.d.ts
 +++ b/dist/sandbox/linux-sandbox-utils.d.ts
 @@ -16,6 +16,12 @@ export interface LinuxSandboxParams {
@@ -489,7 +493,7 @@ index 53c4a2643..3a43a5fd7 100644
      socksSocketPath?: string;
      httpProxyPort?: number;
 diff --git a/dist/sandbox/linux-sandbox-utils.js b/dist/sandbox/linux-sandbox-utils.js
-index b3acba671..37148f953 100644
+index b3acba671fe6356ad5d9e187ca13753f345f931b..37148f95320768342b2dd8837b75ead011f7f96d 100644
 --- a/dist/sandbox/linux-sandbox-utils.js
 +++ b/dist/sandbox/linux-sandbox-utils.js
 @@ -260,11 +260,11 @@ function makeableMountPoint(dest, wanted) {
@@ -1008,7 +1012,7 @@ index b3acba671..37148f953 100644
 \ No newline at end of file
 +//# sourceMappingURL=linux-sandbox-utils.js.map
 diff --git a/dist/sandbox/macos-sandbox-utils.d.ts b/dist/sandbox/macos-sandbox-utils.d.ts
-index 8af5e0304..cb475685d 100644
+index 8af5e03041b27d060b0027278fb0567745b06f2f..cb475685df0ae8d5ae7d00d9009ba2f1f1679ad6 100644
 --- a/dist/sandbox/macos-sandbox-utils.d.ts
 +++ b/dist/sandbox/macos-sandbox-utils.d.ts
 @@ -48,6 +48,8 @@ export interface MacOSSandboxParams {
@@ -1028,7 +1032,7 @@ index 8af5e0304..cb475685d 100644
  //# sourceMappingURL=macos-sandbox-utils.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/macos-sandbox-utils.js b/dist/sandbox/macos-sandbox-utils.js
-index 0e598b612..2743f0463 100644
+index 0e598b612d84d24b09ec2ab0d7ccc9b009c9457b..2743f0463df672bfbc02d8f2035ab31ed6d0ea3b 100644
 --- a/dist/sandbox/macos-sandbox-utils.js
 +++ b/dist/sandbox/macos-sandbox-utils.js
 @@ -750,7 +750,7 @@ function generateWriteRules(config, logTag, allowGitConfig, writeRoots) {
@@ -1109,7 +1113,7 @@ index 0e598b612..2743f0463 100644
          enableWeakerNetworkIsolation,
          allowAppleEvents,
 diff --git a/dist/sandbox/mux-proxy.d.ts b/dist/sandbox/mux-proxy.d.ts
-index 7034511ff..6b1678f3d 100644
+index 7034511ff3a57aa653950dc8f267bf6d37c82d93..6b1678f3d12d98ced508fa0999e347bd078a9245 100644
 --- a/dist/sandbox/mux-proxy.d.ts
 +++ b/dist/sandbox/mux-proxy.d.ts
 @@ -24,6 +24,8 @@ export interface MuxProxyOptions {
@@ -1122,7 +1126,7 @@ index 7034511ff..6b1678f3d 100644
  export interface MuxProxyServer {
      /** The front-end TCP listener. Call `.listen()` on this. */
 diff --git a/dist/sandbox/mux-proxy.js b/dist/sandbox/mux-proxy.js
-index 18e2472cb..43c615116 100644
+index 18e2472cb5b5f40b74c31ed9181aaa51b7f3b73a..43c61511641d87c89a005118a2cd388f9a509317 100644
 --- a/dist/sandbox/mux-proxy.js
 +++ b/dist/sandbox/mux-proxy.js
 @@ -19,9 +19,9 @@ import { closeAfterFlush } from './tls-terminate-proxy.js';
@@ -1149,7 +1153,7 @@ index 18e2472cb..43c615116 100644
                  // unlinking; clear any stale file so listen() doesn't EADDRINUSE.
                  await unlink(path).catch(() => { });
 diff --git a/dist/sandbox/parent-proxy.d.ts b/dist/sandbox/parent-proxy.d.ts
-index c3c6fcb7e..0e5f5fae9 100644
+index c3c6fcb7e86b3d932e3a7e9e63616562af770ae8..0e5f5fae9ec6e3c2accee790e7cdaa2361124e95 100644
 --- a/dist/sandbox/parent-proxy.d.ts
 +++ b/dist/sandbox/parent-proxy.d.ts
 @@ -55,6 +55,8 @@ export interface ConnectTunnelOptions {
@@ -1215,7 +1219,7 @@ index c3c6fcb7e..0e5f5fae9 100644
  export declare function formatAuthority(host: string, port: number, defaultPort: number): string;
  export interface DirectRequestOptions {
 diff --git a/dist/sandbox/parent-proxy.js b/dist/sandbox/parent-proxy.js
-index 1f39c7792..1115d5421 100644
+index 1f39c7792c7abe807f54aa8cd9f6ed769a95e86e..1115d54217ff4dda69f0aab01af5eacb086d6771 100644
 --- a/dist/sandbox/parent-proxy.js
 +++ b/dist/sandbox/parent-proxy.js
 @@ -201,6 +201,11 @@ export function openConnectTunnel(opts) {
@@ -1339,7 +1343,7 @@ index 1f39c7792..1115d5421 100644
  }
  // ---------------------------------------------------------------------------
 diff --git a/dist/sandbox/sandbox-config.d.ts b/dist/sandbox/sandbox-config.d.ts
-index 6a929a0f2..ab869df25 100644
+index 6a929a0f27b9a4a079766d1f8744eaf5bd992a9c..ab869df250a9ecb60719f82cace8cdf68d4b71b9 100644
 --- a/dist/sandbox/sandbox-config.d.ts
 +++ b/dist/sandbox/sandbox-config.d.ts
 @@ -43,14 +43,17 @@ declare const ParentProxyConfigSchema: z.ZodObject<{
@@ -1461,7 +1465,7 @@ index 6a929a0f2..ab869df25 100644
      };
      filesystem: {
 diff --git a/dist/sandbox/sandbox-config.js b/dist/sandbox/sandbox-config.js
-index d52e0f809..2f993bebb 100644
+index d52e0f809e13d5515ab80fb52fe437eccff778f6..2f993bebb2361b569ebf10b11c2a4daa57eb7a2b 100644
 --- a/dist/sandbox/sandbox-config.js
 +++ b/dist/sandbox/sandbox-config.js
 @@ -110,6 +110,12 @@ const ParentProxyConfigSchema = z.object({
@@ -1478,7 +1482,7 @@ index d52e0f809..2f993bebb 100644
  /**
   * Schema for the access mode of a declared credential source.
 diff --git a/dist/sandbox/sandbox-manager.d.ts b/dist/sandbox/sandbox-manager.d.ts
-index 5c46e7a46..30f8220ea 100644
+index 5c46e7a464d33675bbfedafd0780cfef1f30a9e4..30f8220eaf27af409ec37f41e81355720485d0c1 100644
 --- a/dist/sandbox/sandbox-manager.d.ts
 +++ b/dist/sandbox/sandbox-manager.d.ts
 @@ -1,3 +1,11 @@
@@ -1630,7 +1634,7 @@ index 5c46e7a46..30f8220ea 100644
  //# sourceMappingURL=sandbox-manager.d.ts.map
 \ No newline at end of file
 diff --git a/dist/sandbox/sandbox-manager.js b/dist/sandbox/sandbox-manager.js
-index 810b0aa54..4586ed252 100644
+index 810b0aa54d3acaa0ebb75de8268c58f8ff9add94..4586ed2527b7291baacc4468522f540556ea5695 100644
 --- a/dist/sandbox/sandbox-manager.js
 +++ b/dist/sandbox/sandbox-manager.js
 @@ -16,17 +16,21 @@ import * as fs from 'fs';
@@ -3293,7 +3297,7 @@ index 810b0aa54..4586ed252 100644
      cleanupAfterCommand,
      reset,
 diff --git a/dist/sandbox/sandbox-schemas.d.ts b/dist/sandbox/sandbox-schemas.d.ts
-index 4c0be53fa..2eb129ab7 100644
+index 4c0be53fa68af536b0dcf49192421651d7b51476..2eb129ab7d56f8537980f1f39ccdf761c4ea77d9 100644
 --- a/dist/sandbox/sandbox-schemas.d.ts
 +++ b/dist/sandbox/sandbox-schemas.d.ts
 @@ -151,8 +151,75 @@ export type NetworkHostPattern = {
@@ -3374,8 +3378,64 @@ index 4c0be53fa..2eb129ab7 100644
 +};
  //# sourceMappingURL=sandbox-schemas.d.ts.map
 \ No newline at end of file
+diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
+index 3c92084c9e46fb8bec96a25789e0fdec69965ecb..3384c42609399cdd4b59318af6e07a41f3fdb425 100644
+--- a/dist/sandbox/sandbox-utils.js
++++ b/dist/sandbox/sandbox-utils.js
+@@ -515,44 +515,15 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
+     '.npm/_logs',
+     '.claude/debug',
+ ];
+-/**
+- * Get recommended system paths that should be writable for commands to work properly
+- *
+- * WARNING: These default paths are intentionally broad for compatibility but may
+- * allow access to files from other processes. In highly security-sensitive
+- * environments, you should configure more restrictive write paths.
+- *
+- * With no argument this is the whole list. Given the read rules of a
+- * filesystem policy, a home convenience directory (~/.npm/_logs,
+- * ~/.claude/debug) is left out when a `denyRead` entry names it or a
+- * directory above it: kept, it would be bound back over that deny on Linux
+- * (readable and writable again) and stay writable on macOS, so the explicit
+- * denyRead wins over the implicit write allow. It is kept when an `allowRead`
+- * entry beneath that deny re-opens it, because the caller has already made it
+- * readable. A caller who wants it writable regardless lists it in
+- * `allowWrite`. What the sandbox itself needs (stdio, /tmp/claude) is never
+- * left out.
+- *
+- * Pass the entries as configured, not expanded. `dir/**` counts as `dir`,
+- * and a glob covers a directory when it matches that directory or one above
+- * it; nothing is listed from disk. On Linux, where the backend expands globs
+- * against the disk, two things follow: a glob that matches nothing there
+- * still counts (which only ever drops a convenience path), and a glob whose
+- * match is a symlink to one of these directories is not seen. A glob
+- * `allowRead` entry is not counted as re-opening anything.
+- *
+- * An entry marked `{ path, literal: true }` is a name whatever it holds. A
+- * spelling is read by its characters alone: the name it also is when that
+- * exists on disk is for the caller to add as a marked entry.
+- */
++/** Device defaults only; filesystem write roots come from caller policy. */
+ export function getDefaultWritePaths(readRules) {
+-    const home = homedir();
+-    const keptDirs = !readRules || readRules.denyRead.length === 0
+-        ? HOME_CONVENIENCE_WRITE_DIRS
+-        : homeDirsNotReadDenied(home, readRules.denyRead, readRules.allowRead);
+     return [
+-        ...SANDBOX_OWN_WRITE_PATHS,
+-        ...keptDirs.map(rel => path.join(home, rel)),
++        '/dev/stdout',
++        '/dev/stderr',
++        '/dev/null',
++        '/dev/tty',
++        '/dev/dtracehelper',
++        '/dev/autofs_nowait',
+     ];
+ }
+ /**
 diff --git a/dist/sandbox/socks-proxy.d.ts b/dist/sandbox/socks-proxy.d.ts
-index a4ba5d4f7..5c4284723 100644
+index a4ba5d4f755ff3c47e3c0b005e97eb1e87ea0c2a..5c42847231dd55c0f594a973a51aebd87c3c25dc 100644
 --- a/dist/sandbox/socks-proxy.d.ts
 +++ b/dist/sandbox/socks-proxy.d.ts
 @@ -1,12 +1,12 @@
@@ -3407,7 +3467,7 @@ index a4ba5d4f7..5c4284723 100644
       * Per-session token (same value as the HTTP proxy's). When set, the
       * server requires SOCKS5 username/password auth and only accepts
 diff --git a/dist/sandbox/socks-proxy.js b/dist/sandbox/socks-proxy.js
-index 760a10b1d..f5d374530 100644
+index 760a10b1d1c475a7636ff78092d3c9daaafe7335..f5d3745305c9b477df293642547f285d51760b63 100644
 --- a/dist/sandbox/socks-proxy.js
 +++ b/dist/sandbox/socks-proxy.js
 @@ -1,7 +1,7 @@
@@ -3451,26 +3511,3 @@ index 760a10b1d..f5d374530 100644
          open
              .then(upstream => {
              upstreamRef = upstream;
-diff --git a/dist/sandbox/sandbox-utils.js b/dist/sandbox/sandbox-utils.js
-index 3c92084c9..86463952d 100644
---- a/dist/sandbox/sandbox-utils.js
-+++ b/dist/sandbox/sandbox-utils.js
-@@ -545,15 +545,9 @@ const HOME_CONVENIENCE_WRITE_DIRS = [
-  * spelling is read by its characters alone: the name it also is when that
-  * exists on disk is for the caller to add as a marked entry.
-  */
--export function getDefaultWritePaths(readRules) {
--    const home = homedir();
--    const keptDirs = !readRules || readRules.denyRead.length === 0
--        ? HOME_CONVENIENCE_WRITE_DIRS
--        : homeDirsNotReadDenied(home, readRules.denyRead, readRules.allowRead);
--    return [
--        ...SANDBOX_OWN_WRITE_PATHS,
--        ...keptDirs.map(rel => path.join(home, rel)),
--    ];
-+export function getDefaultWritePaths() {
-+    // Non-device write roots are granted only by the host policy.
-+    return ['/dev/stdout', '/dev/stderr', '/dev/null', '/dev/tty', '/dev/dtracehelper', '/dev/autofs_nowait'];
- }
- /**
-  * The {@link HOME_CONVENIENCE_WRITE_DIRS} no `denyRead` entry covers, or

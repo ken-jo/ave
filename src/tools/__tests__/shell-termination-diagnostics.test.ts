@@ -1,5 +1,7 @@
 import type { ToolOutputCapture } from "../../shared/tool-output-artifact.js";
 import { ChildProcess, spawn } from "node:child_process";
+import { readdirSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { t } from "../../i18n/index.js";
@@ -21,7 +23,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (importOriginal) => ({
 
 import { forceKillManagedChildProcess } from "../../main/managed-child-processes.js";
 import * as sandbox from "../../permissions/asrt-sandbox.js";
-import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { __resetActiveSandboxCapabilityForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
 import { POWER_SHELL_AST_PARSER } from "../powershell-ast.js";
 import { BashTool, PowerShellTool, backgroundShellManager as manager, createBashOutputTool, createBashKillTool, endShellSession } from "../shell-tools.js";
 
@@ -45,8 +47,9 @@ afterEach(() => {
 
 describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
   describe.each(["bash", "powershell"] as const)("%s", (dialect) => {
+    const temporaryRoots = new Set<string>();
     async function start(captureFactory?: () => ToolOutputCapture, failure?: "abort" | "empty" | "sync-throw") {
-      setSandboxRequestedAtBoot(route === "sandbox");
+      setShellSandboxRequestedAtBoot(route === "sandbox");
       if (route === "sandbox") setActiveSandboxCapability({
         kind: "asrt", confidence: "verified", platform: process.platform,
         reason: "Controlled wrapper", confines: { filesystem: true, process: true, network: true },
@@ -75,6 +78,18 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
       });
       await vi.advanceTimersByTimeAsync(0);
       if (failure === undefined) expect(child.listenerCount("close")).toBeGreaterThan(0);
+      if (failure === undefined && route === "sandbox" && dialect === "bash") {
+        const env = vi.mocked(spawn).mock.calls.at(-1)?.[2]?.env;
+        expect(env?.TMPDIR).toBeTypeOf("string");
+        const temporary = env!.TMPDIR!;
+        expect(env!.TMP).toBe(temporary);
+        expect(env!.TEMP).toBe(temporary);
+        expect(dirname(temporary)).toBe(env!.HOME);
+        expect(basename(temporary)).toMatch(/^shell-tmp-/);
+        expect(readdirSync(temporary)).toEqual([]);
+        expect(temporaryRoots.has(temporary)).toBe(false);
+        temporaryRoots.add(temporary);
+      }
       return { child, controller, pending };
     }
 

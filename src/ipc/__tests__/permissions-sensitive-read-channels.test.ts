@@ -50,6 +50,7 @@ const SENSITIVE_READ_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]
   ["auditShow", PERMISSIONS.auditShow, [10]],
   ["auditVerify", PERMISSIONS.auditVerify, []],
   ["hookTrustList", PERMISSIONS.hookTrustList, []],
+  ["egressDenialsRecent", PERMISSIONS.egressDenialsRecent, []],
 ];
 
 beforeEach(() => {

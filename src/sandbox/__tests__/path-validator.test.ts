@@ -6,6 +6,7 @@
  * afterEach to keep the test environment hermetic.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import {
   mkdtempSync,
   mkdirSync,
@@ -65,7 +66,8 @@ describe("validateSandboxPath", () => {
     }
   });
 
-  it.each(["file", "directory"])("denies a dangling %s symlink before creating outside the sandbox", (kind) => {
+  it.for(["file", "directory"])("denies a dangling %s symlink before creating outside the sandbox", (kind, context) => {
+    if (kind === "file" && !canCreateSymlinks()) context.skip(); // File links require host permission.
     const link = join(sandboxCwd, "link");
     const target = join(outsideDir, "missing");
     symlinkSync(target, link, kind === "directory" ? dirLinkType : "file");

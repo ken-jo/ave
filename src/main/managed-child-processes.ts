@@ -66,7 +66,7 @@ export function spawnManaged(
   // `spawn()` imports outside of `managed-child-processes.ts` should be
   // flagged by a future lint rule (`no-restricted-imports` allowlisting
   // this module only).
-  const child = spawn(command, args, spawnOptions);
+  const child = spawn(command, args, { windowsHide: true, ...spawnOptions });
   const inferredGroupKill =
     spawnOptions.detached === true && process.platform !== "win32";
   trackManagedChildProcess(child, {
