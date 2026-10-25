@@ -15,6 +15,7 @@ import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+import * as globMatcher from "../../lib/glob-matcher.js";
 import * as sandboxWritePolicy from "../sandbox-write-policy.js";
 import * as bareRepositoryCleanup from "../sandbox-bare-repository-cleanup.js";
 import { openEgressInvocation } from "../egress-invocations.js";
@@ -156,6 +157,40 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     expect(cleanup()).toContain(JSON.stringify(control));
     expect(existsSync(control)).toBe(false);
     expect(existsSync(marker)).toBe(true);
+  });
+
+  it("compiles exclusion patterns once, so the sweep's cost does not grow per scanned entry", async () => {
+    const base = realpathSync(mkdtempSync(join(tmpdir(), "asrt-sweep-cost-")));
+    temporaryRoots.push(base);
+    const project = join(base, "project");
+    // 20 x 20 directories within the scan depth: 420 entries the before and
+    // after sweeps both visit and test against every exclusion pattern.
+    for (let outer = 0; outer < 20; outer += 1) {
+      for (let inner = 0; inner < 20; inner += 1) mkdirSync(join(project, `d${outer}`, `e${inner}`), { recursive: true });
+    }
+    const repository = join(project, "d7", "e3");
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    let snapshot: sandboxWritePolicy.SandboxGitControlSnapshot | undefined;
+    const compile = vi.spyOn(globMatcher, "compileGlobMatcher");
+    buildPerCommandSandboxCustomConfig({ allowWrite: [project], denyWrite: [join(base, "elsewhere", "**", "private-*")] }, undefined,
+      value => { snapshot = value; });
+    expect(snapshot).toBeDefined();
+    const compiledAtBuild = compile.mock.calls.length;
+    expect(compiledAtBuild).toBeGreaterThan(0);
+    setProcessPlatform(ORIGINAL_PLATFORM);
+    const match = vi.spyOn(globMatcher, "globMatch");
+    const cleanup = await bareRepositoryCleanup.prepareSandboxBareRepositoryCleanup([project], "sweep-cost", snapshot);
+    mkdirSync(join(repository, ".git", "hooks"), { recursive: true });
+    writeFileSync(join(repository, ".git", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(repository, ".git", "hooks", "pre-commit"), "created during command\n");
+    const notice = cleanup();
+    // The new control is still found and quarantined.
+    expect(notice).toContain(JSON.stringify(join(repository, ".git")));
+    expect(existsSync(join(repository, ".git", "hooks", "pre-commit"))).toBe(false);
+    // Neither sweep compiled a pattern again: the per-entry checks reuse the
+    // patterns compiled with the policy, however many entries were scanned.
+    expect(compile.mock.calls.length).toBe(compiledAtBuild);
+    expect(match).not.toHaveBeenCalled();
   });
 
   it.each(["with\\backslash", "e\u0301"])("keeps physical spelling when excluding nested metadata: %s", async spelling => {

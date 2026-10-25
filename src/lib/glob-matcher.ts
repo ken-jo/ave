@@ -26,10 +26,22 @@ export function globMatch(
   pattern: string,
   opts: GlobMatcherOptions = {},
 ): boolean {
+  return compileGlobMatcher(pattern, opts)(path);
+}
+
+/**
+ * {@link globMatch} with the pattern compiled once, for callers that test the
+ * same pattern against many paths (a policy check per scanned entry).
+ */
+export function compileGlobMatcher(
+  pattern: string,
+  opts: GlobMatcherOptions = {},
+): (path: string) => boolean {
   const caseInsensitive =
     opts.caseInsensitive ??
     (process.platform === "darwin" || process.platform === "win32");
-  return globToRegExp(pattern, { caseInsensitive }).test(normalizeGlobPath(path));
+  const regex = globToRegExp(pattern, { caseInsensitive });
+  return (path) => regex.test(normalizeGlobPath(path));
 }
 
 /**
