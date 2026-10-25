@@ -561,6 +561,7 @@ export const CHANNELS = {
     subscriptionStartLogin: "ave:settings:subscription:start-login",
     subscriptionOpenLoginBrowser: "ave:settings:subscription:open-login-browser",
     subscriptionCancelLogin: "ave:settings:subscription:cancel-login",
+    subscriptionAcknowledgeNotice: "ave:settings:subscription:acknowledge-notice",
     subscriptionLogout: "ave:settings:subscription:logout",
     subscriptionListModels: "ave:settings:subscription:list-models",
     subscriptionUseForChat: "ave:settings:subscription:use-for-chat",

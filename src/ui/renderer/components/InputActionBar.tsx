@@ -33,6 +33,7 @@ import type {
   ShellSandboxUnavailableCause,
 } from "../../../shared/sandbox-capability-info.js";
 import { EnvForcedNotice } from "./EnvForcedNotice.js";
+import { PlanUsageComposerControls } from "./PlanUsageComposerControls.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
 export interface InputActionBarProps {
@@ -392,14 +393,17 @@ export function ComposerStatusRow({
             <span className="min-w-0 truncate">{t("bottomActionRow.setUpProvider")}</span>
           </button>
         ) : (
-          <ModelQuickPicker
-            vendorModel={vendorModel}
-            displayModel={displayModel}
-            enableThinking={enableThinkingChat}
-            reasoningAvailable={reasoningAvailable}
-            onToggleThinking={onToggleThinking}
-            onOpenModelSettings={onOpenModelSettings}
-          />
+          <>
+            <PlanUsageComposerControls />
+            <ModelQuickPicker
+              vendorModel={vendorModel}
+              displayModel={displayModel}
+              enableThinking={enableThinkingChat}
+              reasoningAvailable={reasoningAvailable}
+              onToggleThinking={onToggleThinking}
+              onOpenModelSettings={onOpenModelSettings}
+            />
+          </>
         )}
       </div>
     </div>

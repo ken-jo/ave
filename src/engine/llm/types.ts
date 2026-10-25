@@ -584,6 +584,11 @@ export interface StreamTurnParams {
   /** Thinking budget before the primary output ceiling, re-bounded for a fallback. */
   requestedThinkingBudgetTokens?: number;
   /**
+   * A route whose user picks reasoning by name (a subscription runtime's speed menu) asks for this effort instead
+   * of one derived from a token budget. The model's accepted levels still decide what is sent.
+   */
+  reasoningEffort?: "none" | "low" | "medium" | "high";
+  /**
    * finish_reason=length CONTINUATION. When true, the FINAL message in
    * `messages` is a partial assistant turn the model must CONTINUE verbatim
    * (not restart). Only the openai-compatible (vLLM) path acts on it today —
@@ -668,6 +673,8 @@ export interface ProviderConfig {
   vertexProject?: string;
   /** Vertex AI — GCP region (default "us-central1"). */
   vertexLocation?: string;
+  /** Pins vendor="openai" to the Responses wire regardless of model family. */
+  openaiWire?: "responses";
   /**
    * Marketplace/provider-package metadata selected at settings time. Runtime
    * adapters can use this to honor catalog-owned base URLs, auth policy,
