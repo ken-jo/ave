@@ -16,7 +16,7 @@ import type { AddressInfo } from "node:net";
 import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -76,6 +76,8 @@ import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sa
 import { asrtCanInitialize } from "./test-helpers.js";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../lib/confined-process-phase.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { retryOnTransientFsLock } from "../../lib/transient-fs-lock-retry.js";
+import { srtWinPrivateDirectories } from "../srt-win-integrity.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
 import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-invocation.js";
@@ -122,6 +124,16 @@ afterAll(async () => {
     process.env.AVE_HOME = originalAveHome;
   }
   await cleanupTmpDir(isolatedWindowsHome);
+});
+
+// The product keeps its private srt-win copy until process exit, which a Vitest worker outlives; remove it non-recursively, as the product does.
+afterAll(async () => {
+  for (const directory of srtWinPrivateDirectories()) {
+    await retryOnTransientFsLock(async () => {
+      for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(directory, name), { force: true });
+      if (existsSync(directory)) rmdirSync(directory);
+    });
+  }
 });
 
 afterEach(async () => {
