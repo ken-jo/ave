@@ -1976,6 +1976,46 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
   return { ok: true, commands, opaque };
 }
 
+// The argv of every simple command in a PowerShell input, nested ones included (`$(…)`, `(…)`, `{…}`), as the lexer unescaped it, for reading what a
+// launched shell (`pwsh`, `cmd`, `bash`, …) receives. A call or dot-source operator before a command is dropped. A token is null unless its value is
+// fixed before the launch: a group, a subexpression, a variable or splat, an expandable string with `$`, a backtick escape, or a backslash before a
+// dash or quote (which Windows argument parsing may treat otherwise) makes it null. Null when the input cannot be read.
+export function powerShellLaunchArgv(command: string): (string | null)[][] | null {
+  const budget = new PowerShellAnalysisBudget();
+  let lexed: ReturnType<typeof lex>;
+  try {
+    budget.enter(command);
+    try { lexed = lex(command, budget); } finally { budget.leave(); }
+  } catch (error) {
+    if (error instanceof PowerShellBudgetError) return null;
+    throw error;
+  }
+  if (lexed.pipelines === null) return null;
+  const commands: (string | null)[][] = [];
+  const launchToken = (token: PsToken): string | null => {
+    if (token.kind !== "word" || token.nested.length > 0 || token.reason !== undefined || token.raw.includes("`")) return null;
+    if (!token.quoted && /[$@]/.test(token.text)) return null;
+    if (token.quoted && token.raw.startsWith("\"") && token.text.includes("$")) return null;
+    if (/\\[-\u2013\u2014\u2015/"']/.test(token.text)) return null;
+    return token.text;
+  };
+  const walk = (pipelines: readonly PsPipeline[]) => {
+    for (const pipeline of pipelines) {
+      for (const stage of pipeline.stages) {
+        const first = stage.tokens[0];
+        const call = first?.kind === "word" && !first.quoted && (first.text === "&" || first.text === ".");
+        commands.push((call ? stage.tokens.slice(1) : stage.tokens).map(launchToken));
+        for (const token of stage.tokens) {
+          if (token.kind === "group") walk(token.body);
+          else for (const nested of token.nested) walk(nested);
+        }
+      }
+    }
+  };
+  walk(lexed.pipelines);
+  return commands;
+}
+
 // The sensitive-path floor shares the bounded analysis used for exfiltration.
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null {
   return inspectPowerShellCommand(input, cwd).sensitive;

@@ -21,7 +21,7 @@ export function buildShellRuleApproval(
   sessionId?: string,
 ): ShellRuleApproval {
   // An `-EncodedCommand` hides the code that runs, so no allow rule may cover it; the card shows the decoded script instead.
-  const encoded = inspectEncodedPowerShell(command);
+  const encoded = inspectEncodedPowerShell(command, dialect);
   const decodedCommands = encoded.scripts;
   const candidate = saves.allow && decodedCommands.length === 0 && !encoded.hidden
     ? dialect === "bash" ? exactBashRule(command, projectCwd) : exactPowerShellRule(command, projectCwd)
