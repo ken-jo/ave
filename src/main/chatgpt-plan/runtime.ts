@@ -2,6 +2,7 @@ import type { FeatureNamespaceHandle } from "../storage/feature-namespace.js";
 import { openFeatureNamespace } from "../storage/feature-namespace.js";
 import type {
   SubscriptionRuntimeCapabilities,
+  SubscriptionRuntimeNotice,
   SubscriptionRuntimeErrorCode,
   SubscriptionRuntimeModel,
   SubscriptionRuntimeStatus,
@@ -109,7 +110,13 @@ export class ChatGptPlanRuntime {
     }
     const usable = status.connection === "connected" && status.planUsage === "enabled";
     const connection = status.connection === "connected" && !usable ? "signed-out" : status.connection;
-    return projectStatus("ready", connection, usable);
+    return projectStatus("ready", connection, usable, status.notice);
+  }
+
+  /** The user dismissed the card's notice (the welcome is shown once per install). */
+  acknowledgeNotice(): SubscriptionRuntimeStatus {
+    this.session.acknowledgeNotice();
+    return this.getStatus();
   }
 
   async startLogin(): Promise<SubscriptionRuntimeStatus> {
@@ -168,8 +175,10 @@ function projectStatus(
   runtime: SubscriptionRuntimeStatus["runtime"],
   connection: SubscriptionRuntimeStatus["connection"],
   usable: boolean,
+  notice: SubscriptionRuntimeNotice | null = null,
 ): SubscriptionRuntimeStatus {
   return {
+    notice,
     provider: "chatgpt-plan",
     runtime,
     connection,

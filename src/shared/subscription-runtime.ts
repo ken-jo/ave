@@ -413,6 +413,23 @@ export function subscriptionRuntimeDescriptor(
     ?? SUBSCRIPTION_RUNTIME_DESCRIPTORS[0]!;
 }
 
+/**
+ * Something the user should be told about a runtime's sign-in, until they dismiss it (ChatGPT plan usage only today).
+ * `welcome`: the first sign-in with plan usage enabled. `plan-usage-disabled`: signed in without the plan grant.
+ * `reconnect-required`: the session ended at the provider. `revocation-unconfirmed`: signed out locally but the
+ * provider did not confirm it. `declined`, `account-mismatch`, `state-mismatch`, `sign-in-failed`: why the last
+ * sign-in did not finish.
+ */
+export type SubscriptionRuntimeNotice =
+  | "welcome"
+  | "plan-usage-disabled"
+  | "reconnect-required"
+  | "revocation-unconfirmed"
+  | "declined"
+  | "account-mismatch"
+  | "state-mismatch"
+  | "sign-in-failed";
+
 /** Never include verification URLs, access tokens, raw CLI output, or executable paths in renderer status. */
 export interface SubscriptionRuntimeStatus {
   provider: SubscriptionRuntimeId;
@@ -425,6 +442,8 @@ export interface SubscriptionRuntimeStatus {
   version: string | null;
   /** Missing or false capability projections are unavailable; provider-native claims alone do not enable them. */
   capabilities: SubscriptionRuntimeCapabilities;
+  /** A fixed notice code for the card; omitted by runtimes that have none. */
+  notice?: SubscriptionRuntimeNotice | null;
 }
 
 export interface SubscriptionRuntimeModel {

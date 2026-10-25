@@ -1,6 +1,7 @@
 import { useId } from "react";
 import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "../../../components/ui/dialog.js";
 import { Label } from "../../../components/ui/label.js";
 import { RadioGroup, RadioGroupItem } from "../../../components/ui/radio-group.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -14,6 +15,7 @@ import {
   type SubscriptionRuntimeExecutableSource,
   type SubscriptionRuntimeId,
   type SubscriptionRuntimeInstallGuidance,
+  type SubscriptionRuntimeNotice,
   type SubscriptionRuntimeState,
 } from "../../../shared/subscription-runtime.js";
 
@@ -34,7 +36,8 @@ export type SubscriptionBusyAction =
   | "cancel-login"
   | "logout"
   | "load-models"
-  | "use-for-chat";
+  | "use-for-chat"
+  | "acknowledge-notice";
 
 /** Stable, renderer-safe error codes. Raw runtime errors must be mapped in main. */
 type SubscriptionProviderErrorCode = SubscriptionRuntimeErrorCode;
@@ -86,6 +89,8 @@ export interface SubscriptionProviderStatus {
   /** The version the resolved runtime reported, when it has been read. */
   version?: string | null;
   errorCode?: SubscriptionProviderErrorCode | null;
+  /** A fixed sign-in notice code; never provider text. */
+  notice?: SubscriptionRuntimeNotice | null;
 }
 
 export interface SubscriptionProviderView {
@@ -118,6 +123,8 @@ interface SubscriptionProviderActions {
   useForChat?: (providerId: SubscriptionProviderId, modelId: string | null) => void | Promise<void>;
   /** Explicitly return chat to the separately configured API-key provider. */
   useApiForChat?: () => void | Promise<void>;
+  /** Dismisses the card's sign-in notice. */
+  acknowledgeNotice?: (providerId: SubscriptionProviderId) => void | Promise<void>;
   /** Opens the provider's own usage settings (ChatGPT plan usage: chatgpt.com/settings/usage). */
   manageUsage?: (providerId: SubscriptionProviderId) => void | Promise<void>;
 }
@@ -137,6 +144,17 @@ export interface SubscriptionProvidersSectionProps {
   /** Use a stable custom anchor only when the embedding settings page needs one. */
   sectionId?: string;
 }
+
+/** What each sign-in notice tells the user, and what they can do about it. `welcome` is the first-sign-in dialog. */
+const NOTICE_MESSAGE_KEYS: Record<Exclude<SubscriptionRuntimeNotice, "welcome">, string> = {
+  "plan-usage-disabled": "subscriptionProvidersSection.chatgptPlanNoticePlanUsageDisabled",
+  "reconnect-required": "subscriptionProvidersSection.chatgptPlanNoticeReconnectRequired",
+  "revocation-unconfirmed": "subscriptionProvidersSection.chatgptPlanNoticeRevocationUnconfirmed",
+  declined: "subscriptionProvidersSection.chatgptPlanNoticeDeclined",
+  "account-mismatch": "subscriptionProvidersSection.chatgptPlanNoticeAccountMismatch",
+  "state-mismatch": "subscriptionProvidersSection.chatgptPlanNoticeStateMismatch",
+  "sign-in-failed": "subscriptionProvidersSection.chatgptPlanNoticeSignInFailed",
+};
 
 export const ERROR_MESSAGE_KEYS: Record<SubscriptionProviderErrorCode, string> = {
   "subscription-provider-not-supported": "subscriptionProvidersSection.errorProviderNotSupported",
@@ -274,6 +292,52 @@ export function SubscriptionAuthControls({
         >
           {t("subscriptionProvidersSection.chatgptPlanDisclosure")}
         </p>
+      ) : null}
+      {status?.notice === "welcome" ? (
+        <Dialog
+          open={true}
+          onOpenChange={(open) => {
+            if (!open) invoke(() => actions.acknowledgeNotice?.(descriptor.id));
+          }}
+        >
+          <DialogContent data-testid={`subscription-provider:${descriptor.id}:welcome`}>
+            <DialogHeader>
+              <DialogTitle>{t("subscriptionProvidersSection.chatgptPlanWelcomeTitle")}</DialogTitle>
+              <DialogDescription>{t("subscriptionProvidersSection.chatgptPlanWelcomeBody")}</DialogDescription>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                type="button"
+                onClick={() => invoke(() => actions.acknowledgeNotice?.(descriptor.id))}
+                data-testid={`subscription-provider:${descriptor.id}:welcome-got-it`}
+              >
+                {t("subscriptionProvidersSection.chatgptPlanWelcomeGotIt")}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      ) : null}
+      {status?.notice && status.notice !== "welcome" ? (
+        <div
+          role="status"
+          className="flex flex-wrap items-start gap-2 rounded-md border bg-muted/(--opacity-muted) px-3 py-2 text-xs text-muted-foreground"
+          data-testid={`subscription-provider:${descriptor.id}:notice`}
+          data-notice={status.notice}
+        >
+          <p className="min-w-0 flex-1">{t(NOTICE_MESSAGE_KEYS[status.notice])}</p>
+          {actions.acknowledgeNotice ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-6 text-xs"
+              onClick={() => invoke(() => actions.acknowledgeNotice?.(descriptor.id))}
+              data-testid={`subscription-provider:${descriptor.id}:notice-dismiss`}
+            >
+              {t("subscriptionProvidersSection.chatgptPlanNoticeDismiss")}
+            </Button>
+          ) : null}
+        </div>
       ) : null}
       {usesChatGptPlan && runtime === "not-configured" && !status?.errorCode ? (
         <p

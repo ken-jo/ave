@@ -166,6 +166,20 @@ describe("plan-usage sign-in state machine", () => {
     await expect(signIn(h, (p) => `error=access_denied&state=${p.get("state")}`)).rejects.toMatchObject({ failure: "declined" });
     expect(h.requests.some((request) => request.url === CHATGPT_PLAN_TOKEN_URL)).toBe(false);
     expect(h.secrets.writes).toBe(0);
+    expect(h.session.status().notice).toBe("declined");
+    h.session.acknowledgeNotice();
+    expect(h.session.status().notice).toBeNull();
+  });
+
+  it("explains a callback that does not belong to the attempt, and says nothing after a cancel", async () => {
+    const h = harness();
+    // The real listener ignores such a callback; the session still checks state itself.
+    await expect(signIn(h, () => "code=c1&state=forged")).rejects.toMatchObject({ failure: "sign-in-failed" });
+    expect(h.session.status().notice).toBe("state-mismatch");
+    const { completion } = await h.session.startSignIn();
+    h.session.cancelSignIn();
+    await expect(completion).rejects.toBeDefined();
+    expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: null });
   });
 
   it("refuses to start without encrypted secret storage", async () => {
@@ -211,6 +225,7 @@ describe("plan-usage sign-in state machine", () => {
     replay.secrets.values.set(CHATGPT_PLAN_ACCOUNT_SECRET_KEY, h.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!);
     otherRoutes.push(tokensFor(replay, 2));
     await expect(signIn(replay, (p) => `code=c2&state=${p.get("state")}`)).rejects.toMatchObject({ failure: "account-mismatch" });
+    expect(replay.session.status().notice).toBe("account-mismatch");
     expect(JSON.parse(replay.secrets.values.get(CHATGPT_PLAN_ACCOUNT_SECRET_KEY)!).tokens.accessToken).toBe("access-1");
   });
 

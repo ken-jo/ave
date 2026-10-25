@@ -106,7 +106,7 @@ describe("ChatGPT plan runtime status", () => {
 
   it("shows a sign-in without the plan grant as signed out, and asks for consent on the next sign-in", async () => {
     const h = harness(IDENTITY_SCOPES, () => new Response("{}", { status: 200 }));
-    expect(h.runtime.getStatus()).toMatchObject({ connection: "signed-out" });
+    expect(h.runtime.getStatus()).toMatchObject({ connection: "signed-out", notice: "plan-usage-disabled" });
     expect(h.runtime.getStatus().capabilities.chat).toBe(false);
     // Discovery is fetched before the browser opens; answer it so the attempt reaches the browser.
     const discovery = {
@@ -350,6 +350,8 @@ describe("SubscriptionRuntimeService with ChatGPT plan usage", () => {
       await expect(svc.listModels("chatgpt-plan")).resolves.toMatchObject({ models: [{ id: "gpt-6.1-sol" }] });
       await expect(svc.startLogin("chatgpt-plan", "device-code")).rejects.toMatchObject({ code: "subscription-provider-not-supported" });
       await expect(svc.chooseExecutable("chatgpt-plan", "/tmp/x")).rejects.toMatchObject({ code: "subscription-provider-not-supported" });
+      await expect(svc.acknowledgeNotice("chatgpt-plan")).resolves.toMatchObject({ notice: null });
+      await expect(svc.acknowledgeNotice("codex")).rejects.toMatchObject({ code: "subscription-provider-not-supported" });
       await expect(svc.openTextSession({ kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" }))
         .rejects.toMatchObject({ code: "subscription-chat-unavailable" });
     } finally {

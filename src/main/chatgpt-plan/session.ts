@@ -15,6 +15,7 @@ import {
   type ChatGptPlanTokenResponse,
 } from "./oauth.js";
 import type { ChatGptPlanCallbackListener } from "./loopback.js";
+import type { SubscriptionRuntimeNotice } from "../../shared/subscription-runtime.js";
 
 /** The settings-store surface the session needs: encrypted secrets only. */
 export interface ChatGptPlanSecretStore {
@@ -77,11 +78,7 @@ export class ChatGptPlanSessionError extends Error {
   }
 }
 
-export type ChatGptPlanNotice =
-  | "welcome"
-  | "plan-usage-disabled"
-  | "reconnect-required"
-  | "revocation-unconfirmed";
+export type ChatGptPlanNotice = SubscriptionRuntimeNotice;
 
 /** Renderer-safe projection: no token, client id, subject or host id. */
 export interface ChatGptPlanStatus {
@@ -166,6 +163,8 @@ export class ChatGptPlanSession {
   private pending: { readonly listener: ChatGptPlanCallbackListener; readonly completion: Promise<void> } | null = null;
   private refreshing: Promise<StoredTokens> | null = null;
   private notice: ChatGptPlanNotice | null = null;
+  /** The pending attempt is ending because the user cancelled it. */
+  private cancelRequested = false;
   /** Set while signing out: no new refresh may start and rotate the token. */
   private signingOut = false;
   private readonly now: () => number;
@@ -268,8 +267,11 @@ export class ChatGptPlanSession {
         this.emit({ event: "sign-in-succeeded" });
       } catch (error) {
         this.emit({ event: "sign-in-failed", failure: failureCode(error) });
+        // A cancelled attempt needs no explanation; any other ending says why it did not finish.
+        this.notice = this.cancelRequested ? null : signInFailureNotice(error);
         throw error instanceof ChatGptPlanSessionError ? error : new ChatGptPlanSessionError("sign-in-failed");
       } finally {
+        this.cancelRequested = false;
         listener.close();
         this.pending = null;
       }
@@ -289,7 +291,9 @@ export class ChatGptPlanSession {
   }
 
   cancelSignIn(): void {
-    this.pending?.listener.close();
+    if (!this.pending) return;
+    this.cancelRequested = true;
+    this.pending.listener.close();
   }
 
   /** Clear a notice the user dismissed. The welcome is shown once per install. */
@@ -460,6 +464,19 @@ export class ChatGptPlanSession {
       // Auditing never changes a session outcome.
     }
   }
+}
+
+function signInFailureNotice(error: unknown): ChatGptPlanNotice {
+  if (error instanceof ChatGptPlanSessionError) {
+    if (error.failure === "declined") return "declined";
+    if (error.failure === "account-mismatch") return "account-mismatch";
+  }
+  if (error instanceof ChatGptPlanOAuthError) {
+    if (error.failure === "state-mismatch") return "state-mismatch";
+    // A returning sign-in that came back bound to another workspace's client is another account here.
+    if (error.failure === "client-mismatch") return "account-mismatch";
+  }
+  return "sign-in-failed";
 }
 
 function failureCode(error: unknown): string {

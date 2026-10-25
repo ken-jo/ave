@@ -1333,6 +1333,13 @@ export class SubscriptionRuntimeService {
     });
   }
 
+  /** Dismiss the runtime's notice. Only plan usage carries notices; any other runtime refuses. */
+  async acknowledgeNotice(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
+    this.assertRunning();
+    if (runtimeId !== "chatgpt-plan") throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
+    return this.requireChatGptPlan().acknowledgeNotice();
+  }
+
   async listModels(runtimeId: SubscriptionRuntimeId): Promise<{
     status: SubscriptionRuntimeStatus;
     models: SubscriptionRuntimeModel[];

@@ -510,6 +510,32 @@ describe("SubscriptionAuthControls for ChatGPT plan usage", () => {
     expect(logout).toHaveBeenCalledWith("chatgpt-plan");
   });
 
+  it("welcomes the first plan sign-in once, and Got it dismisses it", () => {
+    const acknowledgeNotice = vi.fn();
+    renderProviders([planView({
+      runtime: "ready", connection: "connected", capabilities: runtimeCapabilities({ images: false }), notice: "welcome",
+    })], { acknowledgeNotice });
+    const dialog = screen.getByTestId("subscription-provider:chatgpt-plan:welcome");
+    expect(dialog).toHaveTextContent("You're using your ChatGPT plan");
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:welcome-got-it"));
+    expect(acknowledgeNotice).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
+  it.each([
+    ["revocation-unconfirmed", /disconnect Ave in ChatGPT settings/],
+    ["reconnect-required", /sign in again/],
+    ["plan-usage-disabled", /allow plan usage/],
+    ["declined", /not allowed in the browser/],
+    ["account-mismatch", /different ChatGPT account or workspace/],
+    ["state-mismatch", /did not belong to this attempt/],
+  ] as const)("explains the %s notice and lets it be dismissed", (notice, text) => {
+    const acknowledgeNotice = vi.fn();
+    renderProviders([planView({ runtime: "ready", connection: "signed-out", notice })], { acknowledgeNotice, beginLogin: vi.fn() });
+    expect(screen.getByTestId("subscription-provider:chatgpt-plan:notice")).toHaveTextContent(text);
+    fireEvent.click(screen.getByTestId("subscription-provider:chatgpt-plan:notice-dismiss"));
+    expect(acknowledgeNotice).toHaveBeenCalledWith("chatgpt-plan");
+  });
+
   it("says plainly when plan sign-in is not configured", () => {
     renderProviders([planView({ runtime: "not-configured", connection: "unknown" })], { beginLogin: vi.fn() });
     expect(screen.getByTestId("subscription-provider:chatgpt-plan:not-configured")).toBeInTheDocument();
