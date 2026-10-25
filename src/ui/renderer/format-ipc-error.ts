@@ -174,6 +174,15 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "binary-file": "formatIpcError.binaryFile",
   "too-large": "formatIpcError.contentTooLarge",
   "read-failed": "formatIpcError.notFound",
+  // Table-document preview (preview.ts readDocument / table-document-reader.ts).
+  "unsupported-format": "formatIpcError.unsupportedFormat",
+  "sheet-not-found": "formatIpcError.sheetNotFound",
+  "archive-too-large": "formatIpcError.archiveTooLarge",
+  "corrupt-document": "formatIpcError.corruptDocument",
+  "parse-limit": "chatPreviewRail.tableErrorParseLimit",
+  "busy": "chatPreviewRail.tableErrorBusy",
+  "encrypted": "formatIpcError.encryptedDocument",
+  "unsupported-encoding": "formatIpcError.unsupportedEncoding",
   // Workspace pick-root acknowledgement token (workspace.ts): the one-time ack
   // token was never issued / already consumed / past its TTL.
   "ack-unknown": "formatIpcError.ackUnknown",

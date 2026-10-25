@@ -238,6 +238,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["attach", CHANNELS.attach.registerDrop, [["/x"]]],
   ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
+  ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
   ["usage", CHANNELS.usage.pricingOverrides, []],

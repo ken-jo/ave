@@ -219,6 +219,7 @@ describe("preload contextBridge world shape lock", () => {
             "set",
           ],
           "preview": [
+            "readDocument",
             "readFile",
           ],
           "ui": [
