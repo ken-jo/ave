@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacls, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
+import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
 
 const OWNER_SID = "S-1-5-21-1004336348-11-77-1417";
 const OWNER_RULE: WindowsAccessRule = { sid: OWNER_SID, accessControlType: 0, fileSystemRights: 2032127,
@@ -25,7 +26,12 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, mkdirSync: vi.fn(actual.mkdirSync) };
 });
-afterEach(() => { _resetAveHomePrivacyForTest(); vi.unstubAllEnvs(); });
+afterEach(async () => {
+  _resetAveHomePrivacyForTest();
+  vi.unstubAllEnvs();
+  const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+  vi.mocked(execFileSync).mockReset().mockImplementation(actual.execFileSync);
+});
 
 describe("aveHome", () => {
   it("resolves the default home without writing it", () => {
@@ -95,6 +101,7 @@ describe("ensureAveHomePrivate", () => {
     expect(result).toMatchObject({ enforcement: "none", category: "invalid-owner-grant", failedPath: join(dir, "subscription-runtimes") });
   });
   it("reports a failed runtime root ownership claim without downgrading protection", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     const dir = home();
     const runtimeRoot = join(dir, "subscription-runtimes");
     const reason = `Directory "${runtimeRoot}" is owned by Administrators and could not be claimed. Run Ave once elevated or fix the directory owner.`;
@@ -262,6 +269,7 @@ describe("ensureAveHomePrivate", () => {
     expect(command.slice(write, command.indexOf("\n", write))).toContain("'/L'");
   });
   it("claims only the requested runtime root before writing its DACL", () => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     const dir = home();
     const runtimeRoot = join(dir, "subscription-runtimes");
     vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([dir, join(dir, "secrets"), runtimeRoot].map(descriptor)));
@@ -271,13 +279,13 @@ describe("ensureAveHomePrivate", () => {
     expect(request).toEqual({ paths: [dir, join(dir, "secrets"), runtimeRoot], protect: true, claimableRuntimeRoot: runtimeRoot, icacls: win32SystemBinary("icacls") });
     const command = (args as readonly string[]).at(-1)!;
     const guard = command.indexOf("if ($path -eq $request.claimableRuntimeRoot -and -not $elevated -and $owner -eq 'S-1-5-32-544')");
-    const claim = command.indexOf("[RuntimeRootOwnership]::ClaimFromAdministrators($path, $identity.User)");
+    const claim = command.indexOf("[WindowsOwnerClaim]::ClaimFromAdministrators($path, $identity.User, $true)");
     expect(guard).toBeGreaterThan(command.indexOf("if ($request.protect)"));
     expect(guard).toBeGreaterThan(command.indexOf("[System.IO.FileAttributes]::ReparsePoint"));
     expect(claim).toBeGreaterThan(guard);
     expect(claim).toBeLessThan(command.indexOf("& $icacls"));
     expect(command).toContain("CreateFile(path, 0x00080000 | 0x00020000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)");
-    expect(command).toContain('new SecurityIdentifier(owner).Value != "S-1-5-32-544"');
+    expect(command).toContain('OwnerOf(handle) != "S-1-5-32-544"');
     expect(command.indexOf("GetSecurityInfo(handle, 1, 1")).toBeLessThan(command.indexOf("SetSecurityInfo(handle, 1, 1"));
     expect(command).toContain("$refused = 'owner-claim-failed'");
   });
@@ -291,10 +299,10 @@ describe("ensureAveHomePrivate", () => {
   });
 
   /** Owner and access entries of a real directory, read on that directory itself. */
-  function sddl(path: string): string {
+  function sddl(path: string, sections = "Owner, Access"): string {
     return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
       "-NoProfile", "-NonInteractive", "-Command",
-      "[System.IO.Directory]::GetAccessControl($env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('Owner, Access')",
+      `[System.IO.Directory]::GetAccessControl($env:AVE_TEST_TARGET).GetSecurityDescriptorSddlForm('${sections}')`,
     ], { env: { ...process.env, AVE_TEST_TARGET: path }, encoding: "utf-8", windowsHide: true }).trim();
   }
   it.runIf(process.platform === "win32").each(["home", "secrets"])("refuses a %s junction and leaves its target's DACL unchanged", (which) => {
@@ -346,15 +354,30 @@ describe("ensureAveHomePrivate", () => {
     const dir = home();
     expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
     const before = sddl(dir);
-    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor(dir)]));
-    readWindowsDirectoryDacls([dir], true, dir);
-    const args = vi.mocked(execFileSync).mock.calls.at(-1)![1] as readonly string[];
-    const source = args.at(-1)!.split("Add-Type -TypeDefinition @'\n")[1].split("\n'@;")[0];
     const error = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
-      `Add-Type -TypeDefinition @'\n${source}\n'@\ntry { [RuntimeRootOwnership]::ClaimFromAdministrators($env:AVE_TEST_TARGET, [System.Security.Principal.WindowsIdentity]::GetCurrent().User) } catch { [Console]::Write($_.Exception.InnerException.Message) }`,
+      `Add-Type -TypeDefinition @'\n${WINDOWS_OWNER_CLAIM_SOURCE}\n'@\ntry { [WindowsOwnerClaim]::ClaimFromAdministrators($env:AVE_TEST_TARGET, [System.Security.Principal.WindowsIdentity]::GetCurrent().User, $true) } catch { [Console]::Write($_.Exception.InnerException.Message) }`,
     ], { env: { ...process.env, AVE_TEST_TARGET: dir }, encoding: "utf-8", windowsHide: true });
     expect(error).toBe("Owner changed during the claim");
     expect(sddl(dir)).toBe(before);
+  });
+  it.runIf(process.platform === "win32")("claims an Administrators-owned directory on an elevated token without changing its DACL", (context) => {
+    requireRestorePrivilege(context);
+    const dir = home();
+    mkdirSync(dir);
+    const [token] = readWindowsDirectoryDacls([dir]);
+    if (!token.elevated) context.skip("An elevated token is required to exercise the ownership claim directly");
+    try {
+      execFileSync(win32SystemBinary("icacls"), [dir, "/setowner", "*S-1-5-32-544", "/q"], { encoding: "utf-8", windowsHide: true });
+    } catch (error) {
+      context.skip(`Cannot set the fixture owner to Administrators: ${String(error)}`);
+    }
+    expect(readWindowsDirectoryDacls([dir])[0].ownerSid).toBe("S-1-5-32-544");
+    const before = sddl(dir, "Access");
+    execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
+      `Add-Type -TypeDefinition @'\n${WINDOWS_OWNER_CLAIM_SOURCE}\n'@\n[WindowsOwnerClaim]::ClaimFromAdministrators($env:AVE_TEST_TARGET, [System.Security.Principal.WindowsIdentity]::GetCurrent().User, $true)`,
+    ], { env: { ...process.env, AVE_TEST_TARGET: dir }, encoding: "utf-8", windowsHide: true });
+    expect(readWindowsDirectoryDacls([dir])[0].ownerSid).toBe(token.currentUserSid);
+    expect(sddl(dir, "Access")).toBe(before);
   });
   it.runIf(process.platform === "win32")("changes a link itself, not its target, when the permission command runs with /L", () => {
     // The race the refusal above cannot close: a link swapped in after the check.
