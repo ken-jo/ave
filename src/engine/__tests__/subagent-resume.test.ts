@@ -147,6 +147,14 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     return store;
   }
 
+  function makeNoopRunner() {
+    const toolRegistry = new ToolRegistry();
+    toolRegistry.register(noopTool("noop"));
+    const subStore = makeSubStore();
+    const runner = makeRunner(toolRegistry, subStore);
+    return { toolRegistry, subStore, runner };
+  }
+
   function cleanSpawnProvider(): ScriptedProvider {
     return new ScriptedProvider(endTurnScript("spawn answer"));
   }
@@ -191,10 +199,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   }
 
   it("clears a status-only retry before a resumed child reaches its terminal snapshot", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -511,10 +516,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("persists parent agent_spawn linkage and reloads the child transcript by explicit childSessionId", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
     const restore = patchProvider(waitingSpawnProvider());
     try {
       const result = await runner.spawn({
@@ -612,10 +614,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("marks an accepted interrupt as interrupted before the child loop unwinds", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { runner } = makeNoopRunner();
     const provider = new AbortAwareBlockingProvider();
     const restore = patchProvider(provider);
     try {
@@ -750,10 +749,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     },
   );
   it("re-hydrates the original spawn's full history into the continuation turn (tool-pair valid, no loss)", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     const spawnProvider = new ScriptedProvider([
       [
@@ -783,12 +779,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const spawnHistoryLen = persisted!.length;
     expect(spawnHistoryLen).toBeGreaterThan(1);
 
-    const resumeProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "resumed answer" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const resumeProvider = new ScriptedProvider(endTurnScript("resumed answer"));
     restore = patchProvider(resumeProvider);
     let historyLenAtResumeEntry = -1;
     const origRunTurn = ConversationLoop.prototype.runTurn;
@@ -899,12 +890,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       "agent_send",
     ]);
 
-    const resumeProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const resumeProvider = new ScriptedProvider(endTurnScript("ok"));
     restore = patchProvider(resumeProvider);
     try {
       await runner.resume(resumeId, "continue", "scoped");
@@ -937,12 +923,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     // Newly added parent tools must not widen a resumed child frozen scope.
     toolRegistry.register(noopTool("newly_added_tool"));
 
-    const resumeProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const resumeProvider = new ScriptedProvider(endTurnScript("ok"));
     restore = patchProvider(resumeProvider);
     try {
       await runner.resume(resumeId, "continue", "frozen");
@@ -987,12 +968,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     ]);
 
     let spawnDepthAtResume: unknown = "unset";
-    const resumeProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const resumeProvider = new ScriptedProvider(endTurnScript("ok"));
     restore = patchProvider(resumeProvider);
     const origRunTurn = ConversationLoop.prototype.runTurn;
     const runTurnSpy = vi
@@ -1018,10 +994,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("refuses a resume when resumeCount >= MAX_RESUMES (no turn run)", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     const restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1041,12 +1014,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       resumeCount: 3,
     });
 
-    const guard = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "SHOULD NOT RUN" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const guard = new ScriptedProvider(endTurnScript("SHOULD NOT RUN"));
     const restore2 = patchProvider(guard);
     try {
       const resumed = await runner.resume(resumeId, "continue", "exhaust");
@@ -1061,10 +1029,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
 
   it("fails closed when an INPUT_REQUIRED question was not staged by agent_send", async () => {
     const originSessionId = "48c18ddd-1bf4-4a9b-8033-37d44752f46d";
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
     const originalRunTurn = ConversationLoop.prototype.runTurn;
     const restore = patchProvider(cleanSpawnProvider());
     const runTurnSpy = vi
@@ -1643,10 +1608,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   );
 
   it("rejects invalid question answers without consuming the wait, then accepts a valid answer", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1665,12 +1627,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     const waiting = subStore.loadSessionMetadata(spawn.childSessionId)!;
 
-    const guard = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "MUST-NOT-RUN" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const guard = new ScriptedProvider(endTurnScript("MUST-NOT-RUN"));
     restore = patchProvider(guard);
     try {
       for (const invalidAnswer of ["", "x".repeat(9_000)]) {
@@ -1831,10 +1788,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("counts question answers separately from the budget-resume ceiling", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1952,10 +1906,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     },
   );
   it("refuses a resume when cumulativeRounds >= the cumulative ceiling (no turn run)", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     const restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -1972,12 +1923,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       cumulativeRounds: 240,
     });
 
-    const guard = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "SHOULD NOT RUN" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const guard = new ScriptedProvider(endTurnScript("SHOULD NOT RUN"));
     const restore2 = patchProvider(guard);
     try {
       const resumed = await runner.resume(resumeId, "continue", "ceiling");
@@ -1990,10 +1936,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("caps a near-ceiling resume to the remaining round and waiting adds no extra rounds", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2286,10 +2229,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("accounts assistant rounds completed before a spawn throws", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     const originalRunTurn = ConversationLoop.prototype.runTurn;
     const restore = patchProvider(cleanSpawnProvider());
@@ -2335,10 +2275,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("accounts partial-failure rounds without merging budget and question counters", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2405,10 +2342,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
   });
   it("fail-closes a second concurrent resume of the same session (one runs, one rejected, one transition sequence)", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2689,10 +2623,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
   it("terminalizes a resume as FAILED when its final metadata write rejects and denies retry", async () => {
     const originSessionId = "ea3d61ff-c664-45a4-85d4-0dab3a142945";
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2771,10 +2702,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
 
   it("rejects a late interrupt after the resume terminal commit point", async () => {
     const originSessionId = "f29f5c55-0e80-4440-8c9b-6a25cb40c4a4";
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     let restore = patchProvider(waitingSpawnProvider());
     const spawn = await runner.spawn({
@@ -2887,12 +2815,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     restore();
     const resumeId = spawn.childSessionId;
 
-    const resumeProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "resumed" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const resumeProvider = new ScriptedProvider(endTurnScript("resumed"));
     restore = patchProvider(resumeProvider);
     try {
       const resumed = await runner.resume(resumeId, "continue", "iso");
@@ -2912,10 +2835,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("increments resumeCount by 1 and cumulativeRounds by the turn's rounds, preserving the frozen scope (full-overwrite spread)", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     const spawnProvider = new ScriptedProvider([
       [
@@ -2950,12 +2870,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       questionAnswerCount: 7,
     });
 
-    const resumeProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "resumed" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const resumeProvider = new ScriptedProvider(endTurnScript("resumed"));
     restore = patchProvider(resumeProvider);
     let resumed: Awaited<ReturnType<SubAgentRunner["resume"]>>;
     try {
@@ -2980,10 +2895,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("refuses to resume a session that is not a sub-agent", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
     await subStore.saveSessionMetadata("sub-e3b0c442-43badc19-3d7b-48b6-878e-1bca49295211", {
       sessionKind: "main",
       sourceTools: ["noop"],
@@ -2994,20 +2906,14 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("refuses to resume an unknown session id (no metadata)", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { runner } = makeNoopRunner();
     const resumed = await runner.resume("sub-e3b0c442-1290299c-2a39-42ea-8bf7-ae2f8e44adc7", "continue", "x");
     expect(resumed.ok).toBe(false);
     expect(resumed.error).toMatch(/no session metadata/i);
   });
 
   it("fail-closes on an invalid resumeId shape without throwing", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { runner } = makeNoopRunner();
     const resumed = await runner.resume("bad::id//with:sep", "continue", "x");
     expect(resumed.ok).toBe(false);
     expect(resumed.error).toMatch(/invalid resumeId/i);
@@ -3017,10 +2923,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
 
   it("refuses cross-session resume: conversation B cannot resume conversation A's sub-agent (no history loaded, no turn run)", async () => {
     const { createHash } = await import("node:crypto");
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     const originA = "1b9342d9-1e35-4d3e-8b6c-c5e977eb2105";
     const tagA = createHash("sha256").update(originA).digest("hex").slice(0, 8);
@@ -3039,12 +2942,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     // Supply valid history so refusal proves ownership is checked before loading it.
     await subStore.saveSession(resumeId, []);
 
-    const guardProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "CROSS-SESSION-MUST-NOT-RUN" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const guardProvider = new ScriptedProvider(endTurnScript("CROSS-SESSION-MUST-NOT-RUN"));
     const restoreGuard = patchProvider(guardProvider);
     try {
       const originB = "session-B";
@@ -3062,12 +2960,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       restoreGuard();
     }
 
-    const resumeProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "legitimate resume" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const resumeProvider = new ScriptedProvider(endTurnScript("legitimate resume"));
     const restoreResume = patchProvider(resumeProvider);
     try {
       const result = await runner.resume(
@@ -3087,10 +2980,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   it("rejects a tag-matching id when persisted origin metadata mismatches", async () => {
     const { createHash } = await import("node:crypto");
     const { createDlpSafeUuid } = await import("../../shared/dlp-safe-id.js");
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     const callerOrigin = "1b9342d9-1e35-4d3e-8b6c-c5e977eb2105";
     const tag = createHash("sha256")
@@ -3109,12 +2999,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     });
     await subStore.saveSession(resumeId, []);
 
-    const guardProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "MUST-NOT-RUN" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const guardProvider = new ScriptedProvider(endTurnScript("MUST-NOT-RUN"));
     const restore = patchProvider(guardProvider);
     try {
       const result = await runner.resume(
@@ -3135,10 +3020,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("untagged sub-agent id (spawned without originSessionId) is resumable only by a no-origin caller", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { runner } = makeNoopRunner();
 
     // Originless spawns still require a tagged, regex-valid child session ID.
     let restore = patchProvider(waitingSpawnProvider());
@@ -3153,12 +3035,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
     const resumeId = spawn.childSessionId;
     expect(resumeId).toMatch(/^sub-[0-9a-f]{8}-[0-9a-f]{8}-[0-9a-f]{4}-/);
 
-    const guardProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "SHOULD-NOT-RUN" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const guardProvider = new ScriptedProvider(endTurnScript("SHOULD-NOT-RUN"));
     restore = patchProvider(guardProvider);
     try {
       const result = await runner.resume(
@@ -3175,12 +3052,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       restore();
     }
 
-    const okProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const okProvider = new ScriptedProvider(endTurnScript("ok"));
     restore = patchProvider(okProvider);
     try {
       const result = await runner.resume(
@@ -3195,10 +3067,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
   });
 
   it("refuses a resume when meta.sourceTools is empty (corruption/tamper signal), no turn run", async () => {
-    const toolRegistry = new ToolRegistry();
-    toolRegistry.register(noopTool("noop"));
-    const subStore = makeSubStore();
-    const runner = makeRunner(toolRegistry, subStore);
+    const { subStore, runner } = makeNoopRunner();
 
     // Empty frozen scope indicates corruption outside the wire path and must fail closed.
     const { createNamespacedSessionId } = await import("../../shared/dlp-safe-id.js");
@@ -3213,12 +3082,7 @@ describe("SubAgentRunner.resume — re-hydration (PR-C)", () => {
       subAgentSuspensionReason: "budget",
     });
 
-    const guardProvider = new ScriptedProvider([
-      [
-        { type: "text_delta", text: "MUST-NOT-RUN" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const guardProvider = new ScriptedProvider(endTurnScript("MUST-NOT-RUN"));
     const restore = patchProvider(guardProvider);
     try {
       const result = await runner.resume(resumeId, "continue", "tamper-test");

@@ -1,10 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
+import { makeBasicConversationLoopDeps } from "./support/conversation-loop-fixtures.js";
 
 const FAKE_DISK_MESSAGES = [
   { role: "user" as const, content: [{ type: "text" as const, text: "q1" }] },
@@ -39,19 +37,10 @@ function makeLoop(
     listSessions: vi.fn(() => []),
   };
 
-  const loop = new ConversationLoop({
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: {
-      build: () => "system",
-    },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     toolRegistry,
     memoryManager,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
 
   return { loop, memoryManager, savedSessions, savedMetadata };
 }

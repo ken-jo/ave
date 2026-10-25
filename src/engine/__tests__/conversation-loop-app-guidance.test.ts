@@ -2,24 +2,14 @@
 // User guidance must not inherit app permission requirements or provenance.
 import { describe, expect, it, vi } from "vitest";
 
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
 import { ConversationLoop } from "../conversation-loop.js";
 import type { LLMProvider, StreamEvent } from "../llm/types.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
 import { formatAppMessageEnvelope } from "../../shared/mcp-app-message-source.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
 import type { PostTurnHookContext } from "../../hooks/post-turn-hook-chain.js";
-
-class FakeProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-  constructor(private readonly turns: StreamEvent[][]) {}
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 
 function twoToolRounds(): FakeProvider {
   return new FakeProvider([
@@ -69,16 +59,10 @@ function makeLoop(provider: LLMProvider, overrides: Record<string, unknown> = {}
     execute: async () => ({ output: "ok", isError: false }),
   }),
   );
-  const loop = new ConversationLoop({
-    settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-    },
-    systemPromptBuilder: { build: () => "system" },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
+  const loop = new ConversationLoop(makeBasicConversationLoopDeps({
     toolRegistry,
-    memoryManager: { saveSession: () => {}, listSessions: () => [] },
     ...overrides,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+  }));
   (loop as { provider: LLMProvider | null }).provider = provider;
 
   const execCalls: ExecCall[] = [];
@@ -159,12 +143,7 @@ describe("MCP-app guidance downgrades the rest of the turn", () => {
 
   it("preserves attachment and initial-guidance taint for a keyboard turn", async () => {
     const postTurnHookChain = makePostTurnHookSpy();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "done" } as StreamEvent,
-        { type: "message_complete", stopReason: "end_turn" } as StreamEvent,
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("done"));
     const { loop } = makeLoop(provider, { postTurnHookChain });
 
     await loop.runTurn("사용자 질문", {}, undefined, {

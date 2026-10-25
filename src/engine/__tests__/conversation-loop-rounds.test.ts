@@ -22,6 +22,8 @@ import { MCP_RESOURCE_FENCE_OPEN } from "../../shared/mcp-resource-bounds.js";
 import type { SubscriptionRuntimeId } from "../../shared/subscription-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { TurnCallbacks, TurnDecisionEvent } from "../turn/types.js";
+import { endTurnScript } from "./conversation-loop-test-helpers.js";
+import { makeBasicConversationLoopDeps, ScriptedTurnProvider as FakeProvider } from "./support/conversation-loop-fixtures.js";
 
 type AssistantRoundStopReason =
   Parameters<NonNullable<TurnCallbacks["onAssistantRound"]>>[0]["stopReason"];
@@ -30,17 +32,6 @@ import { t } from "../../i18n/index.js";
 import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
 import { MAX_BACKGROUND_OUTPUT_TOKEN_LIMIT } from "../llm/output-token-limit.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "../../shared/model-host-policy.js";
-
-class FakeProvider implements LLMProvider {
-  readonly vendor = "openai" as const;
-  private index = 0;
-
-  constructor(private readonly turns: StreamEvent[][]) {}
-
-  async *streamTurn(): AsyncIterable<StreamEvent> {
-    yield* this.turns[this.index++] ?? [];
-  }
-}
 
 class RecordingPromptProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -92,9 +83,7 @@ describe("ConversationLoop queryLoop", () => {
     const setOriginSource = vi.fn();
     const setActiveSessionId = vi.fn();
     const setActiveRolePrompt = vi.fn();
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: {
         build: () => {
           throw new Error("prompt assembly failed");
@@ -104,12 +93,9 @@ describe("ConversationLoop queryLoop", () => {
         setActiveRolePrompt,
         setToolScope: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = new FakeProvider([]);
 
     await expect(loop.runTurn("질문", undefined, undefined, {
@@ -166,18 +152,15 @@ describe("ConversationLoop queryLoop", () => {
     settings.vendors.openai.enableThinking = true;
     settings.vendors.openai.thinkingBudgetTokens = 32_000;
 
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => settings,
         getSecret: () => "test-key",
       },
       systemPromptBuilder: { build },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
     loop.getHistory().append({
       role: "user",
@@ -212,25 +195,15 @@ describe("ConversationLoop queryLoop", () => {
 
   it("persists persona prompt identity on the user message for retry replay", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
+    const provider = new FakeProvider(endTurnScript("ok"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: {
         build: () => "system",
         setActiveRolePrompt: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("review this", undefined, undefined, {
@@ -256,28 +229,18 @@ describe("ConversationLoop queryLoop", () => {
 
   it("keeps the read-skill registry across user-turn boundaries", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
+    const provider = new FakeProvider(endTurnScript("ok"));
     const clear = vi.fn();
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: {
         build: () => "system",
         setToolScope: vi.fn(),
         setActiveSessionId: vi.fn(),
       },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       skillOverlay: { clear },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("질문", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -324,21 +287,16 @@ describe("ConversationLoop queryLoop", () => {
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ]);
-      const loop = new ConversationLoop({
-        settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-        },
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         systemPromptBuilder: {
           build: () => "system",
           setToolScope: vi.fn(),
           setActiveSessionId: vi.fn(),
         },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
         toolRegistry,
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
         skillOverlay: overlay,
         disableSessionPersistence: true,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       await loop.runTurn("brief me", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -396,21 +354,16 @@ describe("ConversationLoop queryLoop", () => {
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ]);
-      const loop = new ConversationLoop({
-        settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-        },
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         systemPromptBuilder: {
           build: () => "system",
           setToolScope: vi.fn(),
           setActiveSessionId: vi.fn(),
         },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
         toolRegistry,
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
         skillOverlay: overlay,
         disableSessionPersistence: true,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       await loop.runTurn("brief child", undefined, undefined, {
@@ -429,22 +382,12 @@ describe("ConversationLoop queryLoop", () => {
 
   describe("typed /<skill-name> invocation", () => {
     function makeSlashLoop(isSkillName?: (name: string) => boolean) {
-      const provider = new RecordingPromptProvider([
-        [
-          { type: "text_delta", text: "model answered" },
-          { type: "message_complete", stopReason: "end_turn" },
-        ],
-      ]);
-      const loop = new ConversationLoop({
-        settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+      const provider = new RecordingPromptProvider(endTurnScript("model answered"));
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         systemPromptBuilder: { build: () => "system", setToolScope: vi.fn(), setActiveSessionId: vi.fn() },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
-        toolRegistry: new ToolRegistry(),
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
         ...(isSkillName ? { isSkillName } : {}),
         disableSessionPersistence: true,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
       return { loop, provider };
     }
@@ -566,15 +509,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("please write this", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -630,15 +567,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("read and act", undefined, undefined, { inputOrigin: "user-keyboard",
@@ -677,15 +608,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("plugin prompt", undefined, undefined, { inputOrigin: "plugin-emitted",
@@ -721,15 +646,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn(
@@ -782,22 +701,11 @@ describe("ConversationLoop queryLoop", () => {
     const inputClassifier = new InputClassifier();
     const routeEngine = new RouteEngine();
 
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: {
-        build: () => "system",
-      },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       inputClassifier,
       routeEngine,
       toolRegistry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const reasoningDeltas: string[] = [];
@@ -912,20 +820,11 @@ describe("ConversationLoop queryLoop", () => {
     ]);
     const inputClassifier = new InputClassifier();
     const routeEngine = new RouteEngine();
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       inputClassifier,
       routeEngine,
       toolRegistry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("call many tools", undefined, undefined, {
@@ -997,14 +896,9 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
     const decisions: TurnDecisionEvent[] = [];
 
@@ -1089,14 +983,9 @@ describe("ConversationLoop queryLoop", () => {
       },
     }),
     );
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = new AdapterBackedProvider();
 
     const result = await loop.runTurn("call two tools", undefined, undefined, {
@@ -1171,21 +1060,10 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
-      settingsService: {
-        get: () => fakeLlmSettings(),
-        getSecret: () => "test-key",
-      },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       toolRegistry,
-      memoryManager: {
-        saveSession: () => {},
-        listSessions: () => [],
-      },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("call long tool then read chunk", undefined, undefined, {
@@ -1266,19 +1144,10 @@ describe("ConversationLoop queryLoop", () => {
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ]);
-      const loop = new ConversationLoop({
-        settingsService: {
-          get: () => fakeLlmSettings(),
-          getSecret: () => "test-key",
-        },
-        systemPromptBuilder: {
-          build: () => "system",
-        },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         toolRegistry,
         memoryManager,
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       expect(await loop.loadSession(sessionId)).toBe(true);
@@ -1351,17 +1220,13 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
@@ -1399,7 +1264,7 @@ describe("ConversationLoop queryLoop", () => {
           { type: "message_complete", stopReason: "end_turn" },
         ],
       ], subscriptionProvider);
-      const loop = new ConversationLoop({
+      const loop = new ConversationLoop(makeBasicConversationLoopDeps({
         settingsService: {
           // Subscription runtimes must not inherit prefill support from stale API-key settings.
           get: () => ({
@@ -1408,12 +1273,8 @@ describe("ConversationLoop queryLoop", () => {
           }),
           getSecret: () => "test-key",
         },
-        systemPromptBuilder: { build: () => "system" },
-        inputClassifier: new InputClassifier(),
-        routeEngine: new RouteEngine(),
         toolRegistry,
-        memoryManager: { saveSession: () => {}, listSessions: () => [] },
-      } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+      }));
       (loop as { provider: LLMProvider | null }).provider = provider;
 
       const result = await loop.runTurn(
@@ -1445,17 +1306,13 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const rounds: Array<{ text: string; stopReason: string }> = [];
@@ -1486,17 +1343,13 @@ describe("ConversationLoop queryLoop", () => {
         yield { type: "message_complete", stopReason: "max_tokens" };
       }
     }
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider =
       new InfiniteLengthProvider();
 
@@ -1521,17 +1374,13 @@ describe("ConversationLoop queryLoop", () => {
         yield { type: "message_complete", stopReason: "max_tokens" };
       }
     }
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider =
       new CountingProvider();
 
@@ -1556,17 +1405,13 @@ describe("ConversationLoop queryLoop", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const result = await loop.runTurn(
@@ -1595,21 +1440,12 @@ describe("ConversationLoop queryLoop", () => {
   // Server resource text reaches the model; transcript display retains only the user-authored marker.
   it("keeps an attached resource's body out of the user's transcript bubble", async () => {
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+    const provider = new FakeProvider(endTurnScript("ok"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn() },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const fence = [
@@ -1635,21 +1471,12 @@ describe("ConversationLoop queryLoop", () => {
   it("adds no displayText to a turn with no resource attachment", async () => {
     // Ordinary turns must not acquire a duplicate displayText copy that could drift.
     const toolRegistry = new ToolRegistry();
-    const provider = new FakeProvider([
-      [
-        { type: "text_delta", text: "ok" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
+    const provider = new FakeProvider(endTurnScript("ok"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       systemPromptBuilder: { build: () => "system", setActiveRolePrompt: vi.fn() },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry,
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("plain question", undefined, undefined, {
@@ -1665,15 +1492,9 @@ describe("ConversationLoop queryLoop", () => {
 
 describe("reasoning-only round is not a finished turn", () => {
   function createLoop(provider: LLMProvider): ConversationLoop {
-    const loop = new ConversationLoop({
-      settingsService: { get: () => fakeLlmSettings(), getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       disableSessionPersistence: true,
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
     return loop;
   }
@@ -1915,23 +1736,13 @@ describe("reasoning-only round is not a finished turn", () => {
 
 describe("ConversationLoop output ceiling", () => {
   it("forwards the active vendor's outputTokenLimit to every chat round", async () => {
-    const provider = new RecordingPromptProvider([
-      [
-        { type: "text_delta", text: "done" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
+    const provider = new RecordingPromptProvider(endTurnScript("done"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ outputTokenLimit: 16_384 }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
@@ -1941,23 +1752,13 @@ describe("ConversationLoop output ceiling", () => {
 
   it("sends a chat ceiling above the background bound unclamped", async () => {
     // Chat ceilings must not be clamped to the plugin background limit.
-    const provider = new RecordingPromptProvider([
-      [
-        { type: "text_delta", text: "done" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
+    const provider = new RecordingPromptProvider(endTurnScript("done"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ outputTokenLimit: 32_768 }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
@@ -1969,20 +1770,10 @@ describe("ConversationLoop output ceiling", () => {
   it("supplies the default ceiling when an existing vendor block declares none", async () => {
     const settings = fakeLlmSettings();
     delete settings.vendors[settings.provider].outputTokenLimit;
-    const provider = new RecordingPromptProvider([
-      [
-        { type: "text_delta", text: "done" },
-        { type: "message_complete", stopReason: "end_turn" },
-      ],
-    ]);
-    const loop = new ConversationLoop({
+    const provider = new RecordingPromptProvider(endTurnScript("done"));
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: { get: () => settings, getSecret: () => "test-key" },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     await loop.runTurn("answer", undefined, undefined, { inputOrigin: "user-keyboard" });
@@ -2002,17 +1793,12 @@ describe("ConversationLoop output ceiling", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: () => fakeLlmSettings({ provider: "openai-compatible", outputTokenLimit: 128 }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
-      toolRegistry: new ToolRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: Array<{ kind: string; branch: string }> = [];
@@ -2076,14 +1862,10 @@ describe("ConversationLoop progress notification", () => {
 
   it("injects a wire-only notification on the cadence and records the decision", async () => {
     const provider = loopingProvider();
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: settingsWithNudgeCadence(2),
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: Array<{ kind: string; branch: string }> = [];
@@ -2130,7 +1912,7 @@ describe("ConversationLoop progress notification", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: {
         get: (key: string) =>
           key === "chat"
@@ -2138,12 +1920,8 @@ describe("ConversationLoop progress notification", () => {
             : fakeLlmSettings({ provider: "openai-compatible" }),
         getSecret: () => "test-key",
       },
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: Array<{ kind: string; branch: string }> = [];
@@ -2179,14 +1957,10 @@ describe("ConversationLoop progress notification", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: settingsWithNudgeCadence(1),
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: string[] = [];
@@ -2220,14 +1994,10 @@ describe("ConversationLoop progress notification", () => {
 
   it("injects nothing when the cadence is 0", async () => {
     const provider = loopingProvider();
-    const loop = new ConversationLoop({
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps({
       settingsService: settingsWithNudgeCadence(0),
-      systemPromptBuilder: { build: () => "system" },
-      inputClassifier: new InputClassifier(),
-      routeEngine: new RouteEngine(),
       toolRegistry: probeRegistry(),
-      memoryManager: { saveSession: () => {}, listSessions: () => [] },
-    } as unknown as ConstructorParameters<typeof ConversationLoop>[0]);
+    }));
     (loop as { provider: LLMProvider | null }).provider = provider;
 
     const decisions: string[] = [];
