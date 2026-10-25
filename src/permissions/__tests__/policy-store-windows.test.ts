@@ -58,6 +58,18 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     for (const path of paths) expect(denies).not.toContain(path);
   });
 
+  it("treats a missing policy under a user-owned Ave directory as absent", async () => {
+    const directory = join(root, "machine", "Ave");
+    if (readWindowsDirectoryDacls([directory])[0].ownerSid !== token.currentUserSid) {
+      execFileSync(win32SystemBinary("icacls"), [directory, "/setowner", `*${token.currentUserSid}`, "/q"], { windowsHide: true });
+    }
+    expect(readWindowsDirectoryDacls([directory])[0].ownerSid).toBe(token.currentUserSid);
+    const policy = await loadPolicy(user, admin);
+    expect(policy).toMatchObject({ source: "defaults", managed: false });
+    expect(policy).not.toHaveProperty("adminStatus");
+    expect(await loadMarketplacePolicy(admin)).toMatchObject({ ok: true });
+  });
+
   it("rejects a user-owned policy and surfaces its owner reason", async () => {
     await writeUserPolicy('{"version":1,"requireExplicitApproval":false}');
     const log = vi.fn();
