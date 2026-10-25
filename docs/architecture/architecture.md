@@ -2143,6 +2143,11 @@ with its own owner rule:
   root, but it does not take ownership of it. `isOwnerOnlyDacl` in
   `src/shared/ave-home.ts` applies this rule. It takes an elevated
   Administrators token as its sign that the default owner is `S-1-5-32-544`.
+  On a non-elevated boot, only an existing non-reparse `subscription-runtimes`
+  root owned by `S-1-5-32-544` is claimed for the token user before DACL protection,
+  with the owner rechecked on the same non-following handle; other foreign owners
+  remain refused. A failed claim refuses privacy as `owner-claim-failed`, naming
+  the path and advising one elevated run or an owner repair.
 
 Any other owner is refused. A change to any of these rules changes the security
 contract for all of them.
