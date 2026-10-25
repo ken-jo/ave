@@ -1246,7 +1246,7 @@ export function getBuiltinShellSessionReadPolicy(userDataDir = _baseTrustedSetti
   ];
   // A session allowance must not carve into another protected namespace or a
   // trusted custom deny.
-  if (sessionRoot !== undefined && otherDenies.some((denied) => readDenyCoversPath(denied, sessionRoot))) {
+  if (sessionRoot !== undefined && readDenyCovering(otherDenies)(sessionRoot) !== undefined) {
     return Object.freeze({
       allowRead: Object.freeze([]),
       denyRead: Object.freeze([...getDefaultSensitiveReadDenyPaths(userDataDir), ...(_baseTrustedSettings?.denyRead ?? [])]),
@@ -1280,13 +1280,15 @@ export function getBuiltinShellReadPolicy(
   const privateRoots = appOwnedSandboxPrivateRoots();
   const ownHome = sandboxHome === undefined ? undefined : canonicalizePathForMatch(sandboxHome);
   void hostHome;
+  const sessionDenyCovering = readDenyCovering(sessions.denyRead);
+  const privateRootCovering = readDenyCovering(privateRoots);
   const allowRead = [...readPaths, ...sessions.allowRead].filter((path) => {
     const resolved = canonicalizePathForMatch(path);
     // An explicit working directory must not reopen protected user data or a
     // custom deny when removing a broader ancestor changes native rule order.
-    if (sessions.denyRead.some((denied) => readDenyCoversPath(denied, resolved))) return false;
+    if (sessionDenyCovering(resolved) !== undefined) return false;
     const insideOwnHome = ownHome !== undefined && (resolved === ownHome || resolved.startsWith(`${ownHome}/`));
-    if (!insideOwnHome && privateRoots.some((root) => readDenyCoversPath(root, resolved))) return false;
+    if (!insideOwnHome && privateRootCovering(resolved) !== undefined) return false;
     return true;
   });
   return Object.freeze({
@@ -1388,9 +1390,10 @@ function withholdUnder(
   kind: string,
 ): string[] {
   const canonicalPierces = pierces.map((pierce) => canonicalizePathForMatch(pierce));
+  const floorCovering = paths.length === 0 ? () => undefined : readDenyCovering(floor);
   return paths.filter((path) => {
     const resolved = canonicalizePathForMatch(path);
-    const denied = floor.find((deny) => readDenyCoversPath(deny, resolved));
+    const denied = floorCovering(resolved);
     if (denied === undefined) return true;
     if (canonicalPierces.some((pierce) => resolved === pierce || resolved.startsWith(`${pierce}/`))) return true;
     // Withheld silently, a later EACCES/EROFS/ENOENT in the child would have no
@@ -1398,6 +1401,40 @@ function withholdUnder(
     log.debug({ path, deny: denied }, `sandbox: ${kind} withheld under the protected read floor`);
     return false;
   });
+}
+
+/**
+ * {@link readDenyCoversPath} over a fixed list: the first entry, in list
+ * order, that covers a path. Each entry is canonicalized and compiled once
+ * per call of this function instead of once per tested path and ancestor, so
+ * a check of P paths against D entries costs D compiles, not P x D x depth.
+ */
+function readDenyCovering(denied: readonly string[]): (canonicalPath: string) => string | undefined {
+  // Compiled on first use, as readDenyCoversPath reaches an entry only when
+  // no earlier one covered the path.
+  const matchers = new Map<number, (candidate: string) => boolean>();
+  const matcher = (index: number): (candidate: string) => boolean => {
+    let match = matchers.get(index);
+    if (match === undefined) {
+      match = compileGlobMatcher(canonicalizePathForMatch(expandLeadingTilde(denied[index]!)));
+      matchers.set(index, match);
+    }
+    return match;
+  };
+  return (canonicalPath) => {
+    const candidates: string[] = [];
+    for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
+      candidates.push(candidate);
+      if (dirname(candidate) === candidate) break;
+    }
+    for (let index = 0; index < denied.length; index += 1) {
+      const entry = denied[index]!;
+      if (/[\[\]]/.test(entry) || (process.platform === "win32" && entry.includes("%"))) return entry;
+      const match = matcher(index);
+      if (candidates.some((candidate) => match(candidate) || match(`${candidate}/`))) return entry;
+    }
+    return undefined;
+  };
 }
 
 /** Use the shared policy grammar; unrepresented runtime patterns keep the deny. */
