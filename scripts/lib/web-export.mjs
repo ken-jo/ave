@@ -30,8 +30,9 @@ export function finishNotFound(outDir) {
     rmSync(dir, { recursive: true, force: true });
     rmSync(join(outDir, prefix, `${NOT_FOUND_ROUTE}.txt`), { force: true });
   }
-  // Next's own not-found route, exported as a live /404/ page by trailingSlash.
-  rmSync(join(outDir, "404"), { recursive: true, force: true });
+  // Next's own not-found route, exported as a live page by trailingSlash:
+  // /404/ before Next 16, /_not-found/ since.
+  for (const route of ["404", "_not-found"]) rmSync(join(outDir, route), { recursive: true, force: true });
 }
 
 const ENTITIES = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", "#39": "'", "#x27": "'" };
@@ -177,7 +178,9 @@ export function checkExport(outDir, { origin }) {
   }
   const problems = [];
   for (const nf of notFound) if (!pages.has(nf)) problems.push(`the export has no ${nf}`);
-  if (fileSet.has("/404/index.html")) problems.push("the export still has a live /404/ page");
+  for (const live of ["/404/", "/_not-found/"]) {
+    if (fileSet.has(`${live}index.html`)) problems.push(`the export still has a live ${live} page`);
+  }
   problems.push(...analyzePages(pages, (p) => fileSet.has(p), { notFound, origin }));
 
   const sitemap = readFileSync(join(outDir, "sitemap.xml"), "utf8");

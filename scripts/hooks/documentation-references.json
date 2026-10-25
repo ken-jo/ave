@@ -49,6 +49,7 @@
     "docs/development/theme-system.md",
     "docs/guides/getting-started.md",
     "docs/guides/plugin-development.md",
+    "docs/guides/user-hooks.md",
     "docs/references/plugin-tool-schema-design.md",
     "docs/research/sandbox-isolation.md"
   ],

@@ -6,6 +6,7 @@
  * crashing.
  */
 import { vi, type Mock } from "vitest";
+import type { RewindMode, RewindResult } from "../../src/shared/code-rewind.js";
 import { MAIN_CHAT_GROUP_ID } from "../../src/contract/app-contract.js";
 import { fakeLlmSettings } from "../../src/shared/__tests__/fake-llm-settings.js";
 import { resolveActiveChatModel, type ActiveChatModelSettings } from "../../src/shared/active-chat-model.js";
@@ -658,7 +659,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     // Main hands back the input to restore, resolved from the row it cut, so
     // the double resolves it from the seeded history the same way rather than
     // returning an empty string the composer would silently accept.
-    chatRewindTo: vi.fn(async (messageId: string) => {
+    chatRewindTo: vi.fn(async (messageId: string, mode?: RewindMode): Promise<RewindResult> => {
+      if (mode === "code") return { ok: true, text: "" };
       const resolved = await history;
       const row = withSeededMessageIds(resolved.messages).find(
         (m): m is Record<string, unknown> =>

@@ -107,6 +107,8 @@ describe("hosting", () => {
     expect(config.assets.directory).toBe("./out");
     expect(config.routes).toEqual([{ pattern: new URL(SITE).host, custom_domain: true }]);
     expect(read(resolve(web, "lib/i18n.ts"))).toContain(`export const SITE_ORIGIN = "${SITE}";`);
+    // The export's link graph reads that declaration instead of a second literal.
+    expect(read(resolve(root, "scripts/run-web-build.mjs"))).not.toContain(SITE);
     expect(read(join(pub, "robots.txt"))).toContain(`Sitemap: ${SITE}/sitemap.xml`);
   });
 });

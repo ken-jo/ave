@@ -1243,7 +1243,7 @@ export async function executeAuthorizedToolInvocation(
       tool.pluginGeneration !== undefined,
     );
     if (isError) {
-      await services.auditWriter.fireLifecycleEvent(
+      const failureHooks = await services.auditWriter.fireLifecycleEvent(
         "PostToolUseFailure",
         sessionId,
         invocationPermissionContext,
@@ -1253,6 +1253,9 @@ export async function executeAuthorizedToolInvocation(
           durationMs: Date.now() - startTime,
         },
       );
+      if (failureHooks.result?.decision === "deny" && failureHooks.result.results.length > 0) {
+        content = `${content}\n\n[Script Hook Feedback]\n${failureHooks.result.reason}`;
+      }
     }
   }
 

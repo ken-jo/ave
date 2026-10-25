@@ -104,12 +104,16 @@ describe("not-found export", () => {
       writeFileSync(join(dir, prefix, "not-found", "index.html"), `nf ${prefix}`);
       writeFileSync(join(dir, prefix, "not-found.txt"), "rsc");
     }
-    mkdirSync(join(dir, "404"));
-    writeFileSync(join(dir, "404", "index.html"), "next");
+    for (const live of ["404", "_not-found"]) {
+      mkdirSync(join(dir, live));
+      writeFileSync(join(dir, live, "index.html"), "next");
+    }
     finishNotFound(dir);
     expect(readFileSync(join(dir, "404.html"), "utf8")).toBe("nf ");
     expect(readFileSync(join(dir, "en", "404.html"), "utf8")).toBe("nf en");
-    for (const gone of ["not-found", "not-found.txt", "en/not-found", "en/not-found.txt", "404"]) expect(existsSync(join(dir, gone))).toBe(false);
+    for (const gone of ["not-found", "not-found.txt", "en/not-found", "en/not-found.txt", "404", "_not-found"]) {
+      expect(existsSync(join(dir, gone))).toBe(false);
+    }
   });
 
   it("fails when a locale's not-found page was not built", () => {

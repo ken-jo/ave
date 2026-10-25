@@ -4,6 +4,7 @@
 // SHARED gesture token via ./gesture-intent; this surface never touches the
 // gesture-gated mutating permission/policy family (that lives in the internal
 // surface). Channel names come from the contract SOT (no inline literals).
+import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
 import { ipcRenderer } from "electron";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import {
@@ -158,11 +159,8 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     }>,
   chatEditResend: async (messageId: string, newText: string) =>
     ipcRenderer.invoke(CHANNELS.chat.editResend, messageId, newText, chatGroupId),
-  chatRewindTo: async (messageId: string) =>
-    ipcRenderer.invoke(CHANNELS.chat.rewindTo, messageId, chatGroupId) as Promise<
-      | { ok: true; text: string; personaPromptId?: string }
-      | { ok: false; error: string }
-    >,
+  chatRewindTo: async (messageId: string, mode: RewindMode = "conversation") =>
+    ipcRenderer.invoke(CHANNELS.chat.rewindTo, messageId, chatGroupId, mode) as Promise<RewindResult>,
   chatFork: async (messageId?: string) => ipcRenderer.invoke(CHANNELS.chat.fork, messageId, chatGroupId),
   chatContinueLastUser: async (sessionId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.continueLastUser, { sessionId }, chatGroupId) as Promise<{ ok: boolean; error?: string }>,
