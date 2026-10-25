@@ -427,7 +427,7 @@ export function prepareWorkbookContainer(
   }
   const parts = new Map<string, Buffer>();
   const xmlParts = new Map<string, Buffer>();
-  const verdict = verifyZipInflateLimits(bytes, limits, (name, data) => {
+  const verdict = verifyZipInflateLimits(bytes, limits, { onEntry: (name, data) => {
     if (PACKAGE_PARTS.has(name)) parts.set(name, data);
     if (VML_PART_NAME.test(name)) refuseXmlDeclarations(data);
     if (!XML_PART_NAME.test(name)) return;
@@ -441,7 +441,7 @@ export function prepareWorkbookContainer(
         && XML_TARGET_RELATIONSHIP_TYPES.has(tag.attributes.get("type") ?? "")
         && !XML_PART_NAME.test(tag.attributes.get("target") ?? "")) refuse("XML relationship targets a non-XML part");
     });
-  });
+  } });
   if (!verdict.ok) {
     if (verdict.reason === "encrypted") throw new TableDocumentError("encrypted", verdict.detail);
     if (verdict.reason === "corrupt") refuse(verdict.detail);

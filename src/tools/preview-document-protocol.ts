@@ -13,6 +13,7 @@ export const DOCUMENT_PARSE_MESSAGES: Readonly<Record<ParseError, string>> = Obj
   "too-large": "Document exceeds the file size limit.",
   "archive-too-large": "Document expansion exceeds the preview limits.",
   "sheet-not-found": "Requested sheet does not exist.",
+  "page-not-found": "Requested page does not exist.",
   encrypted: "Encrypted documents cannot be previewed.",
   "unsupported-encoding": "Document encoding is not supported.",
   "corrupt-document": "Document is malformed or has the wrong container type.",

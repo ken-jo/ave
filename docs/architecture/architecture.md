@@ -64,10 +64,12 @@ retains ownership of request projection and attachment limits.
 
 ## Process Boundaries
 
-Local table previews use a bounded and killable child. Admission covers reading
+Local document previews use a bounded and killable child. Admission covers reading
 and parsing; separate startup and parse deadlines cover the child lifecycle.
 The [table preview contract](table-document-preview.md) owns request replacement,
 container checks, expansion refusals and bounded display windows.
+The [page preview contract](page-document-preview.md) adds presentation outlines
+and rendered PDF pages through that same lifecycle.
 
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and

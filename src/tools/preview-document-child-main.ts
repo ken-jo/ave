@@ -5,6 +5,8 @@ import {
 import { parseTableDocument } from "./table-document-reader.js";
 import { TableDocumentError } from "./table-document-error.js";
 import { DOCUMENT_PARSE_READY, isDocumentParseError, readDocumentResponse } from "./preview-document-protocol.js";
+import { previewPageFormatOf } from "../shared/preview-page-document.js";
+import { readPageDocumentResponse } from "./preview-page-protocol.js";
 
 async function readInput(length: number): Promise<Buffer> {
   const input = Buffer.allocUnsafe(length);
@@ -21,7 +23,9 @@ async function readInput(length: number): Promise<Buffer> {
 
 try {
   const [formatArg, sheetArg, lengthArg] = process.argv.slice(2);
-  const format = previewDocumentFormatOf(`input.${formatArg}`);
+  const tableFormat = previewDocumentFormatOf(`input.${formatArg}`);
+  const pageFormat = previewPageFormatOf(`input.${formatArg}`);
+  const format = tableFormat ?? pageFormat;
   const sheetIndex = Number(sheetArg);
   const length = Number(lengthArg);
   if (!format || format !== formatArg || process.argv.length !== 5
@@ -31,7 +35,10 @@ try {
     throw new Error("Invalid document parse request.");
   }
   process.stdout.write(DOCUMENT_PARSE_READY);
-  const document = readDocumentResponse(await parseTableDocument(await readInput(length), format, sheetIndex));
+  const bytes = await readInput(length);
+  const document = tableFormat
+    ? readDocumentResponse(await parseTableDocument(bytes, tableFormat, sheetIndex))
+    : readPageDocumentResponse(await (await import("./page-document-reader.js")).parsePageDocument(bytes, pageFormat!, sheetIndex));
   const response = JSON.stringify({ ok: true, document });
   if (Buffer.byteLength(response) > PREVIEW_DOCUMENT_LIMITS.maxResponseBytes) {
     throw new TableDocumentError("parse-limit", "Document result exceeds its byte budget.");

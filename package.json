@@ -129,6 +129,7 @@
     "@ave/shell-parser-runtime": "file:resources/shell-parser",
     "@modelcontextprotocol/ext-apps": "1.7.5",
     "@modelcontextprotocol/sdk": "1.32.2",
+    "@napi-rs/canvas": "1.0.10",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/context-async-hooks": "^3.0.0",
     "@opentelemetry/exporter-trace-otlp-http": "^0.300.0",
@@ -142,9 +143,12 @@
     "better-sqlite3": "^13.0.3",
     "electron-audio-loopback": "^1.0.6",
     "electron-updater": "~6.8.11",
+    "fast-xml-parser": "5.11.2",
+    "jszip": "3.10.2",
     "mermaid": "^12.2.0",
     "node-pty": "^1.1.0",
     "papaparse": "5.7.0",
+    "pdfjs-dist": "6.4.299",
     "pino": "^10.4.0",
     "pino-pretty": "^13.2.0",
     "proper-lockfile": "^4.1.2",
@@ -257,7 +261,10 @@
       "!node_modules/better-sqlite3/src{,/**/*}",
       "!node_modules/better-sqlite3/binding.gyp",
       "!node_modules/{prebuild-install,napi-build-utils,node-abi}{,/**/*}",
-      "!node_modules/{ai,zod,undici,adm-zip,proper-lockfile,papaparse,xlsx}{,/**/*}",
+      "!node_modules/{ai,zod,undici,adm-zip,proper-lockfile,papaparse,xlsx,jszip,fast-xml-parser}{,/**/*}",
+      "!node_modules/pdfjs-dist/{build,web,image_decoders,types}{,/**/*}",
+      "!node_modules/pdfjs-dist/legacy/{web,image_decoders}{,/**/*}",
+      "!node_modules/pdfjs-dist/legacy/build/{pdf.min.mjs,pdf.worker.min.mjs,pdf.sandbox.mjs,pdf.sandbox.min.mjs}",
       "!node_modules/@ai-sdk{,/**/*}",
       "!node_modules/@azure/msal-*{,/**/*}",
       "!node_modules/@radix-ui{,/**/*}",
@@ -276,6 +283,7 @@
       "node_modules/node-pty/**",
       "node_modules/better-sqlite3/**",
       "node_modules/sharp/**",
+      "node_modules/@napi-rs/**",
       "node_modules/@img/**"
     ],
     "directories": {
@@ -298,6 +306,10 @@
       }
     ],
     "extraResources": [
+      {
+        "from": "resources/licenses/document-preview",
+        "to": "licenses/document-preview"
+      },
       {
         "from": "build/icon.png",
         "to": "icon.png"

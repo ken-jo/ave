@@ -729,9 +729,9 @@ export const CHANNELS = {
   },
   preview: {
     readFile: "ave:preview:read-file",
-    // Table documents (csv/tsv/xlsx/xls/ods): main parses with the same read
-    // guard as readFile and returns a bounded grid of display strings — never
-    // the file bytes. INTERNAL: absent from PUBLIC_CHANNELS.
+    // Documents use readFile's authority and an isolated parser. Returns a
+    // bounded sheet or page, never source bytes. The index selects a sheet
+    // for table formats or a page for presentations/PDF. INTERNAL.
     readDocument: "ave:preview:read-document",
   },
   workspace: {

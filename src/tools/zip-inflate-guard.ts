@@ -8,6 +8,11 @@ export interface ZipInflateLimits {
   ratioCheckMinBytes: number;
 }
 
+export interface ZipInflateOptions {
+  onEntry?: (name: string, data: Buffer) => void;
+  opaqueArchiveMemberPrefixes?: readonly string[];
+}
+
 type ZipInflateRejection =
   | "corrupt"
   | "encrypted"
@@ -145,7 +150,7 @@ function buildCanonicalArchive(entries: readonly CheckedZipEntry[]): Buffer {
 export function verifyZipInflateLimits(
   bytes: Buffer,
   limits: ZipInflateLimits,
-  onEntry?: (name: string, data: Buffer) => void,
+  options: ZipInflateOptions = {},
 ): ZipInflateVerdict {
   const end = findEnd(bytes);
   if (end === undefined) return corrupt("ZIP end record is missing or truncated");
@@ -268,10 +273,12 @@ export function verifyZipInflateLimits(
     }
     if (crc32(data) !== entry.checksum) return corrupt(`${entry.name}: checksum mismatch`);
     if (entry.name.endsWith("/") && data.length !== 0) return corrupt(`${entry.name}: directory contains data`);
-    if (hasZipMagic(data)) return corrupt(`${entry.name}: nested ZIP archives are unsupported`);
+    if (hasZipMagic(data) && !options.opaqueArchiveMemberPrefixes?.some((prefix) => prefix.endsWith("/") && entry.name.startsWith(prefix))) {
+      return corrupt(`${entry.name}: nested ZIP archives are unsupported`);
+    }
     actualTotal += data.length;
     entry.compressed = compressed;
-    onEntry?.(entry.name, data);
+    options.onEntry?.(entry.name, data);
   }
   return {
     ok: true,

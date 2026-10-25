@@ -9,6 +9,8 @@
  * reader enforced.
  */
 
+import type { PreviewPageDocument } from "./preview-page-document.js";
+
 export type PreviewDocumentFormat = "csv" | "tsv" | "xlsx" | "xls" | "ods";
 
 const FORMAT_BY_EXTENSION: ReadonlyMap<string, PreviewDocumentFormat> = new Map([
@@ -131,6 +133,7 @@ export type PreviewDocumentError =
   | "too-large"
   | "archive-too-large"
   | "sheet-not-found"
+  | "page-not-found"
   | "encrypted"
   | "unsupported-encoding"
   | "corrupt-document"
@@ -140,5 +143,5 @@ export type PreviewDocumentError =
   | "read-failed";
 
 export type PreviewReadDocumentResult =
-  | { ok: true; path: string; bytes: number; document: PreviewTableDocument }
+  | { ok: true; path: string; bytes: number; document: PreviewTableDocument | PreviewPageDocument }
   | { ok: false; error: PreviewDocumentError; path?: string; bytes?: number; message: string };

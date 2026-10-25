@@ -47,6 +47,8 @@ export function tableErrorKey(code: Exclude<PreviewDocumentError, "superseded">)
       return "chatPreviewRail.tableErrorEncoding";
     case "sheet-not-found":
       return "chatPreviewRail.tableErrorSheetNotFound";
+    case "page-not-found":
+      return "pagePreview.notFound";
     case "unsupported-format":
       return "chatPreviewRail.tableErrorUnsupported";
     case "read-failed":
@@ -120,7 +122,8 @@ export function TableDocumentPreview({ path }: { path: string }) {
               return;
             }
           }
-          if (result.ok) setState({ phase: "ok", document: result.document });
+          if (result.ok) setState("sheet" in result.document
+            ? { phase: "ok", document: result.document } : { phase: "error", code: "unsupported-format" });
           else if (result.error !== "superseded") setState({ phase: "error", code: result.error });
         })
         .catch(() => {
