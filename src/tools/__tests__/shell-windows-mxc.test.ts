@@ -195,9 +195,12 @@ describe("builtin shell — Windows MXC containers", () => {
       // workspace: read-only when it exists, denied when it does not.
       if (process.platform === "win32" && ORIGINAL_PLATFORM === "win32") {
         const grants = rankMxcFilesystem({ ...filesystem, protectedFloor: [] }, existsSync);
-        expect(grants.readwrite).toContain(workspace);
-        expect(grants.readonly).toEqual(expect.arrayContaining([join(workspace, ".git", "hooks"), join(workspace, ".vscode")]));
-        expect(grants.denied).toEqual(expect.arrayContaining([join(workspace, ".husky"), join(workspace, ".envrc")]));
+        // Windows paths are case-insensitive, and canonicalized entries may
+        // carry a lowercase drive letter.
+        const folded = (paths: readonly string[]) => paths.map((path) => path.toLowerCase());
+        expect(folded(grants.readwrite)).toContain(workspace.toLowerCase());
+        expect(folded(grants.readonly)).toEqual(expect.arrayContaining(folded([join(workspace, ".git", "hooks"), join(workspace, ".vscode")])));
+        expect(folded(grants.denied)).toEqual(expect.arrayContaining(folded([join(workspace, ".husky"), join(workspace, ".envrc")])));
       }
     } finally {
       rmSync(workspace, { recursive: true, force: true });
