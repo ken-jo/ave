@@ -1551,21 +1551,60 @@ reviewer, audit and cache consumers use that plan.
 
 A shell whose plan is not sandboxed (the sandbox is off, unavailable or does
 not cover the command, an explicit host request, or the Windows Plan B) runs
-without asking only when an exact `Bash(<command>)` allow rule — user, project
-or This session — matches it (owner decision 2026-10-25, unsandboxed shell exact-rule requirement, superseding the
-I3 rule that sent such shells to the normal rules). Prefix and tool-wide
-rules, remembered dock grants, allow mode, the reviewer and the judge never
-stand in for that rule: everything else asks on the dock, and with nobody to
-ask (a headless or routine turn) it is denied and audited (I5). PowerShell has
-no rule language, so an unsandboxed PowerShell call always asks. The bash card
-for such a shell offers the same five choices as the network card (five-choice shell card): Deny,
-Allow once, This session, This project and Always. Each save stores exactly
-the host-derived `Bash(<command>)` rule for the single simple command on the
-card — in memory for the conversation (ending with it), in the project's rule
-file, or in the user-global rules — never a prefix or an edited pattern; the
-renderer names only the scope (`userApprovalRecord` `rule: { scope }`). A
-compound, irreversible, floor-hitting or secret-bearing command has no such
-rule and offers only Deny and Allow once.
+without asking only when an exact allow rule for that command — user, project
+or This session — matches it: `Bash(<command>)` for bash and
+`PowerShell(<command>)` for PowerShell (owner decisions 2026-10-25: the
+unsandboxed shell exact-rule requirement, superseding the I3 rule that sent
+such shells to the normal rules, and exact PowerShell rules with the same
+strictness as Bash). Prefix and tool-wide rules, wildcard rules, remembered
+dock grants, allow mode, the reviewer and the judge never stand in for that
+rule: everything else asks on the dock. With nobody to ask (a headless or
+routine turn) the same exact rule still runs the command — sandbox-off bash,
+the Plan B and an explicit host request alike — and without one the call is
+denied and audited (I5). A `PowerShell(...)` rule is matched on the parsed
+command in canonical form: the command name lower-cased with its alias
+resolved (`ls` and `gci` are `get-childitem`), `-Parameter` names
+lower-cased, every other token verbatim. The host builds the card's rule from
+the parsed command and matches it again before saving; a command that is not
+one literal simple command has no exact rule.
+
+Remembered approvals saved for unsandboxed shells before this decision stay
+silently inert: they are not migrated, the card does not mark them, and they
+never authorize a plain shell; Settings still lists and revokes them (owner
+decision 2026-10-25).
+
+Every approval card — shell (bash, PowerShell, the Plan B, an explicit host
+request), network, an exact tool approval, a folder grant, a one-shot request
+— draws one shared decision row (owner decision 2026-10-25, unified approval
+card): **Deny ▾ | Allow for session ▾ | Allow once**. The Deny dropdown holds
+Always deny; the allow dropdown holds Allow for session, Always allow in this
+project and Always allow everywhere. A dropdown item selects its choice, the
+button beside it then names and commits it, and an **Edit rule** button
+appears above the row for a choice whose rule can be edited (wildcards
+allowed). Each approval type maps the six choices onto its own store:
+
+| Card | Always deny | Allow for session / in this project / everywhere |
+|---|---|---|
+| Shell | user-global deny rule (`Bash(...)` / `PowerShell(...)`) | session, project or user-global allow rule, the host-derived exact rule unless edited |
+| Network | user-global `Network(<host>[:<port>])` deny rule | the grant of that lifetime (This session / This tab, This project, Always); an edited rule is saved as a `Network(...)` host rule instead |
+| Exact tool approval | exact deny of this tool and input (edited in Settings) | exact approval for the conversation, or for the project folder; everywhere is not offered |
+| Folder access | exact deny of this request (edited in Settings) | everywhere = the parent-folder grant; session and project are not offered |
+| One-shot request | not offered | not offered |
+
+Choices a request does not offer stay visible in the dropdowns, disabled with
+the reason. No card sends the gate's tool-wide `deny-always`: Always deny is
+saved as a rule or an exact deny and the request is denied once. The renderer
+sends only `{ action, scope }` plus, when the person edited it, `pattern`
+(`userApprovalRecord` `rule`). The host checks an edited rule against the
+card's own rule grammar and requires it to decide this very request; an
+invalid or non-matching rule fails with a named error (`invalid-rule`,
+`rule-does-not-match`, `rule-required`, `scope-not-offered`,
+`not-request-owner`) and the request stays pending. Deny rules may be
+wildcards. An allow edited into a wildcard is saved, but it applies only to
+sandboxed runs, and the card says so while the rule is edited (the host
+repeats it as `wildcard-allow-sandboxed-only`); an unsandboxed command still
+needs its exact rule. A compound, irreversible, floor-hitting or
+secret-bearing command has no exact rule and offers no remembered allow.
 
 The [builtin shell sandbox policy](permission-policy-design.md#os-shell-sandbox-policy)
 defines writes within project and temporary roots, mandatory control-file
@@ -1849,12 +1888,17 @@ ASRT runs non-strict with an empty `allowedDomains`, so the callback decides
 every connection: a plugin worker reaches its own extension's declared
 domains and the configured model endpoints, nothing else, and is never asked;
 a Bash or PowerShell call reaches a host a grant covers, and otherwise
-the person is asked on the approval dock with exactly five choices (owner
-decision 2026-10-25, five-choice network card): Deny, Allow once, This session (in memory; it ends
-when the conversation is deleted or the app quits), This project (persisted,
-keyed by the project root of the call's working directory: the repository
-root when one is found, the same root a project `Bash(...)` rule applies to)
-and Always (persisted, global). The scope values on the wire and on disk are
+the person is asked on the approval dock with the shared decision row (owner
+decisions 2026-10-25, five-choice network card and unified approval card):
+Deny, Always deny (a user-global `Network(...)` deny rule), Allow once,
+Allow for session (in memory; it ends when the conversation is deleted or the
+app quits), Always allow in this project (persisted, keyed by the project root
+of the call's working directory: the repository root when one is found, the
+same root a project `Bash(...)` rule applies to) and Always allow everywhere
+(persisted, global). `Network(<host>[:<port>])` host rules (a leading `*.`
+matches subdomains) are consulted before grants: a deny rule refuses the
+connection, an allow rule admits a public destination, and an ask rule skips
+the grants. An address literal has no host rule. The scope values on the wire and on disk are
 `once`, `session`, `project` and `always`; the earlier `conversation` and
 `workspace` names are refused everywhere, except that a version-1 grant file's
 `workspace` grants are migrated once: a grant made at its project root becomes
@@ -1868,7 +1912,8 @@ sub-agents, and deleting a sub-agent session ends only that session's own
 network hosts, since its rules and approvals belong to the root. A workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
 asked in a banner in that tab, drawn only in, fetched by and answered from
-the window that owns the tab (Deny, Allow once, This tab, Always: a
+the window that owns the tab, with the same shared decision row (Deny, Always
+deny, Allow once, Allow for this tab, Always allow everywhere: a
 terminal's Allow once lets that one connection through and is never held;
 "This tab" takes the place of "This session" and lasts until the tab's
 shell exits, including an exit followed by a respawn; terminals have no

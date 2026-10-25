@@ -318,10 +318,12 @@ The structural parser, sink vocabulary, Windows credential rows and general file
 
 PowerShell script blocks and `pwsh`/`powershell` inline command text use the PowerShell catalogue. Other interpreter code receives generic credential/sink inspection without inheriting PowerShell command meanings. Known catalogue effects remain floors through shared wrappers, process-launcher payloads, background execution and static or opaque transport splats. Sink-only wrapper inspection preserves the forwarded native command identity and grants no rule coverage.
 
-`Bash(...)` rules remain dialect-scoped. PowerShell has no per-command rule
-language or project command-rule scope today. Existing tool allow rules and
-saved grants can satisfy its ordinary asks; no new command-rule grammar is
-implied.
+Shell rules are dialect-scoped: `Bash(...)` rules match bash and
+`PowerShell(...)` rules match PowerShell (owner decision 2026-10-25), each at
+user, project or session scope. A `PowerShell(...)` rule matches the parsed
+command in canonical form (command name lower-cased and alias-resolved,
+`-Parameter` names lower-cased, other tokens verbatim) and authorizes an
+unsandboxed call only as an exact rule, with the same strictness as Bash.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS
@@ -1015,9 +1017,16 @@ model's shell-environment description and the tool result say the sandbox is
 unavailable. By owner decision 2026-10-25 (unsandboxed shell exact-rule requirement) every plain shell — sandbox off,
 unavailable or not covering the command, an explicit host request, and the
 Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`) — runs unasked
-only on an exact `Bash(<command>)` allow rule; otherwise it asks on the
-five-choice card (five-choice shell card) in every mode, and headless it is denied and audited.
-The reviewer and the judge are not consulted for it. The parser and plan in
+only on an exact allow rule for that command: `Bash(<command>)`, or
+`PowerShell(<command>)` matched on the parsed command's canonical form with the
+same strictness (owner decision 2026-10-25). Otherwise it asks on the shared
+decision row of the approval card (owner decision 2026-10-25, unified approval
+card) in every mode. Headless, a matching exact rule runs it — for the Plan B
+and an explicit host request too — and without one it is denied and audited.
+The reviewer and the judge are not consulted for it. Wildcard allow rules apply
+only to sandboxed runs; deny rules may be wildcards. Remembered approvals saved
+for plain shells before this decision stay inert, without migration or a card
+marker. The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and
 [execution permit](../../src/permissions/host-shell-execution-permit.ts) own this
