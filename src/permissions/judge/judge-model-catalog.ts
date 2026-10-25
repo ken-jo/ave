@@ -7,7 +7,7 @@
  * catalog needs the model-list endpoint resolver from the LLM engine. Folding
  * the two together pulled the provider stack into every importer of the store.
  */
-import { llmRouteModel, LLM_VENDOR_DEFAULTS, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import { llmRouteModel, LLM_VENDOR_DEFAULTS, llmVendorModelOptions, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { chatRouteModelOptions, type LlmModelListCache } from "../../shared/llm-model-list.js";
 import { isDefaultModelListEndpoint } from "../../engine/llm/model-list.js";
 import { resolveModelRetirement } from "../../shared/context-budget.js";
@@ -54,9 +54,7 @@ export function judgeModelCatalogFrom(source: JudgeModelCatalogSource): JudgeMod
         vendorId: vendor,
         selectedModel: llmRouteModel({ model: block?.model ?? "", presetModels: block?.presetModels }, presetId),
         ...(seeded || !listing?.models ? {} : { syncedOptions: listing.models }),
-        seed: preset
-          ? { modelOptions: preset.modelOptions, defaultModel: preset.defaultModel }
-          : { modelOptions: LLM_VENDOR_MODEL_OPTIONS[vendor], defaultModel: LLM_VENDOR_DEFAULTS[vendor].model },
+        seed: { modelOptions: preset ? preset.modelOptions : llmVendorModelOptions(vendor) },
         ...(preset?.modelDiscoveryPolicy ? { modelDiscoveryPolicy: preset.modelDiscoveryPolicy } : {}),
         isRetired: (model) => resolveModelRetirement({ vendor, model, baseUrl, listing }) !== undefined,
       });

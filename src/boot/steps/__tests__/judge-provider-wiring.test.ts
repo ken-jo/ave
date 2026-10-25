@@ -8,7 +8,7 @@ import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stu
 import { PermissionManager } from "../../../permissions/permission-manager.js";
 import type { JudgeModelRef, JudgeSettings } from "../../../permissions/judge/judge-settings.js";
 import type { LLMProvider } from "../../../engine/llm/types.js";
-import { LLM_VENDOR_MODEL_OPTIONS } from "../../../shared/llm-vendor-defaults.js";
+import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 
 describe("judge configured provider wiring", () => {
   it("constructs an explicitly selected configured model independently of the active reviewer transport", async () => {
@@ -193,7 +193,7 @@ describe("judge configured provider wiring", () => {
     });
     try {
       const { wireReviewerAndPermissions } = await import("../reviewer-permission-wiring.js");
-      const offered = LLM_VENDOR_MODEL_OPTIONS.claude[0]!;
+      const offered = llmVendorModelOptions("claude")[0]!;
       const vendors: Record<string, { model: string }> = { openai: { model: "chat-a" } };
       const settingsService = {
         get: (key: string) => key === "llm" ? { provider: "openai", vendors } : key === "marketplace" ? {} : {},

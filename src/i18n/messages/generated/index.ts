@@ -91,6 +91,7 @@ import { en as en_chatTab } from "./chatTab.js";
 import { en as en_chatView } from "./chatView.js";
 import { en as en_checkpointDivider } from "./checkpointDivider.js";
 import { en as en_clipboardPaste } from "./clipboardPaste.js";
+import { en as en_codeRewind } from "./codeRewind.js";
 import { en as en_commandActions } from "./commandActions.js";
 import { en as en_compactedToolResult } from "./compactedToolResult.js";
 import { en as en_composer } from "./composer.js";
@@ -279,6 +280,7 @@ export const generatedEn: Record<string, string> = {
   ...en_chatView,
   ...en_checkpointDivider,
   ...en_clipboardPaste,
+  ...en_codeRewind,
   ...en_commandActions,
   ...en_compactedToolResult,
   ...en_composer,

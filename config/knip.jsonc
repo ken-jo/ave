@@ -34,6 +34,8 @@
         // Executed as a separate managed child, not imported into the host loop.
         "src/tools/image-preparation-child.ts",
         "scripts/smoke-live-model.mjs",
+        // Informational hook-matcher benchmark, run by hand (see its header).
+        "scripts/bench-hook-matchers.ts",
         "scripts/smoke-live-app.mjs",
         // Loaded by the installer packager through build.beforePack.
         "scripts/electron-before-pack.cjs",
@@ -143,6 +145,9 @@
     "pgrep",
     "plutil",
     "powershell.exe",
+    // PowerShell 7: the PSModulePath regression spawns it to prove the
+    // Windows PowerShell 5.1 env helper survives an inherited 7.x module path.
+    "pwsh.exe",
     "python3",
     "subst",
     "taskkill",

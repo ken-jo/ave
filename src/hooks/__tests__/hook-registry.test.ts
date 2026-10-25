@@ -3,12 +3,13 @@
  *
  * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4.1. Covers `.sh`
  * + config merge into one normalized list and event+matcher filtering (reusing
- * the `.sh` glob via hookMatchesTool).
+ * the `.sh` matcher engine).
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildHookRegistry,
   filterRegistryByEventAndTool,
+  filterRegistryByEventAndSubject,
   type HookRegistryEntry,
 } from "../hook-registry.js";
 import type { DiscoveredHook } from "../hook-discovery.js";
@@ -16,7 +17,7 @@ import type { HookConfigEntry } from "../hook-config.js";
 
 function shHook(over: Partial<DiscoveredHook> & Pick<DiscoveredHook, "fileName" | "hookType">): DiscoveredHook {
   return {
-    path: `/home/u/.config/ave/hooks/${over.fileName}`,
+    path: `/home/alice/.config/ave/hooks/${over.fileName}`,
     sha256: "deadbeef",
     size: 10,
     ...over,
@@ -43,7 +44,7 @@ describe("buildHookRegistry — normalization + merge", () => {
     expect(e.source).toBe("sh");
     expect(e.event).toBe("pre");
     expect(e.matcher).toBe("bash");
-    expect(e.command).toEqual(["/home/u/.config/ave/hooks/pre-guard.sh"]);
+    expect(e.command).toEqual(["/home/alice/.config/ave/hooks/pre-guard.sh"]);
     expect(e.id).toBe("sh:pre-guard.sh");
     if (e.source === "sh") {
       expect(e.discovered.sha256).toBe("deadbeef");
@@ -58,13 +59,13 @@ describe("buildHookRegistry — normalization + merge", () => {
   it("carries a config entry through with its timeout", () => {
     const reg = buildHookRegistry(
       [],
-      [configEntry({ id: "PreToolUse#0.0", event: "pre", matcher: "mcp__*", timeoutMs: 1234 })],
+      [configEntry({ id: "PreToolUse#0.0", event: "pre", matcher: "^mcp__.*$", timeoutMs: 1234 })],
     );
     expect(reg).toHaveLength(1);
     const e = reg[0];
     expect(e.source).toBe("config");
     expect(e.event).toBe("pre");
-    expect(e.matcher).toBe("mcp__*");
+    expect(e.matcher).toBe("^mcp__.*$");
     expect(e.id).toBe("config:PreToolUse#0.0");
     if (e.source === "config") {
       expect(e.timeoutMs).toBe(1234);
@@ -98,18 +99,37 @@ describe("buildHookRegistry — normalization + merge", () => {
     expect(sh).toHaveLength(1);
     expect(cfg).toHaveLength(1);
   });
+
+  it("compiles matchers once per registry build for tool and lifecycle filtering", () => {
+    const constructor = vi.spyOn(globalThis, "RegExp");
+    try {
+      const registry = buildHookRegistry(
+        [shHook({ fileName: "pre-mcp.sh", hookType: "pre", matcher: "^mcp_hr_.*$" })],
+        [configEntry({ id: "compact", event: "PreCompact", matcher: "^(manual|auto)$" })],
+      );
+      expect(constructor).toHaveBeenCalledTimes(2);
+      for (let call = 0; call < 3; call += 1) {
+        expect(filterRegistryByEventAndTool(registry, "pre", "mcp_hr_query")).toHaveLength(1);
+        expect(filterRegistryByEventAndSubject(registry, "PreCompact", "auto")).toHaveLength(1);
+        expect(filterRegistryByEventAndTool(registry, "pre", "prefix_mcp_hr_query")).toEqual([]);
+      }
+      expect(constructor).toHaveBeenCalledTimes(2);
+    } finally {
+      constructor.mockRestore();
+    }
+  });
 });
 
 describe("filterRegistryByEventAndTool — event + matcher (decision a)", () => {
   const registry: HookRegistryEntry[] = buildHookRegistry(
     [
       shHook({ fileName: "pre-all.sh", hookType: "pre" }), // no matcher → all tools
-      shHook({ fileName: "pre-mcp.sh", hookType: "pre", matcher: "mcp__*" }),
+      shHook({ fileName: "pre-mcp.sh", hookType: "pre", matcher: "^mcp__.*$" }),
       shHook({ fileName: "post-all.sh", hookType: "post" }),
     ],
     [
       configEntry({ id: "PreToolUse#0.0", event: "pre", matcher: "bash" }),
-      configEntry({ id: "PermissionRequest#0.0", event: "perm", matcher: "mcp__hr_*" }),
+      configEntry({ id: "PermissionRequest#0.0", event: "perm", matcher: "^mcp__hr_.*$" }),
     ],
   );
 
@@ -123,13 +143,13 @@ describe("filterRegistryByEventAndTool — event + matcher (decision a)", () => 
     expect(r.map((e) => e.id)).toEqual(["sh:pre-all.sh"]);
   });
 
-  it("glob matcher matches across both .sh and config origins", () => {
+  it("regex matcher matches across both .sh and config origins", () => {
     const r = filterRegistryByEventAndTool(registry, "pre", "mcp__hr_list");
-    // pre-all (no matcher) + pre-mcp (mcp__*) match; the bash config entry does not.
+    // pre-all (no matcher) + pre-mcp (^mcp__.*$) match; the bash config entry does not.
     expect(r.map((e) => e.id)).toEqual(["sh:pre-all.sh", "sh:pre-mcp.sh"]);
   });
 
-  it("exact-glob matcher matches the named tool", () => {
+  it("exact-name matcher matches the named tool", () => {
     const r = filterRegistryByEventAndTool(registry, "pre", "bash");
     expect(r.map((e) => e.id)).toEqual(["sh:pre-all.sh", "config:PreToolUse#0.0"]);
   });

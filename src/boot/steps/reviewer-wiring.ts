@@ -351,6 +351,9 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     if (deps.selectedModel?.available === false) {
       selectedModelUnavailable();
     } else try {
+      if (!effectiveSettings.model.trim()) {
+        throw new ReviewerProviderUnconfiguredError("Permission reviewer model not configured.");
+      }
       adapter = resolveReviewerAdapter(effectiveSettings.provider, deps);
     } catch (err) {
       // Discriminate the two failure classes resolveReviewerAdapter can

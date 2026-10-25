@@ -54,7 +54,8 @@ export const DEVELOPMENT_ENV_POLICY = [
   { name: "AVE_TRACE", lifecycle: "active", packaged: "scrub" },
   // Kept the signed whitelist feed offline; host-secret grants no longer fetch anything.
   { name: "AVE_WHITELIST_OFFLINE", lifecycle: "tombstone", packaged: "scrub" },
-  { name: "AVE_WIN_NO_SANDBOX", lifecycle: "active", packaged: "scrub" },
+  // Re-injected --no-sandbox into the dev ave:// registration; unpackaged launches no longer register.
+  { name: "AVE_WIN_NO_SANDBOX", lifecycle: "tombstone", packaged: "scrub" },
   // Renderer-build development flag: deliberately covered despite not using
   // the AVE_ namespace scanned by the env-surface policy gate.
   { name: "VITE_DEBUG_STREAM", lifecycle: "active", packaged: "scrub" },

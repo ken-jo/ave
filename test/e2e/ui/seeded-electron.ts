@@ -54,11 +54,30 @@ function safeProcessEnv(): LaunchEnv {
 export const E2E_CHROMIUM_SWITCHES: readonly string[] = process.platform === "darwin" ? ["--use-mock-keychain"] : [];
 
 /**
+ * The E2E runtime signal every e2e launch carries (`isE2eTestRuntime` in
+ * src/boot/dev-flags.ts). Among other things it keeps the app from claiming the
+ * OS `ave://` handler (src/main/ave-protocol-registration.ts), so a spec never
+ * depends on the launch being unpackaged to leave the installed app's deep
+ * links alone.
+ */
+export const E2E_RUNTIME_ENV = Object.freeze({ AVE_E2E: "1", NODE_ENV: "test" });
+
+/**
  * The only way an e2e spec launches Electron (test/scripts/e2e-electron-launch.test.mjs
- * keeps it that way): Playwright's launch with {@link E2E_CHROMIUM_SWITCHES} in front.
+ * keeps it that way): Playwright's launch with {@link E2E_CHROMIUM_SWITCHES} in front
+ * and {@link E2E_RUNTIME_ENV} over the spec's env (Playwright's default env is
+ * `process.env`, so a spec that passes none keeps it).
  */
 export function launchElectron(options: Parameters<typeof electron.launch>[0]): ReturnType<typeof electron.launch> {
-  return electron.launch({ ...options, args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])] });
+  const baseEnv: Record<string, string> = {};
+  for (const [key, value] of Object.entries(options?.env ?? process.env)) {
+    if (value !== undefined) baseEnv[key] = value;
+  }
+  return electron.launch({
+    ...options,
+    args: [...E2E_CHROMIUM_SWITCHES, ...(options?.args ?? [])],
+    env: { ...baseEnv, ...E2E_RUNTIME_ENV },
+  });
 }
 
 /** The allow-listed parent env plus `overrides`; an `undefined` override removes the key. */

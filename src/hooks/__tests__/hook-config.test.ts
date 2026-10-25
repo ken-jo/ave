@@ -2,7 +2,7 @@
  * Tests for the declarative `hooks.json` parser (#811 command-hooks milestone).
  *
  * Spec ref: docs/architecture/hook-runtime-expansion-design.md §4. Covers the
- * decisions: glob matcher (string-validated), closed event set, command-type
+ * decisions: reference matcher (invalid regex rejected), closed event set, command-type
  * handler with local-script-vs-binary classification + binary-only rejection,
  * and timeoutMs clamp.
  */
@@ -47,7 +47,7 @@ describe("parseHookConfig — valid parse", () => {
       hooks: {
         PreToolUse: [
           {
-            matcher: "mcp__*",
+            matcher: "^mcp__.*$",
             hooks: [
               {
                 type: "command",
@@ -64,7 +64,7 @@ describe("parseHookConfig — valid parse", () => {
     expect(r.entries).toHaveLength(1);
     expect(r.entries[0]).toMatchObject({
       event: "pre",
-      matcher: "mcp__*",
+      matcher: "^mcp__.*$",
       command: ["~/.config/ave/hooks/pre_policy.py"],
       timeoutMs: 3000,
       source: "config",
@@ -117,6 +117,21 @@ describe("parseHookConfig — valid parse", () => {
     expect(r.entries).toHaveLength(2);
     expect(r.entries[0].matcher).toBeUndefined();
     expect(r.entries[1].matcher).toBeUndefined();
+  });
+
+  it("rejects a block whose matcher is an invalid regular expression", () => {
+    const r = parseHookConfig({
+      hooks: {
+        PreToolUse: [
+          { matcher: "*danger*", hooks: [{ type: "command", command: "./a.sh" }] },
+          { matcher: "Edit|Write", hooks: [{ type: "command", command: "./b.sh" }] },
+        ],
+      },
+    });
+    expect(r.entries.map((e) => e.matcher)).toEqual(["*danger*", "Edit|Write"]);
+    expect(r.entries[0].matcherError).toBeDefined();
+    expect(r.errors).toHaveLength(1);
+    expect(r.errors[0]).toContain('PreToolUse[0].matcher "*danger*" is not a valid regular expression');
   });
 });
 

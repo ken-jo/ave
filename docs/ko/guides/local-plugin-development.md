@@ -145,9 +145,10 @@ bun run start
 | `AVE_DEV=1` | 개발자 도구와 개발 모드를 활성화. `bun run dev`가 자동 설정 |
 | `AVE_DEV_RELOAD=1` | 설치된 플러그인 payload의 변경 감시와 reload 활성화 |
 | `AVE_DEV_CONSOLE=0` | DevTools 자동 열기 끄기. `bun run start`의 기본값 |
-| `AVE_WIN_NO_SANDBOX=1` (Windows) | unpackaged corp/VDI 실행에서만 Chromium sandbox 우회. Windows safe launcher가 필요할 때 설정 |
 | GPU safe-flags (Windows) | `--disable-gpu --disable-software-rasterizer --disable-gpu-compositing --no-sandbox` 자동 추가 |
 | 콘솔 UTF-8 (Windows) | `chcp 65001`, `PYTHONIOENCODING=utf-8` 등 |
+
+소스 실행은 `ave://` 를 등록하지 않습니다. 이 변경 전에 설치한 macOS dev 클론은 vendored `node_modules/electron/dist/Electron.app` Info.plist 에 `ave` 가 주입된 채 남아 LaunchServices 가 `ave://` 링크를 그쪽으로 보낼 수 있습니다. packaged Ave 를 한 번 실행하거나 `/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -u <clone>/node_modules/electron/dist/Electron.app` 를 실행하세요.
 
 > `bun run start` 는 **`AVE_DEV=1` 을 세팅하지 않습니다**. 개발자 설치 UI가 필요하면 `bun run dev` (`run-electron-dev.mjs`)를 사용하세요. `AVE_DEV_RELOAD` (§5)는 독립적으로 개발 모드를 엽니다. 어떤 dev 플래그도 마켓플레이스 아티팩트의 sha256 고정 검증, 설치 receipt 무결성, entry 경로 containment를 우회하지 않습니다. `AVE_DEV=1`이 여는 것은 루프백 평문 HTTP 마켓플레이스 접근뿐입니다.
 

@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { dirname, resolve } from "node:path";
@@ -136,6 +137,19 @@ function migrateLegacyEntry(
     migrated.pendingCleanup = entry.pendingCleanup.map((item) => ({ ...item }));
   }
   return migrated;
+}
+
+/**
+ * Every installed plugin id, enabled or not, when the registry can vouch for
+ * the installed set. A missing registry (read as empty on first boot) or one
+ * with an update mid-replacement cannot: undefined, so nothing is pruned on
+ * its word. An unreadable registry throws.
+ */
+export async function vouchedInstalledPluginIds(registryPath: string): Promise<ReadonlySet<string> | undefined> {
+  if (!existsSync(registryPath)) return undefined;
+  const registry = await readPluginRegistry(registryPath);
+  if (registry.plugins.some((entry) => entry.pendingUpdate)) return undefined;
+  return new Set(registry.plugins.map((entry) => entry.id));
 }
 
 export async function readPluginRegistry(registryPath: string): Promise<PluginRegistry> {

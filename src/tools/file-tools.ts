@@ -1,3 +1,4 @@
+import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
 import { constants, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
@@ -902,6 +903,7 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     if (!resolved.ok) return resolved.error;
     const target = resolved.value;
     if (transport.kind === "broker") {
+      await markCodeCheckpointUnavailable();
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.write",
@@ -1028,6 +1030,7 @@ export class EditFileTool extends FileTool<typeof EditFileInputSchema> {
     if (transport.kind === "broker") {
       const read = requireWorkloadRead(this.name, target, ctx);
       if (read) return read;
+      await markCodeCheckpointUnavailable();
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.edit",
@@ -1118,6 +1121,7 @@ export class MultiEditTool extends FileTool<typeof MultiEditInputSchema> {
     if (transport.kind === "broker") {
       const read = requireWorkloadRead(this.name, target, ctx);
       if (read) return read;
+      await markCodeCheckpointUnavailable();
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.patch",
@@ -1307,7 +1311,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
     for (const change of planned) {
       if (change.kind === "delete") {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await unlink(change.path);
+        await checkpointFileMutation([{ path: change.path, content: null }], () => unlink(change.path));
         summary.push(`${PATCH_CHANGE_LETTER.delete} ${change.path}`);
         continue;
       }
@@ -1316,7 +1320,7 @@ export class ApplyPatchTool extends FileTool<typeof ApplyPatchInputSchema> {
       await atomicTextWrite(written, change.content);
       if (change.kind === "update" && change.destination !== change.path) {
         if (sessionId !== undefined) forgetFileRead(sessionId, await fileReadKey(change.path));
-        await unlink(change.path);
+        await checkpointFileMutation([{ path: change.path, content: null }], () => unlink(change.path));
       }
       if (sessionId !== undefined) await recordOwnWrite(sessionId, written, change.content);
       summary.push(
@@ -1373,6 +1377,7 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
     const source = resolvedSource.value;
     const destination = resolvedDestination.value;
     if (transport.kind === "broker") {
+      await markCodeCheckpointUnavailable();
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.move",
@@ -1395,23 +1400,28 @@ export class MoveFileTool extends FileTool<typeof MoveFileInputSchema> {
     if (!sourceStat.value.isFile()) {
       return toolError(`move_file requires a regular source file: ${source}`);
     }
-    await mkdir(dirname(destination), { recursive: true });
-    if (input.overwrite) {
-      const destinationStat = await statExistingPath(destination);
-      if (!destinationStat.ok) return destinationStat.error;
-      if (destinationStat.value && !destinationStat.value.isFile()) {
-        return toolError(`move_file destination is not a regular file: ${destination}`);
+    return checkpointFileMutation([
+      { path: source, content: null },
+      { path: destination, copyFrom: source },
+    ], async () => {
+      await mkdir(dirname(destination), { recursive: true });
+      if (input.overwrite) {
+        const destinationStat = await statExistingPath(destination);
+        if (!destinationStat.ok) return destinationStat.error;
+        if (destinationStat.value && !destinationStat.value.isFile()) {
+          return toolError(`move_file destination is not a regular file: ${destination}`);
+        }
+        await rename(source, destination);
+      } else {
+        const moved = await noClobberMoveFile(source, destination);
+        if (!moved.ok) return moved.error;
       }
-      await rename(source, destination);
-    } else {
-      const moved = await noClobberMoveFile(source, destination);
-      if (!moved.ok) return moved.error;
-    }
-    return {
-      output: JSON.stringify({ sourcePath: source, destinationPath: destination }),
-      isError: false,
-      metadata: { sourcePath: source, destinationPath: destination },
-    };
+      return {
+        output: JSON.stringify({ sourcePath: source, destinationPath: destination }),
+        isError: false,
+        metadata: { sourcePath: source, destinationPath: destination },
+      };
+    });
   }
 }
 
@@ -1455,6 +1465,7 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
     const sourcePath = resolvedSource.value;
     const destinationPath = resolvedDestination.value;
     if (transport.kind === "broker") {
+      await markCodeCheckpointUnavailable();
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.copy",
@@ -1463,6 +1474,7 @@ export class CopyPathTool extends FileTool<typeof CopyPathInputSchema> {
         ctx.abortSignal,
       );
     }
+    await markCodeCheckpointUnavailable();
     return fileTransferExecutionResult(await copyPath({
       sourcePath,
       destinationPath,
@@ -1510,6 +1522,7 @@ export class ExtractArchiveTool extends FileTool<typeof ExtractArchiveInputSchem
     const archivePath = resolvedArchive.value;
     const destinationPath = resolvedDestination.value;
     if (transport.kind === "broker") {
+      await markCodeCheckpointUnavailable();
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.extract",
@@ -1518,6 +1531,7 @@ export class ExtractArchiveTool extends FileTool<typeof ExtractArchiveInputSchem
         ctx.abortSignal,
       );
     }
+    await markCodeCheckpointUnavailable();
     let archiveFormat: ArchiveFormat | undefined;
     const result = await runOwnedTransfer({
       sourcePath: archivePath,
@@ -1576,6 +1590,7 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
     if (!resolved.ok) return resolved.error;
     const target = resolved.value;
     if (transport.kind === "broker") {
+      await markCodeCheckpointUnavailable();
       return transport.runtime.executeBrokeredWorkloadRequest(
         transport.capability,
         "file.delete",
@@ -1592,7 +1607,7 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
     if (!fileStat.value.isFile()) {
       return toolError(`delete_file requires a regular file: ${target}`);
     }
-    await unlink(target);
+    await checkpointFileMutation([{ path: target, content: null }], () => unlink(target));
     return {
       output: JSON.stringify({ path: target, deleted: true }),
       isError: false,
@@ -1824,6 +1839,10 @@ function temporaryWritePath(target: string): string {
 }
 
 async function atomicTextWrite(target: string, content: string): Promise<void> {
+  return checkpointFileMutation([{ path: target, content }], () => writeTextAtomically(target, content));
+}
+
+async function writeTextAtomically(target: string, content: string): Promise<void> {
   const temp = temporaryWritePath(target);
   try {
     await writeFile(temp, content, "utf8");

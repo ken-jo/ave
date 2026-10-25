@@ -16,7 +16,7 @@ import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/suppo
  */
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, userInfo } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 
@@ -41,6 +41,14 @@ import { createSandboxProcessHome } from "../sandbox-process-home.js";
 import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundled-command.js";
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
+
+vi.mock("node:os", async (importOriginal) => {
+  const original = await importOriginal<typeof import("node:os")>();
+  return {
+    ...original,
+    userInfo: vi.fn(original.userInfo),
+  };
+});
 
 const hostPlatform = process.platform;
 const SECRET = "user-data-the-child-must-not-read";
@@ -174,6 +182,30 @@ describe("the shared layer withholds grants under the protected floor", () => {
     ownHome.cleanup();
   });
 
+  it.each(["darwin", "linux"] as const)("on %s, only an exact regular hook file pierces its protected directory", (platform) => {
+    setProcessPlatform(platform);
+    const { ownHome } = layout();
+    try {
+      const hooks = join(root, ".config", "ave", "hooks");
+      mkdirSync(hooks, { recursive: true });
+      const script = join(hooks, "read-probe.cjs");
+      const secret = join(root, ".ssh", "work", "private.cjs");
+      writeFileSync(script, "process.exitCode = 0");
+      writeFileSync(secret, SECRET);
+      const grants = [script, hooks, secret];
+      const readFor = (floorPierces?: string[]) => buildPerCommandSandboxCustomConfig({
+        allowRead: grants, denyRead: getDefaultSensitiveReadDenyPaths(), floorPierces,
+      })?.filesystem?.allowRead;
+      expect(readFor()).toEqual([]);
+      expect(readFor([script])).toEqual([script]);
+      for (const refused of [hooks, secret, join(hooks, "missing.cjs")]) {
+        expect(() => readFor([refused])).toThrow(/not a read the host lets re-open/);
+      }
+    } finally {
+      ownHome.cleanup();
+    }
+  });
+
   it("every ASRT wrap and config change goes through the shared layer", () => {
     // A wrap that handed ASRT its own custom config, or a config change that
     // skipped `buildSandboxConfig`, would skip the rule. Every mention of the
@@ -302,6 +334,8 @@ describe("a confined child cannot reach user data through a grant", () => {
       // past srt-win's 60s stamp budget on a developer machine. A home the
       // test owns keeps the same floor, as asrt-sandbox.test.ts does.
       vi.stubEnv("USERPROFILE", join(root, "home"));
+      vi.stubEnv("HOME", join(root, "home"));
+      vi.mocked(userInfo).mockReturnValue({ ...userInfo(), homedir: join(root, "home") });
       mkdirSync(join(root, "home"));
     }
     userData = join(root, "custom-user-data");

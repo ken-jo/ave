@@ -449,20 +449,43 @@ export function readMessageCatalogEntries(text, relativePath) {
 }
 
 /**
+ * readMessageCatalogEntries for many modules at once, keyed by relative path.
+ * Each compiler session is a native child process, so reading the catalog's
+ * ~190 modules one by one costs ~190 process spawns; this parses them all in
+ * one session and validates each module exactly as the single-module reader.
+ */
+export function readMessageCatalogEntriesByPath(texts) {
+  const readable = new Map([...texts].filter(([, text]) => isReadableCatalogText(text)));
+  const sources = parseCatalogSources(readable);
+  return new Map([...texts.keys()].map((path) =>
+    [path, readParsedMessageCatalog(sources?.get(path), path)?.entries ?? null]));
+}
+
+function isReadableCatalogText(text) {
+  return typeof text === "string" && !/[\u2028\u2029]/u.test(text);
+}
+
+function parseCatalogSources(texts) {
+  try {
+    return parseSourceTexts(texts);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Preserve each locale's property order and the source ranges of its values.
  * Only the shipped declarations, type-only seed scaffolding and static string
  * properties are accepted. Unknown syntax or a different binding layout keeps
  * the full tier; declaration order must never stand in for locale identity.
  */
 function readMessageCatalogModule(text, relativePath) {
-  if (typeof text !== "string" || /[\u2028\u2029]/u.test(text)) return null;
+  if (!isReadableCatalogText(text)) return null;
   const parsePath = relativePath ?? "catalog.ts";
-  let source;
-  try {
-    source = parseSourceTexts(new Map([[parsePath, text]])).get(parsePath);
-  } catch {
-    return null;
-  }
+  return readParsedMessageCatalog(parseCatalogSources(new Map([[parsePath, text]]))?.get(parsePath), relativePath);
+}
+
+function readParsedMessageCatalog(source, relativePath) {
   if (!source) return null;
   const fragment = relativePath === undefined
     ? source.statements.filter(ast.isVariableStatement).length === 2

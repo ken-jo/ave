@@ -1,23 +1,73 @@
 import { execFile } from "node:child_process";
-import { promises as fs, type Stats } from "node:fs";
+import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
+import { constants, promises as fs, type Stats } from "node:fs";
+import { homedir } from "node:os";
 import { posix, win32 } from "node:path";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { isRecord } from "../shared/is-record.js";
+import { createLogger } from "../lib/logger.js";
+import { spawnManaged } from "./managed-child-processes.js";
+import {
+  WindowsAclHost,
+  WindowsAclHostError,
+  windowsAclTransportSeam,
+  type WindowsAclHostLaunch,
+  type WindowsAclLimits,
+  type WindowsAclRequest,
+} from "./windows-acl-host.js";
 
+const log = createLogger("codex-executable-location");
 const MAX_SYMLINKS = 40;
 const MAX_ACL_OUTPUT_BYTES = 256 * 1024;
-// One probe receives at most this many paths, which keeps the path list well
-// inside a Windows environment variable and the output budget per path stable.
+// One request receives at most this many paths, which keeps each request line
+// bounded and the output budget per path stable.
 const ACL_BATCH_PATHS = 128;
 const ACL_BATCH_CHARS = 24 * 1024;
 const ACL_OUTPUT_PATHS = 16;
-const ACL_PATHS_ENV = "AVE_EXECUTABLE_ACL_PATHS";
 const trustedSystemSids = new Set([
   "S-1-5-18",
   "S-1-5-32-544",
   "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464",
 ]);
 const MUTATION_ACCESS_MASK = 0x000d0156 | 0x50000000;
+const FILE_ADD_SUBDIRECTORY = 0x4;
+const SID_PATTERN = /^S-1-(?:\d+-)*\d+$/;
+const CAP_SID_PATTERN = /^S-1-5-21-\d+-\d+-\d+-\d+$/;
+const ACCOUNT_DOMAIN_SID_PATTERN = /^S-1-5-21-\d+-\d+-\d+$/;
+const PACKAGE_SID_PATTERN = /^S-1-15-2(-\d+){7}$/;
+// The owner accepts this installed package's sandbox; the publisher pins its signer.
+const CLAUDE_DESKTOP_PACKAGE = Object.freeze({ familyName: "Claude_pzs8sxrjxfjjc", publisherId: "pzs8sxrjxfjjc" });
+const PACKAGE_RESOLUTION_FAILURES = [
+  "mapping-not-found", "ambiguous-mapping", "package-not-installed", "publisher-mismatch", "malformed-sid", "sid-mismatch", "resolution-failed",
+] as const;
+type PackageResolutionFailure = typeof PACKAGE_RESOLUTION_FAILURES[number];
+type DesktopPackagePrincipals = { status: "resolved"; packageSid: string; capabilitySid: string }
+  | { status: "unavailable"; reason: PackageResolutionFailure };
+// A package SID derives from its family name and stays stable for this process.
+// Uninstalling leaves its ACE inert because no token carries that SID anymore.
+// Cache failures too: a later installation requires a restart to become trusted.
+let cachedDesktopPackage: DesktopPackagePrincipals | undefined;
+let packageResolutionWarned = false;
+
+export function _resetDesktopPackageCacheForTest(): void {
+  cachedDesktopPackage = undefined;
+  packageResolutionWarned = false;
+}
+
+// Spawned through the managed-child tracker, so app quit kills a live host.
+const windowsAclHost = new WindowsAclHost((command, args, options) =>
+  spawnManaged(command, args, options, { label: "windows-acl-host" }));
+let windowsAclQueue: Promise<void> = Promise.resolve();
+let windowsAclRequestId = 0;
+
+/** Kill the ACL host and drop queued work, the way a restart would. */
+export function _resetWindowsAclHostForTest(): void {
+  windowsAclHost.discard();
+  windowsAclTransportSeam.override?.discard();
+  windowsAclQueue = Promise.resolve();
+}
+
+const MAX_CAP_SID_BYTES = 1024 * 1024;
 const PRIVATE_ACCESS_MASK = 0x001f01ff | 0xf0000000;
 const INHERIT_ONLY_ACE = 0x08;
 const aclMutationPermissions = new Set([
@@ -32,6 +82,7 @@ const aclInheritanceFlags = new Set([
 ]);
 
 export class CodexExecutableLocationError extends Error {
+  routeKind?: CodexLocationRouteKind;
   constructor(reason: string) {
     super(reason);
     this.name = "CodexExecutableLocationError";
@@ -47,6 +98,22 @@ interface InspectedPath {
 export interface CodexLocationRequest {
   readonly path: string;
   readonly kind: "executable" | "directory" | "private-directory";
+  /** Windows only; unknown callers retain strict script dependency admission. */
+  readonly routeKind?: CodexLocationRouteKind;
+}
+
+export type CodexLocationRouteKind = "native" | "script" | "guarded-script";
+type ComponentRole = "ancestor" | "leaf" | "private";
+interface ComponentRule { routeKind: CodexLocationRouteKind; role: ComponentRole }
+
+/** The only exception to foreign subdirectory-creation admission. */
+function mayIgnoreForeignSubdirectoryCreation(kind: CodexLocationRouteKind, role: ComponentRole): boolean {
+  return role === "ancestor" && (kind === "native" || kind === "guarded-script");
+}
+
+export interface CodexLocationTrustInputs {
+  readonly capSidPath?: string;
+  readonly readCapSidFile?: (path: string) => Promise<string | null>;
 }
 
 interface WindowsAccessEntry {
@@ -65,13 +132,24 @@ interface WindowsPathSecurity {
 
 interface WindowsSecurityResult {
   currentSid: string;
+  machineDomainSid?: string;
+  capSidAccounts?: { sid: string; resolvesToAccount: boolean }[];
   paths: WindowsPathSecurity[];
+  sandboxGroup?: { name: string; description: string; sid: string; members: string[] };
+  desktopPackage: DesktopPackagePrincipals;
 }
 
 // Open the path object itself so a reparse point's ACL cannot be replaced by
-// its target's ACL. The path list is data supplied through the environment.
+// its target's ACL. The host compiles the native type once, then answers one
+// request line at a time. Each request re-reads every input below; nothing is
+// carried between requests. Paths and SIDs are request data decoded by the
+// JSON parser, never script text. Any error ends the host, which fails closed.
 const WINDOWS_ACL_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
+  "$ProgressPreference = 'SilentlyContinue'",
+  "$WarningPreference = 'SilentlyContinue'",
+  "$VerbosePreference = 'SilentlyContinue'",
+  "$InformationPreference = 'SilentlyContinue'",
   "[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)",
   "Add-Type -TypeDefinition @'",
   "using System;",
@@ -87,6 +165,17 @@ const WINDOWS_ACL_SCRIPT = [
   "  private static extern uint GetSecurityDescriptorLength(IntPtr descriptor);",
   "  [DllImport(\"kernel32.dll\")]",
   "  private static extern IntPtr LocalFree(IntPtr memory);",
+  "  [DllImport(\"userenv.dll\", CharSet = CharSet.Unicode, ExactSpelling = true)]",
+  "  private static extern int DeriveAppContainerSidFromAppContainerName(string name, out IntPtr sid);",
+  "  [DllImport(\"advapi32.dll\", ExactSpelling = true)]",
+  "  private static extern IntPtr FreeSid(IntPtr sid);",
+  "  public static string DerivePackageSid(string name) {",
+  "    IntPtr sid;",
+  "    int result = DeriveAppContainerSidFromAppContainerName(name, out sid);",
+  "    if (result != 0) Marshal.ThrowExceptionForHR(result);",
+  "    try { return new System.Security.Principal.SecurityIdentifier(sid).Value; }",
+  "    finally { FreeSid(sid); }",
+  "  }",
   "  public static byte[] Read(string path) {",
   "    using (SafeFileHandle handle = CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero)) {",
   "      if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());",
@@ -102,9 +191,11 @@ const WINDOWS_ACL_SCRIPT = [
   "  }",
   "}",
   "'@",
+  "while ($null -ne ($line = [Console]::In.ReadLine())) {",
+  "$request = ConvertFrom-Json -InputObject $line",
   // Direct assignment preserves the decoded array without nesting it inside
-  // the single pipeline object returned by the system command's JSON parser.
-  "$targets = ConvertFrom-Json -InputObject $env:AVE_EXECUTABLE_ACL_PATHS",
+  // a single pipeline object.
+  "$targets = $request.paths",
   "$paths = @($targets | ForEach-Object {",
   "  $target = [string]$_",
   "  $descriptor = [System.Security.AccessControl.RawSecurityDescriptor]::new([ExecutablePathSecurity]::Read($target), 0)",
@@ -114,8 +205,81 @@ const WINDOWS_ACL_SCRIPT = [
   "  } })",
   "  [PSCustomObject]@{ path = $target; owner = $descriptor.Owner.Value; daclPresent = ($null -ne $descriptor.DiscretionaryAcl); entries = $entries }",
   "})",
-  "[PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; paths = $paths } | ConvertTo-Json -Depth 6 -Compress",
+  "$machineDomainSid = $null",
+  "try {",
+  "  $localUser = Get-LocalUser -ErrorAction Stop | Select-Object -First 1",
+  "  $machineDomainSid = $localUser.SID.AccountDomainSid.Value",
+  "} catch {",
+  "  try {",
+  "    $localUser = ([ADSI]'WinNT://.').Children | Where-Object { $_.SchemaClassName -eq 'User' } | Select-Object -First 1",
+  "    $machineDomainSid = [System.Security.Principal.SecurityIdentifier]::new([byte[]]$localUser.psbase.InvokeGet('objectSID'), 0).AccountDomainSid.Value",
+  "  } catch { $machineDomainSid = $null }",
+  "}",
+  "$sandboxGroup = $null",
+  "try {",
+  "  $group = [ADSI]'WinNT://./CodexSandboxUsers,group'",
+  "  $name = [string]$group.psbase.InvokeGet('Name')",
+  "  $description = [string]$group.psbase.InvokeGet('Description')",
+  "  if ($name -ceq 'CodexSandboxUsers' -and $description -ceq 'Codex sandbox internal group (managed)') {",
+  "    $sid = [System.Security.Principal.SecurityIdentifier]::new([byte[]]$group.psbase.InvokeGet('objectSID'), 0).Value",
+  "    $members = @($group.psbase.Invoke('Members') | ForEach-Object {",
+  "      $bytes = $_.GetType().InvokeMember('objectSID', 'GetProperty', $null, $_, $null)",
+  "      [System.Security.Principal.SecurityIdentifier]::new([byte[]]$bytes, 0).Value",
+  "    })",
+  "    $sandboxGroup = @{ name = $name; description = $description; sid = $sid; members = $members }",
+  "  }",
+  "} catch {",
+  "  try {",
+  "    $group = Get-LocalGroup -Name 'CodexSandboxUsers' -ErrorAction Stop",
+  "    if ($group.Name -ceq 'CodexSandboxUsers' -and $group.Description -ceq 'Codex sandbox internal group (managed)') {",
+  "      $members = @(Get-LocalGroupMember -Group $group -ErrorAction Stop | ForEach-Object { $_.SID.Value })",
+  "      $sandboxGroup = @{ name = $group.Name; description = $group.Description; sid = $group.SID.Value; members = $members }",
+  "    }",
+  "  } catch { $sandboxGroup = $null }",
+  "}",
+  "$capCandidates = $request.capSids",
+  "$capSidAccounts = @($capCandidates | ForEach-Object {",
+  "  $capSid = [System.Security.Principal.SecurityIdentifier]::new([string]$_)",
+  "  $resolvesToAccount = $true",
+  "  try { $null = $capSid.Translate([System.Security.Principal.NTAccount]) }",
+  "  catch [System.Security.Principal.IdentityNotMappedException] { $resolvesToAccount = $false }",
+  "  [PSCustomObject]@{ sid = $capSid.Value; resolvesToAccount = $resolvesToAccount }",
+  "})",
+  `$desktopPackageIdentity = @{ familyName = '${CLAUDE_DESKTOP_PACKAGE.familyName}'; publisherId = '${CLAUDE_DESKTOP_PACKAGE.publisherId}' }`,
+  "if ($request.skipPackage -is [bool] -and $request.skipPackage) {",
+  "  $desktopPackage = @{ status = 'skipped' }",
+  "} else {",
+  "$desktopPackage = @{ status = 'unavailable'; reason = 'resolution-failed' }",
+  "try {",
+  "  $mappings = @(Get-ChildItem -LiteralPath 'HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings' -ErrorAction Stop | Where-Object {",
+  "    (Get-ItemProperty -LiteralPath $_.PSPath -Name Moniker -ErrorAction Stop).Moniker -ieq $desktopPackageIdentity.familyName",
+  "  })",
+  "  if ($mappings.Count -eq 0) { $desktopPackage.reason = 'mapping-not-found' }",
+  "  elseif ($mappings.Count -ne 1) { $desktopPackage.reason = 'ambiguous-mapping' }",
+  "  else {",
+  "    $packages = @(Get-AppxPackage -Name 'Claude' -ErrorAction Stop | Where-Object { $_.PackageFamilyName -ieq $desktopPackageIdentity.familyName })",
+  "    if ($packages.Count -eq 0) { $desktopPackage.reason = 'package-not-installed' }",
+  "    elseif (@($packages | Where-Object { $_.PublisherId -ine $desktopPackageIdentity.publisherId }).Count -ne 0) { $desktopPackage.reason = 'publisher-mismatch' }",
+  "    else {",
+  "      $packageSid = [string]$mappings[0].PSChildName",
+  "      if ($packageSid -cnotmatch '^S-1-15-2(-\\d+){7}$') { $desktopPackage.reason = 'malformed-sid' }",
+  "      else {",
+  "        $derivedSid = [ExecutablePathSecurity]::DerivePackageSid($desktopPackageIdentity.familyName)",
+  "        if ($packageSid -cne $derivedSid) { $desktopPackage.reason = 'sid-mismatch' }",
+  "        else { $desktopPackage = @{ status = 'resolved'; packageSid = $derivedSid; capabilitySid = 'S-1-15-3-' + $derivedSid.Substring(9) } }",
+  "      }",
+  "    }",
+  "  }",
+  "} catch { $desktopPackage = @{ status = 'unavailable'; reason = 'resolution-failed' } }",
+  "}",
+  "$result = [PSCustomObject]@{ currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value; machineDomainSid = $machineDomainSid; capSidAccounts = $capSidAccounts; paths = $paths; sandboxGroup = $sandboxGroup; desktopPackage = $desktopPackage }",
+  // One physical line per reply, written outside the pipeline.
+  "[Console]::Out.WriteLine(([PSCustomObject]@{ id = $request.id; result = $result } | ConvertTo-Json -Depth 7 -Compress))",
+  "[Console]::Out.WriteLine(('END ' + [string]$request.id))",
+  "[Console]::Out.Flush()",
+  "}",
 ].join("\n");
+const WINDOWS_ACL_ENCODED_SCRIPT = Buffer.from(WINDOWS_ACL_SCRIPT, "utf16le").toString("base64");
 
 function assertAbsolutePath(candidate: string): void {
   if (/[\u0000-\u001f\u007f]/.test(candidate)) {
@@ -273,34 +437,123 @@ async function assertExtendedAccessRules(inspected: readonly InspectedPath[], pr
   if (seen.size !== inspected.length) throw new CodexExecutableLocationError("Executable access rules are incomplete");
 }
 
-function parseWindowsSecurity(stdout: string): WindowsSecurityResult {
-  let value: unknown;
+const WINDOWS_ACL_RESULT_KEYS = new Set(["currentSid", "machineDomainSid", "capSidAccounts", "paths", "sandboxGroup", "desktopPackage"]);
+const WINDOWS_ACL_PATH_KEYS = new Set(["path", "owner", "daclPresent", "entries"]);
+const WINDOWS_ACL_GROUP_KEYS = new Set(["name", "description", "sid", "members"]);
+
+function hasOnlyKeys(value: Record<string, unknown>, keys: ReadonlySet<string>): boolean {
+  return Object.keys(value).every((key) => keys.has(key));
+}
+
+function isSandboxGroupShape(value: unknown): boolean {
+  if (!isRecord(value) || !hasOnlyKeys(value, WINDOWS_ACL_GROUP_KEYS)) return false;
+  const group = value;
+  return ["name", "description", "sid"].every((key) => group[key] === undefined || typeof group[key] === "string")
+    && (group.members === undefined || (Array.isArray(group.members) && group.members.every((member) => typeof member === "string")));
+}
+
+/**
+ * Strict reply framing, checked before parseWindowsSecurity reads the result:
+ * exactly `{ id, result }` carrying the request's id, and a result whose keys
+ * and value types are those the host script writes. Value rules, and members
+ * a reply leaves out, stay with the parser and the trust rules as before.
+ */
+function validateWindowsAclReply(line: string, id: number): unknown {
+  let reply: unknown;
   try {
-    value = JSON.parse(stdout.replace(/^\uFEFF/, ""));
+    reply = JSON.parse(line.replace(/^\uFEFF/, ""));
   } catch {
     throw new CodexExecutableLocationError("Executable access rules could not be read");
   }
-  if (!isRecord(value) || typeof value.currentSid !== "string" || !/^S-1-(?:\d+-)*\d+$/.test(value.currentSid)
+  if (!isRecord(reply) || Object.keys(reply).length !== 2 || reply.id !== id || !isRecord(reply.result)) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
+  const result = reply.result;
+  if (!hasOnlyKeys(result, WINDOWS_ACL_RESULT_KEYS) || typeof result.currentSid !== "string" || !Array.isArray(result.paths)
+      || !isRecord(result.desktopPackage)
+      || (result.machineDomainSid !== undefined && result.machineDomainSid !== null && typeof result.machineDomainSid !== "string")
+      || (result.capSidAccounts !== undefined && !(Array.isArray(result.capSidAccounts) && result.capSidAccounts.every((account) =>
+        isRecord(account) && Object.keys(account).length === 2
+          && typeof account.sid === "string" && typeof account.resolvesToAccount === "boolean")))
+      || (result.sandboxGroup !== undefined && result.sandboxGroup !== null && !isSandboxGroupShape(result.sandboxGroup))) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
+  for (const path of result.paths) {
+    if (!isRecord(path) || !hasOnlyKeys(path, WINDOWS_ACL_PATH_KEYS) || typeof path.path !== "string"
+        || typeof path.owner !== "string" || typeof path.daclPresent !== "boolean" || !Array.isArray(path.entries)) {
+      throw new CodexExecutableLocationError("Executable access rules are invalid");
+    }
+    for (const entry of path.entries) {
+      // Entry failures keep the parser's message for the same refusal.
+      if (!isRecord(entry) || Object.keys(entry).length !== 4 || typeof entry.sid !== "string" || typeof entry.mask !== "number"
+          || typeof entry.flags !== "number" || typeof entry.type !== "number") {
+        throw new CodexExecutableLocationError("Executable access rules are unsupported");
+      }
+    }
+  }
+  return result;
+}
+
+/**
+ * Serialize every request through one queue, so the reply read is always the
+ * one for the request in flight. Any failure discards the host before the
+ * next request runs, and that request starts a fresh one; nothing is retried.
+ * Callers keep today's error paths: a host failure (timeout, oversize, exit,
+ * error output, extra output, failed write) propagates unchanged, as a failed
+ * probe process did; a reply that is not JSON "could not be read"; a wrong id
+ * or shape is "invalid".
+ */
+function exchangeWindowsAcl(request: WindowsAclRequest, launch: WindowsAclHostLaunch, limits: WindowsAclLimits): Promise<unknown> {
+  const exchange = windowsAclQueue.then(async () => {
+    const transport = windowsAclTransportSeam.override ?? windowsAclHost;
+    try {
+      const line = await transport.request(request, launch, limits);
+      if (Buffer.byteLength(line) > limits.maxBytes) throw new WindowsAclHostError("Windows ACL host reply exceeds its limit");
+      return validateWindowsAclReply(line, request.id);
+    } catch (error) {
+      transport.discard();
+      throw error;
+    }
+  });
+  windowsAclQueue = exchange.then(() => undefined, () => undefined);
+  return exchange;
+}
+
+function parseWindowsSecurity(value: unknown, skippedPackage?: DesktopPackagePrincipals): WindowsSecurityResult {
+  if (!isRecord(value) || typeof value.currentSid !== "string" || !SID_PATTERN.test(value.currentSid)
       || !Array.isArray(value.paths)) {
     throw new CodexExecutableLocationError("Executable access rules are invalid");
   }
+  const skipped = isRecord(value.desktopPackage) && value.desktopPackage.status === "skipped";
+  if (skipped && (!skippedPackage || Object.keys(value.desktopPackage as Record<string, unknown>).length !== 1)) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
+  const desktopPackage = skipped ? skippedPackage : value.desktopPackage;
+  if (!isRecord(desktopPackage) || (desktopPackage.status === "resolved"
+    ? Object.keys(desktopPackage).length !== 3 || typeof desktopPackage.packageSid !== "string"
+      || !PACKAGE_SID_PATTERN.test(desktopPackage.packageSid)
+      || desktopPackage.capabilitySid !== desktopPackage.packageSid.replace("S-1-15-2-", "S-1-15-3-")
+    : desktopPackage.status !== "unavailable" || Object.keys(desktopPackage).length !== 2
+      || !PACKAGE_RESOLUTION_FAILURES.includes(desktopPackage.reason as PackageResolutionFailure))) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
   for (const path of value.paths) {
-    if (!isRecord(path) || typeof path.path !== "string" || typeof path.owner !== "string"
+    if (!isRecord(path) || typeof path.path !== "string" || typeof path.owner !== "string" || !SID_PATTERN.test(path.owner)
         || typeof path.daclPresent !== "boolean" || !Array.isArray(path.entries)) {
       throw new CodexExecutableLocationError("Executable access rules are invalid");
     }
     for (const entry of path.entries) {
-      if (!isRecord(entry) || typeof entry.sid !== "string" || !Number.isInteger(entry.mask)
+      if (!isRecord(entry) || typeof entry.sid !== "string" || !SID_PATTERN.test(entry.sid) || !Number.isInteger(entry.mask)
           || !Number.isInteger(entry.flags) || !Number.isInteger(entry.type)
           || (entry.type !== 0 && entry.type !== 1)) {
         throw new CodexExecutableLocationError("Executable access rules are unsupported");
       }
     }
   }
-  return value as unknown as WindowsSecurityResult;
+  return { ...value, desktopPackage } as unknown as WindowsSecurityResult;
 }
 
-async function readWindowsSecurity(inspected: readonly InspectedPath[]): Promise<WindowsSecurityResult> {
+async function readWindowsSecurity(inspected: readonly InspectedPath[], capSids: readonly string[]): Promise<WindowsSecurityResult> {
   // The current account's process environment is trusted; arbitrary actions
   // by that account are outside the filesystem admission boundary.
   const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
@@ -310,50 +563,161 @@ async function readWindowsSecurity(inspected: readonly InspectedPath[]): Promise
   const systemRoot = win32.normalize(root);
   const system32 = win32.join(systemRoot, "System32");
   const command = win32.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
-  const stdout = await new Promise<string>((resolve, reject) => {
-    execFile(command, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(WINDOWS_ACL_SCRIPT, "utf16le").toString("base64")], {
-      windowsHide: true,
-      encoding: "utf8",
-      timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
-      maxBuffer: aclOutputBytes(inspected),
-      env: {
-        SystemRoot: systemRoot,
-        WINDIR: systemRoot,
-        PATH: `${system32};${systemRoot}`,
-        [ACL_PATHS_ENV]: JSON.stringify(inspected.map((entry) => entry.path)),
-      },
-    }, (error, output) => error ? reject(error) : resolve(output));
-  });
-  return parseWindowsSecurity(stdout);
+  // The host process stays as fixed as the per-probe process was. Inputs that
+  // travelled in its environment travel in each request line instead.
+  const launch: WindowsAclHostLaunch = {
+    command,
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
+    options: { windowsHide: true, env: windowsPowerShellEnv({ SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` }) },
+  };
+  // Captured before queueing, so concurrent first lookups each resolve the
+  // package and are compared with the cached outcome below.
+  const skippedPackage = cachedDesktopPackage;
+  const result = await exchangeWindowsAcl({
+    id: ++windowsAclRequestId,
+    paths: inspected.map((entry) => entry.path),
+    capSids: [...capSids],
+    skipPackage: skippedPackage !== undefined,
+  }, launch, { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: aclOutputBytes(inspected) });
+  const security = parseWindowsSecurity(result, skippedPackage);
+  const desktopPackage = security.desktopPackage;
+  if (cachedDesktopPackage && (cachedDesktopPackage.status !== desktopPackage.status
+    || (cachedDesktopPackage.status === "resolved" && desktopPackage.status === "resolved"
+      && cachedDesktopPackage.packageSid !== desktopPackage.packageSid)
+    || (cachedDesktopPackage.status === "unavailable" && desktopPackage.status === "unavailable"
+      && cachedDesktopPackage.reason !== desktopPackage.reason))) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
+  cachedDesktopPackage ??= desktopPackage;
+  if (security.desktopPackage.status === "unavailable" && !packageResolutionWarned) {
+    packageResolutionWarned = true;
+    log.warn({ reason: security.desktopPackage.reason }, "Desktop package exemption unavailable");
+  }
+  return security;
 }
 
-async function assertWindowsSecurity(inspected: readonly InspectedPath[], privateDirectories: ReadonlySet<string>): Promise<void> {
-  const security = await readWindowsSecurity(inspected);
+function sandboxPrincipals(security: WindowsSecurityResult): string[] {
+  const group = security.sandboxGroup;
+  if (!isRecord(group) || group.name !== "CodexSandboxUsers"
+    || group.description !== "Codex sandbox internal group (managed)"
+    || !isMachineAccountSid(group.sid, security.machineDomainSid) || !Array.isArray(group.members)
+    || !group.members.every((sid) => isMachineAccountSid(sid, security.machineDomainSid))) return [];
+  // Fail closed for the whole group: one foreign or broad member invalidates all trust.
+  return [group.sid, ...group.members];
+}
+
+function isMachineAccountSid(sid: unknown, machineDomainSid: unknown): sid is string {
+  // Only local account SIDs qualify; well-known, built-in, logon, creator and package SIDs never do.
+  return typeof sid === "string" && CAP_SID_PATTERN.test(sid)
+    && typeof machineDomainSid === "string" && ACCOUNT_DOMAIN_SID_PATTERN.test(machineDomainSid)
+    && sid.slice(0, sid.lastIndexOf("-")) === machineDomainSid;
+}
+
+function admittedCapSids(security: WindowsSecurityResult, candidates: readonly string[]): string[] {
+  const machineDomainSid = security.machineDomainSid;
+  if (typeof machineDomainSid !== "string" || !ACCOUNT_DOMAIN_SID_PATTERN.test(machineDomainSid)
+    || !Array.isArray(security.capSidAccounts)) return [];
+  const currentDomainSid = security.currentSid.slice(0, security.currentSid.lastIndexOf("-"));
+  return candidates.filter((sid) => {
+    const domainSid = sid.slice(0, sid.lastIndexOf("-"));
+    const resolutions = security.capSidAccounts!.filter((entry) => isRecord(entry) && entry.sid === sid);
+    return domainSid !== currentDomainSid && domainSid !== machineDomainSid
+      && resolutions.length === 1 && resolutions[0]!.resolvesToAccount === false;
+  });
+}
+
+function assertWindowsSecurity(
+  security: WindowsSecurityResult,
+  inspected: readonly InspectedPath[],
+  rules: ReadonlyMap<string, readonly ComponentRule[]>,
+  privateDirectories: ReadonlySet<string>,
+  capSids: readonly string[] = [],
+): void {
   const expected = new Set(inspected.map((entry) => win32.normalize(entry.path)));
   const seen = new Set<string>();
+  // A write-restricted token must pass both normal user/group and restricting-SID
+  // checks. A cap-SID ACE therefore never extends write access to another account.
+  const trustedSids = new Set([security.currentSid, ...trustedSystemSids, ...sandboxPrincipals(security), ...capSids]);
+  // Admission means not writable by another account. AppContainer/capability
+  // tokens must also pass the normal user/group check, so these ACEs never
+  // extend write access to another account. Only the identified package's
+  // sandbox is owner-accepted; other package/capability SIDs remain foreign.
+  // This exemption applies to mutation only, never ownership or private paths.
+  const packageSids = new Set(security.desktopPackage.status === "resolved"
+    ? [security.desktopPackage.packageSid, security.desktopPackage.capabilitySid] : []);
+  const privateRoots = new Set([...privateDirectories].map((directory) => directory.toLowerCase()));
   for (const path of security.paths) {
     const key = win32.normalize(path.path);
-    if (!expected.has(key) || seen.has(key)) throw new CodexExecutableLocationError("Executable access rules are incomplete");
+    if (!expected.has(key)) continue;
+    if (seen.has(key)) throw new CodexExecutableLocationError("Executable access rules are incomplete");
     seen.add(key);
-    const trusted = (sid: string): boolean => sid === security.currentSid || trustedSystemSids.has(sid);
+    let privateComponent = false;
+    for (let component = key.toLowerCase();; component = win32.dirname(component)) {
+      if (privateRoots.has(component)) { privateComponent = true; break; }
+      if (win32.dirname(component) === component) break;
+    }
+    const trusted = (sid: string): boolean => privateComponent
+      ? sid === security.currentSid || trustedSystemSids.has(sid) : trustedSids.has(sid);
     if (!trusted(path.owner)) throw new CodexExecutableLocationError("Executable path has an untrusted owner");
     if (!path.daclPresent) throw new CodexExecutableLocationError("Executable path has unrestricted access");
-    const privateLeaf = privateDirectories.has(key);
-    if (privateLeaf && path.owner !== security.currentSid) {
+    if (privateComponent && path.owner !== security.currentSid) {
       throw new CodexExecutableLocationError("Runtime directory is not owned by the current account");
     }
+    const componentRules = rules.get(key) ?? [{ routeKind: "script", role: "leaf" }];
+    const mayIgnore = componentRules.every(({ routeKind, role }) =>
+      mayIgnoreForeignSubdirectoryCreation(routeKind, privateComponent ? "private" : role));
+    const mask = privateComponent ? PRIVATE_ACCESS_MASK
+      : mayIgnore ? MUTATION_ACCESS_MASK & ~FILE_ADD_SUBDIRECTORY : MUTATION_ACCESS_MASK;
     for (const entry of path.entries) {
       if (entry.type !== 0 || trusted(entry.sid)) continue;
-      if (!privateLeaf && (entry.flags & INHERIT_ONLY_ACE) !== 0) continue;
-      const mask = privateLeaf ? PRIVATE_ACCESS_MASK : MUTATION_ACCESS_MASK;
+      if (!privateComponent && packageSids.has(entry.sid)) continue;
+      if (!privateComponent && (entry.flags & INHERIT_ONLY_ACE) !== 0) continue;
       if ((entry.mask & mask) !== 0) {
-        throw new CodexExecutableLocationError(privateLeaf
+        const reason = privateComponent
           ? "Runtime directory is accessible by another account"
-          : "Executable path is writable by another account");
+          : "Executable path is writable by another account";
+        throw new CodexExecutableLocationError(`${reason}: ${JSON.stringify(path.path)} (SID ${entry.sid}, mask 0x${(entry.mask >>> 0).toString(16)})`);
       }
     }
   }
   if (seen.size !== expected.size) throw new CodexExecutableLocationError("Executable access rules are incomplete");
+}
+
+async function readCapSidFile(path: string): Promise<string | null> {
+  try {
+    const before = await fs.lstat(path, { bigint: true });
+    if (!before.isFile() || before.isSymbolicLink() || before.size > BigInt(MAX_CAP_SID_BYTES)) return null;
+    const file = await fs.open(path, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const opened = await file.stat({ bigint: true });
+      if (opened.dev !== before.dev || opened.ino !== before.ino || opened.size !== before.size
+        || opened.ctimeNs !== before.ctimeNs || opened.mtimeNs !== before.mtimeNs) return null;
+      const buffer = Buffer.alloc(MAX_CAP_SID_BYTES + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const { bytesRead } = await file.read(buffer, length, buffer.length - length, length);
+        if (!bytesRead) break;
+        length += bytesRead;
+      }
+      const after = await file.stat({ bigint: true });
+      if (length > MAX_CAP_SID_BYTES || BigInt(length) !== before.size
+        || after.ctimeNs !== before.ctimeNs || after.mtimeNs !== before.mtimeNs) return null;
+      return buffer.subarray(0, length).toString("utf8");
+    } finally { await file.close(); }
+  } catch { return null; }
+}
+
+function parseCapSids(contents: string | null): string[] {
+  try {
+    if (contents === null || Buffer.byteLength(contents) > MAX_CAP_SID_BYTES) return [];
+    const value: unknown = JSON.parse(contents);
+    if (!isRecord(value)) return [];
+    const values: unknown[] = [value.workspace, value.readonly];
+    for (const key of ["workspace_by_cwd", "writable_root_by_path"]) {
+      if (isRecord(value[key])) values.push(...Object.values(value[key]));
+    }
+    return [...new Set(values.filter((sid): sid is string => typeof sid === "string" && CAP_SID_PATTERN.test(sid)))];
+  } catch { return []; }
 }
 
 async function inspectLocation(
@@ -371,18 +735,40 @@ async function inspectLocation(
  * of all their deduplicated routes through as few probes as the batch allows.
  * A private leaf keeps the private rule even where it is also another
  * location's ancestor, since that rule is stricter than the ancestor rule.
+ * Requested leaves and routes that reject ancestor child creation also keep
+ * their stricter rule when another request allows it.
  */
-export async function assertCodexLocations(requests: readonly CodexLocationRequest[]): Promise<void> {
+export async function assertCodexLocations(requests: readonly CodexLocationRequest[], trustInputs: CodexLocationTrustInputs = {}): Promise<void> {
+  try {
+    await inspectCodexLocations(requests, trustInputs);
+  } catch (error) {
+    if (error instanceof CodexExecutableLocationError) {
+      error.routeKind ??= requests.some((request) => request.routeKind === "guarded-script") ? "guarded-script" : undefined;
+      log.warn({ reason: error.message }, "Executable location rejected");
+    }
+    throw error;
+  }
+}
+
+async function inspectCodexLocations(requests: readonly CodexLocationRequest[], trustInputs: CodexLocationTrustInputs): Promise<void> {
   const inspected = new Map<string, InspectedPath>();
   const privateDirectories = new Set<string>();
-  for (const { path: candidate, kind } of requests) {
+  const rules = new Map<string, ComponentRule[]>();
+  for (const { path: candidate, kind, routeKind = "script" } of requests) {
     if (kind === "private-directory") {
       assertAbsolutePath(candidate);
       if ((await fs.lstat(candidate)).isSymbolicLink()) {
         throw new CodexExecutableLocationError("Runtime directory must not be a symbolic link");
       }
     }
-    const leaf = await inspectLocation(candidate, inspected, kind === "private-directory");
+    const route = new Map<string, InspectedPath>();
+    const leaf = await inspectLocation(candidate, route, kind === "private-directory");
+    for (const [key, entry] of route) {
+      inspected.set(key, entry);
+      const role: ComponentRole = !entry.stat.isDirectory() || key === win32.normalize(candidate)
+        || key === win32.normalize(leaf.path) ? "leaf" : "ancestor";
+      rules.set(key, [...rules.get(key) ?? [], { routeKind, role }]);
+    }
     if (kind === "executable") {
       if (!leaf.stat.isFile()) throw new CodexExecutableLocationError("Executable path is not a regular file");
     } else if (kind === "directory") {
@@ -396,18 +782,88 @@ export async function assertCodexLocations(requests: readonly CodexLocationReque
     }
   }
   if (process.platform !== "win32" && process.platform !== "darwin") return;
-  for (const batch of aclBatches([...inspected.values()])) {
-    if (process.platform === "win32") await assertWindowsSecurity(batch, privateDirectories);
-    else await assertExtendedAccessRules(batch, privateDirectories);
+  if (process.platform === "darwin") {
+    for (const batch of aclBatches([...inspected.values()])) await assertExtendedAccessRules(batch, privateDirectories);
+    return;
   }
+  if (inspected.size === 0) return;
+  // Cap-file routes join the same deduplicated probe batch; they never admit
+  // themselves using SIDs supplied by their own contents.
+  const capPath = trustInputs.capSidPath ?? win32.join(process.env.CODEX_HOME || win32.join(homedir(), ".codex"), "cap_sid");
+  const capRoute = new Map<string, InspectedPath>();
+  try {
+    const stat = await fs.lstat(capPath);
+    if (stat.isFile() && !stat.isSymbolicLink()) await inspectLocation(capPath, capRoute);
+  } catch { capRoute.clear(); }
+  let batches = aclBatches([...inspected.values()]);
+  const withCapPaths = batches.map((batch) => [...batch]);
+  for (const [key, entry] of capRoute) {
+    if (inspected.has(key)) continue;
+    const batch = withCapPaths.find((paths) => paths.length < ACL_BATCH_PATHS
+      && paths.reduce((chars, path) => chars + JSON.stringify(path.path).length + 1, 0)
+        + JSON.stringify(entry.path).length + 1 <= ACL_BATCH_CHARS);
+    if (!batch) {
+      // Optional trust input must not add probes. If existing batches are full,
+      // leave the cap file unread and retain admission without cap exemptions.
+      capRoute.clear();
+      break;
+    }
+    batch.push(entry);
+  }
+  if (capRoute.size) batches = withCapPaths;
+  // Parse only bounded SID data before the existing probe; it grants no trust
+  // until the cap-file route passes admission without those candidates below.
+  let capCandidates: string[] = [];
+  if (capRoute.size) {
+    try { capCandidates = parseCapSids(await (trustInputs.readCapSidFile ?? readCapSidFile)(capPath)); }
+    catch { /* Unreadable cap files supply no candidates. */ }
+    if (JSON.stringify(capCandidates).length > ACL_BATCH_CHARS) capCandidates = [];
+  }
+  const all = new Map([...inspected, ...capRoute]);
+  const results: WindowsSecurityResult[] = [];
+  for (const batch of batches) results.push(await readWindowsSecurity(batch, capCandidates));
+  const security = { ...results[0]!, paths: results.flatMap((result) => result.paths) };
+  if (results.some((result) => result.currentSid !== security.currentSid)) {
+    throw new CodexExecutableLocationError("Executable access rules are invalid");
+  }
+  for (const result of results) {
+    if (result.desktopPackage.status === "unavailable") security.desktopPackage = result.desktopPackage;
+    else if (security.desktopPackage.status === "resolved"
+      && result.desktopPackage.packageSid !== security.desktopPackage.packageSid) {
+      throw new CodexExecutableLocationError("Executable access rules are invalid");
+    }
+  }
+  const expected = new Set(all.keys());
+  if (security.paths.some((path) => !expected.has(win32.normalize(path.path)))) {
+    throw new CodexExecutableLocationError("Executable access rules are incomplete");
+  }
+  let capSids: string[] = [];
+  if (capRoute.size) {
+    try {
+      const capRules = new Map([...capRoute].map(([key, entry]) => [key, [{
+        routeKind: "native" as const, role: !entry.stat.isDirectory() || key === win32.normalize(capPath) ? "leaf" as const : "ancestor" as const,
+      }]]));
+      assertWindowsSecurity(security, [...capRoute.values()], capRules, new Set());
+      capSids = capCandidates.filter((sid) => results.every((result) => admittedCapSids(result, [sid]).length === 1));
+    } catch { /* Untrusted or unreadable cap files supply no principals. */ }
+  }
+  assertWindowsSecurity(security, [...inspected.values()], rules, privateDirectories, capSids);
 }
 
 /** Admit the file's location; callers execute a separately pinned artifact. */
-export async function assertCodexExecutableLocation(candidate: string): Promise<void> {
-  await assertCodexLocations([{ path: candidate, kind: "executable" }]);
+export async function assertCodexExecutableLocation(
+  candidate: string,
+  routeKind: CodexLocationRouteKind = "script",
+  trustInputs: CodexLocationTrustInputs = {},
+): Promise<void> {
+  await assertCodexLocations([{ path: candidate, kind: "executable", routeKind }], trustInputs);
 }
 
 /** Require a current-account private leaf and trusted, non-mutable ancestors. */
-export async function assertCodexPrivateRuntimeDirectory(candidate: string): Promise<void> {
-  await assertCodexLocations([{ path: candidate, kind: "private-directory" }]);
+export async function assertCodexPrivateRuntimeDirectory(
+  candidate: string,
+  routeKind: CodexLocationRouteKind = "script",
+  trustInputs: CodexLocationTrustInputs = {},
+): Promise<void> {
+  await assertCodexLocations([{ path: candidate, kind: "private-directory", routeKind }], trustInputs);
 }

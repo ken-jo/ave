@@ -15,7 +15,7 @@ import { codexExecutableArtifactFixture, NATIVE_LOCATION_WAIT, normalizeFixtureA
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 vi.mock("node:child_process", async (importOriginal) =>
-  (await import("../../__tests__/support/native-executable.js")).maskFixtureAncestorAcl(await importOriginal()));
+  (await import("../../__tests__/support/native-executable.js")).fakeFixtureAcl(await importOriginal()));
 
 interface RpcRequest {
   id?: unknown;
@@ -121,7 +121,7 @@ function createHarness(
   const server = new FakeAppServer(handler, options.deferInitializeUntilInitialized);
   const openExternal = vi.fn(async (_url: string) => undefined);
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-app-server-client-"));
-  normalizeFixtureAncestorPermissions(runtimeRoot);
+  if (process.platform !== "win32") normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
   const sqliteHome = join(runtimeRoot, "sqlite");
   const workspaceDir = join(runtimeRoot, "workspace");
@@ -300,6 +300,8 @@ describe("CodexAppServerClient", () => {
     expect(projected).not.toContain("account-token-must-not-leave-main");
     expect(projected).not.toContain("refresh-token-must-not-leave-main");
     expect(harness.spawnCalls).toHaveLength(1);
+    expect(harness.spawnCalls[0]?.args).toBe(CODEX_APP_SERVER_ARGV);
+    expect(harness.server.requests.some((request) => request.method === "windowsSandbox/setupStart")).toBe(false);
     expect(harness.spawnCalls[0]).toMatchObject({
       command: harness.artifact.executable,
       // The one argv the conversation runtime also spawns with — the

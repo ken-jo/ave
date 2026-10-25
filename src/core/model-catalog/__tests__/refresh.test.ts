@@ -9,10 +9,11 @@
  * where relevant, next-boot selection separately from attempted-check metadata.
  */
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import { buildModelCatalogDocument } from "../document-builder.js";
 import { selectBootModelCatalog } from "../bundled.js";
 import { MODEL_CATALOG_CACHE_MAX_ENTRIES, modelCatalogCacheDir, readCachedModelCatalog, readModelCatalogPointer } from "../cache.js";
@@ -27,6 +28,7 @@ import { pruneModelsDevDocument } from "../../../shared/model-catalog/normalize.
 import { catalogProviderIds } from "../../../shared/model-catalog/provider-map.js";
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
 import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
+import { withFileLock } from "../../../lib/with-file-lock.js";
 
 const lookupMock = vi.fn(async () => [{ address: "93.184.215.14", family: 4 }]);
 vi.mock("node:dns", () => ({ promises: { lookup: () => lookupMock() } }));
@@ -106,6 +108,28 @@ async function seedGoodCopy(at = NOW): Promise<string> {
 const STALE = new Date(NOW.getTime() + MODEL_CATALOG_REFRESH_INTERVAL_MS + 1000);
 
 describe("refreshModelCatalogCache", () => {
+  it("a waiting refresh does not create a missing anchor before it holds the lock", async () => {
+    const anchor = join(dir, ".refresh-lock");
+    const { fetchImpl, calls } = respondWith(() => json(rawDocument()));
+    let refresh: ReturnType<typeof refreshModelCatalogCache> | undefined;
+    try {
+      await withFileLock(anchor, async () => {
+        rmSync(anchor);
+        refresh = refreshModelCatalogCache({ fetchImpl, dir, reference: BUNDLED, now: () => NOW });
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        expect(existsSync(anchor)).toBe(false);
+        expect(calls).toHaveLength(0);
+      });
+    } finally {
+      if (refresh) {
+        expect(await refresh).toMatchObject({ status: "updated" });
+      }
+    }
+    expect(existsSync(anchor)).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "cache" });
+  });
+
   it("keeps the installed process catalog unchanged until another boot", async () => {
     const installed = activeModelCatalog();
     const { fetchImpl } = respondWith(() => json(rawDocument()));
@@ -425,7 +449,8 @@ describe("selectBootModelCatalog", () => {
     expect(readdirSync(dir)).toEqual([]);
   });
 
-  it.each(["current.json", "entry"])("refuses a linked cache %s", async (name) => {
+  it.for(["current.json", "entry"])("refuses a linked cache %s", async (name, { skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     const sha256 = await seedGoodCopy();
     const path = join(dir, name === "entry" ? `${sha256}.json` : name);
     const external = join(dir, "outside.json");
@@ -435,14 +460,16 @@ describe("selectBootModelCatalog", () => {
     expect(await selectBootModelCatalog({ env: {}, dir, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses a linked cache directory", async () => {
+  it("refuses a linked cache directory", async ({ skip }) => {
+    requireSymlinkCapability(dir, "dir", skip);
     await seedGoodCopy();
     const linked = join(dir, "linked");
     symlinkSync(dir, linked, "dir");
     expect(await selectBootModelCatalog({ env: {}, dir: linked, loadBundled })).toMatchObject({ origin: "bundled" });
   });
 
-  it("refuses to publish through a linked cache parent", async () => {
+  it("refuses to publish through a linked cache parent", async ({ skip }) => {
+    requireSymlinkCapability(dir, "dir", skip);
     const home = join(dir, "home");
     const outside = join(dir, "outside");
     mkdirSync(home);
