@@ -33,7 +33,7 @@ const durableAuto: PermissionModeCommand = {
   durable: true,
 } as never;
 
-/** What the EXTERNAL channel is now allowed to send: session-scoped, non-`allow`. */
+// What the EXTERNAL channel is now allowed to send: session-scoped, non-`allow`.
 const sessionAuto: PermissionModeCommand = {
   kind: "mode",
   mode: "auto",
@@ -89,7 +89,7 @@ describe("applyPermissionModeCommand", () => {
     expect(deps.permissionManager.setModePersist).toHaveBeenCalledWith("auto");
   });
 
-  // ── 3-agent cluster review of PR #1441 — critic minor 1 + audit forensics ──
+  // 3-agent cluster review of critic minor 1 + audit forensics
   it("does not request approval for a SESSION-scoped mode change backed by a local-api-approval bypass, and pins the confirmationSource forensic marker", async () => {
     const deps = makeDeps();
 
@@ -115,8 +115,7 @@ describe("applyPermissionModeCommand", () => {
     expect(deps.permissionManager.setModePersist).not.toHaveBeenCalled();
   });
 
-  // ── External-channel ceiling ──
-  // One ApprovalGate click is consent to ONE change, not to a standing grant.
+  // External-channel ceiling One ApprovalGate click is consent to ONE change, not to a standing grant.
   it("refuses a DURABLE mode change on the external channel — nothing is persisted and nothing is audited as applied", async () => {
     const deps = makeDeps();
 
@@ -163,10 +162,7 @@ describe("applyPermissionModeCommand", () => {
     expect(deps.permissionManager.setModePersist).toHaveBeenCalledWith("allow");
   });
 
-  // The bypass union pins trustOrigin: ExternalOrigin for the local-api-approval
-  // variant, but callers hand-build these literals (src/engine/turn/commands.ts)
-  // so a bad cast at a JS call site can smuggle a non-external origin in. The
-  // apply path must re-check at runtime, not trust the type.
+  // The bypass union pins trustOrigin: ExternalOrigin for the local-api-approval variant, but callers hand-build these literals (src/engine/turn/commands.ts) so a bad cast at a JS call site can smuggle a non-external origin in. The apply path must re-check at runtime, not trust the type.
   it("still asks the approval gate when a local-api-approval bypass carries a non-external trustOrigin", async () => {
     const deps = makeDeps();
     deps.approvalGate.requestAndWait.mockResolvedValueOnce({

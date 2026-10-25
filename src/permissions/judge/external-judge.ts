@@ -1,19 +1,4 @@
-/**
- * `external` judge provider — the connection point for an out-of-process judge
- * model (e.g. jev). Two transports:
- *
- *   - command: argv array with an absolute executable, spawned WITHOUT a shell.
- *     The request is one JSON document on stdin; the verdict is one JSON
- *     document on stdout. Non-zero exit is an error. The environment is a
- *     minimal allow-list ({@link buildExternalJudgeEnv}) — nothing of Ave's is
- *     inherited. stderr is kept (first 4 KB, redacted) for the audit only.
- *   - url: HTTPS (or loopback HTTP) POST of the same JSON document; the
- *     response body is the verdict. Redirects are refused.
- *
- * Only the DLP-redacted request ({@link redactJudgeRequest}) is sent. The
- * response is validated strictly ({@link parseJudgeResponse}); anything that is
- * not exactly the verdict schema is `unparseable`.
- */
+// External commands require an absolute executable, direct argv spawn and a minimal env; redact bounded stderr for audit only. URL transport permits HTTPS or loopback HTTP and refuses redirects. Only redacted requests leave the process; nonzero exits and non-schema responses fail.
 import { spawn } from "node:child_process";
 import { errorMessage } from "../../shared/error-message.js";
 import {
@@ -37,7 +22,7 @@ function unparseable(why: string): JudgeFailure {
   return new JudgeFailure("unparseable", `external judge response ${why}`);
 }
 
-/** Strict verdict schema: `{decision, rationale, confidence?, suggestedRule?}` and nothing else. */
+// Strict verdict schema: `{decision, rationale, confidence?, suggestedRule?}` and nothing else.
 export function parseJudgeResponse(text: string): JudgeVerdict {
   let parsed: unknown;
   try {
@@ -78,9 +63,9 @@ export function parseJudgeResponse(text: string): JudgeVerdict {
 
 export type JudgeFetch = (url: string, init: RequestInit) => Promise<Response>;
 
-/** Base variables every command judge receives; nothing else is inherited. */
+// Base variables every command judge receives; nothing else is inherited.
 const BASE_ENV_KEYS = ["PATH", "HOME", "LANG", "TMPDIR"] as const;
-/** Windows cannot start most programs without these. */
+// Windows cannot start most programs without these.
 const WINDOWS_ENV_KEYS = ["SystemRoot", "TEMP", "TMP", "USERPROFILE"] as const;
 
 export function buildExternalJudgeEnv(
@@ -194,7 +179,7 @@ async function postUrl(fetchImpl: JudgeFetch, url: string, body: string, signal:
   return readCappedBody(response, signal);
 }
 
-/** Stream the body and stop at {@link MAX_RESPONSE_BYTES}; never buffers more. */
+// Stream the body and stop at MAX_RESPONSE_BYTES; never buffers more.
 async function readCappedBody(response: Response, signal: AbortSignal): Promise<string> {
   if (!response.body) return "";
   const reader = response.body.getReader();
@@ -229,7 +214,7 @@ export class ExternalJudge implements PermissionJudge {
   constructor(
     private readonly config: JudgeExternalSettings,
     private readonly fetchImpl?: JudgeFetch,
-    /** Stage id from settings, e.g. `jev`. */
+    // Stage id from settings, e.g. `jev`.
     readonly id: string = "external",
   ) {
     const hasCommand = config.command !== undefined;

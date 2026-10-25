@@ -1,16 +1,4 @@
-/**
- * Windows ASRT sandbox — platform LOGIC tests.
- *
- * These prove the Windows partial-confinement posture WITHOUT a real Windows host:
- * `process.platform` is forced to 'win32' and the pure config/capability/env
- * logic is asserted directly. What is NOT covered here (and cannot be on
- * darwin/CI): the live srt-win install, UAC elevation, and
- * actual WFP egress enforcement — those need a real Windows box (see the PR
- * body's "not verifiable" section).
- *
- * Added to the CI `windows-permission-tests` job (ci.yml, windows-2025) AND
- * runs on darwin/linux too — the platform is faked, so the logic is the same.
- */
+// Force the platform to test partial-confinement logic; live installation, elevation and network enforcement require native verification.
 import { win32 as win32Path } from "node:path";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -32,8 +20,7 @@ import {
 } from "../sandbox-capability.js";
 import { sandboxConfinementForPlatform } from "../../shared/sandbox-capability-info.js";
 import { buildSandboxedChildEnv } from "../../tools/safe-env.js";
-// Real ASRT surfaces — pin our mirrored constants + the binShell adapter
-// against the package so upstream drift fails CI (not silently desyncs).
+// Real ASRT surfaces — pin our mirrored constants + the binShell adapter against the package so upstream drift fails CI (not silently desyncs).
 import {
   DEFAULT_WINDOWS_PROXY_PORT_RANGE as ASRT_PROXY_PORT_RANGE,
 } from "@anthropic-ai/sandbox-runtime";
@@ -52,19 +39,13 @@ afterEach(() => {
 describe("windows sandbox — mirrored constants pinned against ASRT", () => {
   it("DEFAULT_WINDOWS_PROXY_PORT_RANGE mirrors ASRT's exported value", () => {
     expect(DEFAULT_WINDOWS_PROXY_PORT_RANGE).toEqual([60080, 60089]);
-    // Drift guard: if ASRT changes its default, this fails so the proxy bind
-    // range never silently desyncs from what the install WFP-permits.
+    // Drift guard: if ASRT changes its default, this fails so the proxy bind range never silently desyncs from what the install WFP-permits.
     expect([...DEFAULT_WINDOWS_PROXY_PORT_RANGE]).toEqual([
       ...ASRT_PROXY_PORT_RANGE,
     ]);
   });
 
-  // ASRT 0.0.80 (#686) ranks the Windows lists in JavaScript before srt-win
-  // sees them: a write grant at or beneath a denyWrite is handed over as a read
-  // grant, and a grant at or beneath a credential file entry is dropped. The
-  // srt-win drift guard (NSIS smoke test) pins only the Rust side, so this pins
-  // the JS side: a change in either rank fails here instead of silently changing
-  // what a Windows workspace or plugin root under a write deny can do.
+  // ASRT 0.0.80 ranks the Windows lists in JavaScript before srt-win sees them: a write grant at or beneath a denyWrite is handed over as a read grant, and a grant at or beneath a credential file entry is dropped. The srt-win drift guard (NSIS smoke test) pins only the Rust side, so this pins the JS side: a change in either rank fails here instead of silently changing what a Windows workspace or plugin root under a write deny can do.
   it("rankWindowsFsAccess keeps denyWrite over allowWrite and credentials over every grant", () => {
     const ranked = rankWindowsFsAccess({
       allowRead: ["C:/read-denied/inside"],
@@ -88,9 +69,7 @@ describe("windows sandbox — buildSandboxConfig emits the windows section on wi
     expect(config.windows).toBeDefined();
     expect(config.windows?.proxyPortRange).toEqual([60080, 60089]);
     expect((config.windows as Record<string, unknown>).groupName).toBeUndefined();
-    // ASRT 0.0.67: srt-win path is REQUIRED (no implicit vendored resolution).
-    // buildSandboxConfig must emit it from the SoT so SandboxManager.initialize
-    // can spawn the backend instead of throwing at runtime.
+    // ASRT 0.0.67: srt-win path is REQUIRED (no implicit vendored resolution). buildSandboxConfig must emit it from the SoT so SandboxManager.initialize can spawn the backend instead of throwing at runtime.
     expect(config.windows?.srtWin?.path).toBe(getVerifiedSrtWinExePath());
     expect(config.windows?.srtWin?.path).not.toBe(getVendoredSrtWinExePath());
   });
@@ -147,8 +126,7 @@ describe("windows sandbox — capability is fs+network partial confinement", () 
     expect(winCap.confines?.filesystem).toBe(true);
     expect(winCap.confines?.network).toBe(true);
     expect(winCap.confines?.process).toBe(false);
-    // Still a verified, non-none ASRT capability → not "weak" by the binary
-    // gate; the per-category gate is what makes it partial.
+    // Still a verified, non-none ASRT capability → not "weak" by the binary gate; the per-category gate is what makes it partial.
     expect(isWeakSandbox(winCap)).toBe(false);
   });
 });
@@ -219,9 +197,7 @@ describe("windows sandbox — binShell threading (the double-shell fix)", () => 
   });
 
   it("undefined binShell defaults to cmd in ASRT — the prior double-shell trap", () => {
-    // The bug this fixes: powershell.ts pre-rendered `powershell.exe -Command …`
-    // AND passed binShell=undefined → ASRT defaulted to cmd → cmd /c "powershell
-    // …". Now powershell.ts passes 'powershell' + the bare command instead.
+    // The bug this fixes: powershell.ts pre-rendered `powershell.exe -Command …` AND passed binShell=undefined → ASRT defaulted to cmd → cmd /c "powershell …". Now powershell.ts passes 'powershell' + the bare command instead.
     expect(parseWindowsBinShell(undefined)).toEqual({
       exe: win32Path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "cmd.exe"),
       args: ["/d", "/s", "/c"],
@@ -277,8 +253,7 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
   });
 
   it("keeps omitted read grants absent and restates retained write grants with mandatory denies", () => {
-    // The restated floor is the subject here, so the composition runs as on a
-    // POSIX host; Windows drops profile-redundant denies (covered on its own).
+    // The restated floor is the subject here, so the composition runs as on a POSIX host; Windows drops profile-redundant denies (covered on its own).
     forcePlatform("linux");
     const config = buildPerCommandSandboxCustomConfig({
       denyRead: ["/home/u/.ssh"],
@@ -297,8 +272,7 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
   });
 
   it("keeps explicitly empty allow arrays when the caller intentionally overrides them", () => {
-    // The restated floor is the subject here, so the composition runs as on a
-    // POSIX host; Windows drops profile-redundant denies (covered on its own).
+    // The restated floor is the subject here, so the composition runs as on a POSIX host; Windows drops profile-redundant denies (covered on its own).
     forcePlatform("linux");
     const config = buildPerCommandSandboxCustomConfig({
       allowRead: [],
@@ -320,9 +294,7 @@ describe("windows sandbox — per-exec filesystem grant guard", () => {
 describe("windows sandbox — safe-env preserves SANDBOX_RUNTIME + proxy keys", () => {
   it("propagates SANDBOX_RUNTIME (the benign Windows marker ASRT emits)", () => {
     vi.stubEnv("PATH", "/usr/bin:/bin");
-    // ASRT's wrapped env = process.env + its additions; SANDBOX_RUNTIME is one
-    // ASRT sets on Windows. It must survive the allow-list (was previously
-    // dropped — added to ASRT_SANDBOX_ENV_KEYS for honesty).
+    // Preserve sandbox-injected environment values through the allowlist.
     const wrapped: NodeJS.ProcessEnv = {
       ...process.env,
       SANDBOX_RUNTIME: "1",

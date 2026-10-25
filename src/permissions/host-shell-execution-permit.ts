@@ -1,11 +1,4 @@
-/**
- * One-shot execution permit for explicit host requests and the Windows Plan B.
- *
- * The execution plan says which substrate is honest for a shell invocation;
- * it is not itself proof that the invocation is authorized. This module
- * keeps the proof in a module-private WeakMap, binds it to one final action,
- * and consumes it before the plain child may spawn.
- */
+// Plans describe substrates, not authorization. Bind proof privately to one final action and consume it before plain-host spawn.
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { captureShellWorkingDirectoryIdentity, matchesShellWorkingDirectoryIdentity, type ShellWorkingDirectoryIdentity } from "./shell-working-directory-identity.js";
@@ -33,11 +26,7 @@ export type HostShellToolName = "bash" | "powershell";
 
 export const HOST_SHELL_AUTHORIZATION_REVOKED_ERROR = "this host shell execution requires a one-shot host approval permit. The working directory or permission policy changed, or the permit is invalid or revoked. Request authorization again.";
 
-/**
- * Renderer-invisible action description attached to the approval pending entry.
- * The ApprovalGate issues a receipt only after an HMAC-verified allow-once
- * response for exactly this binding.
- */
+// Renderer-invisible action description attached to the approval pending entry. The ApprovalGate issues a receipt only after an HMAC-verified allow-once response for exactly this binding.
 export interface HostShellExecutionPermitBinding {
   readonly planIdentity: string;
   readonly plan: HostShellExecutionPlan;
@@ -56,7 +45,7 @@ export interface HostShellExecutionPermitBinding {
 
 declare const hostShellExecutionPermitBrand: unique symbol;
 
-/** Opaque, in-process capability. A structural lookalike is not valid. */
+// Opaque, in-process capability. A structural lookalike is not valid.
 export interface HostShellExecutionPermit {
   readonly [hostShellExecutionPermitBrand]: "host-shell-execution-permit";
 }
@@ -74,12 +63,11 @@ export interface HostShellSpawnAuthorization {
 const permits = new WeakMap<HostShellExecutionPermit, PermitRecord>();
 const pendingHandoffs = new WeakMap<HostShellSpawnAuthorization, PermitRecord>();
 
-// Preserve the permit module's public API while moving the runtime parser to a
-// neutral dependency shared with ApprovalGate.
+// Preserve the permit module's public API while moving the runtime parser to a neutral dependency shared with ApprovalGate.
 export { parseHostShellExecutionInput } from "./host-shell-execution-plan.js";
 export type { ParsedHostShellExecutionInput } from "./host-shell-execution-plan.js";
 
-/** Matches the exact cwd resolution used by BashTool and PowerShellTool. */
+// Matches the exact cwd resolution used by BashTool and PowerShellTool.
 export function resolveHostShellWorkingDirectory(
   executionCwd: string,
   requestedCwd: string | undefined,
@@ -91,7 +79,7 @@ export function resolveHostShellWorkingDirectory(
     : pathResolve(resolvedExecutionCwd, requestedCwd);
 }
 
-/** Stable set semantics for the same extra directory scope the tools validate. */
+// Stable set semantics for the same extra directory scope the tools validate.
 export function canonicalizeHostShellAllowedDirectories(
   directories: readonly string[],
 ): readonly string[] {
@@ -101,11 +89,7 @@ export function canonicalizeHostShellAllowedDirectories(
   return Object.freeze([...new Set(canonical)].sort());
 }
 
-/**
- * Build the host-only action binding after all path grants and hooks have
- * finalized the invocation. Undefined means the raw input cannot represent a
- * native shell spawn, so the invocation must fail closed before requesting a permit.
- */
+// Build the host-only action binding after all path grants and hooks have finalized the invocation. Undefined means the raw input cannot represent a native shell spawn, so the invocation must fail closed before requesting a permit.
 export function buildHostShellExecutionPermitBinding(input: {
   plan: HostShellExecutionPlan;
   toolName: HostShellToolName;
@@ -136,32 +120,15 @@ export function buildHostShellExecutionPermitBinding(input: {
   });
 }
 
-// Only the host authorization pipeline records these after its policy/reviewer
-// gates pass. Bind to the exact in-process action, never renderer-supplied data.
+// Only the host authorization pipeline records these after its policy/reviewer gates pass. Bind to the exact in-process action, never renderer-supplied data.
 const policyAuthorizations = new WeakSet<HostShellExecutionPermitBinding>();
 
-/** Record one host-policy authorization; it does not change any sandbox plan. */
+// Record one host-policy authorization; it does not change any sandbox plan.
 export function recordHostShellPolicyAuthorization(binding: HostShellExecutionPermitBinding): void {
   policyAuthorizations.add(binding);
 }
 
-/**
- * Minted only after one of three host-issued, action-bound proofs is consumed:
- *
- *   - ApprovalGate's HMAC-verified allow-once receipt for this binding; or
- *   - for an explicit host request only (`executionRequest: "host"`), the
- *     PermissionManager's own layer-3 allow-rule decision for this exact shell
- *     command and working directory (design I3: a matching allow rule approves
- *     an unsandboxed retry). The Windows Plan B
- *     never accepts a rule proof here; or
- *   - the host policy lane's authorization for this binding, recorded by the
- *     authorization pipeline once rules, floors and the reviewer/judge allowed
- *     the plain invocation (sandbox unavailable or excluded runs under normal
- *     rules, design I3).
- *
- * Calling this public helper with a structural decision, an unrelated approval
- * or a rule decision for another action fails closed.
- */
+// Consume only action-bound host proof: a verified one-shot receipt, an exact host-request rule decision, or the authorization pipeline's normal-policy permit. The partial Windows plan rejects rule proof; structural, unrelated or differently bound decisions fail closed.
 export function mintHostShellExecutionPermit(input: {
   plan: HostShellExecutionPlan;
   approvalDecision: ApprovalDecision | undefined;
@@ -169,10 +136,7 @@ export function mintHostShellExecutionPermit(input: {
   permissionManager?: PermissionManager | undefined;
   binding: HostShellExecutionPermitBinding;
 }): HostShellExecutionPermit | undefined {
-  // The public TypeScript surface declares these fields as required, but
-  // module consumers can still arrive through untyped JavaScript or a stale
-  // compiled caller. Treat any incomplete input as an unauthorised request
-  // instead of throwing before the fail-closed decision.
+  // The public TypeScript surface declares these fields as required, but module consumers can still arrive through untyped JavaScript or a stale compiled caller. Treat any incomplete input as an unauthorised request instead of throwing before the fail-closed decision.
   if (input.binding === undefined) return undefined;
   let allowRuleAuthorization: ShellAllowRuleAuthorization | undefined;
   // Consumed on every mint attempt, so a recorded authorization never outlives it.
@@ -181,8 +145,7 @@ export function mintHostShellExecutionPermit(input: {
     // The policy lane already decided this exact action.
   } else if (input.approvalDecision === undefined) {
     if (input.allowRuleDecision === undefined) return undefined;
-    // Burn the rule proof before any plan check, so a mismatch cannot be
-    // probed or replayed.
+    // Burn the rule proof before any plan check, so a mismatch cannot be probed or replayed.
     allowRuleAuthorization = consumeIssuedShellAllowRuleDecision(input.allowRuleDecision, {
       toolName: input.binding.toolName,
       dialect: input.binding.toolName,
@@ -197,8 +160,7 @@ export function mintHostShellExecutionPermit(input: {
       input.binding,
     )
   ) return undefined;
-  // Any receipt-bearing mint attempt consumes its receipt before checking
-  // plan compatibility, so a mismatch cannot be probed or replayed.
+  // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
   if (!requiresExplicitHostShellApproval(input.plan)) return undefined;
   if (
     input.binding.plan !== input.plan ||
@@ -211,10 +173,7 @@ export function mintHostShellExecutionPermit(input: {
   return permit;
 }
 
-/**
- * Verify and irreversibly consume the permit. Delete before comparison so a
- * mismatched/replayed attempt cannot probe or reuse an approved capability.
- */
+// Verify and irreversibly consume the permit. Delete before comparison so a mismatched/replayed attempt cannot probe or reuse an approved capability.
 export function consumeHostShellExecutionPermitForSpawn(input: {
   permit: HostShellExecutionPermit | undefined;
   plan: HostShellExecutionPlan;
@@ -260,7 +219,7 @@ export function consumeHostShellExecutionPermitForSpawn(input: {
   return authorization;
 }
 
-/** Burn the spawn authority again at the final, serialized execution handoff. */
+// Burn the spawn authority again at the final, serialized execution handoff.
 export function withHostShellExecutionHandoff<T>(
   authorization: HostShellSpawnAuthorization,
   handoff: ShellPolicyHandoff<T>,
@@ -271,10 +230,7 @@ export function withHostShellExecutionHandoff<T>(
     if (record === undefined ||
       (record.allowRuleAuthorization !== undefined && !isShellAllowRulePolicyCurrent(record.allowRuleAuthorization)) ||
       !matchesShellWorkingDirectoryIdentity(record.cwdIdentity.realpath, record.cwdIdentity)) return undefined;
-    // This host's persisted policy mutations share this queue. Uncoordinated
-    // external edits after this final validation apply from the next command.
-    // The synchronous handoff grants the waiting child (or spawns it on platforms
-    // without a child guard); it must never await between validation and grant.
+    // This host's persisted policy mutations share this queue. Uncoordinated external edits after this final validation apply from the next command. The synchronous handoff grants the waiting child (or spawns it on platforms without a child guard); it must never await between validation and grant.
     return handoff();
   });
 }

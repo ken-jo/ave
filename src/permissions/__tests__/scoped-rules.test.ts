@@ -307,8 +307,7 @@ describe("scoped permission rules", () => {
     for (const subject of [edit(".env"), edit(join(directory, "ave-home", "permissions.json"))]) {
       expect(manager.checkDetailed("operation", "builtin", "write", null, { ruleSubject: subject, projectRulesCwd: project })).toMatchObject({ decision: "ask", forceModal: true });
     }
-    // An unannotated MCP tool and a screened request follow the mode; the
-    // matching allow rule never answers them.
+    // An unannotated MCP tool and a screened request follow the mode; the matching allow rule never answers them.
     const ungranted = [mcp("lookup", false), network(`https://example.com/?token=${"sk-" + "a".repeat(50)}`)];
     for (const mode of ["allow", "default"] as const) {
       manager.setMode(mode);
@@ -497,8 +496,7 @@ describe("scoped permission rules", () => {
     if (!permitted) expect(result?.content).toContain("new permission decision");
   });
 
-  // A screened request without a host rule is an ordinary mode ask, not a
-  // mandatory per-call one, so its redirects follow like any approved fetch.
+  // A screened request without a host rule is an ordinary mode ask, not a mandatory per-call one, so its redirects follow like any approved fetch.
   it.each(["none", "same-origin", "other-origin"] as const)("asks for a screened request without a host rule through the mode: %s", async (redirect) => {
     let requests = 0;
     const transport = vi.fn(async () => {

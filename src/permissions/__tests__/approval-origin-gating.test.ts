@@ -1,19 +1,4 @@
-/**
- * approval-origin-gating.test.ts — §8 P0 security regression (issue #71)
- *
- * Verifies the cross-plugin attack defense introduced by ApprovalIssuerRegistry
- * + verifyApprovalResponder:
- *
- *   (a) Legitimate plugin CAN respond to its own pending approval.
- *   (b) Malicious plugin CANNOT respond to another plugin's pending approval
- *       (cross-plugin hijack → ApprovalOriginError code "cross-plugin-hijack").
- *   (c) Plugin with empty agentApprovalScopes CANNOT respond even to its own
- *       request (scope-not-allowed → ApprovalOriginError code "scope-not-allowed").
- *   (d) Unknown requestId (never issued or already consumed) → "unknown-request".
- *   (e) Registry consume is idempotent: second respond attempt after success fails
- *       with "unknown-request" (no double-respond).
- *   (f) requestAgentApproval records into registry using the provided scope.
- */
+// Only the issuing plugin with an approved scope may answer; unknown or consumed requests fail and cannot be answered twice.
 
 import { describe, it, expect, vi } from "vitest";
 import {
@@ -24,8 +9,6 @@ import {
   ApprovalOriginError,
 } from "../agent-action-requester.js";
 import type { ApprovalGate } from "../approval-gate.js";
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function makeRegistry(): ApprovalIssuerRegistry {
   return new ApprovalIssuerRegistry();
@@ -68,7 +51,7 @@ describe("verifyApprovalRequestScope — request path", () => {
   });
 });
 
-// ─── (a) Legitimate plugin CAN respond to its own pending approval ────────────
+// (a) Legitimate plugin CAN respond to its own pending approval
 
 describe("verifyApprovalResponder — legitimate respond", () => {
   it("(a) succeeds when responderPluginId matches issuer and scope is allowed", () => {
@@ -99,7 +82,7 @@ describe("verifyApprovalResponder — legitimate respond", () => {
   });
 });
 
-// ─── (b) Cross-plugin hijack attack ──────────────────────────────────────────
+// (b) Cross-plugin hijack attack
 
 describe("verifyApprovalResponder — cross-plugin hijack denied", () => {
   it("(b) throws ApprovalOriginError with code 'cross-plugin-hijack' when malicious plugin tries to respond", () => {
@@ -141,7 +124,7 @@ describe("verifyApprovalResponder — cross-plugin hijack denied", () => {
   });
 });
 
-// ─── (c) Empty agentApprovalScopes blocks even self-respond ──────────────────
+// (c) Empty agentApprovalScopes blocks even self-respond
 
 describe("verifyApprovalResponder — scope-not-allowed", () => {
   it("(c) throws 'scope-not-allowed' when issuer's allowed scopes is empty", () => {
@@ -179,7 +162,7 @@ describe("verifyApprovalResponder — scope-not-allowed", () => {
   });
 });
 
-// ─── (d) Unknown requestId ────────────────────────────────────────────────────
+// (d) Unknown requestId
 
 describe("verifyApprovalResponder — unknown-request", () => {
   it("(d) throws 'unknown-request' for a requestId never recorded", () => {
@@ -197,7 +180,7 @@ describe("verifyApprovalResponder — unknown-request", () => {
   });
 });
 
-// ─── (e) Double-respond prevention ───────────────────────────────────────────
+// (e) Double-respond prevention
 
 describe("verifyApprovalResponder — double-respond prevention", () => {
   it("(e) second respond attempt after successful first attempt fails with 'unknown-request'", () => {
@@ -205,7 +188,6 @@ describe("verifyApprovalResponder — double-respond prevention", () => {
     const requestId = "req-double-respond";
     registry.record(requestId, PLUGIN_A, SCOPE);
 
-    // First respond: succeeds
     expect(() =>
       verifyApprovalResponder(registry, requestId, PLUGIN_A, [SCOPE]),
     ).not.toThrow();
@@ -223,7 +205,7 @@ describe("verifyApprovalResponder — double-respond prevention", () => {
   });
 });
 
-// ─── (f) requestAgentApproval records into registry ──────────────────────────
+// (f) requestAgentApproval records into registry
 
 describe("requestAgentApproval — registry integration", () => {
   it("(f) records issuer + scope into registry before calling gate", async () => {
@@ -244,10 +226,7 @@ describe("requestAgentApproval — registry integration", () => {
     );
 
     expect(choice).toBe("allow-once");
-    // After requestAndWait returns, entry remains in registry until respond() consumes it.
-    // (registry.size may be 0 if gate resolve was synchronous in mock — gate mock is async
-    // but the call returns after await, so size should still be 1 at this point)
-    // Actually since requestAgentApproval awaits the gate promise, the entry persists:
+    // After requestAndWait returns, entry remains in registry until respond consumes it. (registry.size may be 0 if gate resolve was synchronous in mock — gate mock is async but the call returns after await, so size should still be 1 at this point) Actually since requestAgentApproval awaits the gate promise, the entry persists:
     expect(registry.size).toBe(1);
   });
 

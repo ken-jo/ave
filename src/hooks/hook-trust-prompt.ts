@@ -1,22 +1,4 @@
-/**
- * Permission policy Layer 6 hook trust quarantine workflow.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 6.
- *
- * Boot-time flow:
- *
- *   1. {@link discoverHooks} reads `~/.config/ave/hooks/`.
- *   2. {@link diffAgainstLockfile} compares to the existing lockfile.
- *   3. If any `new` or `changed` entries → strict-deny unless a test
- *      dispatcher is injected. Production trust enrollment is the
- *      user-keyboard `/permission hooks accept <name>` path.
- *   4. Trusted hooks → lockfile updated; rejected hooks → moved to
- *      `.disabled/` subfolder (won't run on subsequent boots).
- *
- * Atomic cutover (CLAUDE.md No-Fallback): production boot runs in
- * **strict-deny** mode — every untrusted hook is automatically disabled.
- * There's no renderer approval prompt or silent allow path.
- */
+// Boot quarantines every new or changed hook without prompting or silently allowing it; production enrollment requires a user-keyboard accept command (docs/architecture/permission-policy-design.md).
 import { existsSync } from "node:fs";
 import {
   buildAcceptedAtMap,
@@ -43,68 +25,41 @@ const log = createLogger("hook-trust");
 
 export interface TrustPromptDecision {
   fileName: string;
-  /** When true the hook is moved into the trusted lockfile. */
   trust: boolean;
 }
 
 export interface TrustPromptDispatcher {
-  /**
-   * Surface the diff to the user. Returns the decision array.
-   * The orchestrator already filters `removed` entries (no UX needed).
-   */
+  // Surface the diff to the user. Returns the decision array. The orchestrator already filters `removed` entries (no UX needed).
   prompt(diff: HookDiff[]): Promise<TrustPromptDecision[]>;
 }
 
 export interface RunHookTrustOptions {
-  /** Override hooks dir (test). */
   hooksDir?: string;
-  /** Override lockfile path (test). */
   lockfilePath?: string;
-  /** Override disabled subfolder (test). */
   disabledDir?: string;
-  /**
-   * Test dispatcher. Production omits this so every untrusted hook is
-   * auto-disabled (strict-deny).
-   */
+  // Test dispatcher. Production omits this so every untrusted hook is auto-disabled (strict-deny).
   promptDispatcher?: TrustPromptDispatcher;
 }
 
 export interface RunHookTrustResult {
-  /** Trusted hooks (will run going forward). Includes the `hooks.json` trust
-   * unit synthetic hook when the config is trusted. */
+  // Includes the synthetic config trust unit when trusted.
   trustedHooks: DiscoveredHook[];
-  /** Hooks quarantined or rejected, now living under `.disabled/`. */
   disabledHooks: DiscoveredHook[];
-  /** Updated lockfile contents (or null if nothing was persisted). */
   lockfile: LockfileShape | null;
-  /** Initial diff that triggered the trust decision. Useful for audit. */
   diff: HookDiff[];
-  /**
-   * #811 — trusted declarative `hooks.json` `command` entries. EMPTY unless the
-   * `hooks.json` trust unit is in `trustedHooks` (i.e. it was already trusted or
-   * a test dispatcher approved it). An untrusted/changed `hooks.json` yields no
-   * entries — its commands never reach the runtime registry.
-   */
+  // Config entries remain empty unless their whole trust unit is trusted; untrusted or changed commands never reach runtime.
   trustedConfigEntries: HookConfigEntry[];
 }
 
-/**
- * Boot orchestrator. Idempotent — call once at startup. The lockfile
- * write is atomic so concurrent boots don't race (withFileLock inside
- * persistLockfile).
- */
+// Call once at boot; atomic lockfile writes serialize concurrent boots.
 export async function runHookTrustWorkflow(
   options: RunHookTrustOptions = {},
 ): Promise<RunHookTrustResult> {
-  // Always ensure the directory exists — hook trust ships an empty
-  // directory on fresh installs (spec §11 v2.1 binding decision).
+  // Fresh installs require an empty hooks directory.
   ensureHooksDirectory(options.hooksDir);
 
   const shHooks = discoverHooks(options.hooksDir);
-  // #811 — fold the `hooks.json` trust unit into the discovered set so it rides
-  // the SAME diff → quarantine → accept flow as `.sh` files. The synthetic hook
-  // anchors the composite trust hash; an untrusted/changed config is moved to
-  // `.disabled/` and its commands never load.
+  // The composite config hash shares script quarantine; changed or untrusted config commands must not load.
   const configPath = defaultHooksConfigPath(options.hooksDir);
   const loadedConfig = loadHookConfig(configPath);
   const configHook = syntheticConfigHook(loadedConfig);
@@ -119,16 +74,13 @@ export async function runHookTrustWorkflow(
   );
   const trusted = diff.filter((d) => d.state === "trusted").map((d) => d.hook);
 
-  // Resolve which trusted config entries (if any) the runtime may load.
   const configTrusted = (trustedSet: DiscoveredHook[]): HookConfigEntry[] =>
     trustedSet.some((h) => h.fileName === HOOKS_CONFIG_FILENAME)
       ? loadedConfig.entries
       : [];
 
   if (newOrChanged.length === 0) {
-    // Nothing to decide — but if the lockfile previously knew about
-    // files that have since been deleted, refresh the lockfile so the
-    // `removed` entries no longer appear in subsequent diffs.
+    // Refresh deleted entries out of the lockfile so removed hooks stop appearing in later diffs.
     const removed = diff.filter((d) => d.state === "removed");
     if (removed.length > 0 && lockfile) {
       const next = await persistLockfile(trusted, options.lockfilePath, acceptedAtMap);

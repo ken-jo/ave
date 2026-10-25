@@ -1,6 +1,3 @@
-/**
- * policy-store unit tests — B1 managed policy layer + §C2 admin-dir merge
- */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mkdir, open } from "node:fs/promises";
 import { dirname, parse, resolve } from "node:path";
@@ -8,8 +5,7 @@ import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { makeTestPolicy } from "./test-helpers.js";
 
-// ─── Mock fs/promises ─────────────────────────────────
-// Intercept readFile / mkdir / open so tests stay in-memory.
+// Mock fs/promises Intercept readFile / mkdir / open so tests stay in-memory.
 
 type MockFileStore = Record<string, string>;
 
@@ -51,7 +47,6 @@ vi.mock("node:fs/promises", () => ({
   writeFile: vi.fn(async (path: string, data: string) => {
     files[path as string] = data;
   }),
-  // §F6: open() mock — returns fd-like object with writeFile + close
   open: vi.fn(async (path: string, _flags: string, _mode: number) => ({
     writeFile: vi.fn(async (data: string) => {
       files[path] = data;
@@ -60,16 +55,12 @@ vi.mock("node:fs/promises", () => ({
   })),
 }));
 
-// ─── Helpers ─────────────────────────────────────────
-
 const USER_PATH  = resolve("/tmp/ave-test/policy.json");
 const ADMIN_PATH = resolve("/tmp/ave-admin/policy.json");
 
 function writeFile(path: string, obj: object): void {
   files[path] = JSON.stringify(obj, null, 2) + "\n";
 }
-
-// ─── Tests ───────────────────────────────────────────
 
 describe("policy-store", () => {
   beforeEach(() => {
@@ -82,9 +73,7 @@ describe("policy-store", () => {
     vi.clearAllMocks();
   });
 
-  // ══════════════════════════════════════════════════
   // Original B1 cases (regression — admin-dir absent)
-  // ══════════════════════════════════════════════════
 
   it("파일 없을 때 lenient default 반환", async () => {
     const policy = await loadPolicy(USER_PATH, ADMIN_PATH);
@@ -135,10 +124,6 @@ describe("policy-store", () => {
     const final = await loadPolicy(USER_PATH, ADMIN_PATH);
     expect(final.requireExplicitApproval).toBe(true);
   });
-
-  // ══════════════════════════════════════════════════
-  // §C2 admin-dir merge cases
-  // ══════════════════════════════════════════════════
 
   it("admin-dir 없음 → user만 사용, source: 'user'", async () => {
     writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
@@ -212,12 +197,9 @@ describe("policy-store", () => {
     expect(isPolicyUserEditable(result)).toBe(false);
   });
 
-  // ══════════════════════════════════════════════════
   // Fail closed: a file that leaves out or mistypes a safety field
-  // ══════════════════════════════════════════════════
 
-  // A managed policy.json written for another section (the marketplace
-  // policy example carries version 1 and `marketplaces` only).
+  // A managed policy.json written for another section (the marketplace policy example carries version 1 and `marketplaces` only).
   const MARKETPLACE_ONLY = {
     version: 1,
     marketplaces: { additional: [{ id: "corp", url: "https://git.corp.example/ave/marketplace.git" }] },
@@ -449,15 +431,7 @@ describe("policy-store", () => {
     expect(loaded.adminOverrides).toContain("requireExplicitApproval");
   });
 
-  // ══════════════════════════════════════════════════
-  // Read/write agreement — "is this policy user-editable?"
-  //
-  // The read side (Permissions tab) and the write side (savePolicy) must never
-  // disagree. Rather than asserting a hand-written expectation table, each row
-  // below runs BOTH real functions against the same on-disk state and requires
-  // `savePolicy rejects  <=>  !isPolicyUserEditable(loadPolicy(...))`.
-  // A new blocking condition added to savePolicy alone turns this red.
-  // ══════════════════════════════════════════════════
+  // Read/write agreement — "is this policy user-editable?" The read side (Permissions tab) and the write side (savePolicy) must never disagree. Rather than asserting a hand-written expectation table, each row below runs BOTH real functions against the same on-disk state and requires `savePolicy rejects <=> !isPolicyUserEditable(loadPolicy(...))`. A new blocking condition added to savePolicy alone turns this red.
 
   describe("isPolicyUserEditable agrees with savePolicy", () => {
     const cases: Array<[string, () => void]> = [
@@ -471,8 +445,7 @@ describe("policy-store", () => {
       ["admin only, managed:true", () => {
         writeFile(ADMIN_PATH, makeTestPolicy({ managed: true }));
       }],
-      // The case the `managed`-flag-only read side got wrong: an admin-dir
-      // policy that pins requireExplicitApproval without claiming `managed`.
+      // The case the `managed`-flag-only read side got wrong: an admin-dir policy that pins requireExplicitApproval without claiming `managed`.
       ["admin only, managed omitted", () => {
         const { managed: _managed, ...rest } = makeTestPolicy({ requireExplicitApproval: true });
         writeFile(ADMIN_PATH, rest);
@@ -521,10 +494,6 @@ describe("policy-store", () => {
       expect(isPolicyUserEditable(await loadPolicy(USER_PATH, ADMIN_PATH))).toBe(true);
     });
   });
-
-  // ══════════════════════════════════════════════════
-  // §C2 platform path tests
-  // ══════════════════════════════════════════════════
 
   describe("getAdminPolicyPath — 플랫폼별 경로", () => {
     const platforms: Array<[string, string]> = [

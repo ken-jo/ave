@@ -9,7 +9,7 @@ import { ScriptHookManager } from "../script-hook-manager.js";
 import { filterRegistryByEventAndTool } from "../hook-registry.js";
 import { PluginHookTrustStore, preparePluginHookGeneration as prepareWithDigests } from "../plugin-hook-projection.js";
 
-/** Prepare with an approval digest per hook that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes. */
+// Prepare with an approval digest per hook that follows its fingerprint, as `extensionComponentDigests` gives for changed bytes.
 function preparePluginHookGeneration(generation: ActivePluginGeneration, root: string, dataDir: string) {
   return prepareWithDigests(generation, root, dataDir, new Map(generation.contributions.map((contribution) =>
     [contribution.localId, createHash("sha256").update(`digest:${contribution.fingerprint}`).digest("hex")])));

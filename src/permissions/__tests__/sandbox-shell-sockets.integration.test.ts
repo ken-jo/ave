@@ -81,7 +81,6 @@ describe.skipIf(shouldSkipNativeSandboxTests())("host shell socket boundaries", 
   });
 });
 
-
 function attributedProxyUrl(wrapped: { argv: readonly string[]; env: NodeJS.ProcessEnv }): URL {
   const source = [wrapped.env.HTTP_PROXY ?? "", ...wrapped.argv].join("\n");
   const spelling = /(http:\/\/srt\.[^'"\s:@]+:[^'"\s@]+@[^'"\s/]+)/u.exec(source)?.[1];

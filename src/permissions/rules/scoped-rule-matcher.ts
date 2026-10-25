@@ -19,7 +19,7 @@ export type ScopedRuleSubject =
 export interface ScopedRuleEvaluation {
   decision?: PermissionRule["action"];
   pattern?: string;
-  /** Mandatory gate, independent of allow rules and mode. */
+  // Mandatory gate, independent of allow rules and mode.
   floor?: string;
 }
 
@@ -72,7 +72,7 @@ function matchesEdit(spec: Extract<RuleSpecifier, { kind: "edit" }>, path: strin
   return matchesEditPattern(spec, canonicalPattern, path);
 }
 
-/** One precedence calculation across the existing global and project stores. */
+// One precedence calculation across the existing global and project stores.
 export function evaluateScopedRules(
   subject: ScopedRuleSubject,
   root: string,
@@ -138,7 +138,7 @@ export interface EditDepthCandidate {
   pattern: string;
 }
 
-/** Host-resolved depth choices use ordinary Edit rules and the same store. */
+// Host-resolved depth choices use ordinary Edit rules and the same store.
 export function editDepthCandidates(path: string, cwd: string): EditDepthCandidate[] {
   let target: string;
   try {

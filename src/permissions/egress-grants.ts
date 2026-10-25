@@ -1,36 +1,5 @@
-/**
- * Shell egress grants: the hosts a person allowed a sandboxed shell (a Bash or
- * PowerShell tool call, or a workspace terminal tab) to reach.
- *
- * The scopes are the ones the ask offers:
- *
- *   | Scope          | Held                                   | Lifetime                         |
- *   |----------------|----------------------------------------|----------------------------------|
- *   | `once`         | per invocation token, in memory        | until that tool call ends; a terminal's is never held (one connection) |
- *   | `conversation` | per conversation (session id), memory  | until the app restarts           |
- *   | `tab`          | per terminal tab (tab id), memory      | until the tab's shell exits (closed, or exited and respawned) |
- *   | `workspace`    | per working directory, on disk         | until revoked in Settings        |
- *   | `always`       | every workspace, on disk               | until revoked in Settings        |
- *
- * Tool calls are offered once, conversation, workspace and always; terminals
- * once, tab and always (`EGRESS_GRANT_SCOPE_LADDERS`). A persistent grant
- * records its origin (`shell` or `terminal`) and only ever covers a subject
- * of that origin: a terminal's Always never lets an agent's shell call
- * through, nor the reverse. Working directories are compared after
- * `canonicalizePathForMatch`, the canonicalizer the sandbox jails use.
- *
- * A grant names one destination and its approved network class, with the host canonicalised
- * the way a client's request is (lower case, no trailing dot, IPv6 without
- * brackets), so neither its spelling nor a changed class widens a grant.
- *
- * Grants apply to shells only. They are never written into ASRT's
- * `allowedDomains` and never consulted for a plugin worker.
- *
- * The persistent half lives in `<AVE_HOME>/permissions/shell-egress-hosts.json`.
- * The file is validated strictly: anything that is not exactly the shape this
- * module writes is an error the caller sees (the ask callback then denies),
- * never a silently emptied or partially read store.
- */
+// Shell grants bind canonical destination, approved network class and origin; spelling/class changes cannot widen them and terminal grants never cover agent shells. Invocation/conversation/tab grants stay in memory; workspace/always persist until revoked. Terminal once means one connection, and tab grants end with the shell.
+// Never consult these grants for workers or add them to runtime allowedDomains. Canonicalize workspace paths and strictly validate persisted shape; corrupt stores raise an error and the ask denies instead of silently dropping data.
 import { readFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { canonicalizeHost } from "@anthropic-ai/sandbox-runtime/dist/sandbox/parent-proxy.js";
@@ -61,13 +30,7 @@ import {
   type TabEgressGrant,
 } from "../shared/egress-grant-scopes.js";
 
-/**
- * The scopes an ask from this kind of process may offer on a host whose
- * attribution is this strong, narrowest first. A shared identity (Windows
- * srt-win: one account, one port range) can be presented by another
- * invocation, so a grant there must not outlive the conversation (for a
- * terminal: the tab) that made it: the cap keeps the in-memory rungs only.
- */
+// The scopes an ask from this kind of process may offer on a host whose attribution is this strong, narrowest first. A shared identity (Windows srt-win: one account, one port range) can be presented by another invocation, so a grant there must not outlive the conversation (for a terminal: the tab) that made it: the cap keeps the in-memory rungs only.
 export function egressGrantScopesFor(
   strength: EgressIdentityStrength,
   origin: EgressAskOrigin = "shell",
@@ -78,54 +41,25 @@ export function egressGrantScopesFor(
   return EGRESS_GRANT_SCOPE_LADDERS[origin].filter((scope) => !isPersistentScope(scope));
 }
 
-/** One destination: a canonical host and a port. */
+// One destination: a canonical host and a port.
 export interface EgressDestination {
   readonly host: string;
   readonly port: number;
 }
 
-/** A grant also names the class approved; omission means a legacy public grant. */
+// A grant also names the class approved; omission means a legacy public grant.
 export interface EgressGrantDestination extends EgressDestination {
   readonly network?: EgressGrantNetwork;
 }
 
-/**
- * The canonical form of a destination host, or undefined for one that is not
- * a host name or an IP literal: ASRT's own `canonicalizeHost` (the spelling
- * its allow and deny lists are compared in: lower case, no trailing dot,
- * IPv6 compressed and unbracketed, an IPv4-mapped address as IPv4), since the
- * callback is handed the host as the client spelled it.
- */
+// The canonical form of a destination host, or undefined for one that is not a host name or an IP literal: ASRT's own `canonicalizeHost` (the spelling its allow and deny lists are compared in: lower case, no trailing dot, IPv6 compressed and unbracketed, an IPv4-mapped address as IPv4), since the callback is handed the host as the client spelled it.
 export function canonicalEgressHost(host: string): string | undefined {
   if (typeof host !== "string" || host.length === 0 || host.length > 253) return undefined;
   const canonical = canonicalizeHost(host)?.toLowerCase();
   return canonical === undefined || canonical.length === 0 ? undefined : canonical;
 }
 
-/**
- * What kind of network a destination is on, judged from the canonical host
- * and from every address it resolved to (ASRT resolves a name once, before
- * asking, and dials only those addresses, so the decision is made on what is
- * connected to). The most restrictive answer wins:
- *
- *   - `reserved`: never reachable through the ask, whatever anyone answers —
- *     link-local (where most instance-metadata endpoints live), the cloud
- *     metadata addresses outside it, the unspecified address, multicast and
- *     broadcast.
- *   - `local`: this machine or a private network — loopback and
- *     `localhost`/`*.localhost`, RFC 1918, CGNAT (100.64/10), IPv6 ULA and
- *     site-local (fec0::/10), and names that only exist on a local network
- *     (`*.local`, `*.localdomain`, `*.home.arpa`, `*.internal`, `*.lan`,
- *     `ip6-localhost`, `ip6-loopback`). An
- *     intranet host is a legitimate destination, so it may be asked about,
- *     but a grant for it never outlives the conversation (a terminal: the
- *     tab) and the card says what it is.
- *   - `public`: everything else.
- *   - `unverified` (judged in egress-ask, not here): a name this host could not
- *     resolve that a remote upstream proxy resolves instead, so its address
- *     was never checked. Like `local`, a grant for it never outlives the
- *     conversation (a terminal: the tab) and the card says why.
- */
+// Use the most restrictive class across the canonical host and every pinned address: reserved metadata/link-local/unspecified/multicast/broadcast is never askable; local and unresolved upstream destinations cap grants to conversation/tab. Public may use broader scopes; show why restricted scopes apply.
 export type EgressDestinationNetwork = EgressGrantNetwork | "reserved";
 
 const RESERVED_RANGES = [
@@ -150,8 +84,7 @@ function isLocalNetworkName(name: string): boolean {
 function addressNetwork(address: string): EgressDestinationNetwork {
   // Before the embedded-IPv4 rule: `::1`'s IPv4-compatible form is 0.0.0.1.
   if (isLoopbackAddress(address)) return "local";
-  // An address that carries an IPv4 address (NAT64, 6to4, IPv4-compatible)
-  // is delivered to that address, so it is judged by it as well.
+  // An address that carries an IPv4 address (NAT64, 6to4, IPv4-compatible) is delivered to that address, so it is judged by it as well.
   const forms = [address, embeddedIPv4(address)].filter((a): a is string => a !== undefined);
   if (forms.some((a) => addressInSet(RESERVED, a))) return "reserved";
   if (forms.some((a) => isLoopbackAddress(a) || addressInSet(LOCAL, a))) return "local";
@@ -183,16 +116,12 @@ export function egressDestinationNetwork(
   return judged.includes("local") ? "local" : "public";
 }
 
-/** Whether a scope is held on disk (and so outlives the app run). */
+// Whether a scope is held on disk (and so outlives the app run).
 function isPersistentScope(scope: EgressGrantScope): scope is PersistentEgressGrant["scope"] {
   return scope === "workspace" || scope === "always";
 }
 
-/**
- * The scopes a grant for this kind of destination may take: none for a
- * reserved one, only the in-memory ones (once, conversation, tab) for a local
- * or unverified one, any for a public one.
- */
+// The scopes a grant for this kind of destination may take: none for a reserved one, only the in-memory ones (once, conversation, tab) for a local or unverified one, any for a public one.
 export function egressScopesForNetwork(
   scopes: readonly EgressGrantScope[],
   network: EgressDestinationNetwork,
@@ -215,21 +144,21 @@ function destinationKey(destination: EgressGrantDestination): string {
   return `${destination.host} ${destination.port} ${grantNetwork(destination)}`;
 }
 
-/** Where a shell call or terminal tab that asks for a grant runs. */
+// Where a shell call or terminal tab that asks for a grant runs.
 export interface EgressGrantSubject {
-  /** The invocation token ("Allow once"). */
+  // The invocation token ("Allow once").
   readonly token: string;
-  /** The conversation ("This conversation"); undefined outside one, and always for a terminal. */
+  // The conversation ("This conversation"); undefined outside one, and always for a terminal.
   readonly sessionId: string | undefined;
-  /** The terminal tab ("This tab"); undefined for a shell tool call. */
+  // The terminal tab ("This tab"); undefined for a shell tool call.
   readonly tabId: string | undefined;
-  /** The working directory "This workspace" keys on; undefined when unknown, and always for a terminal. */
+  // The working directory "This workspace" keys on; undefined when unknown, and always for a terminal.
   readonly workspaceRoot: string | undefined;
-  /** Which kind of process asks: the only origin whose persistent grants it matches or makes. */
+  // Which kind of process asks: the only origin whose persistent grants it matches or makes.
   readonly origin: EgressAskOrigin;
 }
 
-/** A working directory in the one form grants are stored and compared in. */
+// A working directory in the one form grants are stored and compared in.
 function canonicalWorkspaceRoot(path: string): string {
   return canonicalizePathForMatch(path);
 }
@@ -275,8 +204,7 @@ function parseGrant(path: string, entry: unknown, index: number): PersistentEgre
   if (scope !== "workspace" && scope !== "always") return fail("has a scope that is neither workspace nor always");
   if (origin !== "shell" && origin !== "terminal") return fail("has an origin that is neither shell nor terminal");
   if (scope === "workspace" && origin !== "shell") return fail("is a workspace grant not made by a shell call");
-  // Shape only: the path is not resolved on disk here, so a directory that
-  // moved later just stops matching instead of making the file unreadable.
+  // Shape only: the path is not resolved on disk here, so a directory that moved later just stops matching instead of making the file unreadable.
   if (scope === "workspace" && (typeof workspaceRoot !== "string" || foldCanonicalPathSeparators(resolve(workspaceRoot)) !== workspaceRoot)) {
     return fail("is a workspace grant without an absolute, normalised workspaceRoot");
   }
@@ -294,8 +222,7 @@ export function egressGrantFilePath(): string {
   return join(openFeatureNamespace("permissions").dir, "shell-egress-hosts.json");
 }
 
-
-/** The identity of one grant, for the tokens that used it. */
+// The identity of one grant, for the tokens that used it.
 function grantUseKey(grant: RevocableEgressGrant): string {
   const owner = grant.scope === "conversation" ? grant.sessionId
     : grant.scope === "tab" ? grant.tabId
@@ -311,23 +238,18 @@ function parseDestinationKey(key: string): EgressGrantDestination {
 
 export class EgressGrantStore {
   private readonly once = new Map<string, Set<string>>();
-  /** Session id to destination key to the time it was granted. */
+  // Session id to destination key to the time it was granted.
   private readonly conversation = new Map<string, Map<string, string>>();
-  /** Terminal tab id to destination key to the time it was granted. */
+  // Terminal tab id to destination key to the time it was granted.
   private readonly tab = new Map<string, Map<string, string>>();
-  /** Grant identity to the invocation tokens it let through (for closing them on revoke). */
+  // Grant identity to the invocation tokens it let through (for closing them on revoke).
   private readonly uses = new Map<string, Set<string>>();
   private persistent: PersistentEgressGrant[] | undefined;
   private readonly writes = createSerialQueue();
 
   constructor(private readonly filePath: string = egressGrantFilePath()) {}
 
-  /**
-   * The narrowest eligible grant covering this destination for this subject,
-   * or undefined. The caller limits scopes by current identity, origin and
-   * network class. Throws EgressGrantFileError when the persistent file is
-   * invalid, so the caller can deny with that reason instead of guessing.
-   */
+  // The narrowest eligible grant covering this destination for this subject, or undefined. The caller limits scopes by current identity, origin and network class. Throws EgressGrantFileError when the persistent file is invalid, so the caller can deny with that reason instead of guessing.
   async matchingScope(
     subject: EgressGrantSubject,
     destination: EgressGrantDestination,
@@ -347,12 +269,7 @@ export class EgressGrantStore {
     return undefined;
   }
 
-  /**
-   * Record a grant. `allowedScopes` is what the ask offered; a scope outside
-   * it, or one the subject cannot hold (a conversation grant without a
-   * conversation, a tab grant without a tab, a workspace grant without a
-   * workspace), is an error, not a narrower grant.
-   */
+  // Record a grant. `allowedScopes` is what the ask offered; a scope outside it, or one the subject cannot hold (a conversation grant without a conversation, a tab grant without a tab, a workspace grant without a workspace), is an error, not a narrower grant.
   async grant(
     scope: EgressGrantScope,
     allowedScopes: readonly EgressGrantScope[],
@@ -402,11 +319,7 @@ export class EgressGrantStore {
     }
   }
 
-  /**
-   * Record that `subject.token` was let through to `destination` under this
-   * scope's grant, so revoking the grant can close what it let through.
-   * "Allow once" ends with its call and is not recorded.
-   */
+  // Record that `subject.token` was let through to `destination` under this scope's grant, so revoking the grant can close what it let through. "Allow once" ends with its call and is not recorded.
   noteUse(scope: EgressGrantScope, subject: EgressGrantSubject, destination: EgressGrantDestination): void {
     let grant: RevocableEgressGrant;
     switch (scope) {
@@ -431,7 +344,7 @@ export class EgressGrantStore {
     addTo(this.uses, grantUseKey(grant), subject.token);
   }
 
-  /** Forget a released invocation's "Allow once" hosts and its grant uses. */
+  // Forget a released invocation's "Allow once" hosts and its grant uses.
   releaseToken(token: string): void {
     this.once.delete(token);
     for (const [key, tokens] of this.uses) {
@@ -440,10 +353,7 @@ export class EgressGrantStore {
     }
   }
 
-  /**
-   * Forget every "This tab" grant of a terminal tab whose shell ended (its
-   * tab closed). Returns the grants dropped.
-   */
+  // Forget every "This tab" grant of a terminal tab whose shell ended (its tab closed). Returns the grants dropped.
   releaseTab(tabId: string): readonly TabEgressGrant[] {
     const dropped = this.listTab().filter((grant) => grant.tabId === tabId);
     this.tab.delete(tabId);
@@ -451,7 +361,7 @@ export class EgressGrantStore {
     return dropped;
   }
 
-  /** The "This conversation" grants held now, for Settings. */
+  // The "This conversation" grants held now, for Settings.
   listConversation(): readonly ConversationEgressGrant[] {
     const out: ConversationEgressGrant[] = [];
     for (const [sessionId, grants] of this.conversation) {
@@ -460,7 +370,7 @@ export class EgressGrantStore {
     return out;
   }
 
-  /** The "This tab" grants held now, for Settings. */
+  // The "This tab" grants held now, for Settings.
   listTab(): readonly TabEgressGrant[] {
     const out: TabEgressGrant[] = [];
     for (const [tabId, grants] of this.tab) {
@@ -469,11 +379,7 @@ export class EgressGrantStore {
     return out;
   }
 
-  /**
-   * Revoke one grant of any revocable scope. Resolves whether it existed and
-   * the live invocation tokens it had let through, whose open connections to
-   * that destination the caller closes.
-   */
+  // Revoke one grant of any revocable scope. Resolves whether it existed and the live invocation tokens it had let through, whose open connections to that destination the caller closes.
   async revoke(target: RevocableEgressGrant): Promise<{ readonly removed: boolean; readonly tokens: readonly string[] }> {
     let removed: boolean;
     if (target.scope === "conversation") {
@@ -489,12 +395,12 @@ export class EgressGrantStore {
     return { removed, tokens };
   }
 
-  /** The workspace and always grants, for Settings. */
+  // The workspace and always grants, for Settings.
   async listPersistent(): Promise<readonly PersistentEgressGrant[]> {
     return [...(await this.loadPersistent())];
   }
 
-  /** Remove one persistent grant. Resolves true when it existed. */
+  // Remove one persistent grant. Resolves true when it existed.
   private async revokePersistent(target: Pick<PersistentEgressGrant, "scope" | "origin" | "host" | "port" | "network" | "workspaceRoot">): Promise<boolean> {
     let removed = false;
     await this.mutatePersistent((grants) => {

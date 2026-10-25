@@ -1,26 +1,4 @@
-/**
- * Permission policy — `~/.ave/settings.json` permissions block.
- *
- * Spec ref: docs/architecture/permission-policy-design.md §3 Layer 1.
- *
- * This is a focused store for the Permission policy permission settings only — the
- * existing `SettingsService` (ave-settings.json under Electron's
- * userData) is unchanged. Permission policy settings live in `~/.ave/settings.json`
- * because the spec carves out a permissions namespace there:
- *
- * ```jsonc
- * {
- *   "permissions": {
- *     "additionalDirectories": ["~/workspace/ave"]
- *   }
- * }
- * ```
- *
- * Atomic cutover: an absent `additionalDirectories` key means "use
- * defaults only" (NOT silent allow). Callers compose with
- * `buildAllowedScope(...)` which adds the host defaults.
- *
- */
+// Absent additionalDirectories means host defaults only, never silent allow; callers compose through buildAllowedScope (docs/architecture/permission-policy-design.md).
 import { existsSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
@@ -51,198 +29,64 @@ import {
 
 const log = createLogger("permission-settings");
 
-/**
- * Reviewer mode semantics (post issue #664 P0 normalization):
- *
- * - "disabled" — reviewer lane bypassed. All invocations classify as LOW. The
- *   per-tool category × source × trust matrix in {@link PermissionManager} still
- *   applies (deny rules, allowed-dir checks, overlay-trigger guards, explicit
- *   user approval flows). This mode is for users who DO NOT want LLM/rule-based
- *   risk classification gating their plugin tool calls. Pre-#664 this mode was
- *   wired as "fail-closed defer all", which contradicted both the name and
- *   user expectation — that semantic moved to "strict".
- *
- * - "rule" — deterministic 36-rule heuristic. No LLM call.
- *
- * - "llm" — LLM-backed classifier with rule composition (max(rule, llm)).
- *
- * - "strict" — fail-closed: every reviewer dispatch returns HIGH and is sent
- *   to the deferred queue. Equivalent to the pre-#664 "disabled" semantic but
- *   under an honest name. Use for security-hardened deployments where every
- *   headless mutation must be manually approved.
- */
+// Disabled bypasses review as LOW while matrix/hard gates still apply; rule is deterministic, llm composes with rule floors, and strict returns HIGH/defer for every review.
 export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
 export type ReviewerFallbackOnError = "deny" | "rule";
 
-/**
- * Interactive auto-approve policy — issue #690.
- *
- *   - "off"  : reviewer never auto-approves in interactive (foreground)
- *              flow. Every ask hits the approval dock.
- *   - "low"  : reviewer's LOW verdict in interactive flow silently
- *              allows the call without showing the prompt. MEDIUM/HIGH ask.
- *   - "medium": reviewer LOW and MEDIUM verdicts in interactive flow silently
- *              allow the call without showing the prompt. HIGH still asks.
- *
- * This inclusive threshold applies only to the foreground reviewer route.
- * Headless review remains fail-closed for MEDIUM and HIGH.
- */
+// Interactive auto-approve policy —. - "off" : reviewer never auto-approves in interactive (foreground) flow. Every ask hits the approval dock. - "low" : reviewer's LOW verdict in interactive flow silently allows the call without showing the prompt. MEDIUM/HIGH ask. - "medium": reviewer LOW and MEDIUM verdicts in interactive flow silently allow the call without showing the prompt. HIGH still asks. This inclusive threshold applies only to the foreground reviewer route. Headless review remains fail-closed for MEDIUM and HIGH.
 export type ReviewerInteractiveAutoApprove = "off" | "low" | "medium";
 
 export interface ReviewerInteractiveBlock {
   autoApprove: ReviewerInteractiveAutoApprove;
 }
 
-/**
- * Highest reviewer verdict a parent agent is allowed to adjudicate for its own
- * child (tier 2 of the sub-agent approval chain).
- *
- * `"high"` is deliberately absent from the type, not merely absent from the
- * default: a HIGH verdict is the class of call the user asked to see, and a
- * ceiling the settings file could raise to `"high"` would let a hand-edited
- * file hand the whole class to an agent. The host checks this ceiling before
- * the parent is asked at all, so no parent answer can exceed it.
- */
+// Highest reviewer verdict a parent agent is allowed to adjudicate for its own child (tier 2 of the sub-agent approval chain). `"high"` is deliberately absent from the type, not merely absent from the default: a HIGH verdict is the class of call the user asked to see, and a ceiling the settings file could raise to `"high"` would let a hand-edited file hand the whole class to an agent. The host checks this ceiling before the parent is asked at all, so no parent answer can exceed it.
 export type ParentAdjudicationMaxVerdict = "low" | "medium";
 
-/**
- * Where a tier-3 escalation goes when nobody is watching the child run.
- *
- *   - `"deferred"` — the ask is denied fail-closed and recorded in the deferred
- *     queue with an OS notification, so a background child neither blocks on a
- *     dock nobody is looking at nor waits out the five-minute approval timeout.
- *   - `"modal"` — the pre-existing behaviour: the dock is painted immediately
- *     whatever the run is.
- *
- * `"deferred"` only diverts an ask the host can establish nobody would see: a
- * background run while the app window is hidden or minimised, or any run while
- * the away answerer is armed. With the window in front of the user, every
- * escalation still paints the dock under both values — the queue cannot
- * re-drive a call whose turn is over, so it is the weaker answer whenever a
- * human is actually there to give the stronger one.
- */
+// Deferred escalation denies immediately and notifies only when the host knows nobody can answer: hidden/minimized background runs or armed away authority. Foreground users still get the dock; the queue cannot replay ended calls.
 export type ParentAdjudicationBackgroundEscalation = "deferred" | "modal";
 
-/**
- * Which model answers the tier-2 side turn.
- *
- *   - `"reviewer"` — the permission reviewer's own adapter. It is already
- *     wired, already trusted with risk classification, and costs nothing extra
- *     to reach.
- *   - `"parent-session"` — the chat provider/model the parent's own loop runs
- *     on. It reasons about the parent's task with the parent's own model, and
- *     it is available even in reviewer modes that wire no LLM at all.
- *
- * COST: `"parent-session"` bills one extra call on the (usually larger) chat
- * model for every adjudicated sub-agent tool call, bounded by `maxPerChildRun`
- * per child run. `"reviewer"` is the cheaper default for that reason.
- */
+// Which model answers the tier-2 side turn. - `"reviewer"` — the permission reviewer's own adapter. It is already wired, already trusted with risk classification, and costs nothing extra to reach. - `"parent-session"` — the chat provider/model the parent's own loop runs on. It reasons about the parent's task with the parent's own model, and it is available even in reviewer modes that wire no LLM at all. COST: `"parent-session"` bills one extra call on the (usually larger) chat model for every adjudicated sub-agent tool call, bounded by `maxPerChildRun` per child run. `"reviewer"` is the cheaper default for that reason.
 export type ParentAdjudicationModelSource = "reviewer" | "parent-session";
 
-// Bounds for the numeric fields of ReviewerParentAdjudicationBlock live in
-// shared/parent-adjudication-bounds.ts — the settings form mirrors the same
-// ceilings it types values against, so they cannot be declared per layer.
+// Bounds for the numeric fields of ReviewerParentAdjudicationBlock live in shared/parent-adjudication-bounds.ts — the settings form mirrors the same ceilings it types values against, so they cannot be declared per layer.
 
-/**
- * Tier-2 (parent-adjudication) policy for sub-agent tool approvals.
- *
- * Every field is a ceiling on what the lane may do, never a widening: the lane
- * is skipped entirely unless the feature flag is on AND the request is
- * eligible, and each of these only narrows it further.
- *
- * Reachable through {@link ReviewerSettingsBlock.parentAdjudication}, and read
- * by the approval gate's tier-2 stage through the policy accessor it is wired
- * with — the gate reads the live block per request rather than a value
- * captured at boot, so a narrowed ceiling takes effect on the next ask.
- */
+// Tier-2 (parent-adjudication) policy for sub-agent tool approvals. Every field is a ceiling on what the lane may do, never a widening: the lane is skipped entirely unless the feature flag is on AND the request is eligible, and each of these only narrows it further. Reachable through ReviewerSettingsBlock.parentAdjudication, and read by the approval gate's tier-2 stage through the policy accessor it is wired with — the gate reads the live block per request rather than a value captured at boot, so a narrowed ceiling takes effect on the next ask.
 export interface ReviewerParentAdjudicationBlock {
-  /** Verdict ceiling enforced by the host before the parent is asked. */
+  // Verdict ceiling enforced by the host before the parent is asked.
   maxVerdict: ParentAdjudicationMaxVerdict;
-  /**
-   * How long one adjudication may take, measured from the moment it enters the
-   * queue rather than from the moment it starts, so a queue behind a slow
-   * adjudication cannot push a later request past this bound before it
-   * escalates to the user.
-   */
+  // How long one adjudication may take, measured from the moment it enters the queue rather than from the moment it starts, so a queue behind a slow adjudication cannot push a later request past this bound before it escalates to the user.
   timeoutMs: number;
-  /**
-   * Adjudications a single child run may consume. Past it the lane escalates
-   * to the user, so a child cannot spend the parent's judgement as a resource
-   * to exhaust.
-   */
+  // Adjudications a single child run may consume. Past it the lane escalates to the user, so a child cannot spend the parent's judgement as a resource to exhaust.
   maxPerChildRun: number;
-  /**
-   * How many of the parent conversation's most recent turns are quoted into
-   * the adjudication evidence. `0` — the default — includes none.
-   *
-   * Opt-in rather than on, because it is the one field of this block that
-   * widens what leaves the machine: the turns are the user's own words, and
-   * they travel to whichever provider answers the side turn — which under the
-   * default `model: "reviewer"` is the REVIEWER's configured vendor and
-   * endpoint (a marketplace preset's `baseUrl`, if one is selected), not
-   * necessarily the chat provider the conversation itself runs on. What the host
-   * composes from them is bounded, DLP-masked and quoted as data, and no
-   * sub-agent report is ever among them (a child could otherwise argue for its
-   * own approval through its parent's transcript).
-   */
+  // Parent conversation context is opt-in, default zero: it may leave for the reviewer's provider/endpoint rather than the chat provider. Bound, DLP-mask and quote it as data; never include child reports.
   includeParentContextTurns: number;
-  /** Where a tier-3 escalation goes for a background child run. */
+  // Where a tier-3 escalation goes for a background child run.
   backgroundEscalation: ParentAdjudicationBackgroundEscalation;
-  /** Which model answers the side turn. See the type for the cost note. */
+  // Which model answers the side turn. See the type for the cost note.
   model: ParentAdjudicationModelSource;
 }
 
-/**
- * Permission policy P3 — `permissions.reviewer` block. The reviewer's model is
- * not stored here: it is `permissions.judge.model` (unset follows the active
- * chat model). Files written by older builds may still carry
- * `provider`/`model` keys; the read normalizer drops them and the next save
- * writes the block without them.
- * Defaults: fallbackOnError="deny", interactive.autoApprove="medium".
- */
+// Permission policy `permissions.reviewer` block. The reviewer's model is not stored here: it is `permissions.judge.model` (unset follows the active chat model). Files written by older builds may still carry `provider`/`model` keys; the read normalizer drops them and the next save writes the block without them. Defaults: fallbackOnError="deny", interactive.autoApprove="medium".
 export interface ReviewerSettingsBlock {
   mode: ReviewerMode;
   fallbackOnError: ReviewerFallbackOnError;
   interactive: ReviewerInteractiveBlock;
-  /** Tier-2 policy for sub-agent asks a parent agent may decide. */
+  // Tier-2 policy for sub-agent asks a parent agent may decide.
   parentAdjudication: ReviewerParentAdjudicationBlock;
-  /**
-   * Issue #664 migration marker — ISO-8601 timestamp recorded the first
-   * time a pre-#664 `mode:"disabled"` setting was rewritten to
-   * `mode:"strict"`. Pre-#664 builds wired `disabled` as "defer-all-HIGH"
-   * (fail-closed), so an existing user file with `mode:"disabled"` and no
-   * marker represents a fail-closed posture the user actively chose. The
-   * #664 normalization flipped `disabled` to pass-through-LOW; without
-   * this migration that flip would be a silent post-deploy security
-   * downgrade. The presence of `disabledMigratedAt` makes the migration
-   * idempotent — subsequent loads do not re-write.
-   */
+  // migration marker — ISO-8601 timestamp recorded the first time a pre-`mode:"disabled"` setting was rewritten to `mode:"strict"`. Pre-builds wired `disabled` as "defer-all-HIGH" (fail-closed), so an existing user file with `mode:"disabled"` and no marker represents a fail-closed posture the user actively chose. The normalization flipped `disabled` to pass-through-LOW; without this migration that flip would be a silent post-deploy security downgrade. The presence of `disabledMigratedAt` makes the migration idempotent — subsequent loads do not re-write.
   disabledMigratedAt?: string;
 }
 
 export interface PermissionSettingsBlock {
   additionalDirectories: string[];
-  /**
-   * Re-fence READ-tier path operands to `additionalDirectories` ∪ the host
-   * defaults, the way every effect was fenced before the read/write asymmetry.
-   *
-   * Ships `false`. A read then reaches any path the Layer 0 deny-list permits,
-   * which is what the reference agent hosts do: a directory list answers "what
-   * may this agent CHANGE", and answering "what may it LOOK AT" with the same
-   * list refused `ls /` on a machine the user had already handed over.
-   *
-   * Deliberately has NO settings UI. Reads-anywhere is the host's posture, not
-   * a per-project preference, and a control that fences reads back would read
-   * as a safety feature while removing none: the deny-list, not this key, is
-   * what keeps a secret unreadable. It stays hand-editable in
-   * `~/.ave/settings.json` for a deployment that must fence reads anyway.
-   */
+  // Read fencing defaults off: sensitive-path denies protect secrets while directory lists bound changes. Keep the deployment override hand-editable without a settings control that implies additional secret protection.
   blockReadsOutsideWorkingDirectories: boolean;
   pendingWorkspaceRootRemovals: PendingWorkspaceRootRemoval[];
   reviewer: ReviewerSettingsBlock;
 }
 
-/** Durable forward-only cleanup journal for a removed workspace root. */
+// Durable forward-only cleanup journal for a removed workspace root.
 export interface PendingWorkspaceRootRemoval {
   operationId: string;
   storedPath: string;
@@ -251,51 +95,29 @@ export interface PendingWorkspaceRootRemoval {
   source: string;
 }
 
-/**
- * What a read could NOT interpret in the on-disk file.
- *
- * The settings file is an external boundary: it is hand-editable, it is
- * restored from backups, and a half-written predecessor of the atomic writer
- * could survive a crash. None of that may be answered by pretending the user
- * simply has no projects — "we could not read your settings" and "you have no
- * extra directories" are different facts and the UI owes the user the first
- * one. So a read reports the condition here instead of erasing it, and the
- * file itself is left byte-for-byte as it was found.
- */
+// What a read could NOT interpret in the on-disk file. The settings file is an external boundary: it is hand-editable, it is restored from backups, and a half-written predecessor of the atomic writer could survive a crash. None of that may be answered by pretending the user simply has no projects — "we could not read your settings" and "you have no extra directories" are different facts and the UI owes the user the first one. So a read reports the condition here instead of erasing it, and the file itself is left byte-for-byte as it was found.
 type PermissionSettingsFault =
   | {
-      /** The whole file failed to parse. No grant in it can be honoured. */
+      // The whole file failed to parse. No grant in it can be honoured.
       kind: "file-unreadable";
       filePath: string;
       detail: string;
     }
   | {
-      /** Individual cleanup-journal entries failed validation. */
+      // Individual cleanup-journal entries failed validation.
       kind: "pending-removals-malformed";
       filePath: string;
-      /** How many entries were kept on disk but not interpreted. */
+      // How many entries were kept on disk but not interpreted.
       entries: number;
     };
 
 export interface PermissionSettingsFile {
   permissions: PermissionSettingsBlock;
-  /**
-   * `null` when the file was interpreted whole. Callers that GATE on the
-   * settings (the executor allow-list, the reviewer) deliberately ignore it:
-   * with an uninterpretable SOT the only honest gate answer is the deny-shaped
-   * default this read returns with it. Callers that DISPLAY the settings must
-   * not — a fault means the list they are about to draw is not the user's.
-   */
+  // `null` when the file was interpreted whole. Callers that GATE on the settings (the executor allow-list, the reviewer) deliberately ignore it: with an uninterpretable SOT the only honest gate answer is the deny-shaped default this read returns with it. Callers that DISPLAY the settings must not — a fault means the list they are about to draw is not the user's.
   fault: PermissionSettingsFault | null;
 }
 
-/**
- * A write path found the settings file unparseable.
- *
- * Merging into `{}` instead would let the next write replace every unrelated
- * top-level key the user has in that file, so a write refuses. The file is
- * left untouched for a hand-repair or a restore.
- */
+// A write path found the settings file unparseable. Merging into `{}` instead would let the next write replace every unrelated top-level key the user has in that file, so a write refuses. The file is left untouched for a hand-repair or a restore.
 export class PermissionSettingsUnreadableError extends Error {
   readonly code = "settings-unreadable";
   constructor(
@@ -309,45 +131,11 @@ export class PermissionSettingsUnreadableError extends Error {
 }
 
 const DEFAULT_REVIEWER: ReviewerSettingsBlock = {
-  // Default to "llm": LLM-backed risk review (rule composition, max(rule,llm))
-  // is the strongest available classification for a fresh install. When the
-  // active chat LLM provider/key is not yet configured (fresh install before
-  // login), boot wiring cannot instantiate the reviewer adapter — instead of
-  // crashing or silently passing everything, `wireReviewerAgent` degrades to
-  // the deterministic rule classifier (see reviewer-wiring.ts). The degrade is
-  // self-healing: as soon as a provider/key is configured, the auth + settings
-  // rewire path re-fires wiring and the reviewer returns to "llm".
-  //
-  // `interactive.autoApprove: "medium"` lets LOW and MEDIUM verdicts in the
-  // foreground chat flow silently allow without a prompt. HIGH still returns to
-  // the main LLM as a blocked tool result. This threshold applies in auto mode;
-  // the headless lane remains unaffected.
-  //
-  // Why not "rule" as the default: rule is the *degraded* posture, not the
-  // intended one. Encoding "llm" as the default keeps the intent visible and
-  // makes the degrade observable (banner + boot warn) rather than baking the
-  // weaker classifier in as the silent baseline. Sandbox-internal plugin
-  // writes still collapse to LOW via the #664-P1 auto-LOW rule — now keyed on
-  // the HOST-computed `ownerPluginSandboxRoot` + path-containment (#885 v6 Q4;
-  // the manifest `writesToOwnSandbox` self-claim was removed) — in either mode,
-  // so the #664 fresh-install flood does not reappear under the degraded rule
-  // classifier.
+  // Default to model review; absent provider credentials visibly degrade to rules and rewire back after configuration. Foreground auto mode permits LOW/MEDIUM while HIGH blocks; headless thresholds stay unchanged. Host-proven sandbox-contained plugin writes remain LOW in either classifier.
   mode: "llm",
   fallbackOnError: "deny",
   interactive: { autoApprove: "medium" },
-  // Tier 2 mirrors the interactive threshold: the parent may decide exactly
-  // the band the reviewer would have auto-approved one notch lower, and HIGH
-  // stays with the user under every setting. 30s is the wait a blocked child
-  // can absorb before the user is better served by the dock; 200 keeps a long
-  // multi-file child run from escalating on volume alone.
-  // Parent context is off: the lane works without it, and the version of it
-  // that ships on by default would be the one that starts sending the user's
-  // conversation to a provider nobody asked to send it to.
-  //
-  // A background child escalates into the deferred queue rather than onto a
-  // dock: its turn is not one anybody is watching, and a modal it raises is a
-  // modal that waits out the approval timeout into the same denial the queue
-  // records immediately — with none of the queue's later review.
+  // Parent adjudication never reaches HIGH; its ceiling tracks the interactive band one level lower. Bound wait and volume, default parent context off to avoid unrequested disclosure, and defer unattended escalation rather than waiting on an unseen modal.
   parentAdjudication: {
     maxVerdict: "medium",
     timeoutMs: 30_000,
@@ -373,11 +161,7 @@ export const PARENT_ADJUDICATION_MODEL_SOURCES: ReadonlySet<ParentAdjudicationMo
 const DEFAULT_FILE: PermissionSettingsFile = {
   permissions: {
     additionalDirectories: [],
-    // Also the value an UNREADABLE file falls back to, and deliberately not
-    // the fenced one. The deny-shape this file owes on a fault is "no
-    // directory was granted", and that is `additionalDirectories: []` above.
-    // Reads are bounded by Layer 0, which does not live in this file, so
-    // fencing them here would withdraw no protection a fault put at risk.
+    // Also the value an UNREADABLE file falls back to, and deliberately not the fenced one. The deny-shape this file owes on a fault is "no directory was granted", and that is `additionalDirectories: []` above. Reads are bounded by Layer 0, which does not live in this file, so fencing them here would withdraw no protection a fault put at risk.
     blockReadsOutsideWorkingDirectories: false,
     pendingWorkspaceRootRemovals: [],
     reviewer: { ...DEFAULT_REVIEWER },
@@ -397,25 +181,7 @@ export function permissionSettingsPath(): string {
   return pathResolve(aveHome(), "settings.json");
 }
 
-/**
- * Read `~/.ave/settings.json`. Missing file → DEFAULT_FILE.
- *
- * A file that exists but cannot be interpreted returns the deny-shaped
- * DEFAULT_FILE *carrying* {@link PermissionSettingsFile.fault}, logs at error,
- * and rewrites nothing. Deny is the only honest gate answer when the grant SOT
- * is unreadable; the fault is what keeps that answer from reading as "the user
- * has no projects" on the surfaces that show them.
- *
- * Issue #664 migration: when a pre-#664 file is detected (mode:"disabled"
- * without `disabledMigratedAt` marker), the reviewer mode is rewritten to
- * "strict" *and persisted* before returning. The on-disk file converges to
- * the post-#664 canonical shape on the first read after upgrade, so
- * subsequent loads do not re-rewrite. Persistence failure is logged but
- * the in-memory result is still the migrated (strict) shape — the user
- * never silently lands on the new pass-through-LOW semantic.
- *
- * `pathOverride` is for tests.
- */
+// Unreadable existing settings return deny-shaped defaults with a visible fault, log an error and rewrite nothing. Migrate unmarked legacy disabled to strict and persist once; failed persistence still returns strict so upgrades cannot silently weaken policy.
 export function readPermissionSettings(pathOverride?: string): PermissionSettingsFile {
   const filePath = pathOverride ?? permissionSettingsPath();
   if (!existsSync(filePath)) return structuredClone(DEFAULT_FILE);
@@ -438,10 +204,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
     const migrated = migrateLegacyDisabledMode(parsed);
     const normalized = normalizePermissionSettings(parsed, filePath);
     if (migrated) {
-      // Persist the migration synchronously so the file converges to the
-      // post-#664 shape. We do a best-effort write — if the file is locked
-      // or the disk is read-only, we still return the migrated in-memory
-      // result so the user's runtime behaviour is fail-closed (strict).
+      // Persist the migration synchronously so the file converges to the post-shape. We do a best-effort write — if the file is locked or the disk is read-only, we still return the migrated in-memory result so the user's runtime behaviour is fail-closed (strict).
       try {
         writeUtf8FileAtomicSync(filePath, JSON.stringify(parsed, null, 2), 0o600);
       } catch (persistErr) {
@@ -456,15 +219,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
   }
 }
 
-/**
- * Read the settings document off disk, throwing when it cannot be interpreted.
- *
- * An empty file is not damage: `withFileLock` creates the target as a
- * zero-byte placeholder so `proper-lockfile` can stat it, so every first write
- * this store ever performs starts from one. A non-object root (`null`, an
- * array, a bare number) IS damage — every reader below indexes the result as a
- * record — so it is rejected here rather than in each of them.
- */
+// Read the settings document off disk, throwing when it cannot be interpreted. An empty file is not damage: `withFileLock` creates the target as a zero-byte placeholder so `proper-lockfile` can stat it, so every first write this store ever performs starts from one. A non-object root (`null`, an array, a bare number) IS damage — every reader below indexes the result as a record — so it is rejected here rather than in each of them.
 function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
   const raw = readFileSync(filePath, "utf-8");
   if (allowEmpty && raw.trim().length === 0) return {};
@@ -475,14 +230,7 @@ function readSettingsDocument(filePath: string, allowEmpty = true): Record<strin
   return parsed as Record<string, unknown>;
 }
 
-/**
- * Read the settings object a write path is about to merge into.
- *
- * Refusing an unparseable file is the whole point: the previous `catch {}`
- * here merged into an empty object, so the next successful write replaced the
- * user's entire settings document — every unrelated top-level key included —
- * with whatever that one mutation happened to hold.
- */
+// Read the settings object a write path is about to merge into. Refusing an unparseable file is the whole point: the previous `catch {}` here merged into an empty object, so the next successful write replaced the user's entire settings document — every unrelated top-level key included — with whatever that one mutation happened to hold.
 function readSettingsObjectForUpdate(filePath: string): Record<string, unknown> {
   if (!existsSync(filePath)) return {};
   try {
@@ -492,27 +240,7 @@ function readSettingsObjectForUpdate(filePath: string): Record<string, unknown> 
   }
 }
 
-/**
- * Issue #664 boot-time migration shim.
- *
- * Detects a pre-#664 settings file by the (mode==="disabled" AND no
- * disabledMigratedAt marker) signature and rewrites the in-memory object
- * to `mode:"strict"` + marker. Returns `true` when the mutation happened
- * so the caller can persist.
- *
- * Pre-#664 `disabled` was wired as "defer-all-HIGH" (fail-closed). Post-#664
- * `disabled` is pass-through-LOW. Without this migration a user who
- * explicitly opted into the fail-closed posture would silently land on
- * pass-through after the upgrade — a security regression.
- *
- * Idempotency: the marker is written once and only once. A user who later
- * deliberately picks `mode:"disabled"` after the migration (via slash
- * command or hand-edit) gets the new pass-through semantic without
- * re-migration because the marker is already present.
- *
- * Out-of-band: this is the only auto-rewrite the loader performs. All
- * other validation falls back to defaults without mutation.
- */
+// Only unmarked legacy disabled mode auto-migrates to strict and gains a marker. Preserve later deliberate disabled choices; all other validation defaults without mutating disk.
 export function migrateLegacyDisabledMode(parsed: Record<string, unknown>): boolean {
   const perm = parsed.permissions;
   if (!perm || typeof perm !== "object") return false;
@@ -533,11 +261,7 @@ export function migrateLegacyDisabledMode(parsed: Record<string, unknown>): bool
   return true;
 }
 
-/**
- * Normalize an arbitrary parsed JSON value into a valid
- * PermissionSettingsFile. Only `permissions.additionalDirectories` is
- * accepted as the persisted directory SOT.
- */
+// Normalize an arbitrary parsed JSON value into a valid PermissionSettingsFile. Only `permissions.additionalDirectories` is accepted as the persisted directory SOT.
 export function normalizePermissionSettings(
   parsed: Record<string, unknown>,
   filePath: string,
@@ -552,52 +276,8 @@ export function normalizePermissionSettings(
       journal.malformed.length,
     );
   }
-  // A damaged entry can still NAME a root, and every path it names is honoured
-  // as a pending removal even though the entry as a whole cannot be acted on.
-  //
-  // What this masking is FOR. `beginWorkspaceRootRemovalPersist` drops the path
-  // from `additionalDirectories` in the SAME atomic write that appends the
-  // intent, so a root with a removal in flight is already absent from the list.
-  // The masking therefore only decides the case where the path is in the list
-  // anyway, and there the journal wins over the list.
-  //
-  // Three things can leave it there, not two. A hand edit and an interrupted
-  // legacy write are the outside ones. The third is an in-app add, and only
-  // while the entry naming that root is MALFORMED: the add guard in
-  // `addAllowedDirectoryPersist` is handed `journal.intents`, so it refuses an
-  // add that keys onto a READABLE intent and never sees one that only a damaged
-  // entry names, while the salvage below reads paths out of both. That add is
-  // therefore accepted and persisted, and this read then takes back out the
-  // path the add just returned. As answered here the direction is a grant
-  // vanishing rather than appearing, and the same read raises the fault below —
-  // but the store does say yes and then no, and the fault names the file, not
-  // the root, so nothing tells the user which add it was. Repairing the journal
-  // makes the persisted add live. Pinned by "accepts an add for a root only the
-  // unreadable entry names, then drops it on the next read".
-  //
-  // Read that as the routes that exist today, not as a closed set: the masking
-  // does not ask which one put the path there, and a new writer could add a
-  // fourth without this line noticing.
-  //
-  // What it is NOT. An entry that names nothing (`null`, `7`, an object with no
-  // readable path) masks nothing, so a path a hand edit put back stays active.
-  // That residual is deliberate, and it is not a hole in a defence because
-  // there is no defence here to hole: the same hand edit that put the path back
-  // could have written `pendingWorkspaceRootRemovals: []` instead — a valid
-  // journal that raises no fault and leaves that path exactly as active.
-  //
-  // Mind the scope of that argument, because its general form is FALSE: an
-  // empty journal reactivates nothing by itself. After a normal
-  // `beginWorkspaceRootRemovalPersist` the path is already gone from
-  // `additionalDirectories`, so clearing the journal leaves the read answering
-  // with the root still absent and no fault. `[]` is an equally easy substitute
-  // for the unattributable entry only in the case this paragraph is about,
-  // where the path is back in the list as well.
-  //
-  // This journal is crash recovery, not tamper-evidence. Emptying the list on an
-  // unattributable entry would trade every readable grant for one unreadable
-  // non-grant and buy nothing, so the entry is reported as a fault the UI must
-  // show instead.
+  // Every readable path in a damaged removal intent masks that root even if the intent cannot be acted on; readable intents block adds, but malformed-only roots can be added then masked until journal repair. Entries naming no path mask nothing and must surface a fault.
+  // The journal provides crash recovery, not tamper evidence: clearing it alone cannot restore roots already removed from additionalDirectories, while hand edits can restore both the list and journal. Do not erase unrelated grants because one unreadable entry names nothing.
   const pendingPaths = [
     ...pendingWorkspaceRootRemovals.map((intent) => intent.runtimePath),
     ...journal.malformed.flatMap((entry) => {
@@ -642,22 +322,10 @@ export function normalizePermissionSettings(
   };
 }
 
-/**
- * The cleanup journal split into what can be acted on and what cannot.
- *
- * It used to throw on the first bad entry, and every caller — the reader and
- * all three writers — called it outside their own error handling, so one
- * malformed entry took out every directory ADD as well: the settings file had
- * no route back to a valid journal from inside the app, and the reader
- * answered the same corruption with an empty project list. Splitting is what
- * removes the deadlock without deciding, on the user's behalf, that their
- * queued removals were worthless: the malformed entries stay verbatim in
- * {@link PendingWorkspaceRootRemovalJournal.malformed} so a write puts them
- * back exactly as it found them, and the read reports them as a fault.
- */
+// Separate actionable intents from malformed entries; preserve malformed bytes on every write and report faults on reads so one bad removal does not block all directory adds.
 interface PendingWorkspaceRootRemovalJournal {
   intents: PendingWorkspaceRootRemoval[];
-  /** Entries kept verbatim, never interpreted and never dropped. */
+  // Entries kept verbatim, never interpreted and never dropped.
   malformed: unknown[];
 }
 
@@ -665,11 +333,7 @@ function partitionPendingWorkspaceRootRemovals(
   parsed: unknown,
 ): PendingWorkspaceRootRemovalJournal {
   if (parsed === undefined) return { intents: [], malformed: [] };
-  // A non-array value carries no entry to keep apart, so the value itself is
-  // the thing preserved — a later write returns it to the journal as one
-  // element of the array, after whatever intents that write decided on, rather
-  // than deleting a key it cannot read. It is the sole element only when the
-  // write leaves no intents behind.
+  // A non-array value carries no entry to keep apart, so the value itself is the thing preserved — a later write returns it to the journal as one element of the array, after whatever intents that write decided on, rather than deleting a key it cannot read. It is the sole element only when the write leaves no intents behind.
   if (!Array.isArray(parsed)) return { intents: [], malformed: [parsed] };
   const seenOperations = new Set<string>();
   const intents: PendingWorkspaceRootRemoval[] = [];
@@ -708,10 +372,7 @@ function partitionPendingWorkspaceRootRemovals(
   return { intents, malformed };
 }
 
-/**
- * The journal a write persists: the intents it decided on, followed by the
- * entries it could not read and therefore has no standing to remove.
- */
+// The journal a write persists: the intents it decided on, followed by the entries it could not read and therefore has no standing to remove.
 function composePendingWorkspaceRootRemovals(
   intents: readonly PendingWorkspaceRootRemoval[],
   malformed: readonly unknown[],
@@ -719,12 +380,7 @@ function composePendingWorkspaceRootRemovals(
   return [...intents, ...malformed];
 }
 
-/**
- * Permission policy P3 — normalize `permissions.reviewer` from arbitrary JSON to the
- * canonical block. Unknown enum values fall back to defaults with a
- * warn (per CLAUDE.md No-Fallback: this is the *external boundary* —
- * settings file may be hand-edited with bad values).
- */
+// Permission policy normalize `permissions.reviewer` from arbitrary JSON to the canonical block. Unknown enum values fall back to defaults with a warn (per CLAUDE.md No-Fallback: this is the *external boundary* — settings file may be hand-edited with bad values).
 function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
   if (!parsed || typeof parsed !== "object") return structuredClone(DEFAULT_REVIEWER);
   const obj = parsed as Record<string, unknown>;
@@ -743,8 +399,7 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
     typeof obj.disabledMigratedAt === "string" && obj.disabledMigratedAt.length > 0
       ? obj.disabledMigratedAt
       : undefined;
-  // Only the known keys are carried, so the retired `provider`/`model` keys an
-  // older build wrote are dropped here and leave the file on the next save.
+  // Only the known keys are carried, so the retired `provider`/`model` keys an older build wrote are dropped here and leave the file on the next save.
   return {
     mode,
     fallbackOnError,
@@ -754,12 +409,7 @@ function normalizeReviewerBlock(parsed: unknown): ReviewerSettingsBlock {
   };
 }
 
-/**
- * Clamp rather than reject out-of-range numbers: the settings file is an
- * external boundary a user may hand-edit, and both fields are ceilings whose
- * clamped value is still a safe posture. A non-finite or non-numeric value has
- * no clamped meaning at all, so it falls back to the default.
- */
+// Clamp rather than reject out-of-range numbers: the settings file is an external boundary a user may hand-edit, and both fields are ceilings whose clamped value is still a safe posture. A non-finite or non-numeric value has no clamped meaning at all, so it falls back to the default.
 function clampParentAdjudicationNumber(
   value: unknown,
   fallback: number,
@@ -807,9 +457,7 @@ function normalizeParentAdjudicationBlock(
       PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MIN,
       PARENT_ADJUDICATION_MAX_PER_CHILD_RUN_MAX,
     ),
-    // Clamped like the other numbers, and to a deliberately short range: each
-    // turn is a chunk of the user's conversation leaving the machine, so the
-    // upper bound is a property of the feature rather than a matter of taste.
+    // Clamped like the other numbers, and to a deliberately short range: each turn is a chunk of the user's conversation leaving the machine, so the upper bound is a property of the feature rather than a matter of taste.
     includeParentContextTurns: clampParentAdjudicationNumber(
       obj.includeParentContextTurns,
       fallback.includeParentContextTurns,
@@ -834,35 +482,15 @@ function normalizeInteractiveBlock(parsed: unknown): ReviewerInteractiveBlock {
   return { autoApprove };
 }
 
-/**
- * Compose the settings document a read-modify-write cycle is about to persist.
- *
- * Every persist path in this module ends the same way: keep the file's other
- * top-level keys, keep the `permissions` keys this cycle did not touch, write
- * the canonical `additionalDirectories`, and normalize the reviewer block so a
- * hand-edited file cannot round-trip an invalid mode. Three call sites used to
- * hand-roll that spread, which is three chances for one of them to forget the
- * reviewer normalization on a later edit.
- *
- * The deprecated `permissions.allowedDirectories` alias is NOT touched here.
- * The reader ignores it (see `normalizePermissionSettings`) — that is the whole
- * compatibility contract, and it is the absence of code rather than a branch.
- * The write-time cleanup that used to erase the key was retired on 2026-08-23
- * once no supported writer could emit it (sunset entry
- * `permission-allowed-directories-alias-convergence`, removed from
- * `docs/development/legacy-sunset-inventory.json` with the code).
- */
+// Preserve untouched top-level/permission keys, write canonical directories and normalize reviewer settings on every mutation. The deprecated allowedDirectories alias is ignored by readers and preserved by writers; do not revive write-time cleanup.
 function composeSettingsForPersist(
   existing: Record<string, unknown>,
   existingPerm: Record<string, unknown>,
   next: {
     additionalDirectories: readonly string[];
-    /** Omit to carry the existing block through the read-time normalizer. */
+    // Omit to carry the existing block through the read-time normalizer.
     reviewer?: ReviewerSettingsBlock;
-    /**
-     * Already composed by `composePendingWorkspaceRootRemovals`, so it carries
-     * the malformed entries the reader kept on disk verbatim — hence `unknown`.
-     */
+    // Already composed by `composePendingWorkspaceRootRemovals`, so it carries the malformed entries the reader kept on disk verbatim — hence `unknown`.
     pendingWorkspaceRootRemovals?: readonly unknown[];
   },
 ): Record<string, unknown> {
@@ -879,14 +507,7 @@ function composeSettingsForPersist(
   };
 }
 
-/**
- * Atomically rewrite `~/.ave/settings.json` with a fresh
- * `permissions.additionalDirectories` value. Preserves any other
- * top-level keys present in the existing file.
- *
- * Permission policy P3: also accepts a `reviewer` patch (partial). Provided keys
- * overwrite; missing keys preserve existing values.
- */
+// Atomically rewrite `~/.ave/settings.json` with a fresh `permissions.additionalDirectories` value. Preserves any other top-level keys present in the existing file. Permission policy also accepts a `reviewer` patch (partial). Provided keys overwrite; missing keys preserve existing values.
 export async function writePermissionSettings(
   patch: {
     additionalDirectories?: string[];
@@ -916,12 +537,7 @@ export async function writePermissionSettings(
   });
 }
 
-/**
- * Strict validate a candidate reviewer block. Used by the slash
- * handler / IPC writes — invalid input rejected with an error message
- * (no silent default-substitution at write time, only at read time
- * for hand-edited files).
- */
+// Strict validate a candidate reviewer block. Used by the slash handler / IPC writes — invalid input rejected with an error message (no silent default-substitution at write time, only at read time for hand-edited files).
 const REVIEWER_BLOCK_KEYS: ReadonlySet<string> = new Set([
   "mode",
   "fallbackOnError",
@@ -960,10 +576,7 @@ function validateReviewerPatch(patch: ReviewerSettingsBlock): ReviewerSettingsBl
   return patch;
 }
 
-/**
- * Permission policy P3 — persist a reviewer-block partial. Convenience helper for
- * `/permission reviewer ...` slash dispatchers.
- */
+// Permission policy persist a reviewer-block partial. Convenience helper for `/permission reviewer...` slash dispatchers.
 export async function setReviewerSettingsPersist(
   patch: Partial<ReviewerSettingsBlock>,
   pathOverride?: string,
@@ -973,11 +586,11 @@ export async function setReviewerSettingsPersist(
 }
 
 export type JudgeSettingsReadResult = Pick<NormalizedJudgeSettings, "settings" | "issues" | "chainRejected" | "modelRejected" | "rejectedModel"> & {
-  /** An existing settings document could not be safely interpreted. */
+  // An existing settings document could not be safely interpreted.
   unreadable?: true;
 };
 
-/** Read the user-owned judge block without concealing malformed file content. */
+// Read the user-owned judge block without concealing malformed file content.
 export function readJudgeSettings(
   pathOverride?: string,
   catalog?: JudgeModelCatalog,
@@ -1007,14 +620,7 @@ function storedJudgeModelRef(raw: unknown): StoredJudgeModelRef | null {
   return slash > 0 && isLLMVendor(vendor) ? { vendor, model: raw.slice(slash + 1) } : null;
 }
 
-/**
- * The models the stored judge settings name, as written and read without the
- * model catalog: the reviewer model (`permissions.judge.model`) and each chain
- * stage's own `model`, in chain order. A change to such a model's route or
- * catalogue must re-wire even when the model is not (or no longer) offered.
- * An entry is `null` when unset, absent or not a known provider; unreadable
- * settings name nothing.
- */
+// The models the stored judge settings name, as written and read without the model catalog: the reviewer model (`permissions.judge.model`) and each chain stage's own `model`, in chain order. A change to such a model's route or catalogue must re-wire even when the model is not (or no longer) offered. An entry is `null` when unset, absent or not a known provider; unreadable settings name nothing.
 export function readJudgeStoredModels(pathOverride?: string): {
   reviewer: StoredJudgeModelRef | null;
   stages: Array<StoredJudgeModelRef | null>;
@@ -1036,7 +642,7 @@ export function readJudgeStoredModels(pathOverride?: string): {
 
 export interface JudgeSettingsWriteReceipt {
   settings: JudgeSettings;
-  /** Restore the exact prior subtree, including rejected configuration or absence. */
+  // Restore the exact prior subtree, including rejected configuration or absence.
   rollback(): Promise<void>;
 }
 
@@ -1064,7 +670,7 @@ function persistJudgeSubtree(
   writeUtf8FileAtomicSync(filePath, JSON.stringify(nextDocument, null, 2), 0o600);
 }
 
-/** Atomically merge a user patch and retain its exact host-owned rollback state. */
+// Atomically merge a user patch and retain its exact host-owned rollback state.
 export async function setJudgeSettingsPersist(
   patch: unknown,
   pathOverride?: string,
@@ -1096,11 +702,7 @@ export async function setJudgeSettingsPersist(
         merged[key] = { ...(current[key] as Record<string, unknown>), ...(update[key] as Record<string, unknown>) };
       }
     }
-    // Only the patched fields are validated against their normalized
-    // neighbours. A stored value the host rejected (an unavailable reviewer
-    // model, a chain it could not accept) and that this patch does not replace
-    // is written back exactly as stored, so saving another field never turns it
-    // into "follow chat" or "off": it keeps failing closed until replaced.
+    // Only the patched fields are validated against their normalized neighbours. A stored value the host rejected (an unavailable reviewer model, a chain it could not accept) and that this patch does not replace is written back exactly as stored, so saving another field never turns it into "follow chat" or "off": it keeps failing closed until replaced.
     const keepModel = normalized.modelRejected === true && !Object.hasOwn(update, "model");
     const keepChain = normalized.chainRejected === true &&
       !["chain", "provider", "external"].some((key) => Object.hasOwn(update, key));
@@ -1133,15 +735,7 @@ export async function setJudgeSettingsPersist(
   return receipt;
 }
 
-/**
- * Resolve an existing directory to the identity that is persisted in the
- * permission SOT. Keeping the real path (instead of a symlink alias) freezes the
- * authorized target even if that alias is later removed or retargeted.
- *
- * Legacy/non-existent values are kept verbatim so hand-edited settings and the
- * slash-command parser retain their existing behaviour; workspace IPC validates
- * existence before calling this helper.
- */
+// Resolve an existing directory to the identity that is persisted in the permission SOT. Keeping the real path (instead of a symlink alias) freezes the authorized target even if that alias is later removed or retargeted. Legacy/non-existent values are kept verbatim so hand-edited settings and the slash-command parser retain their existing behaviour; workspace IPC validates existence before calling this helper.
 function persistedAllowedDirectory(dir: string): string {
   if (dir.trim().length === 0) return dir;
   const resolved = pathResolve(dir);
@@ -1193,12 +787,7 @@ async function mutateAllowedDirectoriesPersist(
   return result;
 }
 
-/**
- * Append a directory to `permissions.additionalDirectories`. Persists
- * via {@link writePermissionSettings}. De-duplicates by exact string.
- *
- * Returns the post-add list (caller may show in toast).
- */
+// Append a directory to `permissions.additionalDirectories`. Persists via writePermissionSettings. De-duplicates by exact string. Returns the post-add list (caller may show in toast).
 export async function addAllowedDirectoryPersist(
   dir: string,
   pathOverride?: string,
@@ -1225,10 +814,7 @@ export async function addAllowedDirectoryPersist(
   }, pathOverride);
 }
 
-/**
- * Remove a directory from `permissions.additionalDirectories`. Returns
- * the post-removal list. No-op when the dir is not present.
- */
+// Remove a directory from `permissions.additionalDirectories`. Returns the post-removal list. No-op when the dir is not present.
 export async function removeAllowedDirectoryPersist(
   dir: string,
   pathOverride?: string,
@@ -1247,10 +833,7 @@ export interface BeginWorkspaceRootRemovalResult {
   created: boolean;
 }
 
-/**
- * Atomically cut a registered root out of the active allow-list and append a
- * durable cleanup intent. A matching pending operation is returned on retry.
- */
+// Atomically cut a registered root out of the active allow-list and append a durable cleanup intent. A matching pending operation is returned on retry.
 export async function beginWorkspaceRootRemovalPersist(
   root: string,
   source: string,
@@ -1326,7 +909,7 @@ export async function beginWorkspaceRootRemovalPersist(
   return result;
 }
 
-/** Complete one exact operation; stale operation IDs are ABA-safe no-ops. */
+// Complete one exact operation; stale operation IDs are ABA-safe no-ops.
 export async function completeWorkspaceRootRemovalPersist(
   operationId: string,
   pathOverride?: string,

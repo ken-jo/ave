@@ -1,9 +1,5 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-/**
- * Issue #28 P1a — rule files (user-global Store A + per-project files in Ave
- * home), corrupt-data handling, Store B coexistence, and the decision path:
- * floors > deny > ask > allow across scopes.
- */
+// Across scopes, floors outrank deny, then ask, then allow; corrupt rule data must not silently disappear.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -303,8 +299,7 @@ describe("decision path", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("project rules follow the shell call's own cwd, resolved with realpath", async () => {
-    // The session runs in repo A; the call runs in a nested repo B, reached
-    // through a symlink (inside A, so no out-of-directory grant is involved).
+    // The session runs in repo A; the call runs in a nested repo B, reached through a symlink (inside A, so no out-of-directory grant is involved).
     const repoA = join(dir, "a");
     const repoB = join(repoA, "vendor", "b");
     mkdirSync(join(repoA, ".git"), { recursive: true });
@@ -510,8 +505,7 @@ describe("conversation-scoped exact decisions", () => {
   });
 });
 
-// Owner decision 2026-10-23: every session allow (not only shell) belongs to
-// the root conversation, resolved by the one resolver the judge also uses.
+// Owner decision 2026-10-23: every session allow (not only shell) belongs to the root conversation, resolved by the one resolver the judge also uses.
 describe("non-shell session approvals are keyed by the root conversation", () => {
   const ROOT_A = "11111111-1111-4111-8111-111111111111";
   const ROOT_B = "22222222-2222-4222-8222-222222222222";
@@ -669,9 +663,7 @@ it("keeps conversation grants inspectable and revocable while Store B is corrupt
   expect(readFileSync(path, "utf8")).toBe("{broken");
 });
 
-// Round 5 (owner decision 2026-10-23): the floor covers what a recursive or
-// symlink-following search reads, browser and /proc secret stores, and git
-// object paths.
+// Round 5 (owner decision 2026-10-23): the floor covers what a recursive or symlink-following search reads, browser and /proc secret stores, and git object paths.
 describe("sensitive reads through searches, browser stores, /proc and git objects", () => {
   let home: string;
   let clean: string;

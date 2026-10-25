@@ -1,14 +1,9 @@
 
 
-
-
-
 import { createLogger } from "../lib/logger.js";
 import { areExternalTurnHooksAllowed } from "../shared/turn-extension-policy.js";
 import { t } from "../i18n/index.js";
 const log = createLogger("hook");
-
-// ─── Types ──────────────────────────────────────────
 
 export interface HookContext {
   toolName: string;
@@ -16,7 +11,6 @@ export interface HookContext {
 }
 
 export interface HookRunResult {
-
   action: "allow" | "deny" | "modify";
 
   reason?: string;
@@ -32,34 +26,26 @@ export interface PostHookContext extends HookContext {
 }
 
 export interface PostHookResult {
-
   feedback?: string;
 }
 
 export type PreToolUseHook = (ctx: HookContext) => Promise<HookRunResult> | HookRunResult;
 export type PostToolUseHook = (ctx: PostHookContext) => Promise<PostHookResult | void> | PostHookResult | void;
 
-// ─── Runner ─────────────────────────────────────────
-
 export class HookRunner {
   private readonly preHooks: Array<{ name: string; handler: PreToolUseHook }> = [];
   private readonly postHooks: Array<{ name: string; handler: PostToolUseHook }> = [];
   private generation = 0;
-
 
   registerPreHook(name: string, handler: PreToolUseHook): void {
     this.preHooks.push({ name, handler });
     this.generation += 1;
   }
 
-
   registerPostHook(name: string, handler: PostToolUseHook): void {
     this.postHooks.push({ name, handler });
     this.generation += 1;
   }
-
-
-
 
   async runPreHooks(ctx: HookContext): Promise<HookRunResult> {
     if (!areExternalTurnHooksAllowed()) {
@@ -72,7 +58,6 @@ export class HookRunner {
 
     let currentInput = { ...ctx.toolInput };
     const feedbacks: string[] = [];
-
 
     let modified = false;
 
@@ -93,7 +78,6 @@ export class HookRunner {
           feedbacks.push(result.feedback);
         }
       } catch (err) {
-
         log.warn(`PreToolUse '${hook.name}' failed: %s`, (err as Error).message);
       }
     }
@@ -104,7 +88,6 @@ export class HookRunner {
       feedback: feedbacks.length > 0 ? feedbacks.join("\n") : undefined,
     };
   }
-
 
   async runPostHooks(ctx: PostHookContext): Promise<string | undefined> {
     if (!areExternalTurnHooksAllowed()) return undefined;
@@ -122,7 +105,6 @@ export class HookRunner {
 
     return feedbacks.length > 0 ? feedbacks.join("\n") : undefined;
   }
-
 
   getGeneration(): string { return String(this.generation); }
 

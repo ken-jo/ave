@@ -79,8 +79,7 @@ describe("worker allocation during runtime-directory carry", () => {
     try {
       await moveReached;
       worker = spawnWorker({ pluginId, workerId: "worker", command: process.execPath }).catch((error: Error) => error);
-      // Let the independently requested host operation reach its queue. Without
-      // exclusion it calls the real mkdir before the paused rename resumes.
+      // Let the independently requested host operation reach its queue. Without exclusion it calls the real mkdir before the paused rename resumes.
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(allocation.mkdirEntered).toBe(false);
       expect(statSync(join(backup, "run", "worker")).ino).toBe(leafInode);

@@ -26,9 +26,7 @@ vi.mock("../../permissions/asrt-sandbox.js", async (original) => {
       dir: join(SANDBOX_TEMP_ROOT, real.sandboxTempPrincipalDirName(principal)), root: SANDBOX_TEMP_ROOT }) };
 });
 
-// The Windows relayed spawn, played by a real Node child whose own pipes are
-// hidden: the runner must use the streams the spawn hands back, as it must
-// with the relay, or the hook sees no payload and the host no verdict.
+// Relay streams must carry hook input and verdicts even when the child pipes are hidden.
 interface WindowsSpawnCall {
   label: string; command: string; args: readonly string[]; baseEnv: NodeJS.ProcessEnv;
   cwd?: string; allowRead: readonly string[]; allowWrite: readonly string[];
@@ -75,11 +73,7 @@ const payload: ScriptHookStdin = { hookType: "pre", event: "pre", toolName: "rea
 const runnable = () => ({ id: "hook", hookType: "pre" as const, source: "config" as const,
   hookPath: script, command: ["node", script], confinement: { kind: "bundled" as const, pluginId: "hook-plugin", dataDir, generationRoot } });
 
-/**
- * A user hook takes its sandbox from the host-shell plan, so it is wrapped only
- * when the shell sandbox was requested and a full ASRT capability is live;
- * ASRT running for plugin workers alone (`sandboxActive`) is not its scope.
- */
+// User hooks require the shell sandbox and full confinement capability; worker-only confinement does not apply.
 function activateShellSandbox(): void {
   sandboxActive = true;
   setShellSandboxRequestedAtBoot(true);
@@ -211,8 +205,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     const options = raw as { filesystem: { allowWrite: string[]; denyRead: string[]; denyWrite: string[] } };
     expect(options.filesystem.allowWrite).toContain(dataDir);
     expect(options.filesystem.allowWrite).not.toContain(generationRoot);
-    // Its plugin's temp directory, set as TMPDIR inside the wrap, granted alone;
-    // the shared root holding every other principal's is read-denied.
+    // Its plugin's temp directory, set as TMPDIR inside the wrap, granted alone; the shared root holding every other principal's is read-denied.
     const tempDir = join(SANDBOX_TEMP_ROOT, `plugin-${Buffer.from("hook-plugin").toString("hex")}`);
     expect(cmdline.startsWith(`'/usr/bin/env' 'TMPDIR=${tempDir}' 'TMP=${tempDir}' 'TEMP=${tempDir}' 'node' `)).toBe(true);
     expect(options.filesystem.allowWrite).toContain(tempDir);
@@ -220,8 +213,7 @@ process.stdin.on('end', () => process.stdout.write(JSON.stringify({action:'allow
     expect(options.filesystem.denyRead).toEqual(expect.arrayContaining(appOwnedSandboxPrivateRoots()));
     expect(options.filesystem.denyRead).toContain(join(homedir(), ".ssh"));
     expect(options.filesystem.denyWrite.length).toBeGreaterThan(0);
-    // Another plugin's directories are refused: the plugins root is denied,
-    // and the hook's own generation is the read re-allow inside it.
+    // Another plugin's directories are refused: the plugins root is denied, and the hook's own generation is the read re-allow inside it.
     const reach = raw as { filesystem: { allowRead: string[]; denyPluginsRoot?: boolean } };
     expect(reach.filesystem.denyPluginsRoot).toBe(true);
     expect(reach.filesystem.allowRead).toContain(generationRoot);

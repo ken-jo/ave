@@ -1,13 +1,4 @@
-/**
- * #811 command-hooks milestone — `hooks.json` TOFU trust unit tests.
- *
- * Spec ref: docs/architecture/hook-runtime-expansion-design.md §6.1 / §9 / §10.
- *
- * SECURITY focus: a new or changed `hooks.json` is QUARANTINED (its commands
- * NEVER load) until `/permission hooks accept hooks.json`. Editing a referenced
- * local script ALSO re-quarantines (composite trust hash). Binary-only commands
- * are rejected at parse and contribute no runnable entries.
- */
+// New or changed config and referenced scripts stay quarantined until explicit acceptance; binary-only commands cannot load (docs/architecture/hook-runtime-expansion-design.md).
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   chmodSync,
@@ -121,7 +112,6 @@ describe("hooks.json TOFU diff — quarantine by default", () => {
     // The synthetic config hook was quarantined; commands never load.
     expect(result.disabledHooks.map((h) => h.fileName)).toContain(HOOKS_CONFIG_FILENAME);
     expect(result.trustedConfigEntries).toEqual([]);
-    // hooks.json was moved to .disabled/.
     expect(existsSync(join(disabledDir, HOOKS_CONFIG_FILENAME))).toBe(true);
     expect(existsSync(configPath)).toBe(false);
   });
@@ -140,12 +130,10 @@ describe("hooks.json TOFU diff — quarantine by default", () => {
 
   it("a CHANGED hooks.json on a later boot is re-quarantined", async () => {
     writeJsonConfig(configPath, ALLOW_CONFIG);
-    // First boot: trust it.
     await runHookTrustWorkflow({
       ...layout,
       promptDispatcher: { prompt: async (d) => d.map((x) => ({ fileName: x.hook.fileName, trust: true })) },
     });
-    // Mutate the config.
     writeJsonConfig(configPath, { ...ALLOW_CONFIG, version: 2 });
     // Second boot: strict-deny → re-quarantine, commands stop loading.
     const seen: string[] = [];
@@ -168,7 +156,6 @@ describe("hooks.json /permission hooks accept restores + loads", () => {
   it("accept restores a quarantined hooks.json and the manager loads its entries", async () => {
     writeJsonConfig(configPath, ALLOW_CONFIG);
     const boot = await wireHookSystem(layout);
-    // Quarantined → registry empty.
     expect(boot.manager.size()).toBe(0);
     expect(existsSync(join(disabledDir, HOOKS_CONFIG_FILENAME))).toBe(true);
 
@@ -184,7 +171,6 @@ describe("hooks.json /permission hooks accept restores + loads", () => {
     const listed = listHookTrustState(layout);
     const configRow = listed.active.find((r) => r.fileName === HOOKS_CONFIG_FILENAME);
     expect(configRow?.state).toBe("trusted");
-    // STEP 6 — additive trust-review fields populated.
     expect(configRow?.source).toBe("config");
     expect(configRow?.entryCount).toBe(1);
     expect(configRow?.entries?.[0]).toMatchObject({ event: "pre", command: "./policy.sh" });

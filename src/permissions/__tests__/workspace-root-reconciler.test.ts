@@ -203,7 +203,6 @@ describe("reconcileWorkspaceRoots", () => {
     expect(statFn).toHaveBeenCalledTimes(5);
   });
 
-
   it("keeps a confirmed missing root inactive and journaled when cleanup fails", async () => {
     const { dir, path } = tempSettings();
     await seed(path, [dir]);
