@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
 
@@ -1707,7 +1708,7 @@ export type AvePolicyApi = {
      * `managed`/`source`.
      */
     editable: boolean;
-  }>;
+  } & AdminPolicyDiagnostic>;
   set: (patch: unknown) => Promise<{ ok: boolean; policy?: unknown; error?: string; message?: string }>;
 };
 

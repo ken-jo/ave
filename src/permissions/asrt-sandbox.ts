@@ -6,7 +6,7 @@ import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
@@ -968,13 +968,30 @@ function windowsProfileHome(): string | undefined {
   return isHomeAnchor(home, process.platform) ? home : undefined;
 }
 
-// Windows stamping creates missing deny targets: directory rows need a trailing separator and POSIX-rooted rows must be omitted. Omit profile rows disjoint from grants to avoid recursive ACL stamping; keep outside-profile, overlapping and literal rows. Narrowing stamp targets must never weaken ancestor-deny priority; worker wraps restate overlapping denies.
+// Windows stamping creates missing deny targets: omit machine roots, POSIX rows and profile rows disjoint from grants. Worker wraps restate overlapping denies.
 function windowsDenyTargets<T extends FilesystemPathEntry>(
   entries: readonly T[],
   userDataDir: string | undefined,
   grants: readonly FilesystemPathEntry[],
 ): (T | string)[] {
   if (process.platform !== "win32") return [...entries];
+  const drive = process.env.SystemDrive ?? "C:";
+  const machineRoots = [
+    process.env.ProgramData ?? "C:\\ProgramData",
+    process.env.ProgramFiles ?? `${drive}\\Program Files`,
+    process.env["ProgramFiles(x86)"] ?? `${drive}\\Program Files (x86)`,
+    process.env.ProgramW6432, process.env.CommonProgramFiles,
+    process.env["CommonProgramFiles(x86)"], process.env.CommonProgramW6432,
+    process.env.SystemRoot ?? process.env.windir ?? `${drive}\\Windows`, process.env.windir,
+  ].filter((path): path is string => Boolean(path));
+  // Missing denies create placeholders and stamp parent DACLs. Machine roots require WRITE_DAC an ordinary token lacks; admin policy is protected by trust-on-read instead.
+  entries = entries.filter((entry) => {
+    const path = (typeof entry === "string" ? entry : entry.path).replace(/^\\\\\?\\/, "");
+    return !machineRoots.some((root) => {
+      const subpath = win32.relative(root, path);
+      return subpath === "" || (!subpath.startsWith(`..\\`) && subpath !== ".." && !win32.isAbsolute(subpath));
+    });
+  });
   const literals = entries.filter((entry) => typeof entry !== "string");
   const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
   const homes = sensitiveDenyHomes();

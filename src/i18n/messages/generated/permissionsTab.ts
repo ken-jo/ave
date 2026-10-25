@@ -1,5 +1,6 @@
 // i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
+  "permissionsTab.invalidAdminPolicy": "Administrative policy could not be trusted or parsed. Approval is required and policy edits are locked. {reason}",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "The Windows sandbox helper failed its integrity check. Ave blocked it from running. Reinstall Ave to restore the verified helper.",
   // Reviewer interactive options
   "permissionsTab.interactiveAutoApproveLabel": "Automatic approval threshold",
@@ -380,6 +381,7 @@ export const en = {
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity: the proxy cannot tell which extension process opened a connection the way it can for a contained shell command.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "permissionsTab.invalidAdminPolicy": "관리자 정책을 신뢰하거나 읽을 수 없습니다. 승인이 필수이며 정책을 수정할 수 없습니다. {reason}",
   "permissionsTab.osSandboxWindowsHelperIntegrityError": "Windows 샌드박스 도우미의 무결성 검사에 실패하여 Ave가 실행을 차단했습니다. Ave를 다시 설치하여 검증된 도우미를 복원하세요.",
   "permissionsTab.interactiveAutoApproveLabel": "자동 허용 위험도",
   "permissionsTab.interactiveOffLabel": "끔",
