@@ -3,7 +3,8 @@ import { resolve } from "node:path";
 
 /**
  * The repository's CHANGELOG.md, read once at build time and parsed into the
- * few shapes it uses: release headings (`## v0.14.0 — 2026-10-14`), section
+ * few shapes it uses: release headings (`## v0.14.0 — 2026-10-14`), an
+ * optional `## Unreleased` section at the top, section
  * headings (`###`), paragraphs, bullet lists nested by two-space indents,
  * quotes, fenced code and horizontal rules. Inline text keeps `code`,
  * **strong** and *emphasis*.
@@ -90,10 +91,20 @@ function slug(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/gu, "-").replace(/^-|-$/gu, "");
 }
 
-function parseChangelog(source: string): Release[] {
+/**
+ * The heading of the changes merged since the last release. A release commit
+ * renames it to `## vX.Y.Z — date`, so it only ever sits above every release.
+ * Its blocks are parsed to the same rules, so a bad entry fails the build
+ * before release day, but the page leaves them out: it lists what has
+ * shipped, and the English notes exist only per release.
+ */
+const UNRELEASED = "Unreleased";
+
+export function parseChangelog(source: string): Release[] {
   const lines = source.replace(/\r\n/gu, "\n").split("\n");
   const releases: Release[] = [];
   let release: Release | null = null;
+  let unreleased = false;
   let i = 0;
 
   const fail = (why: string): never => {
@@ -117,9 +128,18 @@ function parseChangelog(source: string): Release[] {
     }
     if (line.startsWith("## ")) {
       const head = line.slice(3).trim();
+      if (head === UNRELEASED) {
+        if (unreleased) fail(`a second ${UNRELEASED} section`);
+        if (releases.length) fail(`${UNRELEASED} section below a release`);
+        unreleased = true;
+        release = { id: slug(UNRELEASED), name: UNRELEASED, date: "", blocks: [] };
+        i++;
+        continue;
+      }
       const dash = head.indexOf(" — ");
       if (dash < 0) fail(`release heading without " — ": ${head}`);
       const name = head.slice(0, dash).trim();
+      if (name === UNRELEASED) fail(`the ${UNRELEASED} heading takes no " — " suffix: ${head}`);
       release = { id: slug(name), name, date: head.slice(dash + 3).trim(), blocks: [] };
       if (releases.some((r) => r.id === release!.id)) fail(`duplicate release anchor ${release.id}`);
       releases.push(release);

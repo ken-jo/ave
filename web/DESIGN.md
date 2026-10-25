@@ -21,7 +21,7 @@ shows it.
 | `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. Models adds every provider the app knows (read from `src/shared/llm-vendor-defaults.ts` at build time); Plugins adds the official catalog by kind (`lib/marketplace.json`). |
 | `/download/` | One card per system with the first-launch steps, then connecting a model, leading on to the start guide. |
 | `/docs/**` | The guide (`lib/docs.ts`), one template. |
-| `/changelog/` | `CHANGELOG.md` at build time, Ave's releases (v0.14.0 and later) each with an anchor. The English page shows each release as a headline and bullet points from `lib/changelog-en.ts`, which the build holds to the same releases and item counts. |
+| `/changelog/` | `CHANGELOG.md` at build time, Ave's releases (v0.14.0 and later) each with an anchor; the `## Unreleased` section at the top is checked but not shown. The English page shows each release as a headline and bullet points from `lib/changelog-en.ts`, which the build holds to the same releases and item counts. |
 | `404.html`, `en/404.html` | Not-found page with links out. |
 
 ## Navigation
