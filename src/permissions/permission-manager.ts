@@ -18,7 +18,7 @@ import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rule
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
 import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
-import { encodedPowerShellPayloads } from "./rules/powershell-encoded-command.js";
+import { inspectEncodedPowerShell } from "./rules/powershell-encoded-command.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./rules/shell-prefix-values.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
@@ -1250,7 +1250,10 @@ export class PermissionManager {
     const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
     // Scripts handed to PowerShell as `-EncodedCommand` (from either dialect) are decoded and meet the same floors as plaintext `-Command`; no allow
     // rule covers a command that carries one.
-    const encodedScripts = ruleSubject === undefined ? [] : encodedPowerShellPayloads(ruleSubject.command);
+    const encoded = ruleSubject === undefined ? { scripts: [], hidden: false } : inspectEncodedPowerShell(ruleSubject.command);
+    const encodedScripts = encoded.scripts;
+    // An encoded-command payload the host could not fully decode hides the code that runs: a destructive floor, never an allow rule (fail closed).
+    const encodedHidden = encoded.hidden;
     const encodedSignals = encodedScripts.map((script) => inspectPowerShellCommand(script, ruleSubject!.cwd));
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
@@ -1266,16 +1269,17 @@ export class PermissionManager {
           command: ruleSubject.command,
           exactAllowOnly: !shellExecution.runsSandboxed,
           floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive ?? powerShellSignals!.ordinaryAsk
-            ?? (encodedScripts.length > 0 ? "encoded command" : null),
+            ?? (encodedScripts.length > 0 || encodedHidden ? "encoded command" : null),
         }, this.rules, projectRules, sessionRules)
         : undefined;
-    const shellRuleEvaluation = encodedScripts.length > 0 && rawShellRuleEvaluation?.decision === "allow"
+    const shellRuleEvaluation = (encodedScripts.length > 0 || encodedHidden) && rawShellRuleEvaluation?.decision === "allow"
       ? { decision: null, reason: "an encoded command is never covered by an allow rule" } as const
       : rawShellRuleEvaluation;
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
       isDestructiveShellText(ruleSubject.command) ||
+      encodedHidden ||
       encodedScripts.some(isDestructiveShellText) ||
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );

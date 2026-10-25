@@ -172,6 +172,23 @@ function matchesPowerShellRule(spec: PowerShellRuleSpecifier, argv: readonly (st
   return spec.tokens.every((token, index) => argv[index] === token);
 }
 
+// The name a deny or ask rule compares, on both sides: a directory path, a `Module\` qualifier and an executable extension are dropped, case is
+// folded and an alias resolves to its cmdlet, so `C:\Git\bin\git.exe`, `GIT` and `git` meet `PowerShell(git push *)`, and
+// `Microsoft.PowerShell.Management\Remove-Item`, `ri` and `PowerShell(gci *)`'s `gci` meet their cmdlets. Matching more only narrows; an allow keeps
+// comparing the literal identity (`matchesPowerShellRule` on the unnormalized tokens).
+function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
+  const head = tokens[0];
+  if (typeof head !== "string") return [...tokens];
+  const base = head.slice(Math.max(head.lastIndexOf("\\"), head.lastIndexOf("/")) + 1).replace(/\.(?:exe|com|cmd|bat)$/i, "");
+  const name = canonicalPowerShellName(base.length > 0 ? base : head);
+  return canonicalPowerShellRuleTokens([name as T, ...tokens.slice(1)]);
+}
+
+function matchesPowerShellRestriction(spec: PowerShellRuleSpecifier, argv: readonly (string | null)[]): boolean {
+  return matchesPowerShellRule(spec, argv) ||
+    matchesPowerShellRule({ ...spec, tokens: restrictionTokens(spec.tokens) }, restrictionTokens(argv));
+}
+
 // `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no floor signal is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
 export function evaluatePowerShellSubject(
   subject: { command: ShellCommandInput; exactAllowOnly: boolean; floorSignal: string | null },
@@ -183,15 +200,10 @@ export function evaluatePowerShellSubject(
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no powershell rules" };
   const shape = powerShellRuleShape(subject.command);
   if (hasRestrictions) {
-    // A restriction also meets the command under every alias spelling it has in any edition: over-matching a deny or ask only narrows, so the
-    // alias union that rule identity refuses (an allow compares the literal name) is safe here and keeps `ri x` under `PowerShell(remove-item *)`.
-    const visible = (shape.ok ? shape.commands : shape.visible).flatMap((argv) => {
-      const head = argv[0];
-      if (typeof head !== "string") return [argv];
-      const resolved = canonicalPowerShellRuleTokens([canonicalPowerShellName(head), ...argv.slice(1)]);
-      return resolved[0] === head ? [argv] : [argv, resolved];
-    });
-    const matching = (list: readonly PowerShellRuleInput[]) => list.find((rule) => visible.some((argv) => matchesPowerShellRule(rule.spec, argv)));
+    // A restriction also meets the command under every spelling of its name (`restrictionTokens`): over-matching a deny or ask only narrows, so the
+    // normalization that rule identity refuses (an allow compares the literal name) is safe here.
+    const visible = shape.ok ? shape.commands : shape.visible;
+    const matching = (list: readonly PowerShellRuleInput[]) => list.find((rule) => visible.some((argv) => matchesPowerShellRestriction(rule.spec, argv)));
     const deny = matching(rules.deny);
     if (deny) return { decision: "deny", pattern: deny.pattern, reason: `deny rule ${deny.pattern}` };
     if (!shape.ok || shape.opaque !== null) {

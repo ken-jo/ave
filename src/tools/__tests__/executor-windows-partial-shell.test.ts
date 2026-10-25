@@ -409,6 +409,11 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     } else {
       expect(execute).not.toHaveBeenCalled();
       expect(result[0]?.is_error).toBe(true);
+      // The denial is audited (I5): a deny row on the permission chain, no allow row, and a denied tool-call row.
+      expect(audit.permissionEntries.some((entry) => entry.decision === "deny")).toBe(true);
+      expect(audit.permissionEntries.some((entry) => entry.decision === "allow")).toBe(false);
+      const call = audit.telemetryEntries.find((entry) => entry.type === "tool_call");
+      expect(call?.toolCalls?.[0]).toMatchObject({ permissionDecision: "deny" });
     }
   });
 
