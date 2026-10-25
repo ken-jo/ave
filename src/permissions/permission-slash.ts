@@ -156,7 +156,7 @@ function tokenizePermissionArgs(rawArgs: string): { ok: true; tokens: string[] }
   return { ok: true, tokens };
 }
 
-// Dispatch a parsed command. Side effects: - `allow` (no --session) → persist to ~/.ave/settings.json. - `allow --session` → no persist; caller owns live-scope mutation. - `deny` → remove from ~/.ave/settings.json (settings-level). Layer 0 sensitive-paths is the actual hard-deny — `deny` here is just removing from the user's own list. - `list` → read current state. `pathOverride` is for tests (settings file location).
+// Dispatch a parsed command. Side effects: - `allow` (no --session) → persist to ~/.ave/config/settings.json. - `allow --session` → no persist; caller owns live-scope mutation. - `deny` → remove from ~/.ave/config/settings.json (settings-level). Layer 0 sensitive-paths is the actual hard-deny — `deny` here is just removing from the user's own list. - `list` → read current state. `pathOverride` is for tests (settings file location).
 export async function dispatchPermissionDirCommand(
   cmd: PermissionDirCommand,
   pathOverride?: string,
@@ -416,7 +416,7 @@ export function parsePermissionReviewerCommand(
   return { verb, value: args[1] };
 }
 
-// Dispatch a parsed reviewer command. Persists to ~/.ave/settings.json via setReviewerSettingsPersist. `pathOverride` is for tests.
+// Dispatch a parsed reviewer command. Persists to ~/.ave/config/settings.json via setReviewerSettingsPersist. `pathOverride` is for tests.
 export async function dispatchPermissionReviewerCommand(
   cmd: PermissionReviewerCommand,
   pathOverride?: string,

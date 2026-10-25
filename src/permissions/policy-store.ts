@@ -4,12 +4,12 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome } from "../shared/ave-home.js";
+import { aveHome, AVE_HOME_CONFIGURATION_DIRECTORY } from "../shared/ave-home.js";
 import type { PolicySource } from "../shared/policy-editability.js";
 import { isAdminPolicyFileAbsent } from "../lib/admin-policy-file.js";
 const log = createLogger("policy-store");
 
-export const userPolicyPath = (): string => resolve(aveHome(), "policy.json");
+export const userPolicyPath = (home = aveHome()): string => resolve(home, AVE_HOME_CONFIGURATION_DIRECTORY, "policy.json");
 
 export function getAdminPolicyPath(): string {
   switch (process.platform) {
@@ -133,7 +133,7 @@ async function readPolicyFile(filePath: string): Promise<PolicyFileRead> {
   return { status: "valid", fields: statedPolicy(filePath, record) };
 }
 
-// Load policy. A valid admin file overrides only the fields it states. An invalid or unreadable admin file requires explicit approval and locks edits. Returned `source` field: - "defaults": no file exists, so defaults are used - "user": only the user file exists - "admin": only the admin file exists - "merged": both exist, with admin overriding user values @param userPath User policy file path (default: ~/.ave/policy.json) @param adminPath Admin policy file path (default: getAdminPolicyPath)
+// Load policy. A valid admin file overrides only the fields it states. An invalid or unreadable admin file requires explicit approval and locks edits. Returned `source` field: - "defaults": no file exists, so defaults are used - "user": only the user file exists - "admin": only the admin file exists - "merged": both exist, with admin overriding user values @param userPath User policy file path (default: ~/.ave/config/policy.json) @param adminPath Admin policy file path (default: getAdminPolicyPath)
 export async function loadPolicy(
   userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),

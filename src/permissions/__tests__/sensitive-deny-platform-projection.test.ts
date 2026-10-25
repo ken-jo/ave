@@ -120,6 +120,7 @@ const MAIN_FLOOR: readonly string[] = [
   `${FIXTURE_HOME}/.ave/secrets/`,
   `${FIXTURE_HOME}/.ave/subscription-runtimes/`,
   `${FIXTURE_HOME}/.ave/keys/`,
+  `${FIXTURE_HOME}/.ave/config/`,
   `${FIXTURE_HOME}/.ave/ave-secrets.json`,
   `${FIXTURE_HOME}/.ave/settings.json`,
   `${FIXTURE_HOME}/.ave/permissions.json`,

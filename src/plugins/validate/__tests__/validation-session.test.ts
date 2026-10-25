@@ -1,3 +1,4 @@
+import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 /** Validation grants only the base envelope, never saved user approvals; delegated workers face the same bound. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -15,7 +16,7 @@ vi.mock("../../../permissions/permission-settings-store.js", async (importOrigin
 });
 
 import { PassThrough, Writable } from "node:stream";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PluginManifest } from "../../types.js";
@@ -105,8 +106,7 @@ describe("the validation session's authority", () => {
     const approved = join(root, "approved-workspace");
     mkdirSync(approved, { recursive: true });
     mkdirSync(process.env.AVE_HOME!, { recursive: true });
-    writeFileSync(
-      join(process.env.AVE_HOME!, "settings.json"),
+    writePermissionSettingsFixture(process.env.AVE_HOME!,
       JSON.stringify({ permissions: { additionalDirectories: [approved] } }, null, 2),
       "utf-8",
     );

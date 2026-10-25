@@ -45,7 +45,7 @@ describe("feature-namespace", () => {
   });
 
   it.runIf(process.platform === "win32")("asserts all boot-owned boundaries instead of creating them on write", async () => {
-    for (const name of ["secrets", "subscription-runtimes", "keys", "certs"]) {
+    for (const name of ["secrets", "subscription-runtimes", "keys", "certs", "config"]) {
       await expect(openFeatureNamespace(name).writeJson("state.json", {})).rejects.toThrow(`Protected boundary directory "${join(tempDir, name)}"`);
       expect(existsSync(join(tempDir, name))).toBe(false);
     }

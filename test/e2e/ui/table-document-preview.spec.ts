@@ -1,3 +1,4 @@
+import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
 import { test, expect, type Page } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -77,7 +78,7 @@ test("table previews show bounded counts, late source rows and explicit parser r
   });
   try {
     // This is the existing additional-directory grant, read fresh by preview IPC.
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [dir] } }));
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [dir] } }));
     await ctx.page.setViewportSize({ width: 1280, height: 860 });
     await ctx.page.addStyleTag({ content: CLASSIC_GRID_SCROLLBARS });
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();

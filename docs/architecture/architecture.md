@@ -2132,12 +2132,15 @@ with its own owner rule:
   made; a later failure removes the copy without following a link.
 - **Private storage boundaries are protected at creation.**
   On Windows, boot creates `AVE_HOME` and the `secrets`,
-  `subscription-runtimes`, `keys` and `certs` boundaries with
+  `subscription-runtimes`, `keys`, `certs` and `config` boundaries with
   `O:<user>D:P(A;OICI;FA;;;<user>)`, using `NtCreateFile` with
   `OBJ_DONT_REPARSE` relative to a pinned directory handle.
-  The boundary list is checked against the sensitive-path table. A future
-  boundary for root-level sensitive files is reserved; those files remain
-  at their current paths. Feature storage asserts that boundaries already
+  The boundary list is checked against the sensitive-path table. Permission
+  settings, user policy and legacy root secrets migrate into `config` by
+  copying into a fresh staged file, publishing it inside the protected directory,
+  then deleting the root file. Existing destination files win without merging;
+  both paths are logged and the root copy is retained.
+  Feature storage asserts that boundaries already
   exist and never creates them on Windows.
   Boot reads each boundary's own descriptor on a pinned no-reparse handle.
   The owner must be the user, or `S-1-5-32-544` under an elevated token;
@@ -2153,18 +2156,26 @@ with its own owner rule:
   right refuses confinement before boundary repair.
   A nonconforming boundary is renamed to `<name>.unprotected-recovery`,
   replaced with a freshly protected directory, and copied without carrying
-  its ACLs or read-only attributes. Links and junctions are skipped and logged. The copy is retried
-  after an interrupted boot while the pending aside remains authoritative.
+  its ACLs or read-only attributes. Links and junctions are skipped and logged.
+  Copy destinations are created exclusively. A fresh repair directory receives
+  a flushed marker before any copied content. On retry, the marker is checked
+  through the pinned handle; the partial live directory is renamed aside and
+  copying restarts in a fresh protected directory. Unmarked partial directories
+  are retained with a diagnostic. The pending aside remains authoritative.
   Once copying and verification finish, the aside is renamed to
   `<name>.unprotected-complete` before deletion. A completed aside beside a
   protected live directory needs deletion only; an aside without a live
   directory is renamed back and repaired again. The deleter opens entries
   relative to pinned handles and removes reparse entries themselves, including
-  read-only entries. Older systems clear read-only on the same handle before deletion.
-  Any failed step refuses confinement and names the boundary and step.
+  read-only entries when extended deletion is supported. Cleanup never changes
+  attributes; an undeletable aside is retained with its path in a warning while
+  the protected live directory remains usable. Other failed repair steps refuse
+  confinement and name the boundary and step.
   Each successful repair emits one localized system notification recommending
   sign-out and sign-in because credentials may have been readable. Headless
-  hosts log the notice without desktop delivery.
+  hosts log the notice without desktop delivery. A flushed pending-notice marker
+  precedes aside deletion and survives restart until the notification service
+  accepts desktop delivery; failed or headless delivery keeps the marker.
 
 Any other owner is refused. A change to any of these rules changes the security
 contract for all of them.

@@ -75,7 +75,7 @@ sits at the root.
 | Subject | Correct location |
 |---|---|
 | Runtime contract | `~/.ave/AGENTS.md` |
-| Host settings | `~/.ave/settings.json` |
+| Host settings | `~/.ave/config/settings.json` |
 | Audit records | current: `~/.ave/audit/*.jsonl`; legacy protected trail: `~/.ave/audit.log*` (no new records) |
 | Permission state | `~/.ave/permissions.json` |
 | Encrypted secrets | `~/.ave/secrets/` |

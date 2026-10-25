@@ -9,6 +9,8 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../__tests__
 import { NotificationService } from "../../main/notification-service.js";
 import { notifyHomeBoundaryRepairs } from "../../boot/steps/home-privacy-notice.js";
 import { windowsPowerShellEnv } from "../windows-powershell-env.js";
+import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
+import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
 
 describe.runIf(process.platform === "win32")("protected home boundaries", () => {
   afterEach(() => { _resetAveHomePrivacyForTest(); });
@@ -36,14 +38,39 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     }] });
   }
   function damage(path: string): void { grant(path, "(OI)(CI)R"); }
+  function native(script: string, path: string, source = WINDOWS_HOME_BOUNDARY_SOURCE): string {
+    const input = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue'; Add-Type -TypeDefinition @'\n${source}\n'@\n$u=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; ${script}`;
+    return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
+      ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")],
+      { input, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env, AVE_TEST_TARGET: path }) }).trim();
+  }
 
-  it("creates all four boundaries with the exact owner-only descriptor", () => {
+  it("creates all five boundaries with the exact owner-only descriptor", () => {
     const dir = fixture();
     expectBoundary(dir);
     expectBoundary(join(dir, "secrets"));
     expectBoundary(join(dir, "subscription-runtimes"));
     expectBoundary(join(dir, "keys"));
     expectBoundary(join(dir, "certs"));
+    expectBoundary(join(dir, "config"));
+  });
+  it("migrates root configuration into fresh files without foreign read grants", () => {
+    const dir = fixture();
+    grant(dir, "(OI)(CI)RX");
+    const source = join(dir, "settings.json");
+    writeFileSync(source, "private-settings");
+    grant(source, "R");
+    const oldIdentity = statSync(source).ino;
+    const before = command("(Get-Acl -LiteralPath $env:AVE_TEST_TARGET).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }", source);
+    expect(before).toContain("S-1-1-0");
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    const target = join(dir, "config", "settings.json");
+    expect(readFileSync(target, "utf8")).toBe("private-settings");
+    expect(existsSync(source)).toBe(false);
+    expect(statSync(target).ino).not.toBe(oldIdentity);
+    const copy = JSON.parse(command("$a=Get-Acl -LiteralPath $env:AVE_TEST_TARGET; @($a.Access | ForEach-Object { @{ sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; inherited=$_.IsInherited; rights=[int]$_.FileSystemRights } }) | ConvertTo-Json -Compress", target));
+    expect(copy).toMatchObject({ inherited: true, rights: 2032127 });
+    expect(copy.sid).toBe(readWindowsDirectoryDacls([join(dir, "config")])[0].currentUserSid);
   });
   it("verifies a conforming directory without rewriting its descriptor or inspecting its files", () => {
     const dir = fixture();
@@ -57,6 +84,17 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(readWindowsDirectoryDacls([secrets])).toEqual(before);
     expect(statSync(secrets).ino).toBe(identity);
     expect(readdirSync(dir).some((name) => name.includes(".unprotected-"))).toBe(false);
+  });
+  it("repairs the configuration boundary before legacy files are migrated", () => {
+    const dir = fixture();
+    const boundary = join(dir, "config");
+    damage(boundary);
+    writeFileSync(join(dir, "policy.json"), "private-policy");
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl", repairs: [boundary] });
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expectBoundary(boundary);
+    expect(readFileSync(join(boundary, "policy.json"), "utf8")).toBe("private-policy");
+    expect(existsSync(join(dir, "policy.json"))).toBe(false);
   });
   it("repairs a foreign boundary ACE through replacement and preserves protected copies", () => {
     const dir = fixture();
@@ -110,7 +148,7 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expectBoundary(boundary);
     expect(existsSync(`${boundary}.unprotected-recovery`)).toBe(false);
     expect(existsSync(`${boundary}.unprotected-complete`)).toBe(false);
-    expect(ensureAveHomePrivate(dir)).not.toHaveProperty("repairs");
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ repairs: [boundary] });
   });
   it("skips a junction during copying and deletes only the junction during aside cleanup", () => {
     const dir = fixture();
@@ -154,6 +192,131 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(readFileSync(join(boundary, "key"), "utf8")).toBe("complete");
     expect(existsSync(aside)).toBe(false);
   });
+  it("never overwrites an outside hardlink in an unmarked interrupted copy", () => {
+    const dir = fixture();
+    const boundary = join(dir, "secrets");
+    const aside = `${boundary}.unprotected-recovery`;
+    mkdirSync(aside); setFixtureOwner(aside);
+    writeFileSync(join(aside, "key"), "authoritative"); setFixtureOwner(join(aside, "key"));
+    const outside = join(dirname(dir), "outside-key");
+    writeFileSync(outside, "outside"); setFixtureOwner(outside);
+    linkSync(outside, join(boundary, "key"));
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl", repairs: [boundary] });
+    expect(readFileSync(outside, "utf8")).toBe("outside");
+    expect(readFileSync(join(boundary, "key"), "utf8")).toBe("authoritative");
+    expect(statSync(join(boundary, "key")).ino).not.toBe(statSync(outside).ino);
+    expect(readdirSync(dir).some((name) => name.startsWith("secrets.unprotected-abandoned-"))).toBe(true);
+  });
+  it("creates the repair marker before copying and restarts a marked partial copy exclusively", () => {
+    const dir = fixture(); const boundary = join(dir, "secrets");
+    writeFileSync(join(boundary, "key"), "authoritative"); setFixtureOwner(join(boundary, "key"));
+    damage(boundary);
+    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("input.CopyTo(output);",
+      'if (input.CanRead) throw new InvalidOperationException("copy interrupted"); input.CopyTo(output);');
+    expect(native("$h=[HomeDirectoryDacl]::OpenHome($env:AVE_TEST_TARGET,$u,$false); try { try { [HomeDirectoryDacl]::Repair($h,'secrets',$u,$false) } catch { 'interrupted' } } finally { $h.Dispose() }", dir,
+      source)).toContain("interrupted");
+    expect(readFileSync(join(boundary, ".ave-repair-created"), "utf8")).toBe("ave-home-boundary-v1");
+    const outside = join(dirname(dir), "marked-outside");
+    writeFileSync(outside, "untouched"); setFixtureOwner(outside);
+    linkSync(outside, join(boundary, "planted"));
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl", repairs: [boundary] });
+    expect(readFileSync(outside, "utf8")).toBe("untouched");
+    expect(readFileSync(join(boundary, "key"), "utf8")).toBe("authoritative");
+    expect(existsSync(join(boundary, "planted"))).toBe(false);
+    expect(readdirSync(dir).some((name) => name.startsWith("secrets.unprotected-abandoned-"))).toBe(false);
+  });
+  it("preserves shared read-only attributes when extended deletion is unavailable", () => {
+    const dir = fixture();
+    const boundary = join(dir, "secrets");
+    const outside = join(dirname(dir), "outside-readonly");
+    writeFileSync(outside, "outside"); setFixtureOwner(outside);
+    linkSync(outside, join(boundary, "key"));
+    command("[System.IO.File]::SetAttributes($env:AVE_TEST_TARGET, [System.IO.FileAttributes]::ReadOnly)", outside);
+    damage(boundary);
+    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("int status = NtSetInformationFile(handle, out io, memory, 4, 64);",
+      "io = new IoStatus(); int status = unchecked((int)0xC0000003); GC.KeepAlive(io);");
+    const result = native("$h=[HomeDirectoryDacl]::OpenHome($env:AVE_TEST_TARGET,$u,$false); try { [HomeDirectoryDacl]::Repair($h,'secrets',$u,$false) } finally { $h.Dispose() }", dir, source);
+    expect(result).toBe("0");
+    expect(command("[int][System.IO.File]::GetAttributes($env:AVE_TEST_TARGET) -band 1", outside)).toBe("1");
+    expect(readFileSync(outside, "utf8")).toBe("outside");
+    expect(readFileSync(join(boundary, "key"), "utf8")).toBe("outside");
+    expect(existsSync(`${boundary}.unprotected-complete`)).toBe(true);
+    const warning = native("$h=[HomeDirectoryDacl]::OpenHome($env:AVE_TEST_TARGET,$u,$false); try { [HomeDirectoryDacl]::Repair($h,'secrets',$u,$false,$env:AVE_TEST_TARGET) | Out-Null; [HomeDirectoryDacl]::CleanupWarnings.ToArray() } finally { $h.Dispose() }", dir, source);
+    expect(warning).toContain(`${boundary}.unprotected-complete`);
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
+  });
+  it("refuses an existing copy destination without writing through its hardlink", () => {
+    const dir = fixture();
+    const outside = join(dirname(dir), "copy-collision");
+    writeFileSync(outside, "untouched"); setFixtureOwner(outside);
+    const source = join(dir, "keys"); const destination = join(dir, "certs");
+    writeFileSync(join(source, "key"), "new"); setFixtureOwner(join(source, "key"));
+    linkSync(outside, join(destination, "key"));
+    const result = native("$h=[HomeDirectoryDacl]::OpenHome($env:AVE_TEST_TARGET,$u,$false); $s=[HomeDirectoryDacl]::OpenRelative($h,'keys',$u,1,$true,$true,$true); $d=[HomeDirectoryDacl]::OpenRelative($h,'certs',$u,1,$true,$true,$true); try { try { [HomeDirectoryDacl].GetMethod('Copy',[System.Reflection.BindingFlags]'NonPublic,Static').Invoke($null,@($s,$d,$u)) | Out-Null; 'copied' } catch { 'refused' } } finally { $d.Dispose(); $s.Dispose(); $h.Dispose() }", dir);
+    expect(result).toBe("refused");
+    expect(readFileSync(outside, "utf8")).toBe("untouched");
+  });
+  it("refuses a pre-existing staged migration hardlink without changing either source", () => {
+    const dir = fixture();
+    const outside = join(dirname(dir), "stage-collision");
+    writeFileSync(outside, "untouched"); setFixtureOwner(outside);
+    writeFileSync(join(dir, "settings.json"), "legacy"); setFixtureOwner(join(dir, "settings.json"));
+    const id = "11111111111111111111111111111111";
+    linkSync(outside, join(dir, "config", `.settings.json.migration-${id}`));
+    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace('Guid.NewGuid().ToString("N")', `"${id}"`);
+    expect(native("try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false); 'copied' } catch { 'refused' }", dir, source)).toBe("refused");
+    expect(readFileSync(outside, "utf8")).toBe("untouched");
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("legacy");
+    expect(existsSync(join(dir, "config", "settings.json"))).toBe(false);
+  });
+  it("keeps a notice pending when desktop delivery fails or is not ready", () => {
+    const dir = fixture(); const boundary = join(dir, "secrets"); damage(boundary);
+    const privacy = ensureAveHomePrivate(dir);
+    const pending = join(boundary, ".ave-repair-notice-pending");
+    const host = createBootHostFixture({ desktop: createDesktopHostFixture() });
+    const unavailable = new NotificationService({ getMainWindow: () => null, isReady: () => false, isTestEnv: () => false });
+    notifyHomeBoundaryRepairs(privacy, { host, notificationService: unavailable });
+    expect(existsSync(pending)).toBe(true);
+    const broken = new NotificationService({ getMainWindow: () => null, isReady: () => true, isTestEnv: () => false,
+      notificationFactory: () => { throw new Error("delivery unavailable"); } });
+    notifyHomeBoundaryRepairs(privacy, { host, notificationService: broken });
+    expect(existsSync(pending)).toBe(true);
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ repairs: [boundary] });
+  });
+  it("replays a notice after cleanup and clears it only after desktop acceptance", () => {
+    const dir = fixture(); const boundary = join(dir, "secrets"); damage(boundary);
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ repairs: [boundary] });
+    expect(existsSync(`${boundary}.unprotected-complete`)).toBe(false);
+    const pending = join(boundary, ".ave-repair-notice-pending");
+    expect(existsSync(pending)).toBe(true);
+    const show = vi.fn();
+    const notificationService = new NotificationService({ getMainWindow: () => null, isReady: () => true,
+      isTestEnv: () => false, notificationFactory: () => ({ show, on: vi.fn() }) });
+    const next = ensureAveHomePrivate(dir);
+    expect(next).toMatchObject({ repairs: [boundary] });
+    notifyHomeBoundaryRepairs(next, { host: createBootHostFixture(), notificationService });
+    expect(existsSync(pending)).toBe(true);
+    expect(show).not.toHaveBeenCalled();
+    notifyHomeBoundaryRepairs(ensureAveHomePrivate(dir), {
+      host: createBootHostFixture({ desktop: createDesktopHostFixture() }), notificationService,
+    });
+    expect(show).toHaveBeenCalledOnce();
+    expect(existsSync(pending)).toBe(false);
+    expect(ensureAveHomePrivate(dir)).not.toHaveProperty("repairs");
+  });
+  it("maps a native generic read root grant before admitting migration", () => {
+    const dir = fixture();
+    const result = native("$s=[System.Security.AccessControl.DirectorySecurity]::new(); $s.SetSecurityDescriptorSddlForm('O:'+$u.Value+'D:P(A;OICI;FA;;;'+$u.Value+')(A;;GR;;;WD)'); [HomeDirectoryDacl]::RootSafe($s,$u,$false,0x1200a9)", dir);
+    expect(result).toBe("True");
+  });
+  it("refuses a native generic write root grant", () => {
+    const dir = fixture();
+    expect(native("$s=[System.Security.AccessControl.DirectorySecurity]::new(); $s.SetSecurityDescriptorSddlForm('O:'+$u.Value+'D:P(A;OICI;FA;;;'+$u.Value+')(A;;GW;;;WD)'); [HomeDirectoryDacl]::RootSafe($s,$u,$false,0x1200a9)", dir)).toBe("False");
+  });
+  it("refuses a native generic all root grant", () => {
+    const dir = fixture();
+    expect(native("$s=[System.Security.AccessControl.DirectorySecurity]::new(); $s.SetSecurityDescriptorSddlForm('O:'+$u.Value+'D:P(A;OICI;FA;;;'+$u.Value+')(A;;GA;;;WD)'); [HomeDirectoryDacl]::RootSafe($s,$u,$false,0x1200a9)", dir)).toBe("False");
+  });
   it("finishes a completed aside without overwriting the live content", () => {
     const dir = fixture();
     const boundary = join(dir, "secrets");
@@ -161,7 +324,7 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     mkdirSync(aside); setFixtureOwner(aside);
     writeFileSync(join(aside, "key"), "old"); setFixtureOwner(join(aside, "key"));
     writeFileSync(join(boundary, "key"), "current"); setFixtureOwner(join(boundary, "key"));
-    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl", repairs: [boundary] });
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl" });
     expect(readFileSync(join(boundary, "key"), "utf8")).toBe("current");
     expect(existsSync(aside)).toBe(false);
   });

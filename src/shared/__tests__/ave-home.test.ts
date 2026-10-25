@@ -7,6 +7,7 @@ import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryD
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
+import { permissionSettingsPath } from "../../permissions/permission-settings-store.js";
 
 const OWNER_SID = "S-1-5-21-1004336348-11-77-1417";
 const OWNER_RULE: WindowsAccessRule = { sid: OWNER_SID, accessControlType: 0, fileSystemRights: 2032127,
@@ -76,7 +77,7 @@ describe("ensureAveHomePrivate", () => {
   it("accepts alias-free numeric JSON rules and requests protection in one read-back", () => {
     const { dir, result, readDacls } = check();
     expect(result).toEqual({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID });
-    expect(readDacls.mock.calls).toEqual([[[dir, join(dir, "secrets"), join(dir, "subscription-runtimes"), join(dir, "keys"), join(dir, "certs")], true]]);
+    expect(readDacls.mock.calls).toEqual([[[dir, join(dir, "secrets"), join(dir, "subscription-runtimes"), join(dir, "keys"), join(dir, "certs"), join(dir, "config")], true]]);
   });
   it("protects the default home with only mocked profile and filesystem access", () => {
     vi.stubEnv("AVE_HOME", undefined);
@@ -217,6 +218,21 @@ describe("ensureAveHomePrivate", () => {
     const { result, dir } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
       { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 268435456 }] } : entry);
     expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "extra-principals" });
+  });
+  it("warns when a foreign root grant contains generic read", () => {
+    expect(check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: -2147483648 }] } : entry).result)
+      .toMatchObject({ enforcement: "win32-dacl", diagnostics: [expect.stringContaining("foreign read-only access")] });
+  });
+  it("refuses when a foreign root grant contains generic write", () => {
+    expect(check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
+      { ...OWNER_RULE, sid: "S-1-1-0", fileSystemRights: 0x40000000 }] } : entry).result)
+      .toMatchObject({ enforcement: "none", category: "extra-principals" });
+  });
+  it("reports a wrong owner before foreign access entries", () => {
+    expect(check((entry) => ({ ...entry, ownerSid: "S-1-5-18", rules: [OWNER_RULE,
+      { ...OWNER_RULE, sid: "S-1-1-0" }] })).result)
+      .toMatchObject({ enforcement: "none", category: "invalid-owner-grant", reason: "Directory is owned by another account" });
   });
   it("refuses when a foreign root grant contains an unknown right", () => {
     const { result, dir } = check((entry, index) => index === 0 ? { ...entry, rules: [OWNER_RULE,
@@ -432,8 +448,8 @@ describe("ensureAveHomePrivate", () => {
       // Creation sets current-user ownership even on an elevated token.
       expect(entry.ownerSid).toBe(entry.currentUserSid);
     }
-    writeFileSync(join(dir, "settings.json"), "{}");
-    expect(readFileSync(join(dir, "settings.json"), "utf-8")).toBe("{}");
+    writeFileSync(permissionSettingsPath(dir), "{}");
+    expect(readFileSync(permissionSettingsPath(dir), "utf-8")).toBe("{}");
   }
   it.runIf(process.platform === "win32")("protects a real directory containing ordinary", () => { checkRelocatedDirectory("ordinary"); });
   it.runIf(process.platform === "win32")("protects a real directory containing curly quote", () => { checkRelocatedDirectory("curly’quote"); });

@@ -1,6 +1,6 @@
 import { t } from "../../i18n/index.js";
 import { createLogger } from "../../lib/logger.js";
-import type { AveHomePrivacy } from "../../shared/ave-home.js";
+import { acknowledgeHomeBoundaryRepair, type AveHomePrivacy } from "../../shared/ave-home.js";
 import type { BootContext } from "../context.js";
 
 const log = createLogger("ave");
@@ -14,13 +14,17 @@ export function notifyHomeBoundaryRepairs(
     const body = t("homePrivacy.boundaryRepaired");
     log.warn("boot: %s: %s", path, body);
     if (ctx.host.desktop) {
-      ctx.notificationService.fire({
+      const delivery = ctx.notificationService.deliver({
         kind: "system",
         title: t("homePrivacy.boundaryRepairedTitle"),
         body,
         // Boot can precede the renderer's toast subscription.
         bypassFocusGate: true,
       });
+      if (delivery?.accepted) {
+        try { acknowledgeHomeBoundaryRepair(privacy.home, path); }
+        catch (error) { log.warn("boot: repair notice remains pending: %s", String(error)); }
+      }
     }
   }
 }

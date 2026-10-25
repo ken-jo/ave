@@ -187,22 +187,27 @@ export class NotificationService {
 
   // Never let dependency, window, or delivery failures escape fire(); passive cues must not interrupt host lifecycle.
   fire(opts: FireOptions): void {
+    this.deliver(opts);
+  }
+
+  deliver(opts: FireOptions): { accepted: boolean } {
     try {
-      this.fireUnguarded(opts);
+      return { accepted: this.fireUnguarded(opts) };
     } catch (err) {
       // Delivery failure must never propagate into the calling flow. The inner OS/toast paths already degrade individually; this catch is the structural
       // backstop for everything else (probe callbacks, window races, sanitizer edge cases).
       log.warn("notification fire failed: %s", (err as Error)?.message ?? String(err));
+      return { accepted: false };
     }
   }
 
-  private fireUnguarded(opts: FireOptions): void {
+  private fireUnguarded(opts: FireOptions): boolean {
     // Test-mode + pre-ready hard guard — never pop a notification before the app is ready or inside a vitest run.
-    if (this.isTestEnv() || !this.isReady()) return;
+    if (this.isTestEnv() || !this.isReady()) return false;
 
     if (opts.kind === "turn-end" && !this.isOsNotificationsEnabled()) {
       this.auditSuppressed(opts.kind, 0, "os-notifications-disabled");
-      return;
+      return false;
     }
 
     // #1482 — turn-end is a background-only cue. When the user is already in Ave, the conversation itself is the completion signal; do not surface a
@@ -211,7 +216,7 @@ export class NotificationService {
     const focusGateActive = !opts.bypassFocusGate && this.canShowToast(win);
     if (opts.kind === "turn-end" && focusGateActive) {
       this.auditSuppressed(opts.kind, 0, "foreground");
-      return;
+      return false;
     }
 
     // Audit suppressed events; bypassFocusGate escapes focus and cooldown while still consuming the next cooldown slot.
@@ -223,7 +228,7 @@ export class NotificationService {
       const elapsedMs = now - last;
       if (last !== 0 && elapsedMs < cooldownMs && opts.bypassFocusGate !== true) {
         this.auditSuppressed(opts.kind, elapsedMs);
-        return;
+        return false;
       }
       this.lastFiredAt.set(opts.kind, now);
     }
@@ -256,15 +261,16 @@ export class NotificationService {
           "notification toast send failed, falling back to OS: %s",
           (err as Error).message,
         );
-        this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent);
+        const accepted = this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent);
         this.audit("os", opts.kind, cleanTitle);
-        return;
+        return accepted;
       }
     } else {
-      this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent);
+      if (!this.fireOsNotification(opts, cleanTitle, truncatedPlainBody, urgent)) return false;
     }
 
     this.audit(gate, opts.kind, cleanTitle);
+    return true;
   }
 
   // Whether a cue fired now without `bypassFocusGate` would be an in-app toast rather than an OS notification — so a caller can choose between the two
@@ -284,7 +290,7 @@ export class NotificationService {
     return mainAlive && this.isAnyWindowFocused();
   }
 
-  private fireOsNotification(opts: FireOptions, title: string, body: string, urgent: boolean): void {
+  private fireOsNotification(opts: FireOptions, title: string, body: string, urgent: boolean): boolean {
     try {
       const n = this.notificationFactory({
         title,
@@ -300,12 +306,14 @@ export class NotificationService {
         });
       });
       n.show();
+      return true;
     } catch (err) {
       // OS notification can fail on Linux without libnotify, on Windows without AppUserModelId, etc. Never let a failed notification block the lifecycle event that fired it.
       log.warn(
         "OS notification fire failed: %s",
         (err as Error).message,
       );
+      return false;
     }
   }
 

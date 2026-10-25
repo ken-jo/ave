@@ -86,6 +86,7 @@ import { createLogger } from "./lib/logger.js";
 import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing.js";
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot } from "./shared/ave-home.js";
+import { migrateAveHomeConfiguration } from "./shared/ave-home-configuration.js";
 import { ensureAveScratchDir } from "./shared/ave-scratch.js";
 import {
   listAveHomeDocUpgradeMarkers,
@@ -233,6 +234,10 @@ export async function bootstrap(
       `boot: ${homePrivacy.failedPath ?? homePrivacy.home} could not be restricted to this account (${homePrivacy.category}: ${homePrivacy.reason}) — extension confinement is refused because private directory protection is unverified`,
     );
   }
+
+  // An unverified root has no protected config boundary to migrate into; legacy root files stay in place.
+  if (homePrivacy.enforcement === "none") log.warn("boot: legacy root configuration is not migrated while home protection is unverified");
+  else for (const diagnostic of migrateAveHomeConfiguration(homePrivacy.home)) log.warn(`boot: ${diagnostic}`);
 
   // The application-owned scratch directory the agent may stage work in
   // without an approval. It is offered to the model and to the Layer 1

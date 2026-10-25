@@ -1,5 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { permissionSettingsPath } from "../../../permissions/permission-settings-store.js";
+import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
+import { existsSync, readFileSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { foreignFrameEvent, hostFrameEvent, useTempDirs } from "../../../__tests__/test-helpers.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
@@ -49,7 +50,7 @@ describe("judge settings host boundary", () => {
   });
 
   it("reports a rejected stored chain so the renderer does not present it as off", async () => {
-    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { chain: [{ provider: "external" }], mode: "active" } } }));
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: { chain: [{ provider: "external" }], mode: "active" } } }));
     const result = await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent());
     expect(result).toMatchObject({ ok: true, settings: { chain: [], mode: "active" }, storedChainRejected: true });
     expect(result).not.toHaveProperty("chainRejected");
@@ -64,14 +65,14 @@ describe("judge settings host boundary", () => {
     expect(await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent())).toMatchObject({
       ok: true, settings: { model: null }, chatModel: "openai-compatible/team/local", reviewerModelUnavailable: false,
     });
-    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: "claude/removed-model" } } }));
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: { model: "claude/removed-model" } } }));
     expect(await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent())).toMatchObject({
       ok: true, settings: { model: { vendor: "claude", model: "removed-model" } }, reviewerModelUnavailable: true,
     });
   });
 
   it("keeps fatal read metadata on the host side of the snapshot", async () => {
-    writeFileSync(join(home, "settings.json"), "{broken");
+    writePermissionSettingsFixture(home, "{broken");
     expect(permissionSettings.readJudgeSettings()).toHaveProperty("unreadable", true);
     const result = await handlers.get(PERMISSIONS.judgeGet)!(hostFrameEvent());
     expect(result).toMatchObject({ ok: true, settings: { chain: [], mode: "shadow" } });
@@ -84,7 +85,7 @@ describe("judge settings host boundary", () => {
     expect(await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), {
       intent, settings: { chain: [{ provider: "builtin-llm" }] },
     })).toEqual({ ok: false, error: "judge-rewire-failed" });
-    expect(existsSync(join(home, "settings.json"))).toBe(false);
+    expect(existsSync(permissionSettingsPath(home))).toBe(false);
   });
 
   it("shows configured provider models and persists selected identity before refresh", async () => {
@@ -95,7 +96,7 @@ describe("judge settings host boundary", () => {
       settings: { chain: [{ provider: "builtin-llm", model: "openai-compatible/team/local" }] },
     });
     expect(saved).toMatchObject({ ok: true, settings: { chain: [{ model: { vendor: "openai-compatible", model: "team/local" } }], mode: "shadow" } });
-    expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).permissions.judge.chain[0].model).toBe("openai-compatible/team/local");
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8")).permissions.judge.chain[0].model).toBe("openai-compatible/team/local");
     expect(deps.rewireReviewerAgent).toHaveBeenCalledOnce();
   });
 
@@ -136,37 +137,37 @@ describe("judge settings host boundary", () => {
   it("restores prior settings and wiring after refresh fails", async () => {
     vi.mocked(deps.rewireReviewerAgent!).mockImplementationOnce(() => { throw new Error("refresh failed"); });
     expect(await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), { intent, settings: { chain: [{ provider: "builtin-llm" }] } })).toEqual({ ok: false, error: "judge-rewire-failed" });
-    expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8"))).not.toHaveProperty("permissions.judge");
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8"))).not.toHaveProperty("permissions.judge");
     expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(2);
   });
 
   it("reports an unsuccessful runtime rollback separately", async () => {
     vi.mocked(deps.rewireReviewerAgent!).mockImplementation(() => { throw new Error("refresh failed"); });
     expect(await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), { intent, settings: { chain: [{ provider: "builtin-llm" }] } })).toEqual({ ok: false, error: "judge-rollback-failed" });
-    expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8"))).not.toHaveProperty("permissions.judge");
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8"))).not.toHaveProperty("permissions.judge");
   });
 
   it("restores a rejected active raw chain when a replacement cannot activate", async () => {
     const rejected = { chain: [{ provider: "external", id: "missing-transport" }], mode: "active" };
-    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: rejected, allow: ["Read(*)"] } }));
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: rejected, allow: ["Read(*)"] } }));
     vi.mocked(deps.rewireReviewerAgent!).mockImplementationOnce(() => { throw new Error("refresh failed"); });
     expect(await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), {
       intent, settings: { chain: [{ provider: "builtin-llm" }] },
     })).toEqual({ ok: false, error: "judge-rewire-failed" });
-    expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8"))).toEqual({ permissions: { judge: rejected, allow: ["Read(*)"] } });
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8"))).toEqual({ permissions: { judge: rejected, allow: ["Read(*)"] } });
     expect(permissionSettings.readJudgeSettings()).toMatchObject({ settings: { mode: "active" }, chainRejected: true });
   });
 
   it("reports rollback conflict without replacing a later manual judge change", async () => {
     const later = { permissions: { judge: { provider: "off" } } };
     vi.mocked(deps.rewireReviewerAgent!).mockImplementationOnce(() => {
-      writeFileSync(join(home, "settings.json"), JSON.stringify(later));
+      writePermissionSettingsFixture(home, JSON.stringify(later));
       throw new Error("refresh failed");
     });
     expect(await handlers.get(PERMISSIONS.judgeSet)!(hostFrameEvent(), {
       intent, settings: { chain: [{ provider: "builtin-llm" }] },
     })).toEqual({ ok: false, error: "judge-rollback-failed" });
-    expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8"))).toEqual(later);
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8"))).toEqual(later);
     expect(deps.rewireReviewerAgent).toHaveBeenCalledOnce();
   });
 
@@ -199,6 +200,6 @@ describe("judge settings host boundary", () => {
     expect(saved).toMatchObject({ ok: true, settings: { timeoutMs: 30_000 } });
     expect(writer).toHaveBeenCalledTimes(2);
     expect(deps.rewireReviewerAgent).toHaveBeenCalledTimes(3);
-    expect(JSON.parse(readFileSync(join(home, "settings.json"), "utf8")).permissions.judge.timeoutMs).toBe(30_000);
+    expect(JSON.parse(readFileSync(permissionSettingsPath(home), "utf8")).permissions.judge.timeoutMs).toBe(30_000);
   });
 });

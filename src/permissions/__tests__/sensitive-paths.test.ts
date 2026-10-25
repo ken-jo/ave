@@ -19,10 +19,10 @@ const resources = new PermissionTestResources();
 it("keeps protected boundaries aligned with credential directories", () => {
   const credentialDirectories = SENSITIVE_PATH_ENTRIES.filter((entry) =>
     entry.anchor === "ave-home" && entry.kind === "dir" &&
-    ["secrets", "subscription-runtimes", "keys", "certs"].includes(entry.segments[0]),
+    ["secrets", "subscription-runtimes", "keys", "certs", "config"].includes(entry.segments[0]),
   ).map((entry) => entry.segments.join("/"));
   expect([...AVE_HOME_PROTECTED_DIRECTORIES].sort()).toEqual(credentialDirectories.sort());
-  expect(AVE_HOME_PROTECTED_DIRECTORIES).toHaveLength(4);
+  expect(AVE_HOME_PROTECTED_DIRECTORIES).toHaveLength(5);
 });
 
 describe("per-decision sensitive matcher", () => {

@@ -2567,7 +2567,7 @@ Components ─► Semantic tokens (--background, --primary, --destructive)
 
 - **토큰 정의**: `src/styles.css` (`:root` primitive + `[data-theme-bundle="<id>"]` semantic)
 - **Provider**: `src/ui/renderer/theme/` (`ThemeProvider`, OS `prefers-color-scheme`
-  추적, `~/.ave/settings.json#appearance.schemaVersion=2` + `appearance.bundleId`
+  추적, `~/.ave/config/settings.json#appearance.schemaVersion=2` + `appearance.bundleId`
   영속화)
 - **번들**: `src/shared/theme-bundles.ts` 의 `BUNDLE_IDS` 가 SOT이며 기본값은
   `tokyo-night`. `followSystem`은 별도 boolean이고 violet light/dark pair에만

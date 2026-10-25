@@ -2,6 +2,9 @@ import { WINDOWS_OWNER_CLAIM_SOURCE } from "./windows-owner-claim.js";
 
 export const WINDOWS_HOME_BOUNDARY_SOURCE = `${WINDOWS_OWNER_CLAIM_SOURCE}
 public static class HomeDirectoryDacl {
+  private const string RepairMarker = ".ave-repair-created";
+  private const string NoticeMarker = ".ave-repair-notice-pending";
+  public static readonly System.Collections.Generic.List<string> CleanupWarnings = new System.Collections.Generic.List<string>();
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out long attributes, uint size);
   [DllImport("advapi32.dll")]
@@ -120,9 +123,15 @@ public static class HomeDirectoryDacl {
         ownRules++;
         if (rule.AccessControlType != AccessControlType.Allow || (int)rule.FileSystemRights != 2032127 ||
           (int)rule.InheritanceFlags != 3 || (int)rule.PropagationFlags != 0 || rule.IsInherited) return false;
-      } else if (rule.AccessControlType != AccessControlType.Allow || ((int)rule.FileSystemRights & ~readMask) != 0) return false;
+      } else if (rule.AccessControlType != AccessControlType.Allow || (MapFileGenericRights((int)rule.FileSystemRights) & ~readMask) != 0) return false;
     }
     return ownRules == 1;
+  }
+  private static int MapFileGenericRights(int mask) {
+    uint rights = unchecked((uint)mask);
+    return (int)((rights & 0x0fffffff) | ((rights & 0x80000000) != 0 ? 0x120089u : 0) |
+      ((rights & 0x40000000) != 0 ? 0x120116u : 0) | ((rights & 0x20000000) != 0 ? 0x1200a0u : 0) |
+      ((rights & 0x10000000) != 0 ? 0x1f01ffu : 0));
   }
   private static string[] RepairEntries(SafeFileHandle handle) {
     var entries = new System.Collections.Generic.List<string>();
@@ -157,7 +166,7 @@ public static class HomeDirectoryDacl {
       Check(NtSetInformationFile(handle, out io, memory, (uint)size, 10), "Repair rename failed");
     } finally { Marshal.FreeHGlobal(memory); GC.KeepAlive(parent); }
   }
-  private static void Delete(SafeFileHandle handle, SecurityIdentifier user) {
+  private static bool Delete(SafeFileHandle handle, SecurityIdentifier user) {
     long attributes = Attributes(handle);
     if ((attributes & 0x410) == 0x10) {
       foreach (string name in RepairEntries(handle)) {
@@ -167,35 +176,24 @@ public static class HomeDirectoryDacl {
         }
       }
     }
-    IntPtr memory = Marshal.AllocHGlobal(40);
+    IntPtr memory = Marshal.AllocHGlobal(4);
     try {
       Marshal.WriteInt32(memory, 0x1 | 0x2 | 0x10);
       IoStatus io;
       int status = NtSetInformationFile(handle, out io, memory, 4, 64);
-      if (status != unchecked((int)0xC0000003) && status != unchecked((int)0xC00000BB)) {
-        Check(status, "Repair no-follow deletion failed");
-        return;
-      }
-      if ((attributes & 1) != 0) {
-        // Zero timestamps preserve them; attributes are changed on the pinned entry only.
-        for (int i = 0; i < 40; i++) Marshal.WriteByte(memory, i, 0);
-        int writableAttributes = unchecked((int)attributes) & ~1;
-        Marshal.WriteInt32(memory, 32, writableAttributes == 0 ? 0x80 : writableAttributes);
-        Check(NtSetInformationFile(handle, out io, memory, 40, 4), "Repair read-only attribute clearing failed");
-      }
-      Marshal.WriteByte(memory, 1);
-      Check(NtSetInformationFile(handle, out io, memory, 1, 13), "Repair no-follow deletion failed");
+      return status >= 0;
     } finally { Marshal.FreeHGlobal(memory); }
   }
   private static int Copy(SafeFileHandle source, SafeFileHandle destination, SecurityIdentifier user) {
     int skipped = 0;
     foreach (string name in RepairEntries(source)) {
+      if (name == RepairMarker || name == NoticeMarker) continue;
       using (var child = OpenRelative(source, name, user, 1, false, false, false)) {
         if (child == null) throw new InvalidOperationException("Repair entry disappeared during copy");
         long attributes = Attributes(child);
         if ((attributes & 0x400) != 0) { skipped++; continue; }
         bool directory = (attributes & 0x10) != 0;
-        using (var copy = OpenRelative(destination, name, user, directory ? 3u : 5u, directory, true, false)) {
+        using (var copy = OpenRelative(destination, name, user, 2, directory, true, false)) {
           if (directory) skipped += Copy(child, copy, user);
           else {
             using (var input = new System.IO.FileStream(child, System.IO.FileAccess.Read))
@@ -209,11 +207,49 @@ public static class HomeDirectoryDacl {
     }
     return skipped;
   }
-  public static int Repair(SafeFileHandle home, string name, SecurityIdentifier user, bool elevated) {
+  public static string[] MigrateConfiguration(string path, string directory, string[] names, SecurityIdentifier user, bool elevated) {
+    var diagnostics = new System.Collections.Generic.List<string>();
+    using (var home = OpenHome(path, user, false)) {
+      if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
+      using (var destination = OpenRelative(home, directory, user, 1, true, true, true)) {
+        if (destination == null || !OwnerOnly(Read(destination), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
+        foreach (string name in names) {
+          string oldPath = System.IO.Path.Combine(path, name);
+          string newPath = System.IO.Path.Combine(path, directory, name);
+          using (var source = OpenRelative(home, name, user, 1, false, false, false)) {
+            if (source == null) continue;
+            if ((Attributes(source) & 0x410) != 0) {
+              diagnostics.Add("Skipped non-regular configuration source \\"" + oldPath + "\\" for \\"" + newPath + "\\"");
+              continue;
+            }
+            using (var existing = OpenRelative(destination, name, user, 1, false, false, false)) {
+              if (existing != null) {
+                diagnostics.Add("Configuration \\"" + newPath + "\\" already exists; retained legacy \\"" + oldPath + "\\" without merging");
+                continue;
+              }
+            }
+            string staged = "." + name + ".migration-" + Guid.NewGuid().ToString("N");
+            using (var copy = OpenRelative(destination, staged, user, 2, false, true, false))
+            using (var input = new System.IO.FileStream(source, System.IO.FileAccess.Read))
+            using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
+              input.CopyTo(output);
+              output.Flush(true);
+              Rename(copy, destination, name);
+              if (!Delete(source, user)) diagnostics.Add("Legacy configuration retained after copy: " + oldPath);
+            }
+          }
+        }
+      }
+    }
+    return diagnostics.ToArray();
+  }
+  public static int Repair(SafeFileHandle home, string name, SecurityIdentifier user, bool elevated, string path = "") {
+    CleanupWarnings.Clear();
     string step = "open";
     string pending = name + ".unprotected-recovery";
     string complete = name + ".unprotected-complete";
     SafeFileHandle live = null, aside = null, finished = null;
+    bool fresh = false;
     try {
       live = OpenRelative(home, name, user, 1, true, true, true);
       aside = OpenRelative(home, pending, user, 1, true, true, false);
@@ -221,35 +257,84 @@ public static class HomeDirectoryDacl {
       if (aside != null && finished != null) throw new InvalidOperationException("Multiple repair states exist");
       if (live == null && (aside != null || finished != null)) {
         step = "recover";
-        live = aside ?? finished;
-        Rename(live, home, name);
-        aside = null; finished = null;
+        if (finished != null) { Rename(finished, home, pending); aside = finished; finished = null; }
       }
-      if (live == null) { step = "create"; live = OpenRelative(home, name, user, 2, true, true, true); }
+      if (live == null) { step = "create"; live = OpenRelative(home, name, user, 2, true, true, true); fresh = true; }
       var security = Read(live);
       if (!OwnerValid(security, user, elevated)) throw new InvalidOperationException("Directory is owned by another account");
       bool valid = OwnerOnly(security, user, elevated);
       if (finished != null) {
         if (!valid) throw new InvalidOperationException("Completed repair has no protected live directory");
-        step = "delete"; Delete(finished, user); return 0;
+        bool noticePending = HasMarker(live, NoticeMarker, user);
+        step = "delete"; Cleanup(finished, System.IO.Path.Combine(path, complete), user); return noticePending ? 0 : -1;
       }
-      if (aside == null && valid) return -1;
+      if (aside == null && valid) return HasMarker(live, NoticeMarker, user) ? 0 : -1;
       if (aside == null) {
         step = "rename"; Rename(live, home, pending); aside = live; live = null;
         step = "create"; live = OpenRelative(home, name, user, 2, true, true, true);
-      } else if (!valid) throw new InvalidOperationException("Pending repair has an unprotected live directory");
+      } else if (!fresh) {
+        step = "restart";
+        bool created = valid && HasMarker(live, RepairMarker, user);
+        string abandoned = name + ".unprotected-abandoned-" + Guid.NewGuid().ToString("N");
+        Rename(live, home, abandoned);
+        if (created) Cleanup(live, System.IO.Path.Combine(path, abandoned), user);
+        else CleanupWarnings.Add("Unmarked interrupted directory retained: " + System.IO.Path.Combine(path, abandoned));
+        live.Dispose();
+        live = OpenRelative(home, name, user, 2, true, true, true);
+      }
+      EnsureMarker(live, RepairMarker, user);
       step = "copy";
       int skipped = Copy(aside, live, user);
       step = "verify";
       if (!OwnerOnly(Read(live), user, elevated)) throw new InvalidOperationException("Fresh boundary protection failed verification");
+      EnsureMarker(live, NoticeMarker, user);
       step = "complete"; Rename(aside, home, complete);
-      step = "delete"; Delete(aside, user);
+      step = "delete"; Cleanup(aside, System.IO.Path.Combine(path, complete), user);
       return skipped;
     } catch (Exception error) { throw new InvalidOperationException("Directory " + name + " repair step " + step + " failed: " + error.Message, error); }
     finally {
       if (finished != null) finished.Dispose();
       if (aside != null) aside.Dispose();
       if (live != null) live.Dispose();
+    }
+  }
+  private static void Cleanup(SafeFileHandle handle, string path, SecurityIdentifier user) {
+    try {
+      if (Delete(handle, user)) return;
+    } catch (Exception error) { CleanupWarnings.Add("Aside cleanup failed: " + path + ": " + error.Message); return; }
+    CleanupWarnings.Add("Aside retained without changing attributes: " + path);
+  }
+  private static bool HasMarker(SafeFileHandle directory, string name, SecurityIdentifier user) {
+    using (var marker = OpenRelative(directory, name, user, 1, false, false, false)) {
+      if (marker == null) return false;
+      if ((Attributes(marker) & 0x410) != 0) return false;
+      using (var stream = new System.IO.FileStream(marker, System.IO.FileAccess.Read)) {
+        byte[] expected = System.Text.Encoding.UTF8.GetBytes("ave-home-boundary-v1");
+        if (stream.Length != expected.Length) return false;
+        foreach (byte value in expected) if (stream.ReadByte() != value) return false;
+        return true;
+      }
+    }
+  }
+  private static void EnsureMarker(SafeFileHandle directory, string name, SecurityIdentifier user) {
+    if (HasMarker(directory, name, user)) return;
+    using (var marker = OpenRelative(directory, name, user, 2, false, true, false))
+    using (var stream = new System.IO.FileStream(marker, System.IO.FileAccess.Write)) {
+      byte[] bytes = System.Text.Encoding.UTF8.GetBytes("ave-home-boundary-v1");
+      stream.Write(bytes, 0, bytes.Length);
+      stream.Flush(true);
+    }
+  }
+  public static void AcknowledgeRepair(string path, string name, SecurityIdentifier user, bool elevated) {
+    using (var home = OpenHome(path, user, false)) {
+      if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Notice home protection is unverified");
+      using (var boundary = OpenRelative(home, name, user, 1, true, true, true)) {
+        if (boundary == null || !OwnerOnly(Read(boundary), user, elevated)) throw new InvalidOperationException("Notice boundary protection is unverified");
+        if (!HasMarker(boundary, NoticeMarker, user)) return;
+        using (var marker = OpenRelative(boundary, NoticeMarker, user, 1, false, true, false)) {
+          if (marker != null && !Delete(marker, user)) throw new InvalidOperationException("Notice acknowledgment failed");
+        }
+      }
     }
   }
 }`;

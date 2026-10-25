@@ -5,7 +5,7 @@ import { resolve as pathResolve } from "node:path";
 import { withFileLock } from "../lib/with-file-lock.js";
 import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome } from "../shared/ave-home.js";
+import { aveHome, AVE_HOME_CONFIGURATION_DIRECTORY } from "../shared/ave-home.js";
 import {
   PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
   PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
@@ -177,8 +177,8 @@ const REVIEWER_MODES: ReadonlySet<ReviewerMode> = new Set([
 ]);
 const REVIEWER_FALLBACKS: ReadonlySet<ReviewerFallbackOnError> = new Set(["deny", "rule"]);
 
-export function permissionSettingsPath(): string {
-  return pathResolve(aveHome(), "settings.json");
+export function permissionSettingsPath(home = aveHome()): string {
+  return pathResolve(home, AVE_HOME_CONFIGURATION_DIRECTORY, "settings.json");
 }
 
 // Unreadable existing settings return deny-shaped defaults with a visible fault, log an error and rewrite nothing. Migrate unmarked legacy disabled to strict and persist once; failed persistence still returns strict so upgrades cannot silently weaken policy.
@@ -507,7 +507,7 @@ function composeSettingsForPersist(
   };
 }
 
-// Atomically rewrite `~/.ave/settings.json` with a fresh `permissions.additionalDirectories` value. Preserves any other top-level keys present in the existing file. Permission policy also accepts a `reviewer` patch (partial). Provided keys overwrite; missing keys preserve existing values.
+// Atomically rewrite `~/.ave/config/settings.json` with a fresh `permissions.additionalDirectories` value. Preserves any other top-level keys present in the existing file. Permission policy also accepts a `reviewer` patch (partial). Provided keys overwrite; missing keys preserve existing values.
 export async function writePermissionSettings(
   patch: {
     additionalDirectories?: string[];

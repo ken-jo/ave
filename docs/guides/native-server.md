@@ -150,7 +150,7 @@ out of this JSON. For the example provider, set
 The default project is `$AVE_HOME/workspace`, created during normal host boot;
 use that path as `PROJECT_DIR` for an initial run. To authorize another project,
 merge its absolute directory into the separate
-`$AVE_HOME/settings.json` permission document before starting the host:
+`$AVE_HOME/config/settings.json` permission document before starting the host:
 
 ```json
 {

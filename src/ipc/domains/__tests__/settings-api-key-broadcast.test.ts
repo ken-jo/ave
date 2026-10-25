@@ -1,7 +1,8 @@
+import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 /** MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated to all app windows so the reviewer tab auto-unlocks without a full reload: -
  * ave:settings:set-api-key - ave:settings:delete-api-key - ave:settings:set-web-api-key - ave:settings:delete-web-api-key - ave:settings:marketplace:set-api-key - ave:settings:marketplace:delete-api-key */
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
@@ -405,7 +406,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   ] as const)("%s when a selected reviewer model's own provider route changes (reviewer model %s)", async (_label, reviewerModel, rewires) => {
     const home = mkdtempSync(join(tmpdir(), "reviewer-route-rewire-"));
     vi.stubEnv("AVE_HOME", home);
-    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: reviewerModel } } }));
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: { model: reviewerModel } } }));
     try {
       const rewire = vi.fn();
       const llm = (claudeBaseUrl: string) => ({
@@ -445,7 +446,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   ] as const)("re-wires on a catalogue sync that %s for a chain stage's own model (listing %j -> %j, rewires %i)", async (_label, before, after, rewires) => {
     const home = mkdtempSync(join(tmpdir(), "stage-catalogue-rewire-"));
     vi.stubEnv("AVE_HOME", home);
-    writeFileSync(join(home, "settings.json"), JSON.stringify({
+    writePermissionSettingsFixture(home, JSON.stringify({
       permissions: { judge: { model: null, chain: [{ id: "stage", provider: "builtin-llm", model: "openai/team-stage" }] } },
     }));
     try {
@@ -491,7 +492,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
   ] as const)("%s when the chat provider's synced catalogue changes a same-provider reviewer model's availability (listing %j)", async (_label, listed, rewires) => {
     const home = mkdtempSync(join(tmpdir(), "reviewer-catalogue-rewire-"));
     vi.stubEnv("AVE_HOME", home);
-    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { judge: { model: "openai/team-reviewer" } } }));
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: { model: "openai/team-reviewer" } } }));
     try {
       const rewire = vi.fn();
       const llm = (models: readonly string[] | null) => ({

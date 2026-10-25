@@ -1,5 +1,6 @@
+import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PluginRuntime, createNoopHostApiForTests } from "../../runtime.js";
@@ -12,7 +13,7 @@ let root: string;
 let previousHome: string | undefined;
 
 function setApproved(directories: string[]): void {
-  writeFileSync(join(root, "home", "settings.json"), JSON.stringify({
+  writePermissionSettingsFixture(join(root, "home"), JSON.stringify({
     permissions: { additionalDirectories: directories },
   }));
 }

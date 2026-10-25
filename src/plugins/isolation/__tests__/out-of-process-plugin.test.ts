@@ -1,3 +1,4 @@
+import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
 import { describe, expect, it, vi } from "vitest";
 
@@ -1661,7 +1662,7 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
     mkdirSync(home, { recursive: true });
     mkdirSync(approved, { recursive: true });
     mkdirSync(pluginDataDir, { recursive: true });
-    writeFileSync(join(home, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [approved] } }));
+    writePermissionSettingsFixture(home, JSON.stringify({ permissions: { additionalDirectories: [approved] } }));
     const entryPath = join(pluginRoot, "plugin.mjs");
     writeFileSync(
       entryPath,

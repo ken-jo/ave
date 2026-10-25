@@ -1,3 +1,4 @@
+import { writePermissionSettingsFixture } from "../../../src/__tests__/support/permission-settings-fixture.js";
 import { test, expect } from "@playwright/test";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -27,7 +28,7 @@ test("document pages render, navigate and refuse malformed files through the rea
     ],
   });
   try {
-    writeFileSync(join(ctx.aveHome, "settings.json"), JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
+    writePermissionSettingsFixture(ctx.aveHome, JSON.stringify({ permissions: { additionalDirectories: [directory] } }));
     await ctx.page.setViewportSize({ width: 1280, height: 860 });
     await ctx.page.getByTestId(TEST_IDS.panePanelToggle).click();
     await ctx.page.getByTestId(chatSidePanelLauncherTestId("file-browser")).click();

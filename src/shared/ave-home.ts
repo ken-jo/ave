@@ -1,14 +1,15 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync } from "node:fs";
+import { closeSync, constants, fchmodSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
 
-// Reserve the next boundary for root-level credentials when they move into a directory.
+export const AVE_HOME_CONFIGURATION_DIRECTORY = "config";
+
 export const AVE_HOME_PROTECTED_DIRECTORIES: readonly string[] = Object.freeze([
-  "secrets", "subscription-runtimes", "keys", "certs",
+  "secrets", "subscription-runtimes", "keys", "certs", AVE_HOME_CONFIGURATION_DIRECTORY,
 ]);
 
 /** All user-data paths must use this resolver so AVE_HOME isolates every store, including secrets. */
@@ -75,6 +76,7 @@ export interface WindowsDirectoryDacl {
   protected?: boolean;
   repaired?: boolean;
   skippedLinks?: number;
+  cleanupWarnings?: string[];
   rules?: WindowsAccessRule[];
   category?: AveHomePrivacyFailureCategory;
   error?: string;
@@ -100,6 +102,12 @@ const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
 
 // FILE_GENERIC_READ | FILE_GENERIC_EXECUTE (including SYNCHRONIZE), with no mutating rights.
 const WINDOWS_ROOT_READ_ONLY_RIGHTS = 0x1200a9;
+
+function mapFileGenericRights(mask: number): number {
+  return (mask & 0x0fffffff) | ((mask & 0x80000000) ? 0x120089 : 0) |
+    ((mask & 0x40000000) ? 0x120116 : 0) | ((mask & 0x20000000) ? 0x1200a0 : 0) |
+    ((mask & 0x10000000) ? 0x1f01ff : 0);
+}
 
 /** ACL input stays in environment JSON; the bootstrap reads the script from stdin. */
 export function readWindowsDirectoryDacls(paths: readonly string[], protect = false): WindowsDirectoryDacl[] {
@@ -144,12 +152,13 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
           } else {
             if ([System.IO.Path]::GetDirectoryName($path) -ne [System.IO.Path]::GetFullPath($request.paths[0])) { throw 'Directory is outside the pinned home' }
             $leaf = [System.IO.Path]::GetFileName($path);
-            $repaired = [HomeDirectoryDacl]::Repair($homeHandle, $leaf, $identity.User, $elevated);
+            $repaired = [HomeDirectoryDacl]::Repair($homeHandle, $leaf, $identity.User, $elevated, $request.paths[0]);
             $handle = [HomeDirectoryDacl]::OpenRelative($homeHandle, $leaf, $identity.User, 1, $true, $true, $true);
           }
           if ($null -eq $handle) { throw 'Directory does not exist' }
           $result = Read-Dacl $path $handle;
           if ($repaired -ge 0) { $result.repaired = $true; $result.skippedLinks = $repaired }
+          if ($request.protect -and $null -ne $homeHandle -and $handle -ne $homeHandle) { $result.cleanupWarnings = @([HomeDirectoryDacl]::CleanupWarnings.ToArray()) }
           $result
         } catch {
           $refused = $true;
@@ -184,6 +193,25 @@ function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean
   return ownerValid && descriptor.rules?.length === 1 && rule?.sid === sid &&
     rule.accessControlType === 0 && rule.fileSystemRights === 2032127 &&
     rule.inheritanceFlags === 3 && rule.propagationFlags === 0 && rule.isInherited === false;
+}
+
+export function acknowledgeHomeBoundaryRepair(home: string, path: string): void {
+  if (process.platform !== "win32") return;
+  const name = AVE_HOME_PROTECTED_DIRECTORIES.find((entry) => join(home, entry) === path);
+  if (name === undefined) throw new Error("Repair notice boundary is invalid");
+  const script = `$ErrorActionPreference='Stop'; $ProgressPreference='SilentlyContinue';
+    $request=ConvertFrom-Json $env:AVE_DACL_REQUEST;
+    Add-Type -TypeDefinition @'
+${WINDOWS_HOME_BOUNDARY_SOURCE}
+'@;
+    $identity=[System.Security.Principal.WindowsIdentity]::GetCurrent();
+    $elevated=([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
+    [HomeDirectoryDacl]::AcknowledgeRepair($request.home,$request.name,$identity.User,$elevated);`;
+  execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-EncodedCommand",
+    Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")], {
+    input: script, windowsHide: true, stdio: ["pipe", "pipe", "pipe"],
+    env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({ home, name }) }),
+  });
 }
 
 let bootHomePrivacy: AveHomePrivacy | undefined;
@@ -256,6 +284,13 @@ export function ensureAveHomePrivate(
 ): AveHomePrivacy {
   if (runtime.platform !== "win32") {
     mkdirSync(home, { recursive: true, mode: 0o700 });
+    const config = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
+    mkdirSync(config, { mode: 0o700, recursive: true });
+    if (process.platform !== "win32") {
+      const handle = openSync(config, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
+      try { fchmodSync(handle, 0o700); }
+      finally { closeSync(handle); }
+    }
     return { enforcement: "posix-mode", home };
   }
   let path = home;
@@ -293,9 +328,12 @@ export function ensureAveHomePrivate(
         typeof rule.isInherited !== "boolean")) {
         throw new Error("Directory DACL rules read-back is invalid");
       }
+      if (descriptor.ownerSid !== sid && !(descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544")) {
+        return { enforcement: "none", home, failedPath: path, category: "invalid-owner-grant", reason: "Directory is owned by another account" };
+      }
       const extraPrincipals = [...new Map(descriptor.rules
         .filter((rule) => rule.sid !== sid && (path !== home || rule.accessControlType !== 0 ||
-          (rule.fileSystemRights & ~WINDOWS_ROOT_READ_ONLY_RIGHTS) !== 0))
+          (mapFileGenericRights(rule.fileSystemRights) & ~WINDOWS_ROOT_READ_ONLY_RIGHTS) !== 0))
         .map(({ sid, account }) => [sid, { sid, ...(account ? { account } : {}) }])).values()];
       if (extraPrincipals.length > 0) {
         return { enforcement: "none", home, failedPath: path, category: "extra-principals", extraPrincipals,
@@ -312,6 +350,7 @@ export function ensureAveHomePrivate(
       if (readOnlyPrincipals.length > 0) diagnostics.push(`Directory "${path}" has foreign read-only access: ${readOnlyPrincipals.map((rule) => rule.sid).join(", ")}`);
       if (descriptor.repaired) repairs.push(path);
       if (descriptor.skippedLinks) diagnostics.push(`Directory "${path}" repair skipped ${descriptor.skippedLinks} link entries`);
+      diagnostics.push(...descriptor.cleanupWarnings ?? []);
     }
     if (!sid) throw new Error("Current account SID read-back missing");
     return { enforcement: "win32-dacl", home, sid, ...(repairs.length ? { repairs } : {}), ...(diagnostics.length ? { diagnostics } : {}) };
