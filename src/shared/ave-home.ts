@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
@@ -170,6 +170,19 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
       } catch { @{ path = $path; error = $_.Exception.Message } }
     }
     $results = @(foreach ($path in $request.paths) {
+      # A directory this call creates is owned by the token user from the start, with
+      # the same protected owner-only DACL icacls then grants. A token whose default
+      # owner is Administrators would otherwise own it as that group, and a parent's
+      # CREATOR OWNER entry would leave an explicit Administrators grant behind.
+      if ($request.protect -and -not [System.IO.Directory]::Exists($path)) {
+        try {
+          $security = [System.Security.AccessControl.DirectorySecurity]::new();
+          $security.SetOwner($identity.User);
+          $security.SetAccessRuleProtection($true, $false);
+          $security.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($identity.User, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow'));
+          [System.IO.Directory]::CreateDirectory($path, $security) | Out-Null;
+        } catch { @{ path = $path; category = 'directory-failed'; error = $_.Exception.Message }; continue }
+      }
       if ($request.protect) {
         & $icacls $path '/inheritance:r' '/grant:r' ('*' + $sid + ':(OI)(CI)F') '/q' | Out-Null;
         if ($LASTEXITCODE -ne 0) { @{ path = $path; category = 'icacls-failed'; error = 'Directory permission command failed' }; continue }
@@ -193,10 +206,10 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
 }
 
 function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean {
-  // AVE_HOME is usually a root that already exists, chosen by the user or left
-  // by an earlier run, so it follows rule 2 of "Windows object ownership" in
-  // docs/architecture/architecture.md: an elevated token may create an
-  // Administrators-owned object. The grant
+  // A home this app creates is owned by the user (rule 1 of "Windows object
+  // ownership" in docs/architecture/architecture.md). One that already exists,
+  // chosen by the user or left by an earlier run, follows rule 2: an elevated
+  // token may have created it Administrators-owned. The grant
   // still belongs only to the token user; group Allow entries are never accepted.
   const ownerValid = descriptor.ownerSid === sid ||
     (descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
@@ -319,11 +332,10 @@ export function ensureAveHomePrivate(
   let path = home;
   let category: AveHomePrivacyFailureCategory = "directory-failed";
   try {
-    mkdirSync(home, { recursive: true, mode: 0o700 });
-    for (path of [home, join(home, "secrets")]) {
-      category = "directory-failed";
-      mkdirSync(path, { recursive: true, mode: 0o700 });
-    }
+    // The protecting step creates the home and its secrets directory itself, so
+    // each is owned by the current user from the start ("Windows object
+    // ownership" in docs/architecture/architecture.md). Only the parent is made here.
+    mkdirSync(dirname(home), { recursive: true });
     category = "read-back-failed";
     path = home;
     const paths = [home, join(home, "secrets")];

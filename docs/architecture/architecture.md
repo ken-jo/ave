@@ -1968,7 +1968,11 @@ group rather than by the user. Ownership on Windows follows two rules:
    PowerShell step protects the directory, creates the empty image and the
    owner marker inside it, sets the token user as the owner of all three and
    reads each owner back. The image's bytes are written only after that step.
-   If it fails, creation is refused and the directory is removed.
+   If it fails, creation is refused and the directory is removed. When
+   `AVE_HOME` or its `secrets` directory does not exist yet,
+   `ensureAveHomePrivate` in `src/shared/ave-home.ts` has its protecting step
+   create it with the user as owner and an owner-only protected DACL, so no
+   grant for the token's default owner is left behind.
 2. **Roots the app did not create, such as `AVE_HOME`, may be owned by
    `S-1-5-32-544` only when the current token's default owner is
    `S-1-5-32-544` and every access entry belongs to the owner or to a trusted

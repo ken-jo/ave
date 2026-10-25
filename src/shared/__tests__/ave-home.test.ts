@@ -163,6 +163,13 @@ describe("ensureAveHomePrivate", () => {
     expect(readWindowsDirectoryDacls(paths)).toEqual(results);
     expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
   });
+  it("reports a directory the protecting step could not create", () => {
+    const dir = home();
+    const result = ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths) => [
+      { path: paths[0]!, category: "directory-failed", error: "Access is denied" }, descriptor(paths[1]!),
+    ] });
+    expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "directory-failed", reason: "Access is denied" });
+  });
   it("rejects a malformed read-back result set", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
     vi.mocked(execFileSync).mockReturnValueOnce("{}");
@@ -206,7 +213,8 @@ describe("ensureAveHomePrivate", () => {
       expect(entry).toMatchObject({ protected: true, rules: [expect.objectContaining({
         ...OWNER_RULE, sid: (result as { sid: string }).sid,
       })] });
-      expect([entry.currentUserSid, ...(entry.elevated ? ["S-1-5-32-544"] : [])]).toContain(entry.ownerSid);
+      // The call created both directories, so the current user owns them even on an elevated token.
+      expect(entry.ownerSid).toBe(entry.currentUserSid);
     }
     writeFileSync(join(dir, "settings.json"), "{}");
     expect(readFileSync(join(dir, "settings.json"), "utf-8")).toBe("{}");
