@@ -60,8 +60,15 @@ async function requireNativeCase(context: TestContext): Promise<void> {
 
 const NETWORK_UNREACHABLE = `network unreachable: https://${HOST}/ cannot be fetched from this machine without the sandbox, so the terminal egress cases would measure nothing`;
 
+// Hosted runners drop a single fetch now and then, and one miss fails the required precondition; retry within the 45 s test timeout.
 async function hostReachable(): Promise<boolean> {
-  reachable ??= await fetch(`https://${HOST}/`, { signal: AbortSignal.timeout(10_000) }).then((res) => res.ok, () => false);
+  reachable ??= await (async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
+      if (await fetch(`https://${HOST}/`, { signal: AbortSignal.timeout(10_000) }).then((res) => res.ok, () => false)) return true;
+    }
+    return false;
+  })();
   return reachable;
 }
 
