@@ -1580,7 +1580,13 @@ destructive one gets the same forced modal as the plain text, no allow rule
 covers an encoded command, and the card shows the decoded script. The
 payload is read from the argv each shell's own lexer produced (the same view
 the rule matcher uses), nested `-Command`, `cmd /c` and `bash -c` scripts
-included. A launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, …) whose
+included. Every launcher is followed to the command it runs: each PowerShell
+vocabulary entry with a `launcher` effect and the bash side's shells, wrappers
+and runners, with their own option grammar where modeled (`cmd /c /r /k`, glued
+too; `wsl -e`, `--exec`, `--`; a quoted command-line argument such as
+`-ArgumentList`), and a coverage test drives every launcher entry to an
+encoded `pwsh`. An unknown launcher option, an argument before cmd's `/c`, or a
+command wrapper's non-literal command (`sudo $cmd`) is hidden code too. A launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, …) whose
 argv is not fully literal (a variable, splat, subexpression, backtick or caret
 escape, a cmd `%`/`!` expansion), input the lexer cannot read, a payload the
 host cannot fully decode, or an encoded-looking word after `-Command`/`-File`
