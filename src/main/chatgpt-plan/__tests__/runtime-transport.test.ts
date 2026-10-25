@@ -353,6 +353,59 @@ describe("ChatGPT plan transport", () => {
     expect(wire).not.toContain("item_reference");
   });
 
+  it("feeds a streamed function call back by its call id, never the stored item id the route does not keep", async () => {
+    let round = 0;
+    const h = harness(PLAN_SCOPES, (url) => {
+      if (url !== CHATGPT_PLAN_RESPONSES_URL) return sse(COMPLETED_TURN);
+      round += 1;
+      return round === 1
+        ? sse([
+          { type: "response.created", response: { id: "r1", created_at: 1, model: "gpt-6.1-sol" } },
+          { type: "response.output_item.added", output_index: 0, item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: "" } },
+          { type: "response.function_call_arguments.delta", item_id: "fc_1", output_index: 0, delta: "{}" },
+          { type: "response.output_item.done", output_index: 0, item: { type: "function_call", id: "fc_1", call_id: "call_1", name: "read_file", arguments: "{}", status: "completed" } },
+          { type: "response.completed", response: { id: "r1", usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } } },
+        ])
+        : sse(COMPLETED_TURN);
+    });
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-6.1-sol" },
+      async () => h.runtime,
+    );
+    const tools = [{ name: "read_file", description: "Read a file", inputSchema: { type: "object", properties: {} } }];
+    const first = await collect(transport.streamTurn({
+      model: "m", systemPrompt: "s", enableThinking: true, reasoningEffort: "medium", tools,
+      messages: [{ role: "user", content: "read it" }],
+    }));
+    const call = first.find((event) => event.type === "tool_call");
+    expect(call).toMatchObject({ type: "tool_call", name: "read_file" });
+    const callId = (call as { id: string }).id;
+    await collect(transport.streamTurn({
+      model: "m", systemPrompt: "s", enableThinking: true, reasoningEffort: "medium", tools,
+      messages: [
+        { role: "user", content: "read it" },
+        { role: "assistant", content: "", toolCalls: [{ id: callId, name: "read_file", input: {} }] },
+        { role: "tool_result", toolUseId: callId, toolName: "read_file", content: "file text" },
+      ],
+    }));
+    const second = JSON.stringify(h.requests.filter((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)[1]!.body);
+    expect(second).toContain('"call_id":"call_1"');
+    expect(second).not.toContain("fc_1");
+  });
+
+  it("sends no reasoning field for a model that takes no reasoning setting, as the speed menu says", async () => {
+    const h = harness(PLAN_SCOPES);
+    const transport = new ChatGptPlanTransport(
+      { kind: "subscription", provider: "chatgpt-plan", model: "gpt-4o" },
+      async () => h.runtime,
+    );
+    const events = await collect(transport.streamTurn({
+      model: "m", systemPrompt: "s", messages: [{ role: "user", content: "hi" }], enableThinking: true, reasoningEffort: "medium",
+    }));
+    expect(events.find((event) => event.type === "error")).toBeUndefined();
+    expect(h.requests.find((entry) => entry.url === CHATGPT_PLAN_RESPONSES_URL)!.body).not.toHaveProperty("reasoning");
+  });
+
   it("sends the newest turn's image natively to a model that accepts images", async () => {
     const h = harness(PLAN_SCOPES);
     const transport = new ChatGptPlanTransport(
