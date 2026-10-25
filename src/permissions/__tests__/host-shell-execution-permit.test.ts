@@ -321,6 +321,9 @@ describe("explicit host execution permit from a matching allow rule (design I3)"
     });
     // Allow mode does not admit a plain shell outside the sandbox: it still
     // needs an allow rule or approval, and the mode issues no rule proof.
+    // OWNER ITEM: ip2 #90 keeps allow mode from admitting a plain shell; I3
+    // (owner 2026-10-16) sends sandbox-off/unavailable shells to the normal
+    // rules, where allow mode allows. No dated decision covers allow mode here.
     expect(modeAllow).toMatchObject({ decision: "ask", layer: 6 });
     expect(isIssuedShellAllowRuleDecision(modeAllow)).toBe(false);
   });

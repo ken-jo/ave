@@ -1823,7 +1823,9 @@ every connection: a plugin worker reaches its own extension's declared
 domains and the configured model endpoints, nothing else, and is never asked;
 a Bash or PowerShell call reaches a host a grant covers, and otherwise
 the person is asked on the approval dock (Deny, Allow once, This
-conversation, This workspace, Always); a workspace terminal tab (always in
+conversation, This workspace, Always; OWNER ITEM: pending — this line carries
+Ave's merged main, while the permissions-2 line offers a shell call only Allow
+once and Always, until the owner picks); a workspace terminal tab (always in
 the foreground) reaches a host a grant covers, and otherwise the person is
 asked in a banner in that tab, drawn only in, fetched by and answered from
 the window that owns the tab (Deny, Allow once, This tab, Always: a

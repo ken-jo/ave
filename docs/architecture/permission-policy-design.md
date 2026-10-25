@@ -1013,7 +1013,9 @@ the normal rules, exactly like sandbox-off, while its plan keeps
 `fallbackReason: "requested-sandbox-unavailable"`: the approval card, the
 model's shell-environment description and the tool result say the sandbox is
 unavailable. The Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`)
-keeps its allow-once permit until its own routing change. The parser and plan in
+keeps its allow-once permit until its own routing change (OWNER ITEM: pending —
+the permissions-2 line instead reviews it in the foreground and lets its card
+offer rules, #90; headless it is denied either way). The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and
 [execution permit](../../src/permissions/host-shell-execution-permit.ts) own this
