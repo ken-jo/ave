@@ -1,11 +1,5 @@
-/**
- * Linux ASRT runtime-probe boot mapping.
- *
- * The adapter emits a typed failure only after the configured wrapper actually
- * fails. Boot must preserve the requested-at-boot signal, never publish a
- * verified capability, and choose the existing default-degrade vs explicit-
- * environment-abort policy without exposing wrapper diagnostics.
- */
+/** After a wrapper probe fails, retain requested activation but publish no verified capability.
+ * Explicit activation aborts; settings activation degrades without exposing wrapper diagnostics. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import {
@@ -35,9 +29,7 @@ vi.mock("../../lib/logger.js", () => ({
 }));
 
 vi.mock("../../permissions/asrt-sandbox.js", async () => {
-  // The boot step sweeps both private roots and creates the HOME root, so they
-  // live under a directory this file owns in the OS temp dir — never the real
-  // AVE_HOME — whose parent can be created.
+  // Boot sweeps private roots; use an owned temporary home.
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { mkdirSync } = await import("node:fs");

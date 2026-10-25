@@ -123,9 +123,7 @@ function publishOpenFileArchiveSync(
     closeSync(stagedFd);
     stagedFd = undefined;
 
-    // A hard-link publishes the fully-synced inode atomically without the
-    // overwrite semantics of rename(2). Existing forensic evidence therefore
-    // fails closed with EEXIST instead of being replaced.
+    // Publish the synced inode by hard link; existing forensic evidence must fail closed with EEXIST.
     try {
       linkSync(stagedPath, archivePath);
     } catch (error) {
@@ -135,8 +133,7 @@ function publishOpenFileArchiveSync(
       throw error;
     }
     unlinkSync(stagedPath);
-    // Persist both publication of the final name and removal of the staging
-    // name before the caller truncates the canonical descriptor.
+    // Persist both publication of the final name and removal of the staging name before the caller truncates the canonical descriptor.
     fsyncDirectorySync(auditDir);
   } catch (error) {
     operationError = error;
@@ -271,13 +268,7 @@ function readLastCompleteLineSync(fd: number, boundary: number): string {
   return line.toString("utf-8");
 }
 
-/**
- * Token usage as persisted on an audit row. UsageDashboard / computeCost
- * contract, not raw AI SDK total input: Claude stores fresh input here and
- * cache in the cache fields; OpenAI / Gemini style providers keep provider
- * prompt tokens, which include cache. `usage-stats.ts` reads rows back through
- * this same shape.
- */
+/** The anthropic route stores fresh input with separate cache counts; other routes retain cache-inclusive prompt totals, per usage-stats.ts. */
 export interface AuditTokenUsage {
   inputTokens: number;
   outputTokens: number;
@@ -295,7 +286,7 @@ export interface AuditEntry {
   timestamp: string;
   sessionId: string;
   type: "turn" | "tool_call" | "approval" | "warn" | "error" | "mcp_connect" | "mcp_apikey_set" | "kill_switch" | "dlp" | "info" | "diagnostics-export" | "plugin_hostapi_denied";
-  /** DLP hit payload — populated when type === "dlp" */
+  /** DLP hit payload; populated when type === "dlp" */
   dlp?: {
     byKind: Record<string, number>;
     totalRedactions: number;
@@ -312,20 +303,13 @@ export interface AuditEntry {
     executionTimeMs?: number;
     /** Host tool-use correlation, when an execution pipeline supplied one. */
     toolUseId?: string;
-    /**
-     * Public-safe host shell substrate selected for the invocation. This
-     * deliberately excludes tool arguments, paths, permits, and approval
-     * integrity material.
-     */
+    /** Public shell telemetry must exclude arguments, paths, permits, and approval integrity material. */
     executionPlan?: import("../permissions/host-shell-execution-plan.js").HostShellExecutionPlanAuditProjection;
 
     permissionDecision?: string;
     permissionReason?: string;
     rateLimitRemaining?: number;
-    /** How the tool execution ended — `"ok"` on success, `"ceiling"` when the
-     *  executor's global timeout fired, `"user-abort"` when caller cancelled
-     *  via abortSignal, `"error"` for any other failure. Distinguishes
-     *  policy-enforced cap from user cancellation in post-incident analysis. */
+    /** Distinguish policy timeout, caller cancellation, and other failures for incident analysis. */
     terminationReason?: "ok" | "ceiling" | "user-abort" | "error" | "indeterminate";
   }>;
   tokenUsage?: AuditTokenUsage;
@@ -362,36 +346,18 @@ export interface AuditSearchFilter {
   offset?: number;
 }
 
-/**
- * Boot-time OS-sandbox activation telemetry. ONE record per boot, written to the
- * DEDICATED `<date>.sandbox-gate.jsonl` channel (mirrors the channel-separation
- * convention of `*.permission-shadow.jsonl` / `*.sandbox.jsonl`). This lets the
- * real-world sandbox activation success / degrade / abort / skip rates be
- * read per platform for the people who run with `osToolSandbox` (on by default
- * on macOS/Linux) or turn `pluginWorkerConfinement` on (off by default
- * everywhere — see settings-defaults). Plain JSONL, NOT the HMAC-chained
- * audit-grade channel.
- */
+/** One boot record in the dedicated sandbox-gate channel; plain JSONL, outside the HMAC chain. */
 export interface SandboxGateAuditEntry {
-  /** ISO 8601 — stamped by {@link AuditLogger.logSandboxGate}. */
+  /** ISO 8601; stamped by {@link AuditLogger.logSandboxGate}. */
   timestamp: string;
   type: "sandbox_gate";
   /** `process.platform` at boot. */
   platform: NodeJS.Platform;
-  /**
-   * Which on-signal drove the gate decision:
-   *   - `explicit-env`     — `AVE_SANDBOX_ENABLED=1` or `AVE_PLUGIN_WORKER_CONFINEMENT=1`
-   *                          (deliberate, fail-closed).
-   *   - `default-settings` — the `osToolSandbox` or `pluginWorkerConfinement` setting / shipped default.
-   *   - `off`              — neither signal on (gate off → skip).
-   */
+  /** Explicit environment activation fails closed; settings/default activation may degrade; off skips the gate. */
   onSignal: "explicit-env" | "default-settings" | "off";
-  /** Terminal gate outcome — mirrors decideSandboxGate's action. */
+  /** Terminal gate outcome; mirrors decideSandboxGate's action. */
   outcome: "activate" | "degrade" | "abort" | "skip";
-  /**
-   * Stable machine reason from `decideSandboxGate` (SandboxGateReason). Absent
-   * on the gate-off skip path, which short-circuits before a decision is computed.
-   */
+  /** Stable gate reason; absent when the off path skips decision computation. */
   reason?: string;
 }
 
@@ -430,63 +396,24 @@ function normalizePositiveInteger(value: number | undefined, fallback: number): 
   return value;
 }
 
-/**
- * Infix that marks a file as quarantined rows whose HMAC seal did not verify.
- * The naming is the whole signal `_filesOverlapping` has to keep them out of
- * reads, so both writers that quarantine a tail build their name from THIS.
- */
+/** Both quarantine writers use this infix; readers rely on it to exclude unauthenticated evidence. */
 const UNVERIFIED_QUARANTINE_MARKER = "-unverified-";
 
-/**
- * The instant an audit row was written, as epoch milliseconds (`NaN` when the
- * row carries no parseable time). Reads span every `.jsonl` partition in the
- * audit directory, which holds two schemas: telemetry rows stamp
- * `AuditEntry.timestamp`, the HMAC-chained permission rows stamp
- * `AuditCommon.ts`. Both name the one instant the row was written; this reads
- * whichever field the row's schema uses.
- */
+/** Telemetry uses timestamp; chained permission rows use ts. Unparseable instants return NaN. */
 function entryInstant(entry: AuditEntry): number {
   const row = entry as { timestamp?: unknown; ts?: unknown };
   const raw = row.timestamp ?? row.ts;
   return typeof raw === "string" ? Date.parse(raw) : Number.NaN;
 }
 
-/**
- * `start <= at < end` with either bound open. An unparseable instant (`NaN`)
- * fails every comparison, so it never satisfies a bound that was set.
- *
- * That asymmetry is the whole contract for a row whose time cannot be read, and
- * it is deliberate rather than incidental:
- *   - `search({})` with NEITHER bound set returns such a row, because there is
- *     no window for it to fall outside of. It sorts to the end of the
- *     newest-first page (see {@link NewestFirstRows}) — an unknown time cannot
- *     honestly claim to be recent.
- *   - `search({ dateFrom })` — or any call that sets a bound — drops it. A row
- *     that cannot say when it happened cannot be shown as evidence that it
- *     happened inside the picked days.
- *   - {@link AuditLogger.getStats} always sets a bound, so such rows are never
- *     counted. They are deliberately NOT given an "unknown" bucket: `totalByDay`
- *     feeds a per-day chart whose x-axis is a calendar, and a bucket with no
- *     place on that axis would have to be drawn somewhere it does not belong.
- *     A row with no readable time is a corrupt row, and the honest count of
- *     rows on a given day excludes it.
- */
+/** Unparseable timestamps appear last only in unbounded searches; any bound excludes them, including statistics. */
 function instantWithin(at: number, start?: Date, end?: Date): boolean {
   if (start !== undefined && !(at >= start.getTime())) return false;
   if (end !== undefined && !(at < end.getTime())) return false;
   return true;
 }
 
-/**
- * The kind a stored row is counted under, by the contract of the channel that
- * wrote it: a telemetry or sandbox-gate row states its `type`; a permission
- * row (`<day>.permission-audit.jsonl`, audit-schema.ts) states its `decision`
- * instead and has no `type`. The Audit tab labels a row the same way.
- *
- * A row that states neither matches no channel's contract. It is a corrupt
- * row and has no kind — the caller does not count it, exactly as it does not
- * count a line that fails to parse or a row with no readable time.
- */
+/** Count telemetry by type and permission rows by decision; rows with neither are corrupt and excluded. */
 function auditRowKind(entry: unknown): string | undefined {
   if (typeof entry !== "object" || entry === null) return undefined;
   const type = (entry as { type?: unknown }).type;
@@ -501,34 +428,12 @@ interface RankedAuditRow {
   entry: AuditEntry;
 }
 
-/** True when `a` belongs ahead of `b` on a newest-first page. */
 function ranksAhead(a: RankedAuditRow, b: RankedAuditRow): boolean {
   if (a.at !== b.at) return a.at > b.at;
   return a.seq < b.seq;
 }
 
-/**
- * The newest `capacity` rows of a stream, in newest-first order.
- *
- * A day's audit trail is split across up to half a dozen channel files
- * (`<day>.jsonl`, `<day>.permission-audit.jsonl`, `<day>.sandbox-gate.jsonl`, …)
- * that are read in file-name order, so the concatenated stream is NOT in time
- * order: it restarts at the day's first instant on every channel boundary. A
- * page sliced out of that stream shows a Time column that walks backwards, and
- * `offset` names a position in an ordering nobody chose. Rows are therefore
- * ordered here, before the slice.
- *
- * Retention is capped rather than sorting the whole match set, because a page
- * of 50 rows must not pull a busy day's 50,000 parsed rows into memory to
- * produce them. The cap is `offset + limit` — everything the caller can
- * actually see — and the heap keeps the ranked-highest that many, which is why
- * `search` can still stream files it never fully retains.
- *
- * Ties break on read order, so two rows stamped the same millisecond keep the
- * order the files gave them and the page is deterministic. A row with an
- * unreadable instant ranks last (see {@link instantWithin} for when such a row
- * is present at all).
- */
+/** Retain only offset + limit newest rows across all channels; equal timestamps preserve read order and unknown times rank last. */
 class NewestFirstRows {
   /** Min-heap by rank: the root is the row that would be dropped first. */
   private readonly heap: RankedAuditRow[] = [];
@@ -606,19 +511,14 @@ interface PlainWriterState {
 
 export class AuditLogger {
   private readonly auditDir: string;
-  /**
-   * Permission policy — separate file for the discriminated-union HMAC-chained
-   * audit channel. Format `<date>.permission-audit.jsonl`. Kept distinct from the
-   * telemetry channel (`<date>.jsonl`) so chain verification
-   * doesn't have to filter heterogeneous shapes.
-   */
+  /** Keep HMAC-chained permission rows in a separate file so verification never filters mixed schemas. */
   private permissionAuditLogFile: string;
   private permissionAuditDate: string;
 
-  /** Permission policy — HMAC chain state. Wired via `setupPermissionAuditChain`. Null = uninitialized chain. */
+  /** HMAC chain state; null until setupPermissionAuditChain. */
   private permissionAuditSecret: string | null = null;
   private permissionAuditChainBootstrapped = false;
-  /** Permission policy — secret store for daily seals. Wired alongside `setupPermissionAuditChain`. */
+  /** Daily-seal store wired with the chain. */
   private permissionAuditSealStore: SecretStore | null = null;
   private readonly plainWriters = new Map<string, PlainWriterState>();
   private droppedPlainWrites = 0;
@@ -672,11 +572,7 @@ export class AuditLogger {
     return join(this.auditDir, `${date}.permission-audit.jsonl`);
   }
 
-  /**
-   * Synchronous preflight rollover for the normal long-running-process case:
-   * the new UTC day has no rows yet. A pre-existing non-empty epoch must be
-   * re-verified asynchronously by append/setup and is rejected here.
-   */
+  /** Synchronous rollover accepts only an empty new UTC epoch; existing rows require asynchronous re-verification. */
   private ensurePermissionAuditEpochForPreflight(): void {
     if (this.permissionAuditAppendActive > 0) {
       throw new Error("permission audit append is already in progress");
@@ -711,8 +607,7 @@ export class AuditLogger {
     try {
       await transition;
     } finally {
-      // Every contender awaits the one published transition before it can
-      // create another, so the owner can clear the slot unconditionally.
+      // Every contender awaits the one published transition before it can create another, so the owner can clear the slot unconditionally.
       this.permissionAuditEpochTransition = null;
     }
   }
@@ -726,14 +621,7 @@ export class AuditLogger {
     }
   }
 
-  /**
-   * Permission policy — append one record to the DEDICATED shadow
-   * reconciliation channel (`<date>.permission-shadow.jsonl`), kept separate
-   * from the canonical telemetry channel so per-invocation shadow volume never
-   * evicts real telemetry. Same plain-JSONL shape + 0o600 hardening as
-   * {@link log}; this is NOT the HMAC-chained audit-grade channel. Failures are
-   * swallowed — shadow logging must never break a tool invocation.
-   */
+  /** Shadow reconciliation uses a separate plain-JSONL channel with mode 0o600; failures must never break tool calls. */
   logShadow(entry: AuditEntry): void {
     try {
       const line = JSON.stringify(entry) + "\n";
@@ -743,20 +631,11 @@ export class AuditLogger {
     }
   }
 
-  /** Permission policy — accessor for the dedicated shadow channel file (tests). */
   getPermissionShadowLogFile(): string {
     return this.permissionShadowPath();
   }
 
-  /**
-   * Append the ONE-per-boot OS-sandbox activation telemetry record to the
-   * dedicated `<date>.sandbox-gate.jsonl` channel. The caller (boot's sandbox
-   * gate) passes the resolved `{ platform, onSignal, outcome, reason }`; this
-   * method stamps `timestamp` + the `type` discriminant so the shape is
-   * controlled centrally. Same plain-JSONL + 0o600 hardening as {@link log};
-   * failures are swallowed — activation telemetry must never break boot (it runs
-   * on the abort path immediately before boot re-throws the fail-closed error).
-   */
+  /** Stamp boot telemetry centrally in its separate mode-0o600 JSONL channel; failures must never prevent fail-closed boot handling. */
   logSandboxGate(event: Omit<SandboxGateAuditEntry, "timestamp" | "type">): void {
     try {
       const entry: SandboxGateAuditEntry = {
@@ -785,7 +664,6 @@ export class AuditLogger {
     if (this.permissionAuditEpochTransition) await this.permissionAuditEpochTransition;
   }
 
-  /** Queue state exposed for deterministic saturation and shutdown tests. */
   getWriterStats(): AuditWriterStats {
     let pendingWrites = 0;
     let pendingBytes = 0;
@@ -846,8 +724,7 @@ export class AuditLogger {
             await handle.chmod(0o600);
             this.hardenedPlainFiles.add(filePath);
           } catch {
-            // Best-effort hardening: creation already requested mode 0o600.
-            // Retry chmod on the next accepted write instead of caching failure.
+            // Best-effort hardening: creation already requested mode 0o600. Retry chmod on the next accepted write instead of caching failure.
           }
         }
         await handle.writeFile(line, { encoding: "utf-8" });
@@ -857,21 +734,11 @@ export class AuditLogger {
     });
   }
 
-  /** Accessor for the dedicated sandbox-gate telemetry channel file (tests). */
   getSandboxGateLogFile(): string {
     return this.sandboxGatePath();
   }
 
-  /**
-   * Permission policy — probe whether the dedicated shadow channel can be
-   * appended to. {@link logShadow} swallows write failures (observability must
-   * never break a tool call), so a silently-undeliverable shadow dataset is
-   * otherwise undetectable. A construction-time caller (the ToolExecutor) uses
-   * this to surface a ONE-TIME warning when the reconciliation dataset would be
-   * silently empty. Checks W_OK on the existing channel file, falling back to the
-   * audit directory when the file has not been created yet. Returns `false` on
-   * any access error rather than throwing — a probe must never break a caller.
-   */
+  /** Probe shadow-channel writability without throwing; swallowed logging failures must remain observable to the executor. */
   isShadowChannelWritable(): boolean {
     try {
       const shadowLogFile = this.permissionShadowPath();
@@ -885,16 +752,8 @@ export class AuditLogger {
     }
   }
 
-  /**
-   * Permission policy — wire the HMAC chain state. Call once at boot after
-   * loading the audit secret from the keychain. When unwired, all
-   * `appendPermissionAuditEntry` calls throw — fail-secure per spec §1: refuse
-   * to start the chain rather than silently downgrade.
-   *
-   * `sealStore` is optional for fresh self-authenticated chains, but required
-   * to migrate a historical tail that predates `entryHash`. It also backs
-   * daily-seal verification via `/permission audit verify`.
-   */
+  /** Unwired chains reject appends; load the keychain secret at boot.
+   * A seal store is required for legacy-tail migration and daily-seal verification. */
   async setupPermissionAuditChain(secret: string, sealStore?: SecretStore): Promise<void> {
     this.permissionAuditDate = this.currentUtcDate();
     this.permissionAuditLogFile = this.permissionAuditPath(this.permissionAuditDate);
@@ -909,10 +768,7 @@ export class AuditLogger {
     let authenticatedRowsStarted = false;
     await withFileLock(this.permissionAuditLogFile, async () => {
       const noFollow = platform === "win32" ? 0 : fsConstants.O_NOFOLLOW;
-      // One descriptor spans verification AND publication. Re-resolving the
-      // pathname after the bytes were authenticated is the time-of-check /
-      // time-of-use gap: a local process that replaces the active file in
-      // between would otherwise have its bytes archived as if verified.
+      // Verify and publish through one descriptor; pathname replacement must not archive unauthenticated bytes.
       let fd: number | undefined;
       try {
         fd = openSync(
@@ -924,8 +780,7 @@ export class AuditLogger {
         if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
       }
       try {
-        // Bytes [0, verifiedSize) of the open descriptor: what the loop below
-        // authenticates and what any archival below publishes, byte for byte.
+        // The authenticated descriptor prefix must be archived byte for byte.
         let verifiedSize = 0;
         if (fd !== undefined) {
           const { size } = fstatSync(fd);
@@ -1007,8 +862,7 @@ export class AuditLogger {
               throw new Error("permission audit active-tail seal mismatch");
             }
           } else {
-            // Never trust-on-first-use a mutable legacy tail. Preserve it as
-            // unverified evidence and begin a fresh self-authenticated epoch.
+            // Never trust-on-first-use a mutable legacy tail. Preserve it as unverified evidence and begin a fresh self-authenticated epoch.
             if (fd === undefined) {
               throw new Error("permission audit legacy tail lost its open descriptor");
             }
@@ -1016,10 +870,7 @@ export class AuditLogger {
               this.auditDir,
               `${this.permissionAuditDate}.permission-audit.legacy${UNVERIFIED_QUARANTINE_MARKER}${computedSeal.slice(0, 12)}.jsonl`,
             );
-            // Publish the verified inode through its own descriptor and empty
-            // it in place. Renaming the pathname instead would archive whatever
-            // file happens to answer to that name now, and an existing archive
-            // fails closed on the hard link rather than being overwritten.
+            // Publish the verified inode and empty it in place; pathname replacement and existing archives must fail closed.
             publishOpenFileArchiveSync(
               fd,
               verifiedSize,
@@ -1030,9 +881,8 @@ export class AuditLogger {
             try { chmodSync(archivePath, 0o600); } catch { /* best effort */ }
             ftruncateSync(fd, 0);
             fsyncSync(fd);
-            // The fresh epoch may only begin on the file that was just emptied.
-            // A non-empty active name means something replaced it during
-            // archival: refuse to start a chain over unauthenticated bytes.
+            // The fresh epoch may only begin on the file that was just emptied. A non-empty active name
+            // means something replaced it during archival: refuse to start a chain over unauthenticated bytes.
             if (statSync(this.permissionAuditLogFile).size !== 0) {
               throw new Error(
                 "permission audit active file was replaced during legacy archival",
@@ -1054,8 +904,7 @@ export class AuditLogger {
             if (!interruptedCommit) {
               throw new Error("permission audit active-tail seal mismatch");
             }
-            // The row is fsynced/self-authenticated and the stored checkpoint
-            // names its exact predecessor: finish the interrupted seal commit.
+            // The row is fsynced/self-authenticated and the stored checkpoint names its exact predecessor: finish the interrupted seal commit.
             sealStore.write(sealName, computedSeal);
           }
         }
@@ -1068,21 +917,15 @@ export class AuditLogger {
     this.permissionAuditChainBootstrapped = true;
   }
 
-  /** Permission policy — accessor for tests + slash audit verify. */
   getPermissionAuditLogFile(): string {
     return this.permissionAuditLogFile;
   }
 
-  /** Permission policy — was setupPermissionAuditChain called? */
   isPermissionAuditChainReady(): boolean {
     return this.permissionAuditChainBootstrapped && this.permissionAuditSecret !== null;
   }
 
-  /**
-   * Permission policy — preflight used before mutating tool execution.
-   * Verifies the HMAC chain is initialized and the active audit file can
-   * be opened for append before side effects run.
-   */
+  /** Before side effects, require an initialized HMAC chain and an appendable audit file. */
   assertPermissionAuditWritable(): void {
     if (!this.isPermissionAuditChainReady()) {
       throw new Error("permission audit chain not initialized");
@@ -1113,35 +956,22 @@ export class AuditLogger {
     }
   }
 
-  /** Permission policy — accessor for the wired HMAC secret. Null when not bootstrapped. */
+  /** Null until the secret is bootstrapped. */
   getPermissionAuditSecret(): string | null {
     return this.permissionAuditSecret;
   }
 
-  /** Permission policy — accessor for the wired seal store. Null when not bootstrapped or omitted. */
+  /** Null when the seal store is unwired or omitted. */
   getPermissionAuditSealStore(): SecretStore | null {
     return this.permissionAuditSealStore;
   }
 
-  /** Permission policy — accessor for the audit directory (used by audit-show/verify). */
   getAuditDir(): string {
     return this.auditDir;
   }
 
-  /**
-   * Permission policy — append a discriminated-union audit entry with HMAC
-   * chain. Caller supplies the entry minus `prevHash`; this method
-   * computes and threads the chain link.
-   *
-   * Throws when the chain is not bootstrapped (fail-secure). The
-   * caller is responsible for catching at the boot boundary and
-   * surfacing a user-actionable error.
-   *
-   * Concurrency: withFileLock serializes cross-process writers without
-   * blocking the event loop in a spin wait. The locked section reads
-   * only the on-disk tail so prevHash always links to the actual last
-   * line without O(n) full-file scans on every append.
-   */
+  /** Reject unwired chains; the boot boundary reports failures.
+   * Serialize cross-process writers with withFileLock and link to the on-disk tail without scanning the full file. */
   appendPermissionAuditEntry(entry: PermissionAuditEntryInput): Promise<PermissionAuditEntry> {
     if (!this.acceptingPermissionAuditWrites) {
       return Promise.reject(new Error("permission audit logger is closed"));
@@ -1208,9 +1038,7 @@ export class AuditLogger {
         const auditFd = openSync(epoch.path, "a", 0o600);
         try {
           writeFileSync(auditFd, serialized + "\n", { encoding: "utf-8" });
-          // The external seal must never name a row that exists only in the OS
-          // page cache. Persist the row first; setup can then safely finish a
-          // seal commit interrupted between these two durable writes.
+          // Persist the row before the external seal; setup can finish an interrupted seal commit only over durable bytes.
           fsyncSync(auditFd);
         } finally {
           closeSync(auditFd);
@@ -1218,7 +1046,7 @@ export class AuditLogger {
         try {
           chmodSync(epoch.path, 0o600);
         } catch {
-          // Non-fatal — chmod failure must not block audit writes.
+          // Non-fatal; chmod failure must not block audit writes.
         }
         if (sealStore) {
           try {
@@ -1236,16 +1064,7 @@ export class AuditLogger {
     }
   }
 
-  /**
-   * Rotate + prune audit files.
-   *
-   * - Any .jsonl file whose size >= maxBytes OR whose date prefix is older
-   *   than rotationAgeDays is compressed to a collision-safe timestamp/UUID gzip archive and removed.
-   * - Any .jsonl.*.gz archive whose embedded date is older than retentionDays
-   *   is deleted.
-   *
-   * Uses withFileLock on each candidate file to prevent concurrent write races.
-   */
+  /** Rotate on size or age and prune expired archives under per-file locks. */
   async rotateAndPrune(opts: AuditRotationOptions = {}): Promise<void> {
     await withAuditSnapshotLock(this.auditDir, async () => this.rotateAndPruneUnlocked(opts));
   }
@@ -1271,32 +1090,20 @@ export class AuditLogger {
       return;
     }
 
-    // --- Rotate .jsonl logs (plain daily logs + HMAC-chained channels) ---
-    // Plain daily logs `YYYY-MM-DD.jsonl` rotate on size OR age. The HMAC-chained
-    // channels (`<date>.permission-audit.jsonl`, `<date>.sandbox.jsonl`) are
-    // append-only, prevHash-linked tamper-evident chains: they must NEVER be
-    // SIZE-rotated (gzip+unlinking the active chain mid-day severs the prevHash
-    // links), but a CLOSED prior-day chain is sealed per UTC day, so AGE-rotation
-    // (archiving a file ≥ rotationAgeDays old, which is always a closed prior day)
-    // is safe and keeps disk bounded.
+    // HMAC chains may age-rotate only after their UTC day closes; size rotation would sever active links.
     const jsonlFiles = entries.filter((f) => f.endsWith(".jsonl"));
     for (const fname of jsonlFiles) {
       const filePath = join(this.auditDir, fname);
       const isHmacChain =
         fname.endsWith(".permission-audit.jsonl") || fname.endsWith(".sandbox.jsonl");
-      // Skip current active log file — only rotate if size or age threshold met
       let shouldRotate = false;
       try {
         const st = statSync(filePath);
-        // Size-rotation applies to plain daily logs only — never an HMAC chain
-        // (that would sever today's still-appending chain).
+        // Size rotation must never split an active HMAC chain.
         if (!isHmacChain && st.size >= maxBytes) {
           shouldRotate = true;
         }
-        // Age-rotation archives a CLOSED prior-day file. The leading-date match
-        // covers both `<date>.jsonl` and `<date>.<channel>.jsonl`; with the
-        // default 7-day age this only ever fires on a sealed prior-day chain,
-        // never today's active one.
+        // Age rotation covers every channel suffix but only closed prior-day chains.
         const dateMatch = fname.match(/^(\d{4}-\d{2}-\d{2})\./);
         if (dateMatch) {
           const fileDate = new Date(dateMatch[1]).getTime();
@@ -1310,34 +1117,29 @@ export class AuditLogger {
 
       if (!shouldRotate) continue;
 
-      // Don't rotate a file that is today's active log based on size alone
-      // unless it actually exceeds the limit (age check already handles old dates)
       const archivePath = `${filePath}.${archiveDateStamp}.${randomUUID()}.gz`;
 
       try {
         await withFileLock(filePath, async () => {
-          // Re-stat inside lock — another process may have already rotated
+          // Re-stat under the lock; another writer may have rotated the file.
           const st2 = await fsStat(filePath).catch(() => null);
           if (!st2 || st2.size === 0) return;
 
-          // Compress to .gz
           await pipeline(
             createReadStream(filePath),
             createGzip(),
             createWriteStream(archivePath, { flags: "wx", mode: 0o600 }),
           );
           await chmod(archivePath, 0o600);
-          // Remove original after successful compression
           await unlink(filePath);
           this.hardenedPlainFiles.delete(filePath);
         });
       } catch {
-        // Rotation failure is non-fatal
+        // Rotation failures are non-fatal.
       }
     }
 
-    // --- Prune stale legacy and timestamp/UUID .jsonl gzip archives ---
-    // Re-read directory after potential rotations
+    // Re-read the directory after rotation before pruning archives.
     let entries2: string[];
     try {
       entries2 = readdirSync(this.auditDir);
@@ -1357,31 +1159,13 @@ export class AuditLogger {
         try {
           await unlink(join(this.auditDir, fname));
         } catch {
-          // Non-fatal
         }
       }
     }
   }
 
-  /**
-   * Search audit entries across JSONL files within a date range.
-   * Returns a filtered, paginated slice of matching entries.
-   *
-   * `dateFrom` / `dateTo` are inclusive HOST-LOCAL civil days — what the
-   * Audit tab's picker shows. The store stays partitioned by UTC day (see
-   * `currentUtcDate`), so the local range is mapped onto the instants it
-   * covers, every UTC partition that can overlap those instants is read (one
-   * extra file on each side when the host is off UTC), and each entry is kept
-   * or dropped by its own timestamp instant — never by comparing day strings.
-   *
-   * ORDERING CONTRACT: `entries` come back NEWEST FIRST, ordered by the row's
-   * own instant and, for rows stamped the same millisecond, by the order the
-   * files gave them. `offset` indexes that ordering, so paging walks backwards
-   * through time. The order is imposed rather than inherited: the files a day
-   * spans are read by name, which restarts the clock at each channel boundary
-   * (see {@link NewestFirstRows}). `total` counts every match, not just the
-   * retained page.
-   */
+  /** Interpret date bounds as inclusive host-local days and filter each row by its instant across overlapping UTC partitions.
+   * Paginate newest first with read-order ties; total counts all matches. */
   async search(filter: AuditSearchFilter): Promise<{ entries: AuditEntry[]; total: number }> {
     await this.flush();
     const { dateFrom, dateTo, type, textSearch, limit = 100, offset = 0 } = filter;
@@ -1422,10 +1206,7 @@ export class AuditLogger {
     return { entries: ranked.drain().slice(offset), total };
   }
 
-  /**
-   * Return aggregate stats over the last N host-local days, `totalByDay`
-   * bucketed by host-local day key — the same calendar the Audit tab shows.
-   */
+  /** Bucket statistics by host-local civil day, matching the Audit picker. */
   async getStats(lastDays: number): Promise<{
     totalByType: Record<string, number>;
     totalByDay: Record<string, number>;
@@ -1469,24 +1250,8 @@ export class AuditLogger {
     return { totalByType, totalByDay, sensitiveOps };
   }
 
-  /**
-   * List every `.jsonl` file whose UTC-day partition can hold an entry inside
-   * the instant range `[start, end)`, oldest first. Partitions are named by
-   * the UTC day of the entries they hold (`YYYY-MM-DD[.<channel>].jsonl`), so
-   * the candidates run from the UTC day of `start` through the UTC day of the
-   * last instant before `end`. Callers still filter each entry by its own
-   * instant; this only bounds which files are opened.
-   *
-   * Quarantine files are excluded. When the HMAC chain fails to verify, the
-   * unverifiable rows are moved aside into a `…-unverified-…` file
-   * (`torn-unverified` for a truncated tail, `legacy-unverified` for a seal from
-   * a superseded epoch) so a fresh self-authenticated chain can start. Those
-   * rows are evidence of tampering, not evidence of what happened: mixing them
-   * back into search results or stat counts — where nothing in the returned
-   * shape can say which rows lost their seal — would let an attacker's forged
-   * or replayed row be read as an authenticated one. They stay quarantined
-   * until something is built that can present them AS quarantined.
-   */
+  /** Read overlapping UTC partitions, then filter individual instants.
+   * Exclude quarantined rows: forged or replayed bytes must never appear as authenticated search results or statistics. */
   private _filesOverlapping(start?: Date, end?: Date): string[] {
     let files: string[];
     try {

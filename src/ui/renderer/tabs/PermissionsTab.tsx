@@ -68,8 +68,7 @@ const DEFAULT_REVIEWER_SETTINGS: PermissionReviewerSettings = {
   mode: "disabled",
   fallbackOnError: "deny",
   interactive: { autoApprove: "off" },
-  // Placeholder for the pre-load render only — the persisted block arrives with
-  // the first `reviewerDispatch("show")` and replaces this wholesale.
+  // Placeholder for the pre-load render only; the persisted block arrives with the first `reviewerDispatch("show")` and replaces this wholesale.
   parentAdjudication: {
     maxVerdict: "medium",
     timeoutMs: 30_000,
@@ -92,10 +91,7 @@ interface WindowsInstallOutcomeView {
   errorCode?: string;
 }
 
-/**
- * Localized copy per stable failure code. Only the code crosses IPC: ASRT's
- * message holds srt-win output and local paths, so it stays in the main log.
- */
+/** Localized copy per stable failure code. Only the code crosses IPC: ASRT's message holds srt-win output and local paths, so it stays in the main log. */
 const WINDOWS_INSTALL_FAILURE_COPY: Record<string, () => string> = {
   install_wfp_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedWfp"),
   install_user_failed: () => t("permissionsTab.osSandboxWindowsInstallFailedUser"),
@@ -119,11 +115,8 @@ const WINDOWS_WFP_STATE_LABEL: Record<string, () => string> = {
   "cannot-read": () => t("permissionsTab.osSandboxWindowsWfpStateCannotRead"),
 };
 
-/**
- * Boot degraded because the bundled Windows helper is missing or failed its
- * integrity check. An env opt-in leaves the toggles off, so the helper status
- * and notice key on this as well as on the toggles, agreeing with the banner.
- */
+/** Boot degraded because the bundled Windows helper is missing or failed its integrity check. An env opt-in leaves
+ * the toggles off, so the helper status and notice key on this as well as on the toggles, agreeing with the banner. */
 function bootReportsWindowsHelperFailure(boot: SandboxCapabilityInfo["boot"] | undefined): boolean {
   return (boot?.action === "degrade" || boot?.action === "abort") &&
     boot.causes.some((cause) => cause === "windows-sandbox-missing" || cause === "windows-sandbox-integrity-failed");
@@ -141,12 +134,8 @@ const UNEXPECTED_WINDOWS_INSTALL_VIEW = (): WindowsInstallOutcomeView => ({
   text: t("permissionsTab.osSandboxWindowsInstallUnexpected"),
 });
 
-/**
- * Every value `sandboxWindowsInstall` can resolve to — an outcome, an IPC
- * refusal, an older shape, or something unexpected — becomes a visible state.
- * The click must never end looking like nothing happened (issue #1608). No
- * free text from main reaches the screen; only codes and localized copy do.
- */
+/** Every value `sandboxWindowsInstall` can resolve to; an outcome, an IPC refusal, an older shape, or something unexpected; becomes a visible
+ * state. The click must never end looking like nothing happened (). No free text from main reaches the screen; only codes and localized copy do. */
 function describeWindowsInstallResult(result: unknown): WindowsInstallOutcomeView {
   if (!result || typeof result !== "object" || Array.isArray(result)) {
     return UNEXPECTED_WINDOWS_INSTALL_VIEW();
@@ -220,11 +209,7 @@ const WINDOWS_INSTALL_OUTCOME_TONE: Record<WindowsInstallOutcomeView["tone"], st
 };
 
 
-/**
- * A thrown IPC failure as this tab shows it. The thrown text can carry paths
- * and internal messages, so it goes to the renderer log, and the screen gets
- * localized copy only.
- */
+/** A thrown IPC failure as this tab shows it. The thrown text can carry paths and internal messages, so it goes to the renderer log, and the screen gets localized copy only. */
 function thrownErrorText(context: string, error: unknown): string {
   console.warn(`[ave] permissions: ${context} failed:`, errorMessage(error));
   return t("formatIpcError.unknownError");
@@ -246,14 +231,8 @@ function sandboxKindText(kind: unknown): string {
   return t("permissionsTab.osSandboxKindUnknown");
 }
 
-/**
- * An `ok: false` IPC result as this tab shows it: a known code in its
- * localized form, otherwise the action's own localized copy with the code. The
- * free-text `message` (English, possibly with paths) is logged, not shown.
- * Some handlers (the slash-backed directory and reviewer dispatch) put free
- * text in `error` itself, such as a "usage: /permission dir …" line; that is
- * logged and replaced by the action's copy, without a code.
- */
+/** An `ok: false` IPC result as this tab shows it: a known code in its localized form, otherwise the action's own localized copy with the code. The free-text `message` (English, possibly with paths) is logged, not
+ * shown. Some handlers (the slash-backed directory and reviewer dispatch) put free text in `error` itself, such as a "usage: /permission dir …" line; that is logged and replaced by the action's copy, without a code. */
 function ipcFailureText(
   context: string,
   result: { readonly error?: unknown; readonly message?: unknown },
@@ -267,8 +246,7 @@ function ipcFailureText(
     typeof result.message === "string" ? result.message : "",
   );
   if (code && resolveIpcErrorKey(code)) return formatIpcError(code, undefined);
-  // A template that places the code itself gets it (or "-"); a plain sentence
-  // gets the code appended.
+  // A template that places the code itself gets it (or "-"); a plain sentence gets the code appended.
   if (typeof fallback === "function") return fallback(code);
   return code ? `${fallback} (${code})` : fallback;
 }
@@ -289,8 +267,7 @@ function formatReviewerDispatchError(error: string): string {
     ].join(" ");
   }
   if (error === "user-keyboard-required") return t("permissionsTab.errorUserKeyboardRequired");
-  // A slash-parse failure arrives here as English free text; ipcFailureText
-  // logs it and shows the localized reviewer-error copy instead.
+  // A slash-parse failure arrives here as English free text; ipcFailureText logs it and shows the localized reviewer-error copy instead.
   return ipcFailureText("reviewer dispatch", { error }, t("permissionsTab.errorReviewerFallbackContext"));
 }
 
@@ -305,22 +282,12 @@ function preserveSettingsScrollPosition(): () => void {
   };
 }
 
-/**
- * This tab's fields are 11px, and a popup that opens from an 11px control must
- * be 11px too — `SelectContent` carries the size so its items inherit it,
- * rather than each item pinning `text-sm` and the menu reading a size larger
- * than the field it belongs to.
- */
+/** This tab's fields are 11px, and a popup that opens from an 11px control must be 11px too; `SelectContent` carries the size so
+ * its items inherit it, rather than each item pinning `text-sm` and the menu reading a size larger than the field it belongs to. */
 const DENSE_SELECT_POPUP = "text-[11px]";
 
-/**
- * The reviewer settings that follow an execution mode. `auto` is the only mode
- * whose verdicts a reviewer produces, so choosing it turns the LLM reviewer on
- * and lets it auto-approve interactive low/medium risk; every other mode turns
- * both off. This tab and the composer's permission picker send the same two
- * `reviewerDispatch` verbs after a successful `setMode`, derived from here, so
- * the two surfaces cannot leave the reviewer in different states for one mode.
- */
+/** The reviewer settings that follow an execution mode. `auto` is the only mode whose verdicts a reviewer produces, so choosing it turns the LLM reviewer on and lets it auto-approve interactive low/medium risk; every other mode
+ * turns both off. This tab and the composer's permission picker send the same two `reviewerDispatch` verbs after a successful `setMode`, derived from here, so the two surfaces cannot leave the reviewer in different states for one mode. */
 export function reviewerModeForExecMode(m: ExecutionMode): PermissionReviewerMode {
   return m === "auto" ? "llm" : "disabled";
 }
@@ -360,9 +327,7 @@ export function PermissionsTab({
     bannerTimerRef.current = setTimeout(() => setBanner(null), LONG_TOAST_TTL_MS);
   }, []);
 
-  // ── Execution Mode ────────────────────────────────
-  // "unknown" until the first host read lands, and whenever the host reports a
-  // mode this tab cannot name: no radio is selected rather than a wrong one.
+  // "unknown" until the first host read lands, and whenever the host reports a mode this tab cannot name: no radio is selected rather than a wrong one.
   const [mode, setMode] = useState<ExecutionModeDisplay>("unknown");
   const [modeBusy, setModeBusy] = useState(false);
 
@@ -412,48 +377,31 @@ export function PermissionsTab({
   const { capability: sandboxCapability, statusQueryFailed: sandboxStatusQueryFailed, refresh: refreshSandboxCapability } =
     useSandboxCapability(window.ave?.permission, getApi().onSettingsUpdated);
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
-  // `AVE_SANDBOX_ENABLED=1` is OR-ed with this setting at boot, so with the
-  // variable set the toggle cannot turn the sandbox off for this run. The
-  // stored value still decides the next run without it, so the control stays
-  // usable — what was missing was saying so.
+  // `AVE_SANDBOX_ENABLED=1` is OR-ed with this setting at boot, so with the variable set the toggle cannot turn the sandbox off for
+  // this run. The stored value still decides the next run without it, so the control stays usable; what was missing was saying so.
   const envForcedPaths = useEnvForcedSettings();
   const [sandboxBusy, setSandboxBusy] = useState(false);
-  // Plugin-worker confinement: its own setting, so the shell toggle above
-  // never confines workers and this one never confines shells.
-  // `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
+  // Plugin-worker confinement: its own setting, so the shell toggle above never confines workers
+  // and this one never confines shells. `AVE_PLUGIN_WORKER_CONFINEMENT=1` is OR-ed with it at boot.
   const [workerConfinementEnabled, setWorkerConfinementEnabled] = useState(false);
   const [workerConfinementBusy, setWorkerConfinementBusy] = useState(false);
-  // Windows srt-win repair flow (the OS sandbox is normally provisioned at
-  // app-install time; this panel is the re-provision/repair fallback).
-  // `windowsStatus` holds the latest readiness snapshot once the user opts in on
-  // win32; the panel renders off it. `windowsInstallPhase` is where a click is:
-  // "installing" (main checks status, then may raise the UAC prompt) or
-  // "refreshing" (re-reading status afterwards); while it is set the
-  // "Re-provision" button is disabled.
-  // `windowsInstallOutcome` is what the last click led to, shown until the next.
+  // Windows srt-win repair flow (the OS sandbox is normally provisioned at app-install time; this panel is the re-provision/repair fallback). `windowsStatus` holds the latest readiness snapshot once the user opts in on win32; the panel renders off it.
+  // `windowsInstallPhase` is where a click is: "installing" (main checks status, then may raise the UAC prompt) or "refreshing" (re-reading status afterwards); while it is set the "Re-provision" button is disabled. `windowsInstallOutcome` is what the last click led to, shown until the next.
   const [windowsStatus, setWindowsStatus] = useState<SandboxWindowsStatusInfo | null>(null);
   const [windowsInstallPhase, setWindowsInstallPhase] = useState<"installing" | "refreshing" | null>(null);
   const windowsInstallBusy = windowsInstallPhase !== null;
   const [windowsInstallOutcome, setWindowsInstallOutcome] = useState<WindowsInstallOutcomeView | null>(null);
 
-  // ── Sub-agent parent adjudication ─────────────────
-  // The master switch is a feature flag in app settings; the ceilings below it
-  // live in the permission settings file and travel over the reviewer slash
-  // dispatcher, so the two have separate busy flags and separate write paths.
+  // The master switch is a feature flag in app settings; the ceilings below it live in the permission settings
+  // file and travel over the reviewer slash dispatcher, so the two have separate busy flags and separate write paths.
   const [adjudicationEnabled, setAdjudicationEnabled] = useState(true);
   const [adjudicationBusy, setAdjudicationBusy] = useState(false);
-  // Bumped whenever a write is refused. The numeric fields are uncontrolled and
-  // keyed on the persisted value, so a rejection — which by definition leaves
-  // that value unchanged — would otherwise leave the refused number on screen
-  // as if it had been stored.
+  // Bumped whenever a write is refused. The numeric fields are uncontrolled and keyed on the persisted value, so a rejection;
+  // which by definition leaves that value unchanged; would otherwise leave the refused number on screen as if it had been stored.
   const [adjudicationRevision, setAdjudicationRevision] = useState(0);
 
-  // True once the panel has content on screen. After that, a refresh must not
-  // reach for the blank/error surface: `loading` replaces the WHOLE panel with
-  // one line, the scroll container collapses from ~4000px to one viewport, and
-  // the browser clamps scrollTop to the new maximum. When the content comes
-  // back the scroll position is gone — which is why removing a rule at the
-  // bottom of the page threw the user back to the top.
+  // True once the panel has content on screen. After that, a refresh must not reach for the blank/error surface: `loading` replaces the WHOLE panel with one line, the scroll container collapses from ~4000px to
+  // one viewport, and the browser clamps scrollTop to the new maximum. When the content comes back the scroll position is gone; which is why removing a rule at the bottom of the page threw the user back to the top.
   const hasLoadedRef = useRef(false);
 
   const fetchAll = useCallback(async () => {
@@ -477,8 +425,7 @@ export function PermissionsTab({
       }
       setMode(normalizeExecutionMode(modeRes.mode));
       setRequireExplicit(policyRes.requireExplicitApproval);
-      // Host-derived: `managed` alone misses an admin-dir file that does not
-      // set managed:true, which savePolicy still refuses to overwrite.
+      // Host-derived: `managed` alone misses an admin-dir file that does not set managed:true, which savePolicy still refuses to overwrite.
       setPolicyManaged(!policyRes.editable);
       setPolicySource((policyRes.source as "defaults" | "user" | "admin" | "merged") ?? "defaults");
       setPolicyAdminPath(policyRes.adminPath as string | undefined);
@@ -491,15 +438,13 @@ export function PermissionsTab({
       setSandboxEnabled(osSandboxOn);
       const workerConfinementOn = settingsRes.features?.pluginWorkerConfinement ?? false;
       setWorkerConfinementEnabled(workerConfinementOn);
-      // Mirrors the store default (ON) for a settings file written before the
-      // flag existed — normalization stamps it on the next write.
+      // Mirrors the store default (ON) for a settings file written before the flag existed; normalization stamps it on the next write.
       setAdjudicationEnabled(settingsRes.features?.subAgentParentAdjudication ?? true);
     } catch (e) {
       console.warn("[ave] permissions: load failed:", errorMessage(e));
       const message = t("permissionsTab.errorLoadFailed");
-      // Same rule for the failure surface. A refresh that fails still has the
-      // last-known state on screen, so it reports through the banner instead of
-      // replacing what the user is reading with an error page.
+      // Same rule for the failure surface. A refresh that fails still has the last-known state on screen,
+      // so it reports through the banner instead of replacing what the user is reading with an error page.
       if (hasLoadedRef.current) showBanner("error", message);
       else setError(message);
     } finally {
@@ -511,10 +456,8 @@ export function PermissionsTab({
   useEffect(() => { void fetchAll(); }, [fetchAll]);
 
   useEffect(() => {
-    // On win32 with either setting ON (or a reported home-privacy / helper
-    // failure), surface the consent/setup state so the panel persists across
-    // navigations until ready. Extension provisioning is separate from MXC
-    // shell readiness.
+    // On win32 with either setting ON (or a reported home-privacy / helper failure), surface the consent/setup state so
+    // the panel persists across navigations until ready. Extension provisioning is separate from MXC shell readiness.
     const windowsSetupRelevant = sandboxEnabled || workerConfinementEnabled ||
       sandboxCapability?.homePrivacyError !== undefined || bootReportsWindowsHelperFailure(sandboxCapability?.boot);
     if (sandboxCapability?.platform !== "win32" || !windowsSetupRelevant) {
@@ -606,13 +549,8 @@ export function PermissionsTab({
     }
   }, [exactDenyDraft, fetchApprovals, onExactDenySaved, showBanner]);
 
-  // Auto-refresh on cross-window directory/rule/user-approval config changes
-  // (persistent directory grants from the out-of-allowed-dir approval card, addRule/removeRule
-  // through PermissionManager SOT, userApprovalRecord/Revoke in another
-  // window). Refresh BOTH `fetchAll` (rules + directories + mode) AND
-  // `fetchApprovals` (active approvals) so every PermissionsTab section
-  // stays in sync — the broadcast is a single hint event covering all
-  // permission-state mutations.
+  // Auto-refresh on cross-window directory/rule/user-approval config changes (persistent directory grants from the out-of-allowed-dir approval card, addRule/removeRule through PermissionManager SOT, userApprovalRecord/Revoke in
+  // another window). Refresh BOTH `fetchAll` (rules + directories + mode) AND `fetchApprovals` (active approvals) so every PermissionsTab section stays in sync; the broadcast is a single hint event covering all permission-state mutations.
   useEffect(() => {
     const unsubscribe = window.ave?.permission?.onConfigChanged?.(() => {
       void fetchAll();
@@ -633,10 +571,8 @@ export function PermissionsTab({
     };
   }, [fetchAll]);
 
-  // Revoked at once for every scope, persistent included. Removing a stored
-  // decision destroys nothing and grants nothing: the next matching call simply
-  // follows the current policy and may ask again, which is the same position the
-  // user was in before they ever answered.
+  // Revoked at once for every scope, persistent included. Removing a stored decision destroys nothing and grants nothing: the next
+  // matching call simply follows the current policy and may ask again, which is the same position the user was in before they ever answered.
   const handleRevokeApproval = async (key: string, toolName: string) => {
     if (!window.ave?.userApproval) return;
     setApprovalsBusy(true);
@@ -765,12 +701,8 @@ export function PermissionsTab({
     }
   };
 
-  /**
-   * Write one ceiling of the parent-adjudication block. Every field goes
-   * through the reviewer slash dispatcher, which is the single writer for the
-   * permission settings file and rejects an out-of-range value rather than
-   * clamping it — so the form offers only values the store accepts.
-   */
+  /** Write one ceiling of the parent-adjudication block. Every field goes through the reviewer slash dispatcher, which is the single writer for
+   * the permission settings file and rejects an out-of-range value rather than clamping it; so the form offers only values the store accepts. */
   const handleAdjudicationChange = async (
     field:
       | "maxVerdict"
@@ -822,10 +754,8 @@ export function PermissionsTab({
     }
   };
 
-  // One write path for both confinement scopes. Each scope writes ONLY its own
-  // setting: the shell toggle writes `osToolSandbox`, the worker toggle writes
-  // `pluginWorkerConfinement`, and neither reads or changes the other's value
-  // beyond deciding whether the Windows setup panel stays open.
+  // One write path for both confinement scopes. Each scope writes ONLY its own setting: the shell toggle writes `osToolSandbox`, the worker toggle
+  // writes `pluginWorkerConfinement`, and neither reads or changes the other's value beyond deciding whether the Windows setup panel stays open.
   const toggleConfinementScope = async (scope: "shell" | "pluginWorkers") => {
     const isShell = scope === "shell";
     if (isShell ? sandboxBusy : workerConfinementBusy) return;
@@ -880,18 +810,13 @@ export function PermissionsTab({
     }
   };
 
-  // The ONLY user-consented privilege-escalation trigger. The OS sandbox is
-  // normally provisioned at app-install time (NSIS customInstall), so this is
-  // the manual REPAIR / re-provision path — invoked from an explicit
-  // "Re-provision" click inside the win32 panel, never automatically. Triggers
-  // ASRT's single self-elevating UAC prompt.
+  // The ONLY user-consented privilege-escalation trigger. The OS sandbox is normally provisioned at app-install time (NSIS customInstall), so this is the manual REPAIR
+  // / re-provision path; invoked from an explicit "Re-provision" click inside the win32 panel, never automatically. Triggers ASRT's single self-elevating UAC prompt.
   const handleWindowsInstall = async () => {
     if (windowsInstallBusy) return;
     setWindowsInstallOutcome(null);
-    // The install is invoked straight from the click: preload stamps the
-    // click's transient user activation onto the call, and that lapses after
-    // ~5 s. Main validates it at entry, then reads status (up to ~45 s) and
-    // raises the UAC prompt only when setup is needed (issue #1608).
+    // The install is invoked straight from the click: preload stamps the click's transient user activation onto the call, and that
+    // lapses after ~5 s. Main validates it at entry, then reads status (up to ~45 s) and raises the UAC prompt only when setup is needed ().
     setWindowsInstallPhase("installing");
     try {
       let view: WindowsInstallOutcomeView;
@@ -905,9 +830,8 @@ export function PermissionsTab({
       if (view.outcome === "refused") {
         console.warn("[ave] sandboxWindowsInstall refused:", view.errorCode ?? "rejected");
       }
-      // Shown whatever the status re-read says: an unchanged panel is exactly
-      // what made the click look like a no-op. The user's opt-in stays ON in
-      // every case, so the panel remains the place to retry.
+      // Shown whatever the status re-read says: an unchanged panel is exactly what made the click look
+      // like a no-op. The user's opt-in stays ON in every case, so the panel remains the place to retry.
       setWindowsInstallOutcome(view);
       setWindowsInstallPhase("refreshing");
       try {
@@ -1030,21 +954,17 @@ export function PermissionsTab({
 
   const sandboxPotentialReason = sandboxCapability?.potentialReason ?? sandboxCapability?.reason ?? "";
   const sandboxRuntimeReason = sandboxCapability?.runtime?.reason ?? "";
-  // The setting is on and the gate did not activate it this session. Distinct
-  // from the toggle being off — the user chose this and it did not take — and
-  // distinct from "restart to apply", which is what an unchanged gate would
-  // mean. A gate that never ran (`null`) is NOT reported as either.
+  // The setting is on and the gate did not activate it this session. Distinct from the toggle being off; the user chose this and it did not take;
+  // and distinct from "restart to apply", which is what an unchanged gate would mean. A gate that never ran (`null`) is NOT reported as either.
   const sandboxBoot = sandboxCapability?.boot ?? null;
-  // The host could not reconcile its own shell sandbox observations. Only the
-  // shell row reports it; the rest of the panel still renders the snapshot.
-  // The toggle stays usable: turning the setting off is what clears it.
+  // The host could not reconcile its own shell sandbox observations. Only the shell row reports it; the rest of
+  // the panel still renders the snapshot. The toggle stays usable: turning the setting off is what clears it.
   const shellStatusError = sandboxCapability?.shell?.state === "error";
   const sandboxDegraded =
     sandboxBoot !== null && (sandboxBoot.action === "degrade" || sandboxBoot.action === "abort");
   const windowsHelperRequested =
     sandboxEnabled || workerConfinementEnabled || bootReportsWindowsHelperFailure(sandboxBoot);
-  // Windows: which substrate carries shells and extensions this session.
-  // Shown whenever boot recorded one, so an unavailable MXC is never silent.
+  // Windows: which substrate carries shells and extensions this session. Shown whenever boot recorded one, so an unavailable MXC is never silent.
   const windowsSubstrate = sandboxCapability?.windowsSubstrate ?? null;
 
   return (
@@ -1578,9 +1498,7 @@ export function PermissionsTab({
               </p>
             ) : windowsStatus.userState !== "absent" ||
             windowsStatus.wfpState !== "absent" ? (
-              // Install partially ran or status cannot be fully read. Show the
-              // localized setup guidance and keep the explicit retry action
-              // available. Setup does not require signing out.
+              // Install partially ran or status cannot be fully read. Show the localized setup guidance and keep the explicit retry action available. Setup does not require signing out.
               <div
                 data-testid="os-sandbox-windows-setup-status"
                 className="space-y-2 rounded-md border border-info/(--opacity-medium) bg-info/(--opacity-soft) px-3 py-2 text-[11px] text-info"
@@ -1601,10 +1519,8 @@ export function PermissionsTab({
                 </Button>
               </div>
             ) : (
-              // Sandbox not ready (install-time provisioning was cancelled/failed
-              // or the app was not installed via the NSIS installer). REPAIR
-              // fallback: warning card + a "Re-provision" button. No auto-UAC —
-              // the user must click.
+              // Sandbox not ready (install-time provisioning was cancelled/failed or the app was not installed via the
+              // NSIS installer). REPAIR fallback: warning card + a "Re-provision" button. No auto-UAC; the user must click.
               <div
                 data-testid="os-sandbox-windows-consent"
                 className="space-y-2 rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning"

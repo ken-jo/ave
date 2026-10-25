@@ -1,48 +1,6 @@
-/**
- * Project instruction discovery — leaf module.
- *
- * Discovers the committed, team-shared instruction files of the active project
- * so they can be injected as a distinct layer BELOW the global personal
- * `~/.ave/AGENTS.md`.
- *
- * Chain. The walk starts at the repository root — the nearest ancestor of the
- * project root holding `.git` (a directory, or a file in a worktree), or the
- * project root itself when there is none — and goes down to the project root.
- * The climb is bounded by the home directory: a `.git` found at `$HOME` or
- * above it (a dotfiles repository, say) is not the project's repository, so
- * the walk then starts at the project root and `~/AGENTS.md` never loads as a
- * committed project file.
- * Each directory contributes at most one file: `AGENTS.md`, or `CLAUDE.md`
- * when `AGENTS.md` is absent or empty. Layers are ordered root-first, so the
- * file closest to the project root comes last and reads as the most specific.
- *
- * Subdirectories below the project root are not part of the launch chain;
- * {@link discoverDirectoryInstructions} reads one of them on demand when the
- * agent works with files there.
- *
- * Imports. A line may name another file as `@path` (relative to the file that
- * names it). Imports are appended after the importing file's own text, up to
- * {@link PROJECT_INSTRUCTIONS_MAX_IMPORT_DEPTH} hops, once each. Text inside
- * fenced code blocks and inline code spans is not scanned. An import must
- * resolve inside the repository root: committed files are shared content, and
- * a path out of the repository (an absolute path, `~`, or a symlink) would let
- * them pull arbitrary host files into the prompt. A path the host's sensitive
- * path policy denies for reading (`.env`, keys, credentials) is skipped even
- * inside the repository.
- *
- * Budget. The whole chain shares {@link PROJECT_AGENTS_MD_MAX_TOTAL_BYTES},
- * filled root-first: the layer that crosses the cap is head-clamped and the
- * layers after it are dropped.
- *
- * First touch. {@link discoverDirectoryInstructions} stops at a nested
- * repository (a directory holding `.git`, as a submodule or a third-party
- * clone does) and at `node_modules`, and skips files git ignores: what lies
- * there is not this project's committed text.
- *
- * Dependencies stay at node built-ins plus the sensitive-path policy leaf, so
- * this remains a memory-layer leaf with no upward dependency on engine/ or
- * prompts/.
- */
+/** Load root-first project instructions below personal guidance, stopping repository discovery at home and first-touch discovery at nested repos or dependencies.
+ * Each directory prefers nonempty AGENTS.md over CLAUDE.md; imports are depth-limited, unique, repository-contained, and sensitive-path checked.
+ * Ignore import syntax inside code and clamp the shared byte budget root-first. */
 import { execFileSync } from "node:child_process";
 import { closeSync, fstatSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
@@ -66,10 +24,7 @@ export interface ProjectAgentsMd {
   layers: ProjectAgentsMdLayer[];
   /** Total UTF-8 bytes of injected content, always <= maxTotalBytes. */
   totalBytes: number;
-  /**
-   * Every path whose change can change the result: each candidate file name
-   * in each chain directory (present or not) and each imported file read.
-   */
+  /** Every path whose change can change the result: each candidate file name in each chain directory (present or not) and each imported file read. */
   watchedPaths: string[];
 }
 
@@ -101,17 +56,13 @@ function utf8HeadSlice(text: string, maxBytes: number): string {
   const buf = Buffer.from(text, "utf-8");
   if (buf.length <= maxBytes) return text;
   let end = maxBytes;
-  // Back off while `end` lands on a continuation byte (10xxxxxx): slicing there
-  // would split a character. Stop on an ASCII/lead byte so [0, end) is clean.
+  // Back off while `end` lands on a continuation byte (10xxxxxx): slicing there would split a character. Stop on an ASCII/lead byte so [0, end) is clean.
   while (end > 0 && (buf[end] & 0xc0) === 0x80) end--;
   return buf.subarray(0, end).toString("utf-8");
 }
 
-/**
- * Read a regular file whose realpath stays inside `canonicalRoot`. Returns
- * null for absent, non-regular, escaping or unreadable files — the expected
- * filesystem cases of discovery, all of which mean "no file here".
- */
+/** Read a regular file whose realpath stays inside `canonicalRoot`. Returns null for absent, non-regular,
+ * escaping or unreadable files; the expected filesystem cases of discovery, all of which mean "no file here". */
 function readConfinedFile(canonicalRoot: string, path: string): { canonicalPath: string; text: string } | null {
   const canonicalPath = canonical(path);
   if (!canonicalPath || !isWithin(canonicalRoot, canonicalPath)) return null;
@@ -119,7 +70,7 @@ function readConfinedFile(canonicalRoot: string, path: string): { canonicalPath:
   let fd: number | null = null;
   try {
     fd = openSync(canonicalPath, "r");
-    if (!fstatSync(fd).isFile()) return null; // EISDIR / socket / fifo — not an instruction file
+    if (!fstatSync(fd).isFile()) return null; // EISDIR / socket / fifo; not an instruction file
     return { canonicalPath, text: readFileSync(fd, "utf-8").replace(/\r\n/g, "\n") };
   } catch {
     return null;
@@ -172,11 +123,7 @@ function expandImports(
   return parts.join("\n\n");
 }
 
-/**
- * The instruction file of one directory with its imports, or null when the
- * directory has none. `seen` carries files already included elsewhere so a
- * file is never injected twice.
- */
+/** The instruction file of one directory with its imports, or null when the directory has none. `seen` carries files already included elsewhere so a file is never injected twice. */
 function directoryLayer(
   canonicalRoot: string,
   dir: string,
@@ -212,11 +159,8 @@ function canonicalHome(): string | null {
   return canonical(expandLeadingTilde("~"));
 }
 
-/**
- * Nearest ancestor of `start` (inclusive) holding `.git`, or `start` when none
- * does. A repository at `home` or above it is not taken: there the walk would
- * leave the project for the user's own files, so `start` is the root instead.
- */
+/** Nearest ancestor of `start` (inclusive) holding `.git`, or `start` when none does. A repository at `home` or above
+ * it is not taken: there the walk would leave the project for the user's own files, so `start` is the root instead. */
 function repositoryRoot(start: string, home: string | null): string {
   let dir = start;
   for (;;) {
@@ -241,11 +185,8 @@ function chainDirectories(top: string, bottom: string): string[] {
   return dirs;
 }
 
-/**
- * Discover the committed instruction chain for `projectRoot`. Returns empty
- * `layers` when no directory on the chain has a usable file. Never throws for
- * the expected filesystem cases.
- */
+/** Discover the committed instruction chain for `projectRoot`. Returns empty `layers` when no
+ * directory on the chain has a usable file. Never throws for the expected filesystem cases. */
 export function discoverProjectAgentsMd(
   projectRoot: string,
   opts: { maxTotalBytes?: number; homeDir?: string } = {},
@@ -265,8 +206,7 @@ export function discoverProjectAgentsMd(
   const layers: ProjectAgentsMdLayer[] = [];
   let totalBytes = 0;
   for (const layer of found) {
-    // Several layers are joined into one block; a source line keeps each one's
-    // origin, and with it which one is closest, readable.
+    // Several layers are joined into one block; a source line keeps each one's origin, and with it which one is closest, readable.
     const text = found.length > 1
       ? `<!-- instructions: ${layer.relativePath} -->\n${layer.content}`
       : layer.content;
@@ -281,18 +221,11 @@ export function discoverProjectAgentsMd(
   return { projectRoot: root, layers, totalBytes, watchedPaths: [...watched] };
 }
 
-/**
- * Session-scoped memo of git's ignore verdicts, keyed by repository root and
- * path. The owner (the conversation loop) clears it on a session switch.
- */
+/** Session-scoped memo of git's ignore verdicts, keyed by repository root and path. The owner (the conversation loop) clears it on a session switch. */
 export type GitIgnoreVerdicts = Map<string, boolean>;
 
-/**
- * Whether git reports `path` as ignored in the repository at `repoRoot`, asked
- * once per `verdicts` lifetime. The query is synchronous because its caller
- * appends to a tool result in the same pass; the memo keeps repeated touches
- * of an ignored directory from spawning git each time.
- */
+/** Whether git reports `path` as ignored in the repository at `repoRoot`, asked once per `verdicts` lifetime. The query is synchronous because
+ * its caller appends to a tool result in the same pass; the memo keeps repeated touches of an ignored directory from spawning git each time. */
 function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts | undefined): boolean {
   // An unsettled sandbox write is temporary, so do not cache its conservative answer.
   if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
@@ -304,12 +237,8 @@ function gitIgnores(repoRoot: string, path: string, verdicts: GitIgnoreVerdicts 
   return verdict;
 }
 
-/**
- * Whether git reports `path` as ignored in the repository at `repoRoot`. A
- * tracked file is never reported. Any failure to ask (no git, not a
- * repository) reads as "not ignored": the nested-repository and
- * `node_modules` stops still hold without git.
- */
+/** Whether git reports `path` as ignored in the repository at `repoRoot`. A tracked file is never reported. Any failure to ask
+ * (no git, not a repository) reads as "not ignored": the nested-repository and `node_modules` stops still hold without git. */
 function askGitIgnores(repoRoot: string, path: string): boolean {
   if (!isHostGitWorkspaceAvailable(repoRoot)) return false;
   if (!hasGitEntry(repoRoot)) return false;
@@ -329,17 +258,8 @@ function askGitIgnores(repoRoot: string, path: string): boolean {
   }
 }
 
-/**
- * Instruction files for directories BELOW `projectRoot` on the way to
- * `targetPath` (a file or directory the agent touched; relative paths resolve
- * against the project root), root-first, skipping any whose `relativePath`
- * is already in `attached`. Each layer is capped at the project budget. A
- * target outside the project root, or the root itself, yields nothing.
- *
- * The descent stops at the first directory that is `node_modules` or holds
- * `.git` (a nested repository or submodule): instruction files from there down
- * belong to another project. A file git ignores is skipped.
- */
+/** Instruction files for directories BELOW `projectRoot` on the way to `targetPath` (a file or directory the agent touched; relative paths resolve against the project root), root-first, skipping any whose `relativePath` is already in `attached`. Each layer is capped at the project
+ * budget. A target outside the project root, or the root itself, yields nothing. The descent stops at the first directory that is `node_modules` or holds `.git` (a nested repository or submodule): instruction files from there down belong to another project. A file git ignores is skipped. */
 export function discoverDirectoryInstructions(
   projectRoot: string,
   targetPath: string,

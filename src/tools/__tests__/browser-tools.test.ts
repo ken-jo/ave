@@ -1,12 +1,5 @@
-/**
- * The agent browser tools through the real ToolExecutor, PermissionManager,
- * ApprovalGate and approval store, over the real main-side tab registry with
- * fake guests and fake page actions.
- *
- * Covers who is asked when (agent tab vs user tab, per origin, per action),
- * the TOCTOU re-check, window scope, denied schemes, the untrusted-content
- * fence, and user takeover cancelling a pending action.
- */
+/** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers
+ * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -143,11 +136,8 @@ describe("browser tools", () => {
     await cleanupTmpDir(aveHomeDir);
   });
 
-  /**
-   * Window 1 hosts the conversation (and its child); window 2 hosts another.
-   * Every card is answered allow, remembered for the session when the card
-   * allows remembering. `onCard` runs while the card is open.
-   */
+  /** Window 1 hosts the conversation (and its child); window 2 hosts another. Every card is answered
+   * allow, remembered for the session when the card allows remembering. `onCard` runs while the card is open. */
   function harness(options: {
     onCard?: (card: ApprovalRequest) => void;
     beforeActions?: () => void | Promise<void>;

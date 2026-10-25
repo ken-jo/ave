@@ -1,10 +1,5 @@
-/**
- * The installed-content IPC (blueprint P3): the `ave-content:` handler is
- * registered with the IPC handlers, before any window loads (a frame binds
- * its scheme loaders when it commits); nothing is loaded until the renderer
- * or an asset request first asks, the load runs once, and a failed load
- * answers "unavailable" (IPC) or 404 (assets) instead of throwing.
- */
+/** The installed-content IPC (blueprint P3): the `ave-content:` handler is registered with the IPC handlers, before any window loads (a frame binds its scheme loaders when it
+ * commits); nothing is loaded until the renderer or an asset request first asks, the load runs once, and a failed load answers "unavailable" (IPC) or 404 (assets) instead of throwing. */
 import { mkdtempSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

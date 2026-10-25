@@ -1,7 +1,5 @@
 import { terminalSessionFixture } from "../../__tests__/support/terminal-session-fixtures.js";
-/**
- * terminal_run: type one approved command into a terminal the user can see.
- */
+/** terminal_run: type one approved command into a terminal the user can see. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createTerminalRunTool,
@@ -303,9 +301,7 @@ describe("terminal_run", () => {
       expect(deps.typed).toEqual([]);
     });
 
-    // Each of these reads differently to the permission rules (bash) than to
-    // the terminal's interactive zsh, hides from the card, or outlives the
-    // command in the user's shell.
+    // Each of these reads differently to the permission rules (bash) than to the terminal's interactive zsh, hides from the card, or outlives the command in the user's shell.
     it.each([
       ["a # comment zsh may run as text", "echo SAFE # ; echo PWNED", /# comment/],
       ["a # comment hiding an rm", "ls # ; rm -rf build", /# comment/],

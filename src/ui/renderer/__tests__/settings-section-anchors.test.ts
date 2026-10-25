@@ -1,18 +1,5 @@
-/**
- * `SETTINGS_SECTIONS` and the DOM must name the same places.
- *
- * The registry is what a marketplace announcement and a plugin manifest are
- * validated against; the `data-settings-section` attributes are what arrival
- * actually looks for. Nothing at runtime notices when the two drift: a registry
- * id with no anchor validates fine and then lands the reader at the top of the
- * page, and an anchor missing from the registry is a place every link to it is
- * rejected. Both failures are silent, and both are what an ordinary rename of a
- * settings section produces.
- *
- * A source scan rather than a render, because these tabs pull live IPC on
- * mount: a render deep enough to prove the attribute is present would be
- * proving the mocks instead.
- */
+/** Scan source anchors against the settings registry in both directions so renamed sections cannot silently break links.
+ * Rendering these IPC-heavy tabs would mostly verify mocks. */
 import { describe, expect, it } from "vitest";
 import { readFileSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -98,9 +85,8 @@ describe("settings section anchors", () => {
   });
 
   it("puts no anchor outside the tab bodies the map covers", () => {
-    // The map above is the claim that a section belongs to ONE tab. An anchor
-    // written into a component no tab's list reaches would satisfy both checks
-    // above by never being read at all.
+    // The map above is the claim that a section belongs to ONE tab. An anchor written into a
+    // component no tab's list reaches would satisfy both checks above by never being read at all.
     const mapped = new Set<string>(Object.values(TAB_SOURCES).flatMap((files) => [...files]));
     const stray = rendererSources()
       .filter((file) => !mapped.has(file))

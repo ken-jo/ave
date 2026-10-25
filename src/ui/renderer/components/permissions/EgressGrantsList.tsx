@@ -1,13 +1,5 @@
-/**
- * Settings → Permissions → Network: the hosts a sandboxed shell may reach
- * without asking because someone chose "This conversation", "This tab" (a
- * workspace terminal), "This workspace" or "Always" on an egress ask, each
- * with a Revoke button. A workspace or always grant names its origin (agent
- * shell calls or workspace terminals): it covers only that origin. Revoking also
- * closes the connections that grant let through that are still open. "Allow
- * once" grants end with their call and are not listed. Plugin workers never
- * use these grants.
- */
+/** Settings → Permissions → Network: the hosts a sandboxed shell may reach without asking because someone chose "This conversation", "This tab" (a workspace terminal), "This workspace" or "Always" on an egress ask, each with a Revoke button. A workspace or always grant
+ * names its origin (agent shell calls or workspace terminals): it covers only that origin. Revoking also closes the connections that grant let through that are still open. "Allow once" grants end with their call and are not listed. Plugin workers never use these grants. */
 import { useCallback, useEffect, useState, type ReactElement } from "react";
 import { Button } from "../../../../components/ui/button.js";
 import { useTranslation } from "../../../../i18n/react.js";

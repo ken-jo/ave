@@ -11,8 +11,7 @@ function propertyName(property: string): string | undefined {
 
 function isUnavailableMetadata(metadata: string): boolean {
   const properties = metadata.split(",").map((property) => property.trim()).filter(Boolean);
-  // Spreads, computed keys and other nonliteral properties can overwrite any
-  // field. Each required verdict must occur after the last such write.
+  // Spreads, computed keys and other nonliteral properties can overwrite any field. Each required verdict must occur after the last such write.
   const lastUnknownWrite = properties.findLastIndex((property) => propertyName(property) === undefined);
   const expected = {
     sandboxed: /^sandboxed\s*:\s*false$/,

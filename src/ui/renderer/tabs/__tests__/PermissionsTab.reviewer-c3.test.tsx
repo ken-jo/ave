@@ -1,9 +1,5 @@
-/**
- * Permission policy C3 — hidden Settings reviewer controls.
- *
- * Provider/model are no longer reviewer-local controls. In Settings, auto mode
- * exposes the read-only prompt panel only; reviewer config stays slash/internal.
- */
+/** Permission policy hidden Settings reviewer controls. Provider/model are no longer reviewer-local
+ * controls. In Settings, auto mode exposes the read-only prompt panel only; reviewer config stays slash/internal. */
 import "../../../../../test/renderer/setup.js";
 import { MOCK_REVIEWER_PARENT_ADJUDICATION, installMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
@@ -28,8 +24,7 @@ function installApi() {
     permission: {
       egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
       egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
-      // The reviewer config only renders under the auto-verification mode now
-      // that the permission UI exposes a single axis.
+      // The reviewer config only renders under the auto-verification mode now that the permission UI exposes a single axis.
       getMode: vi.fn(async () => ({ mode: "auto" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),
@@ -114,8 +109,7 @@ function installApi() {
   };
 
   (globalThis as unknown as { window: typeof window }).window.ave = ave as never;
-  // The tab subscribes to settings changes and reads the env-forced set on
-  // mount, so it needs a real api double rather than a bare object.
+  // The tab subscribes to settings changes and reads the env-forced set on mount, so it needs a real api double rather than a bare object.
   installMockAveApi({ settings: { features: { osToolSandbox: false } } });
   return ave;
 }

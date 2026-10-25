@@ -24,8 +24,7 @@ function installApi(opts: { mode: "llm" | "rule"; degraded: boolean }) {
     permission: {
       egressGrantsList: vi.fn(async () => ({ ok: true as const, grants: [] })),
       egressGrantRevoke: vi.fn(async () => ({ ok: true as const })),
-      // The reviewer config (and its degrade banner) only renders under the
-      // auto-verification mode now that the permission UI has a single axis.
+      // The reviewer config (and its degrade banner) only renders under the auto-verification mode now that the permission UI has a single axis.
       getMode: vi.fn(async () => ({ mode: "auto" })),
       setMode: vi.fn(async (mode: string) => ({ ok: true, mode })),
       onModeChanged: vi.fn(() => () => undefined),

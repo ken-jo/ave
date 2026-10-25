@@ -1,21 +1,5 @@
-/**
- * The shell floors (credential exfiltration, sensitive path) apply to every
- * host shell that executes a command string, not only to `bash`.
- *
- * Drives the real `ToolExecutor` with the real `BashTool` / `PowerShellTool`
- * and a real `PermissionManager` in `allow` mode. Benign calls use a confined
- * execution-plan fixture; plain calls need an exact rule. The handler refuses, so a
- * floored call never reaches `execute`, and an unfloored one does (its
- * `execute` is stubbed — no shell is spawned).
- *
- * The PowerShell path policy needs a `pwsh` AST parse, which CI hosts do not
- * have (it fails closed there). It is stubbed to "no violation" — the state
- * of a Windows host for a command whose operands are inside the working
- * directory — so the permission decision is what these tests observe. The
- * uploaded files are ordinary project files on purpose: a sensitive operand
- * is also refused later by the path policy, but an upload of `notes.txt` is
- * caught by nothing except the exfiltration floor.
- */
+/** Credential and exfiltration floors apply to every host command-string shell, even in allow mode and for ordinary project-file uploads.
+ * Mock the unavailable platform parser and execution so these tests isolate permission decisions without spawning shells. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";

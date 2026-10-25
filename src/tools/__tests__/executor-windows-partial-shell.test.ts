@@ -2,11 +2,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({ execFileSync: vi.fn() }));
 
-// The executor prepares the bash invocation before routing, which probes a
-// Bash for the simulated platform. A darwin or linux probe cannot find
-// /bin/bash on a Windows host, and the resolver caches that failure for every
-// later case, so answer both probes here: these cases test routing and
-// approval, not host shell discovery. No shell child is started.
+// The executor prepares the bash invocation before routing, which probes a Bash for the simulated platform. A darwin or linux probe cannot find /bin/bash on a Windows host, and
+// the resolver caches that failure for every later case, so answer both probes here: these cases test routing and approval, not host shell discovery. No shell child is started.
 vi.mock("node:child_process", async (importOriginal) => ({
   ...await importOriginal<typeof import("node:child_process")>(),
   execFileSync: childProcessMock.execFileSync,
@@ -207,8 +204,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(executed).not.toHaveBeenCalled();
   });
 
-  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is
-  // denied and audited, even when a rule would allow it in the foreground.
+  // I5 (owner 2026-10-16): with nobody to answer, an explicit host request is denied and audited, even when a rule would allow it in the foreground.
   it("denies and audits a headless explicit host request despite an ordinary allow", async () => {
     fullDarwinAsrt();
     const audit = recordingAuditLogger();
@@ -382,8 +378,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const cards = sentApprovalCards<ApprovalRequest>({ send } as never);
     expect(cards).toHaveLength(1);
     const rendererApproval = cards[0]!;
-    // Canonical host shells expose only the sealed, allowlist projection. The
-    // raw capability carries a free-form host reason and must never cross IPC.
+    // Canonical host shells expose only the sealed, allowlist projection. The raw capability carries a free-form host reason and must never cross IPC.
     expect(rendererApproval.sandboxCapability).toBeUndefined();
     expect(rendererApproval.executionPlan).toMatchObject({
       mode: "plain",
@@ -503,8 +498,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const registry = new ToolRegistry();
     registry.register(shellProbe(execute));
     let request: ApprovalRequest | undefined;
-    // This imitates an untrusted/stale gate response: it says allow-once but
-    // carries no host-issued receipt bound to the private action description.
+    // This imitates an untrusted/stale gate response: it says allow-once but carries no host-issued receipt bound to the private action description.
     const requestAndWait = vi.fn(async (pending: ApprovalRequest) => {
       request = pending;
       return { requestId: pending.id, choice: "allow-once" as const };
@@ -607,10 +601,8 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     expect(result[0]?.is_error).toBe(true);
   });
 
-  // Design I3 (owner 2026-10-16): a requested-but-unavailable sandbox warns
-  // and continues under the normal rules — reviewer, approval memory and allow
-  // decisions included — exactly like sandbox-off, while the sealed plan keeps
-  // `requested-sandbox-unavailable` so the card, result and audit can say so.
+  // Design I3 (owner 2026-10-16): a requested-but-unavailable sandbox warns and continues under the normal rules; reviewer, approval memory and allow
+  // decisions included; exactly like sandbox-off, while the sealed plan keeps `requested-sandbox-unavailable` so the card, result and audit can say so.
   it.each(["darwin", "linux", "win32"] as const)(
     "routes requested-unavailable %s shells through the normal reviewer lane with the fallback recorded",
     async (platform) => {
@@ -670,8 +662,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     },
   );
 
-  // Design I3 (owner 2026-10-16): an unavailable requested sandbox runs under
-  // the normal rules with no one-shot permit. #90 expected a permit here.
+  // Design I3 (owner 2026-10-16): an unavailable requested sandbox runs under the normal rules with no one-shot permit. #90 expected a permit here.
   it.each(["darwin", "linux", "win32"] as const)(
     "runs requested-unavailable %s shells on an ordinary allow without a card or permit",
     async (platform) => {

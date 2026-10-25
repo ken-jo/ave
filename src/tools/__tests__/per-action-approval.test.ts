@@ -1,15 +1,5 @@
-/**
- * `requiresPerActionApproval` and the authorized-scope handoff.
- *
- * A builtin that marks an input per-action keeps every ask a person's
- * decision: the foreground reviewer never answers it, no remembered approval
- * skips it, and the card is a one-shot allow-once / deny-once that records
- * nothing. The executor also hands every tool the target-wide scope it was
- * authorized under, so a tool whose target can move (a browser tab) can
- * re-check it at execute time.
- *
- * Drives the real ToolExecutor + PermissionManager + ApprovalGate + store.
- */
+/** Per-action asks always require one-shot human approval with no memory reuse or recording.
+ * Pass the authorized target scope to execution so moving targets can recheck it. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -62,11 +52,8 @@ describe("per-action approval and the authorized scope", () => {
     await cleanupTmpDir(aveHomeDir);
   });
 
-  /**
-   * A reviewer that grades everything MEDIUM with interactive auto-approve on:
-   * an ordinary ask never reaches a card. Each card that does appear is
-   * answered "remember for the session" when the host allows remembering.
-   */
+  /** A reviewer that grades everything MEDIUM with interactive auto-approve on: an ordinary ask never reaches a
+   * card. Each card that does appear is answered "remember for the session" when the host allows remembering. */
   function harness(tools: Tool[], autoApprove: "off" | "medium" = "medium") {
     const registry = new ToolRegistry();
     for (const tool of tools) registry.register(tool);

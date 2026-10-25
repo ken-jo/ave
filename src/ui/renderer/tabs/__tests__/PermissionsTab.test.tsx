@@ -6,8 +6,7 @@ import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup } from "@testing-library/react";
 
-// The real preload surface is used by the issue #1608 gesture test below; its
-// ipcRenderer is routed to a fake main per test.
+// The real preload surface is used by the gesture test below; its ipcRenderer is routed to a fake main per test.
 const { ipcInvoke, mainHandlers } = vi.hoisted(() => ({
   ipcInvoke: vi.fn(),
   mainHandlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -35,11 +34,8 @@ import { PERMISSIONS } from "../../../../shared/ipc-channels.js";
 import { hostFrameEvent } from "../../../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../../../__tests__/support/process-platform.js";
 
-/**
- * Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable`
- * from the real predicate. Built here the same way so a renderer that goes back
- * to reading `managed` directly fails these tests.
- */
+/** Mirrors the `PERMISSIONS.policyGet` handler: the host attaches `editable` from the real predicate.
+ * Built here the same way so a renderer that goes back to reading `managed` directly fails these tests. */
 function policyGetPayload(loaded: {
   requireExplicitApproval: boolean;
   managed: boolean;
@@ -390,9 +386,8 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByRole("button", { name: t("permissionsTab.auditLogOpenButton") }));
     });
 
-    // The log is a region of THIS section: it takes the pane's width and pushes
-    // what follows down. It is not a panel fixed to the window edge, which
-    // covered the tiles beside the Settings pane and the title bar.
+    // The log is a region of THIS section: it takes the pane's width and pushes what follows down. It is not
+    // a panel fixed to the window edge, which covered the tiles beside the Settings pane and the title bar.
     const panel = await waitFor(() => {
       const el = section.querySelector<HTMLElement>('[data-testid="audit-panel"]');
       expect(el).not.toBeNull();
@@ -466,9 +461,7 @@ describe("PermissionsTab hook quarantine notice", () => {
 
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
-    // Round-2 test-engineer MAJOR — exec-mode-auto must ALSO fire the
-    // `interactive medium` dispatch so the global LOW+MEDIUM threshold stays
-    // coupled to the legacy `auto` UX.
+    // Round-2 test-engineer MAJOR; exec-mode-auto must ALSO fire the `interactive medium` dispatch so the global LOW+MEDIUM threshold stays coupled to the legacy `auto` UX.
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("interactive medium");
     expect(api.permission.setMode.mock.invocationCallOrder[0]).toBeLessThan(
       api.permission.reviewerDispatch.mock.invocationCallOrder.at(-1)!,
@@ -799,8 +792,7 @@ describe("PermissionsTab hook quarantine notice", () => {
       fireEvent.click(screen.getByTestId(execModeTestId("auto")));
     });
 
-    // The exec mode switch succeeds, but the auto-wired `mode llm` reviewer
-    // dispatch fails → surface the rewire-failure banner.
+    // The exec mode switch succeeds, but the auto-wired `mode llm` reviewer dispatch fails → surface the rewire-failure banner.
     expect(api.permission.setMode).toHaveBeenCalledWith("auto");
     expect(api.permission.reviewerDispatch).toHaveBeenCalledWith("mode llm");
     expect(screen.getByText(/이전 설정으로 복원했습니다/)).toBeTruthy();
@@ -966,7 +958,7 @@ describe("PermissionsTab hook quarantine notice", () => {
   it("renders only the prompt panel when mode=auto + interactive.autoApprove=off", async () => {
     const api = installApi([[]]);
     api.permission.getMode.mockResolvedValueOnce({ mode: "auto" });
-    // Note: reviewerDispatch("show") default returns interactive.autoApprove="off".
+    // reviewerDispatch("show") default returns interactive.autoApprove="off".
     await act(async () => {
       render(<PermissionsTab />);
     });
@@ -983,8 +975,7 @@ describe("PermissionsTab hook quarantine notice", () => {
     await act(async () => {
       render(<PermissionsTab />);
     });
-    // Single-axis: the reviewer config only exists under 자동 검증, so strict
-    // shows no reviewer section and none of its banners.
+    // Single-axis: the reviewer config only exists under 자동 검증, so strict shows no reviewer section and none of its banners.
     expect(screen.queryByTestId("reviewer-framework-panel")).toBeNull();
     expect(screen.queryByTestId("permissions-legacy-auto-mode-banner")).toBeNull();
   });
@@ -1021,9 +1012,8 @@ describe("PermissionsTab — explicit-approval policy editability", () => {
     expect(screen.queryByTitle("IT 관리자 설정")).toBeNull();
   });
 
-  // The case the `managed` flag alone gets wrong: an admin-dir policy that
-  // pins requireExplicitApproval without claiming `managed`. loadPolicy returns
-  // managed:false + source:"admin", savePolicy still refuses every write.
+  // The case the `managed` flag alone gets wrong: an admin-dir policy that pins requireExplicitApproval without
+  // claiming `managed`. loadPolicy returns managed:false + source:"admin", savePolicy still refuses every write.
   it("locks the checkbox for an admin-dir policy that does not set managed:true", async () => {
     const api = installApi([[]]);
     api.policy.get.mockResolvedValueOnce(policyGetPayload({
@@ -1219,9 +1209,8 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
   });
 
   it("says the environment is deciding the sandbox when the variable is set", async () => {
-    // `AVE_SANDBOX_ENABLED=1` is OR-ed with the setting at boot, so without
-    // this line the toggle reads "off" while the sandbox is on, and turning it
-    // off again does nothing — a control that lies about the running app.
+    // `AVE_SANDBOX_ENABLED=1` is OR-ed with the setting at boot, so without this line the toggle reads "off"
+    // while the sandbox is on, and turning it off again does nothing; a control that lies about the running app.
     installApi([[]], ["features.osToolSandbox"]);
 
     await act(async () => {
@@ -1231,8 +1220,7 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
     await waitFor(() => {
       expect(screen.getByTestId("os-sandbox-forced")).toHaveTextContent("AVE_SANDBOX_ENABLED");
     });
-    // The control stays usable: the stored value still decides the next run
-    // launched without the variable.
+    // The control stays usable: the stored value still decides the next run launched without the variable.
     expect(screen.getByTestId("os-sandbox-toggle")).not.toBeDisabled();
   });
 
@@ -1275,12 +1263,8 @@ describe("PermissionsTab — OS sandbox toggle and capability rendering", () => 
 });
 
 describe("PermissionsTab — handleWindowsInstall error-shape robustness", () => {
-  /**
-   * When sandboxWindowsInstall returns an error shape (ok: false), the handler
-   * must keep the user's opt-in setting enabled and keep the consent panel
-   * visible so the install can be retried. The UI surfaces the error separately
-   * from the persisted desire to enable ASRT.
-   */
+  /** When sandboxWindowsInstall returns an error shape (ok: false), the handler must keep the user's opt-in setting enabled and keep the
+   * consent panel visible so the install can be retried. The UI surfaces the error separately from the persisted desire to enable ASRT. */
   function installApiWithWindows(overrides: {
     sandboxWindowsInstall?: ReturnType<typeof vi.fn>;
     sandboxWindowsStatus?: ReturnType<typeof vi.fn>;
@@ -1630,12 +1614,10 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
       fireEvent.click(screen.getByText("재설정"));
     });
 
-    // osToolSandbox must not be reverted to false; the user opted in and the
-    // consent panel remains the place to retry/follow instructions.
+    // osToolSandbox must not be reverted to false; the user opted in and the consent panel remains the place to retry/follow instructions.
     expect(updateSettings).not.toHaveBeenCalledWith({ features: { osToolSandbox: false } });
 
-    // The refusal is visible and localized; main's free text (srt-win output,
-    // local paths with the user name) is not on screen.
+    // The refusal is visible and localized; main's free text (srt-win output, local paths with the user name) is not on screen.
     const outcome = screen.getByTestId("os-sandbox-windows-install-outcome");
     expect(outcome).toHaveAttribute("data-outcome", "refused");
     expect(outcome).toHaveTextContent("Windows 샌드박스 설정 오류:");
@@ -1664,9 +1646,8 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     expect(screen.getByTestId("os-sandbox-windows-consent")).toBeTruthy();
   });
 
-  // Issue #1608: the click must always end in a visible state of its own. The
-  // status mock returns the same not-ready snapshot before and after, which is
-  // exactly when the old handler left the panel looking untouched.
+  // the click must always end in a visible state of its own. The status mock returns the same not-ready
+  // snapshot before and after, which is exactly when the old handler left the panel looking untouched.
   async function clickInstall(result: () => Promise<unknown>) {
     const api = installApiWithWindows({ sandboxWindowsInstall: vi.fn(result) });
     await act(async () => {
@@ -1925,8 +1906,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
   });
 
   describe("through the real preload surface (issue #1608 gesture expiry)", () => {
-    // Electron 44 measured: navigator.userActivation.isActive is true ~4.8 s
-    // after a click and false by ~5.3 s. The fake keeps that window.
+    // Electron 44 measured: navigator.userActivation.isActive is true ~4.8 s after a click and false by ~5.3 s. The fake keeps that window.
     const ACTIVATION_WINDOW_MS = 5_000;
     // Slower than the window: a real status read is up to ~45 s.
     const STATUS_READ_MS = 6_000;
@@ -2033,8 +2013,7 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
 });
 
 describe("PermissionsTab — failures never put raw text on screen", () => {
-  // What main's free-text messages and thrown errors can carry: English
-  // internals and local paths with the user's account name.
+  // What main's free-text messages and thrown errors can carry: English internals and local paths with the user's account name.
   const RAW = String.raw`EACCES: open C:\Users\example\AppData\Local\ave\settings.json`;
 
   async function renderTab() {
@@ -2114,8 +2093,7 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
     warn.mockRestore();
   });
 
-  // The slash-backed directory dispatch puts chat-oriented English, or a bare
-  // IPC code, in `error` itself.
+  // The slash-backed directory dispatch puts chat-oriented English, or a bare IPC code, in `error` itself.
   function dirDispatchFailing(failure: { add?: unknown; remove?: unknown }) {
     const api = installApi([[]]);
     mock(api.permission.dirDispatch).mockImplementation(async (rawArgs: string) => {
@@ -2215,17 +2193,8 @@ describe("PermissionsTab — failures never put raw text on screen", () => {
   });
 });
 
-/**
- * A refresh must not blank the panel.
- *
- * Every rule/directory mutation broadcasts a permission-config-changed hint,
- * and this tab answers it by re-running `fetchAll`. While `loading` was true
- * for THAT fetch too, the whole panel collapsed to a single "loading" line —
- * the scroll container went from thousands of pixels to one viewport, the
- * browser clamped scrollTop to the new maximum, and the position was gone by
- * the time the content came back. Measured on the real app: removing a rule
- * near the bottom took the scroll container from 1562 to 8.
- */
+/** A refresh must not blank the panel. Every rule/directory mutation broadcasts a permission-config-changed hint, and this tab answers it by re-running `fetchAll`. While `loading` was true for THAT fetch too, the whole panel collapsed to a single "loading" line; the
+ * scroll container went from thousands of pixels to one viewport, the browser clamped scrollTop to the new maximum, and the position was gone by the time the content came back. Measured on the real app: removing a rule near the bottom took the scroll container from 1562 to 8. */
 describe("PermissionsTab background refresh", () => {
   it("keeps the loaded panel on screen while a config-change refresh runs", async () => {
     const api = installApi([[], []]);
@@ -2280,10 +2249,8 @@ describe("PermissionsTab background refresh", () => {
 
 describe("PermissionsTab — revoking a stored approval", () => {
   it("revokes a persistent decision at once, with nothing to confirm", async () => {
-    // Removing a stored decision destroys nothing and grants nothing: the next
-    // matching call follows the current policy and may ask again. A browser
-    // confirm here blocked the renderer thread to ask about an action that was
-    // already reversible by re-answering the prompt.
+    // Removing a stored decision destroys nothing and grants nothing: the next matching call follows the current policy and may ask
+    // again. A browser confirm here blocked the renderer thread to ask about an action that was already reversible by re-answering the prompt.
     const confirm = vi.spyOn(window, "confirm");
     try {
       const api = installApi([[]]);

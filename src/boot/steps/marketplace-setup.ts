@@ -1,12 +1,4 @@
-/**
- * Boot step — the plugin store and its live-refresh closures (extracted from
- * boot.ts C18).
- *
- * Constructs the PluginMarketplaceService — the plugin install/uninstall
- * transactions the git marketplace drives (design §16.2) — and wires the
- * live-refresh closures the settings IPC handlers invoke: the active-LLM
- * wildcard config push and the sandbox network-policy refresh.
- */
+/** Wire marketplace transactions and live configuration refreshes for settings changes. */
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { PluginMarketplaceService } from "../../plugins/marketplace.js";
@@ -19,17 +11,10 @@ import { aveHome } from "../../shared/ave-home.js";
 
 const log = createLogger("ave");
 
-/**
- * What the retired server marketplace left on disk (design §16.2): the signed
- * admission, whitelist and revocation documents under `userData`, the catalog
- * cache, and the tarball cache and verified downloads of each package tree it
- * installed into. Nothing reads them any more.
- */
+/** Remove unused signed documents, catalogs, and package/download caches from the retired server marketplace. */
 export function retiredMarketplaceCachePaths(input: {
   userDataPath: string;
-  /** `~/.ave`. */
   home: string;
-  /** `~/.ave/plugins/.cache`. */
   pluginCacheRoot: string;
 }): string[] {
   const packageCacheRoots = [
@@ -45,7 +30,7 @@ export function retiredMarketplaceCachePaths(input: {
   ];
 }
 
-/** Best effort: a path that cannot be removed now is tried again next boot. */
+/** Removal is best effort; retry failures on the next boot. */
 export async function removeRetiredMarketplaceCaches(paths: readonly string[]): Promise<void> {
   await Promise.all(paths.map(async (path) => {
     try {
@@ -71,25 +56,8 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
     pluginCacheRoot: pluginPaths.cacheRoot,
   }));
 
-  // #893 — Push the active LLM vendor id into the plugin runtime's wildcard
-  // configOverrides slot. Plugins read this via
-  // `hostApi.config.get("hostApiVendor")` so a plugin that needs an LLM call
-  // doesn't have to ship its own vendor-detection logic. Called once at
-  // boot (after plugin runtime is available) and again after every
-  // llm-settings IPC change.
-  //
-  // The wildcard slot deliberately carries no `hostApiKey`. The actual
-  // secret must always flow through `hostApi.getSecret("llm.apiKey.<vendor>")`,
-  // which routes through the three-tier allowlist gate (only plugins that
-  // declare the matching `hostSecrets.read[]` entry receive the key).
-  // Injecting the apiKey into a wildcard config slot would bypass that gate:
-  // every plugin would receive the key via `config.get("hostApiKey")`
-  // regardless of its manifest.
-  //
-  // The factory lives in `boot/steps/refresh-active-llm-wildcard.ts` so the
-  // debounce + vendor-change-restart contract is independently unit-testable:
-  // the first call seeds, and subsequent vendor changes trigger a debounced
-  // restart sweep of every loaded plugin.
+  // Wildcard config exposes vendor identity only; secrets must pass the manifest-gated getSecret path.
+  // Seed at boot and debounce loaded-plugin restarts when the vendor changes.
   const {
     refresh: refreshActiveLlmWildcard,
     dispose: disposeRefreshActiveLlmWildcard,
@@ -105,14 +73,8 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
   });
   refreshActiveLlmWildcard();
 
-  // ── Worker egress allowlists + refresh ───────────────────────────────────
-  // What each plugin worker may reach through the sandbox proxy: its own
-  // extension's manifest `networkAccess.allowedDomains` plus the host-resolved
-  // model endpoints (user-configured vendor baseUrls a worker actually reaches,
-  // e.g. local-indexer's Azure OpenAI resource). The egress ask callback reads
-  // this per connection, so one extension's domains never reach another
-  // extension's worker or a shell (invariant I4); ASRT's own allowedDomains
-  // stays empty.
+  // Worker egress uses its own extension domains plus resolved model endpoints; never share these with other workers or shells.
+  // Keep the runtime-wide domain allow-list empty.
   const buildWorkerEgressAllowlists = async (): Promise<WorkerEgressAllowlists> => {
     const { computeDynamicEndpointHosts } = await import("../../permissions/asrt-sandbox.js");
     return {
@@ -125,11 +87,7 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
     };
   };
 
-  // Recomputes the worker allowlists: at boot, after plugins load (before any
-  // worker starts), and from the settings / chat IPC handlers when a model
-  // endpoint changes, so a reconfigured endpoint applies without a restart.
-  // GATED: a no-op when ASRT is not active (gate off, deps missing, Windows not
-  // ready), since no sandboxed process exists to reach anything.
+  // Refresh worker domains after load and before workers start, then on endpoint changes; do nothing without an active runtime.
   const refreshSandboxNetworkConfig = (): Promise<void> =>
     (async () => {
       const [{ isAsrtSandboxActive }, { setWorkerEgressAllowlists }] = await Promise.all([
@@ -145,9 +103,7 @@ export async function setupMarketplace(ctx: BootContext): Promise<void> {
         allowlists.modelEndpointHosts.length,
       );
     })().catch((err) => {
-      // Degrade loudly rather than throw: a failed refresh keeps the previous
-      // allowlists (deny-by-default stands for anything new), and the
-      // boot-path awaiter must not brick startup over it.
+      // On refresh failure, warn and retain prior lists; deny-by-default still blocks new destinations.
       log.warn(
         "boot: worker egress allowlist refresh failed: %s",
         errorMessage(err),

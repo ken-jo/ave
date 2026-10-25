@@ -36,9 +36,8 @@ vi.mock("electron", () => ({
   session: { defaultSession: { resolveProxy: resolveProxyMock } },
 }));
 
-// `policyGet` must attach the host-derived `editable` flag. loadPolicy itself
-// reads real OS paths (/etc/ave, %ProgramData%), so the file layer is stubbed
-// while the handler under test — and the predicate it calls — stay real.
+// `policyGet` must attach the host-derived `editable` flag. loadPolicy itself reads real OS paths (/etc/ave,
+// %ProgramData%), so the file layer is stubbed while the handler under test; and the predicate it calls; stay real.
 const loadPolicyMock = vi.hoisted(() => vi.fn());
 const egressRuntimeMock = vi.hoisted(() => ({
   listEgressGrants: vi.fn(async (): Promise<unknown[]> => []),
@@ -62,9 +61,7 @@ vi.mock("../../../permissions/user-approval-store.js", async (importOriginal) =>
 function invoke(channel: string, ...args: unknown[]): unknown {
   const fn = handlers.get(channel);
   if (!fn) throw new Error(`No handler registered for: ${channel}`);
-  // Issue #798: mutating user-approval handlers gate on user-keyboard intent.
-  // Auto-inject the intent marker on the relevant channels so existing test
-  // fixtures don't need a payload rewrite.
+  // mutating user-approval handlers gate on user-keyboard intent. Auto-inject the intent marker on the relevant channels so existing test fixtures don't need a payload rewrite.
   const intentRequired =
     channel === PERMISSIONS.userApprovalRecord ||
     channel === PERMISSIONS.userApprovalRevoke;
@@ -86,9 +83,8 @@ function makeDeferredEntry(overrides: Record<string, unknown> = {}) {
     category: "shell",
     inputSummary: "bash command",
     verdict: { level: "high", reason: "test" },
-    // Approving an entry applies its recorded grant; an entry without one
-    // cannot be approved at all (see the "no-grant-available" tests below),
-    // so the shared fixture carries the out-of-allowed-dir lane's grant.
+    // Approving an entry applies its recorded grant; an entry without one cannot be approved at all (see the
+    // "no-grant-available" tests below), so the shared fixture carries the out-of-allowed-dir lane's grant.
     grant: { kind: "directory", path: "/srv/app/data" },
     status: "pending",
     ...overrides,
@@ -148,15 +144,13 @@ function makeDeps(options: {
     getVisibilityDenyRules: vi.fn(() => []),
     getDeferredQueue: vi.fn(() => options.queue ?? null),
     isReviewerDegradedToRule: vi.fn(() => false),
-    // Registration hands the host's ask surface to the manager; the tests keep
-    // the callback so they can drive it the way a newly deferred entry would.
+    // Registration hands the host's ask surface to the manager; the tests keep the callback so they can drive it the way a newly deferred entry would.
     setDeferredEntryAsk: vi.fn((fn: (entry: unknown) => void) => {
       askDeferredEntry = fn;
     }),
   };
-  // Answers by POSITION, not by label: the labels are localized, and a test
-  // that spelled one out would be asserting the catalog rather than the map
-  // from the user's pick to the resolution.
+  // Answers by POSITION, not by label: the labels are localized, and a test that spelled one out
+  // would be asserting the catalog rather than the map from the user's pick to the resolution.
   const askUserQuestionGate = {
     ask: vi.fn(async (input: { questions: { choices: string[] }[] }) =>
       options.answerChoiceIndex === undefined
@@ -183,10 +177,8 @@ function makeDeps(options: {
       })),
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRenderer: vi.fn((_requestId: string, decision: unknown) => decision),
-      // #799 + CRITICAL-2 ralph iter 4: server-side ApprovalRequest binding.
-      // userApprovalRecord handler reads identity, raw args, and verdict from
-      // this host snapshot. Tests opt into HIGH explicitly; renderer claims
-      // cannot downgrade it into a persistent allow.
+      // #799 + CRITICAL-2 ralph iter 4: server-side ApprovalRequest binding. userApprovalRecord handler reads identity, raw args, and
+      // verdict from this host snapshot. Tests opt into HIGH explicitly; renderer claims cannot downgrade it into a persistent allow.
       getRequestSnapshot: vi.fn((_requestId: string) => ({
         sessionId: options.snapshotSessionId === null ? undefined : options.snapshotSessionId ?? "conversation-1",
         projectCwd: "/srv/project",
@@ -225,8 +217,7 @@ function makeDeps(options: {
     getAppWindows: vi.fn(() => appWindows),
     askUserQuestionGate,
   };
-  // The lifecycle is no longer a dep field: `ipc/domains/workspace.ts` publishes
-  // the one instance and every consumer resolves it through the authority.
+  // The lifecycle is no longer a dep field: `ipc/domains/workspace.ts` publishes the one instance and every consumer resolves it through the authority.
   setWorkspaceRootLifecycle(
     options.workspaceLifecycleAvailable === false ? undefined : workspaceRootLifecycle,
   );
@@ -303,7 +294,6 @@ describe("permissions IPC handlers", () => {
     expect(permissionManager.setModePersist).toHaveBeenCalledWith("strict");
   });
 
-  // ── 3-agent cluster review of PR #1441 — critic minor 2 ────────────────
   it("setMode rejects a foreign/invalid sender frame with UNAUTHORIZED_FRAME", async () => {
     const { permissionManager } = await setup({ approvalChoice: "allow-once" });
 
@@ -687,10 +677,8 @@ describe("permissions IPC handlers", () => {
     },
   );
 
-  // ── What an approval actually GRANTS ──────────────────────────────────────
-  // The original call is dead by the time anyone resolves the entry, so these
-  // assert the forward-looking grant — the directory reaching the permission
-  // scope — not the JSONL `status` field, which is only bookkeeping.
+  // The original call is dead by the time anyone resolves the entry, so these assert the forward-looking grant
+  // — the directory reaching the permission scope — not the JSONL `status` field, which is only bookkeeping.
 
   it("approving a deferred entry registers its directory for the session", async () => {
     const entry = makeDeferredEntry();
@@ -708,8 +696,7 @@ describe("permissions IPC handlers", () => {
     });
 
     expect(result).toMatchObject({ ok: true });
-    // The observable consequence: the next call under this directory passes
-    // Layer 1 without asking.
+    // The observable consequence: the next call under this directory passes Layer 1 without asking.
     expect(deps.conversationLoop.addSessionAdditionalDirectory).toHaveBeenCalledWith(
       expect.stringContaining("srv/app/data"),
     );
@@ -760,10 +747,8 @@ describe("permissions IPC handlers", () => {
   });
 
   it("refuses to approve an entry whose lane recorded no grant", async () => {
-    // The strict-mode reviewer lane defers on an exact (tool, args, source)
-    // tuple and keeps only a redacted summary, so no grant is reconstructable.
-    // Recording an approval here would tell the user their click did
-    // something it did not.
+    // The strict-mode reviewer lane defers on an exact (tool, args, source) tuple and keeps only a redacted summary, so
+    // no grant is reconstructable. Recording an approval here would tell the user their click did something it did not.
     const entry = makeDeferredEntry({ grant: undefined });
     const queue = {
       get: vi.fn(() => entry),
@@ -803,9 +788,8 @@ describe("permissions IPC handlers", () => {
   });
 
   it("does not record an approval when applying the grant fails", async () => {
-    // A sensitive path is refused outright by validateDirectoryAddition
-    // ("path matches sensitive pattern '**/.ssh/**'"). The entry must stay
-    // pending rather than be marked approved with nothing granted.
+    // A sensitive path is refused outright by validateDirectoryAddition ("path matches sensitive pattern
+    // '**/.ssh/**'"). The entry must stay pending rather than be marked approved with nothing granted.
     const entry = makeDeferredEntry({
       grant: { kind: "directory", path: "/srv/app/.ssh" },
     });
@@ -828,8 +812,7 @@ describe("permissions IPC handlers", () => {
   });
 
   it("holds the adjacency gate instead of acknowledging on the user's behalf", async () => {
-    // Same widening gate the foreground card renders as a warning checkbox.
-    // ".git" warns; ".ssh" would be a hard reject, which is a different path.
+    // Same widening gate the foreground card renders as a warning checkbox. ".git" warns; ".ssh" would be a hard reject, which is a different path.
     const entry = makeDeferredEntry({
       grant: { kind: "directory", path: "/srv/app/.git" },
     });
@@ -1036,9 +1019,7 @@ describe("permissions IPC handlers", () => {
     expect(deps.auditLogger.appendPermissionAuditEntry).toHaveBeenCalledOnce();
   });
 
-  // ── approvalSource provenance in the audit row ────────────────────────
-  // End-to-end IPC → audit assertion that the surface the user gestured on
-  // reaches the audit chain.
+  // End-to-end IPC → audit assertion that the surface the user gestured on reaches the audit chain.
   it("deferredResolve records the question-card provenance in the audit entry", async () => {
     const entry = makeDeferredEntry();
     const queue = {
@@ -1070,8 +1051,7 @@ describe("permissions IPC handlers", () => {
     expect(queue.resolve).toHaveBeenCalledWith("deferred-1", "approved", undefined, "session");
   });
 
-  // The in-chat approval chip that wrote this provenance is gone, and with it
-  // the value: an audit row may still carry it, but nothing may write one.
+  // The in-chat approval chip that wrote this provenance is gone, and with it the value: an audit row may still carry it, but nothing may write one.
   it("deferredResolve refuses the retired natural-language provenance", async () => {
     const entry = makeDeferredEntry();
     const queue = { get: vi.fn(() => entry), resolve: vi.fn() };
@@ -1231,8 +1211,7 @@ describe("a deferred approval is asked as a question in the tile that raised it"
     expect(queue.resolve).not.toHaveBeenCalled();
   });
 
-  // An approval the resolve path would refuse is not an option: an entry with
-  // no recorded grant can only be denied or left pending.
+  // An approval the resolve path would refuse is not an option: an entry with no recorded grant can only be denied or left pending.
   it("offers no approval for an entry that recorded no grant", async () => {
     const entry = makeDeferredEntry({ sessionId: "session-a", grant: undefined });
     const queue = makeQueue(entry);
@@ -1249,9 +1228,7 @@ describe("a deferred approval is asked as a question in the tile that raised it"
   });
 });
 
-// ─── Helper: create an IPC event with a foreign sender frame ─────────────────
-// `invoke` sends the trusted host-renderer frame; these send a frame the guards
-// must refuse, exercising the UNAUTHORIZED_FRAME path.
+// `invoke` sends the trusted host-renderer frame; these send a frame the guards must refuse, exercising the UNAUTHORIZED_FRAME path.
 
 function makeForeignEvent(url = "https://attacker.example.com/pwn") {
   return foreignFrameEvent(url);
@@ -1282,7 +1259,7 @@ describe("policyGet exposes host-derived editability", () => {
   });
 });
 
-// ─── HIGH verdict IPC enforcement: explicit one-shot only ───────────────────
+// HIGH verdict IPC enforcement: explicit one-shot only
 
 describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => {
   it("records a conservative HIGH display only when the live host snapshot permits persistence", async () => {
@@ -1576,14 +1553,8 @@ describe("CRITICAL-2: user-approval-record HIGH verdict IPC enforcement", () => 
   });
 });
 
-// ─── Sender-frame guard on the state-mutating permission channels ────────────
-// These channels changed the host's permission state, so they must refuse
-// anything that is not the host renderer. A plugin UI shell is also a `file://`
-// frame — the base `validateSender` accepts it — so the stronger
-// `validateHostRendererSender` is what actually turns it away. A frameless
-// event (Electron nulls `senderFrame` once the sending frame is destroyed or
-// navigated away between `invoke` and handler execution) is refused too: an
-// unprovable sender is not a trusted one.
+// These channels changed the host's permission state, so they must refuse anything that is not the host renderer. A plugin UI shell is also a `file://` frame; the base `validateSender` accepts it; so the stronger
+// `validateHostRendererSender` is what actually turns it away. A frameless event (Electron nulls `senderFrame` once the sending frame is destroyed or navigated away between `invoke` and handler execution) is refused too: an unprovable sender is not a trusted one.
 
 describe("state-mutating permission channels refuse non-host frames", () => {
   const MUTATING: ReadonlyArray<readonly [string, Record<string, unknown>]> = [
