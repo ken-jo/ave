@@ -4,13 +4,7 @@ import {
   urlHostMatchesAllowList,
 } from "../../../main/host-allow-list.js";
 
-/**
- * Tier A — the deny-by-default egress contract enforced inside
- * `createHostApi.hostFetch`. hostFetch normalizes
- * `manifest.networkAccess.allowedDomains` and matches the target host with the
- * same two helpers exercised here, so this pins the policy semantics the
- * runtime relies on without standing up the full plugin runtime.
- */
+/** Exercise the same domain normalization and matching helpers used by deny-by-default hostFetch. */
 function egressAllowed(allowedDomains: string[], targetUrl: string): boolean {
   const normalized = normalizeAllowedHosts(allowedDomains);
   return urlHostMatchesAllowList(new URL(targetUrl).hostname, normalized);
@@ -35,7 +29,6 @@ describe("networkAccess deny-by-default egress allow-list", () => {
     expect(egressAllowed(allow, "https://evil.com/x")).toBe(false);
     // suffix-spoof: allow-list host as a left label of an attacker domain
     expect(egressAllowed(allow, "https://openai.azure.com.attacker.com/x")).toBe(false);
-    // declared azure does NOT implicitly allow public OpenAI
     expect(egressAllowed(allow, "https://api.openai.com/v1/audio/transcriptions")).toBe(false);
   });
 

@@ -1,10 +1,3 @@
-/**
- * §B3 — buildAppPreferenceReader unit tests.
- *
- * Verifies the explicit allowlist (HOST_PUBLIC_PREFERENCE_KEYS) gate, the
- * undefined-on-reject contract (no throw), the per-(plugin, key) warn dedupe,
- * and live read-through to settingsService.
- */
 import { describe, it, expect, vi } from "vitest";
 import {
   buildAppPreferenceReader,
@@ -30,8 +23,7 @@ function makeStubSettings(initial: { preferredFlow: "in-app" | "system-browser" 
 
 describe("HOST_PUBLIC_PREFERENCE_KEYS allowlist (§B3)", () => {
   it("currently exposes only webView.preferredFlow", () => {
-    // Adding a new entry is a deliberate API surface change — this test pins
-    // it so a reviewer must update the snapshot consciously.
+    // Adding public preference keys changes the API surface; update this snapshot deliberately.
     expect([...HOST_PUBLIC_PREFERENCE_KEYS]).toEqual(["webView.preferredFlow"]);
   });
 });
@@ -112,8 +104,8 @@ describe("buildAppPreferenceReader (§B3)", () => {
 
     read("plugin-a", "llm.apiKey");
     read("plugin-a", "pluginConfigs.foo.secret");
-    read("plugin-a", "llm.apiKey"); // duped — no extra warn
-    read("plugin-a", "pluginConfigs.foo.secret"); // duped — no extra warn
+    read("plugin-a", "llm.apiKey");
+    read("plugin-a", "pluginConfigs.foo.secret");
 
     expect(warn.warn).toHaveBeenCalledTimes(2);
   });

@@ -1,8 +1,4 @@
-/**
- * Which characters of a terminal_run command the approval card names as
- * possible look-alikes: mixed-script words and non-letter symbols, never a
- * word written in one script.
- */
+/** Flag mixed-script words and look-alike symbols, while allowing words entirely in one script. */
 import { describe, expect, it } from "vitest";
 import { terminalCommandLookalikes } from "../terminal-command-lookalikes.js";
 

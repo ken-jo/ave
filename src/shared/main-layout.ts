@@ -1,24 +1,4 @@
-/**
- * The main window's saved layout — what comes back on the next launch.
- *
- * It holds the pane tree (geometry), which panes show a terminal or web page,
- * which panes had their work panel or session thumbnails open, and each
- * pane's terminal and browser side tabs. Each terminal records the directory its shell last reported, and
- * each page its last address. It does NOT hold a terminal's process or
- * scrollback: those end with the app, so a restored terminal is a new shell
- * started in the saved directory, and it says so in its buffer.
- *
- * Both processes call ONE parser. Main checks the value's SHAPE when it is
- * stored or read back; the renderer checks it again with the window's limits
- * (the pane ceiling and the primary pane id, which live in the app contract)
- * before acting on it — the same split as `system.activeView`, whose stored
- * key main checks structurally and the renderer re-checks against what it
- * loaded. Keeping the contract out of this module keeps it out of the
- * settings store's import graph. A snapshot that
- * fails any rule is refused whole with a reason, and the window starts in the
- * default layout. A half-applied layout would point panes at surfaces that do
- * not exist.
- */
+/** Persist geometry and last directories or URLs, never processes or scrollback; reject invalid snapshots whole. */
 
 import { isRecord } from "./is-record.js";
 import { parseTabId } from "./tab-id.js";
@@ -30,9 +10,8 @@ export type SavedSurfaceKind = "terminal" | "browser";
 
 export interface SavedSurface {
   kind: SavedSurfaceKind;
-  /** The tab id ("terminal:3fa91c0e-2", `shared/tab-id.ts`) — kept, so AVE_TERMINAL_ID is stable across launches. */
+  /** Keep tab ids stable across launches so terminal identity survives restore. */
   tabId: string;
-  /** "Terminal 3" — the number in the tab's name. */
   ordinal: number;
   /** A terminal's last directory (absolute), or null. Always null for a page. */
   cwd: string | null;
@@ -52,17 +31,15 @@ export interface MainLayoutSnapshot {
   focusedId: string;
   /** Panes showing a terminal or page, keyed by pane id. A pane not listed shows its conversation. */
   surfaces: Record<string, SavedSurface>;
-  /** Panes whose side panel was open. */
   panelOpenIds: string[];
   /** Panes whose session thumbnails were open. Older layouts restore them closed. */
   thumbnailOpenIds: string[];
-  /** Each pane's terminal and browser side tabs, in tab order. */
   sideTabs: Record<string, SavedSurface[]>;
 }
 
 export type MainLayoutParse = { ok: true; layout: MainLayoutSnapshot } | { ok: false; reason: string };
 
-/** What only the window knows: how many panes it holds and which one is primary. */
+/** Renderer supplies window-specific pane limits; main checks shape only. */
 export interface MainLayoutLimits {
   maxPanes: number;
   primaryPaneId: string;
@@ -130,10 +107,7 @@ function parseSurface(raw: unknown, path: string): SavedSurface {
   return { kind, tabId: tabId as string, ordinal, cwd: cwd as string | null, url: url as string | null, ...(binding === undefined ? {} : { binding }) };
 }
 
-/**
- * Check a stored layout. Every rule is all-or-nothing; the reason names the
- * first broken one. Without `limits` only the shape is checked.
- */
+/** Without limits validate shape only; any failed rule rejects the whole layout. */
 export function parseMainLayout(raw: unknown, limits?: MainLayoutLimits): MainLayoutParse {
   try {
     if (!isRecord(raw)) refuse("the layout is not an object");

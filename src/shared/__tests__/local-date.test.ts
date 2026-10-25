@@ -1,13 +1,4 @@
-/**
- * These helpers project onto the HOST's civil calendar, so every assertion has
- * to pin the zone or it asserts nothing beyond "the machine running the suite
- * agrees with itself". Node re-reads `TZ` on assignment, for both `Date` and
- * the `Intl` default.
- *
- * 2026-06-16T00:00:00Z is Tue the 16th at 09:00 in Seoul and still Mon the 15th
- * at 17:00 in Los Angeles — one instant, two civil days, which is the whole
- * thing these helpers decide.
- */
+/** Pin TZ to test host-calendar behavior; the same instant can belong to different local days. */
 import { describe, expect, it } from "vitest";
 import { withTz } from "../../__tests__/test-helpers.js";
 
@@ -38,7 +29,6 @@ describe("localDateKey", () => {
 
   it("follows the local midnight boundary in a zone behind UTC", () => {
     withTz("America/Los_Angeles", () => {
-      // 07:00Z is 00:00 local on the 16th (PDT, UTC-7) — the day has just turned.
       expect(localDateKey(new Date(Date.parse("2026-06-16T07:00:00.000Z")))).toBe("2026-06-16");
       expect(localDateKey(new Date(Date.parse("2026-06-16T06:59:00.000Z")))).toBe("2026-06-15");
     });
@@ -99,9 +89,7 @@ describe("shiftLocalDateKey", () => {
   });
 
   it("keeps a two-digit year in its own century instead of landing in the 1900s", () => {
-    // `Date.UTC(99, …)` means 1999, so an uncorrected shift turned a year-99
-    // key into a year-1999 one — and `localDayRange` then opened a window
-    // nineteen centuries wide instead of the one day that was asked for.
+    // Date.UTC interprets years below 100 as 1900-based unless explicitly corrected.
     expect(shiftLocalDateKey("0099-01-01", 1)).toBe("0099-01-02");
     expect(shiftLocalDateKey("0099-12-31", 1)).toBe("0100-01-01");
     expect(shiftLocalDateKey("0100-01-01", -1)).toBe("0099-12-31");
@@ -116,9 +104,7 @@ describe("shiftLocalDateKey", () => {
 
 describe("localDayRange", () => {
   it("stays one day wide when the year has two digits", () => {
-    // The range is built from `shiftLocalDateKey(toKey, 1)`, so a year that
-    // slipped into the 1900s here would not just be mislabelled — it would open
-    // a window nineteen centuries wide and hand back every row ever written.
+    // A low-year shift must not expand a one-day query into a nineteen-century range.
     withTz("UTC", () => {
       const range = localDayRange("0099-01-01", "0099-01-01");
       expect(range).not.toBeNull();
@@ -130,14 +116,12 @@ describe("localDayRange", () => {
 describe("week and month anchors", () => {
   it("localMondayWeekStartKey anchors on Monday, not the Work Board's Sunday", () => {
     withTz("UTC", () => {
-      // Tue 2026-06-16: the Monday before it is the 15th, the Sunday the 14th.
       expect(localMondayWeekStartKey(new Date(TUE_JUN16_09_SEOUL))).toBe("2026-06-15");
     });
   });
 
   it("localMondayWeekStartKey treats Sunday as the end of the week it closes", () => {
     withTz("UTC", () => {
-      // Sun 2026-06-14 belongs to the week that began Mon the 8th.
       expect(localMondayWeekStartKey(new Date(Date.parse("2026-06-14T00:00:00.000Z"))))
         .toBe("2026-06-08");
     });
@@ -146,7 +130,6 @@ describe("week and month anchors", () => {
   it("localMonthStartKey returns the first of the local month", () => {
     const lastInstantOfJune = new Date(Date.parse("2026-06-30T16:00:00.000Z"));
     expect(withTz("UTC", () => localMonthStartKey(lastInstantOfJune))).toBe("2026-06-01");
-    // Same instant is already July 1st in Seoul.
     expect(withTz("Asia/Seoul", () => localMonthStartKey(lastInstantOfJune))).toBe("2026-07-01");
   });
 });

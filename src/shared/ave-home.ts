@@ -5,69 +5,31 @@ import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
-/**
- * Single source of truth for the Ave user-data root.
- *
- * Default: `~/.ave` per architecture §5 + project CLAUDE.md storage
- * namespace convention.
- *
- * Override via `AVE_HOME` env — used by e2e fixtures to point host state at
- * a per-test temp dir so encrypted-secret blobs from a previous dev run on
- * `~/.ave/secrets/` do not bleed into isolated test runs. Consumers that
- * resolve Ave sub-paths MUST go through this helper rather than calling
- * `homedir()` directly, otherwise the env override leaks past one feature.
- */
+/** All user-data paths must use this resolver so AVE_HOME isolates every store, including secrets. */
 export function aveHome(): string {
   const home = resolve(process.env.AVE_HOME ?? defaultAveHome());
-  // Every store resolves its directory here, so this is where the test runner
-  // stops a test that would reach the person's real data (an audit log, a
-  // session, a secret). A no-op in the app: see ave-home-test-guard.ts.
+  // Tests replace the guard to refuse real user data; production uses its no-op implementation.
   checkResolvedAveHome(home);
   return home;
 }
 
-/**
- * The default root, `~/.ave`, whatever `AVE_HOME` says. For the few callers
- * that must recognise the person's real data even while a test or an e2e run
- * points `AVE_HOME` elsewhere.
- */
+/** The actual default home, ignoring AVE_HOME, for recognizing protected real-user data. */
 export function defaultAveHome(): string {
   return resolve(join(homedir(), ".ave"));
 }
 
-/**
- * The three names the agent-context doc occupies in `~/.ave`.
- *
- * They are spelled once here because four modules have to agree on them and
- * disagreement is invisible: the seeder decides which file an upgrade marker
- * belongs to, the memory manager decides which file the prompt reads, the IPC
- * domain decides which file an apply writes, and the merge job decides which
- * file it may never write. A second spelling anywhere makes one of those four
- * act on a file the other three do not know about.
- */
+/** Keep live, user-overlay, and merge-artifact names shared across seeding, prompt reads, IPC, and merging. */
 
 /** Live agent context. Seeded from packaged resources; read on every turn. */
 export const AGENTS_DOC_NAME = "AGENTS.md";
 
-/**
- * The user's own agent context under keep-latest, composed after the live doc
- * so it wins on conflict. Absent while keep-latest has never been engaged.
- */
+/** Compose the keep-latest user overlay after the live document so user choices win. */
 export const AGENTS_CUSTOM_DOC_NAME = "agents.custom.md";
 
-/**
- * Review artifact of the model-assisted merge. It is never what the runtime
- * reads: applying it is a separate, explicit write onto the live doc.
- */
+/** Merge output is review-only until explicitly applied to the live document. */
 export const AGENTS_MERGED_DOC_NAME = "AGENTS.md.merged";
 
-/**
- * How the Ave home directory ended up being protected.
- *
- * Not an implementation detail: `0o700`/`0o600` is a POSIX-only control, so on
- * Windows the same call establishes nothing at all, and the caller has to be
- * able to say which of the two happened rather than assume the first.
- */
+/** Report actual protection: POSIX modes do not establish Windows ACL isolation. */
 export type AveHomePrivacy =
   | { enforcement: "posix-mode"; home: string }
   | { enforcement: "win32-dacl"; home: string; sid: string }
@@ -116,7 +78,6 @@ export interface WindowsAccessRule extends AveHomePrincipal {
   isInherited: boolean;
 }
 
-/** Seam for the Windows ACL commands, so the argv can be asserted anywhere. */
 export interface AveHomePrivacyRuntime {
   platform: NodeJS.Platform;
   readDacls(paths: readonly string[], protect?: boolean): WindowsDirectoryDacl[];
@@ -127,22 +88,7 @@ const DEFAULT_PRIVACY_RUNTIME: AveHomePrivacyRuntime = {
   readDacls: readWindowsDirectoryDacls,
 };
 
-/**
- * One read-back process for all directories; a read failure keeps its path.
- *
- * The inputs travel as one JSON value in `AVE_DACL_REQUEST`, decoded by
- * ConvertFrom-Json; nothing is spliced into the fixed `-Command` text. This is
- * deliberately not the request-line channel of the resident ACL host
- * (windows-acl-host.ts): that host is spawned once and serves many requests,
- * and a process's environment is fixed at spawn, so per-request data there can
- * only travel on stdin — which in turn needs ASCII-escaped JSON because stdin
- * is decoded through the console input code page. This is a one-shot
- * `execFileSync` per boot with two paths: the environment carries the request
- * exactly once, as UTF-16 on Windows, so no code page can alter a path, and
- * the value is a few hundred characters against a 32,767-character limit.
- * The icacls path rides in the same JSON, resolved here like the PowerShell
- * binary, so no second variable names the system root.
- */
+/** Pass one-shot ACL input as UTF-16 environment JSON, never command interpolation or console-codepage stdin. */
 export function readWindowsDirectoryDacls(paths: readonly string[], protect = false): WindowsDirectoryDacl[] {
   if (!(process.env.SystemRoot ?? process.env.windir)?.trim()) {
     return paths.map((path) => ({ path, category: "system-root-missing", error: "Windows system root is missing" }));
@@ -228,12 +174,7 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
 }
 
 function isOwnerOnlyDacl(descriptor: WindowsDirectoryDacl, sid: string): boolean {
-  // A home this app creates is owned by the user ("Windows object ownership"
-  // in docs/architecture/architecture.md, the AVE_HOME item). One that already
-  // exists, chosen by the user or left by an earlier run, may be
-  // Administrators-owned under an elevated token. The grant still belongs only
-  // to the token user; group Allow entries are never accepted. The protecting
-  // step applies the same owner rule before it changes the DACL.
+  // Allow an existing elevated administrator owner, but never group Allow entries; new homes belong to the token user.
   const ownerValid = descriptor.ownerSid === sid ||
     (descriptor.elevated === true && descriptor.ownerSid === "S-1-5-32-544");
   const rule = descriptor.rules?.[0];
@@ -296,23 +237,7 @@ export function _resetAveHomePrivacyForTest(): void {
   reportPrivacyRefusal = undefined;
 }
 
-/**
- * Resolve a Windows system executable by absolute path rather than letting
- * `PATH` decide which binary answers to the name.
- *
- * Both reasons are load-bearing for a security control. A PATH that puts a
- * POSIX toolchain (Git Bash, MSYS2, Cygwin) ahead of `System32` — the ordinary
- * state of a developer machine, and reachable on an end-user one — resolves
- * `whoami` to a coreutils binary that rejects `/user` as an operand. The DACL
- * call below then never runs, `ensureAveHomePrivate` reports `"none"`, and
- * `~/.ave` keeps whatever ACL it inherited while the app carries on. And a
- * control that decides who may read `secrets/` must not execute whichever
- * `whoami.exe` an earlier PATH entry happens to name.
- *
- * `SystemRoot` is set by the Windows session itself. If it is somehow absent
- * the bare name is still tried, which is exactly today's behaviour rather than
- * a new failure mode.
- */
+/** Resolve system security executables by absolute path to avoid incompatible or attacker-controlled PATH entries. */
 export function win32SystemBinary(
   name: string,
   env: NodeJS.ProcessEnv = process.env,
@@ -321,29 +246,7 @@ export function win32SystemBinary(
   return root ? join(root, "System32", `${name}.exe`) : name;
 }
 
-/**
- * Create `~/.ave` and restrict it to the account running the app.
- *
- * `~/.ave` holds `settings.json`, `audit.log` and `secrets/`, and the whole
- * tree is created with `mode: 0o700` / `0o600` — which Windows ignores. Node
- * maps `mode` onto the FAT read-only ATTRIBUTE there and never onto an ACL, so
- * on Win32 those numbers describe an intent that nothing enforces: what
- * actually decides who may read the file is the DACL the directory hands down.
- * Inside `%USERPROFILE%` that inherited DACL happens to already exclude other
- * users; anywhere else `AVE_HOME` may point — `C:\\ProgramData`, a data drive,
- * a share — it does not, and nothing in the app would notice.
- *
- * So on Win32 this sets the DACL explicitly: inheritance dropped, one Full
- * Control ACE for the current user's SID, marked `(OI)(CI)` so every file and
- * folder created underneath inherits it. That is the closest equivalent of
- * `0o700` the platform has. SYSTEM and Administrators are deliberately not
- * granted — they can still take ownership, which is exactly the residual root
- * holds under `0o700` as well.
- *
- * Failure is REPORTED, never swallowed: the result says `"none"` with the
- * reason so boot can refuse confinement whose private storage is unprotected.
- * Secrets also get an independent protected DACL, checked by the same reader.
- */
+/** Windows needs an explicit owner-only inheritable DACL; report failure so confinement refuses unprotected storage. */
 export function ensureAveHomePrivate(
   home = aveHome(),
   runtime: AveHomePrivacyRuntime = DEFAULT_PRIVACY_RUNTIME,
@@ -355,9 +258,7 @@ export function ensureAveHomePrivate(
   let path = home;
   let category: AveHomePrivacyFailureCategory = "directory-failed";
   try {
-    // The protecting step creates the home and its secrets directory itself, so
-    // each is owned by the current user from the start ("Windows object
-    // ownership" in docs/architecture/architecture.md). Only the parent is made here.
+    // The protection helper creates home and secrets with current-user ownership; create only the parent here.
     mkdirSync(dirname(home), { recursive: true });
     category = "read-back-failed";
     path = home;

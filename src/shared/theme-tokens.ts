@@ -1,18 +1,6 @@
-/**
- * Theme token contract shared by the compiled-in bundles, the theme package
- * installer (design §5.2) and the renderer.
- *
- * Every token is an `H S% L%` triple: the renderer writes it into
- * `hsl(var(--token))`, so a value in any other form either paints nothing or
- * carries text into a CSS declaration. The contrast rules are the ones the
- * compiled-in bundles are held to; an installed theme that fails one is
- * refused at install.
- *
- * No runtime imports: the main process, the renderer and the tests load it.
- */
+/** Tokens must be H S% L% triples for hsl(var(--token)); other forms can fail rendering or inject CSS. Installed themes must meet the same contrast rules as bundled themes. */
 
 export const THEME_TOKEN_NAMES = [
-  /* Tier B — semantic shell */
   "background", "foreground",
   "card", "card-foreground",
   "popover", "popover-foreground",
@@ -23,24 +11,18 @@ export const THEME_TOKEN_NAMES = [
   "destructive", "destructive-foreground",
   "warning", "warning-foreground",
   "success", "success-foreground",
-  /* Tier B' — status / state */
   "info", "info-foreground",
   "emphasis", "emphasis-foreground",
   "border", "input", "ring", "ui-line",
   "message-user-bg", "message-user-fg",
   "input-bar-bg",
-  /* Tier B'' — surface overlay + interaction */
   "overlay", "hover-overlay",
   "focus-ring", "link-fg",
-  /* Tier B''' — peripheral system */
   "selection-bg", "selection-fg",
   "scrollbar-thumb", "scrollbar-track",
   "kbd-bg", "kbd-border",
-  /* Tier C — code surface */
   "code-bg", "code-fg", "code-border",
-  /* Tier D — chart palette */
   "chart-1", "chart-2", "chart-3", "chart-4", "chart-5",
-  /* Action tokens */
   "action-view", "action-branch", "action-compact",
 ] as const;
 
@@ -103,7 +85,6 @@ function blend(overlay: Rgb, backdrop: Rgb, alpha: number): Rgb {
 }
 
 export interface ThemeContrastRule {
-  /** What the rule measures, for a failure message. */
   label: string;
   minimum: number;
   ratio(tokens: ThemeTokens): number;
@@ -126,11 +107,7 @@ function rgbOf(tokens: ThemeTokens, name: ThemeTokenName): Rgb {
 /** Share of a state colour washed over the background behind a diff hunk. */
 const DIFF_WASH_ALPHA = 0.15;
 
-/**
- * Body text needs WCAG AA (4.5); buttons, chips and badges carry short,
- * heavier labels and need AA Large (3.0); the visible UI line is a non-text
- * element (3.0); diff hunk text sits on a translucent state wash (4.5).
- */
+/** Body and diff text require 4.5 contrast; short heavy labels and non-text UI lines require 3.0. */
 export const THEME_CONTRAST_RULES: readonly ThemeContrastRule[] = Object.freeze([
   pair("background", "foreground", 4.5),
   pair("card", "card-foreground", 4.5),
@@ -154,11 +131,7 @@ export const THEME_CONTRAST_RULES: readonly ThemeContrastRule[] = Object.freeze(
   })),
 ]);
 
-/**
- * Every problem with `value` as a token set: missing, unknown or malformed
- * tokens first (contrast is not measured over those), then each contrast
- * rule it fails. Empty when the tokens are usable.
- */
+/** Report malformed token structure before contrast; do not measure contrast over invalid tokens. */
 export function themeTokenProblems(value: unknown): string[] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return ["tokens must be an object"];
   const record = value as Record<string, unknown>;
@@ -181,11 +154,7 @@ export function themeTokenProblems(value: unknown): string[] {
   return problems;
 }
 
-/**
- * The depth ladder a compiled bundle declares in its `styles.css` block
- * besides its tokens: the surface elevation rungs and the border split. An
- * installed theme declares them in `theme.json` (`surfaces`), as triples.
- */
+/** Surface triples come from bundled CSS or installed theme.json surfaces. */
 export const THEME_SURFACE_NAMES = [
   "surface-sunken", "surface", "surface-raised", "surface-overlay",
   "border-subtle", "border-strong",
@@ -194,7 +163,6 @@ export const THEME_SURFACE_NAMES = [
 type ThemeSurfaceName = (typeof THEME_SURFACE_NAMES)[number];
 export type ThemeSurfaces = Record<ThemeSurfaceName, string>;
 
-/** Every problem with `value` as a surface set: missing, unknown or malformed entries. */
 export function themeSurfaceProblems(value: unknown): string[] {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return ["surfaces must be an object"];
   const record = value as Record<string, unknown>;
@@ -208,12 +176,7 @@ export function themeSurfaceProblems(value: unknown): string[] {
   return problems;
 }
 
-/**
- * Elevation shadows by shell: the stacks every compiled light and dark bundle
- * uses (light: soft layered greys; dark: deeper drop plus an inset top-edge
- * highlight). An installed theme takes its shell's stack; the shadows read
- * the theme's own `--overlay`.
- */
+/** Installed themes use their shell shadow stack with their own overlay color. */
 const SHELL_SHADOWS: Readonly<Record<"light" | "dark", Readonly<Record<string, string>>>> = Object.freeze({
   light: Object.freeze({
     "shadow-e1": "0 1px 2px hsl(var(--overlay) / 0.06), 0 1px 1px hsl(var(--overlay) / 0.04)",
@@ -229,12 +192,7 @@ const SHELL_SHADOWS: Readonly<Record<"light" | "dark", Readonly<Record<string, s
   }),
 });
 
-/**
- * The CSS custom properties an installed theme sets on `:root`, where a
- * compiled bundle's `styles.css` block would: its tokens, its surfaces, its
- * shell's shadows. Values are the validated triples and the fixed stacks
- * above, never text from the package.
- */
+/** Emit only validated triples and fixed shadow stacks, never raw package text. */
 export function installedThemeCustomProperties(theme: { shell: "light" | "dark"; tokens: ThemeTokens; surfaces: ThemeSurfaces }): Record<string, string> {
   const properties: Record<string, string> = {};
   for (const name of THEME_TOKEN_NAMES) properties[`--${name}`] = theme.tokens[name];

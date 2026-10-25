@@ -1,16 +1,4 @@
-/**
- * Boot step — plugin tool execution surface (permission policy P4 Layer 6 +
- * §8, extracted from boot.ts C18).
- *
- * Builds the in-process HookRunner, the script-hook system, the plugin-surface
- * ToolExecutor (with the sandbox-filesystem-contained relaxation coupling), the
- * plugin-surface permission scope, and the `invokePluginTool` delegate that
- * routes every plugin tool call — from the model ("plugin"), the plugin's own
- * trusted panel ("ui"), or an MCP App card ("mcp-app") — through the executor.
- * The ONE exception is the app-only-visibility runtime dispatch, which skips
- * straight to the runtime and is reachable from the trusted panel ORIGIN ALONE.
- * Installs the delegate on the late-binding ref + the plugin runtime.
- */
+/** Route plugin calls through the executor; only trusted panel calls may use the app-only runtime bypass. */
 import { randomUUID } from "node:crypto";
 import { createHookRunner } from "../conversation.js";
 import { wireHookSystem } from "./hook-system-wiring.js";
@@ -23,10 +11,7 @@ import {
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
 import { getWorkspaceRootLifecycle } from "../../permissions/workspace-root-lifecycle.js";
 import { broadcastPermissionConfigChangedFromHost } from "../permission-config-broadcast.js";
-// Confines-aware reader for the foreground plugin read-relaxation coupling. It
-// reads the published active-sandbox capability snapshot plus the exact
-// host-owned plugin worker registry (no asrt-sandbox.js import) and reports
-// whether this tool's off-hostApi filesystem residuals are actually contained.
+// Read relaxation requires this exact worker’s active filesystem confinement, not sandbox intent.
 import { isActiveSandboxFilesystemContainedForPluginEffects } from "../../permissions/sandbox-capability.js";
 import type { PluginToolInvocationContext } from "../../plugins/runtime.js";
 import {
@@ -64,15 +49,10 @@ function pluginInvocationSessionId(context: PluginToolInvocationContext): string
 export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
   const { toolRegistry, permissionManager, bashAstValidator, approvalGate, bootAuditLogger, settingsService, pluginRuntime, lateBinding } = ctx;
 
-  // In-process HookRunner kept for internal/test hook registration only.
-  // Production external hooks flow through ScriptHookManager below so strict
-  // quarantine + explicit user trust registration is the single path.
+  // External hooks use the single trust-quarantine path; the in-process runner is internal only.
   const hookRunner = createHookRunner();
 
-  // Permission policy P4 — Layer 6 script-hook system (individual `pre-*.sh` /
-  // `post-*.sh` / `perm-*.sh` files under `~/.config/ave/hooks/`).
-  // Production boot has no renderer approval prompt: untrusted or changed hook
-  // files are strict-denied and moved to `.disabled/`.
+  // New or changed hooks are quarantined at boot without a renderer prompt.
   const hookSystem = await wireHookSystem({ auditLogger: bootAuditLogger, notificationService: ctx.notificationService,
     authorizeCommand: createHookCommandAuthorizer({ permissionManager, approvalGate }) });
   const scriptHookManager = hookSystem.manager;
@@ -107,9 +87,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
   ctx.pluginOperationGrants = pluginOperationGrants;
   ctx.pluginOperationIdentityProvider = pluginOperationIdentityProvider;
 
-  // This executor is created before ConversationLoop and workspace IPC. Resolve
-  // the workspace-root lifecycle authority at approval time; an unexpectedly
-  // early plugin invocation sees undefined and fails closed.
+  // Resolve workspace authority at approval time; calls before it exists fail closed.
   const pluginSurfaceExecutor = new ToolExecutor(
     toolRegistry,
     hookRunner,
@@ -119,12 +97,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     scriptHookManager,
     bootAuditLogger,
     () => settingsService.get("features")?.hostClassifiesRisk ?? false,
-    // Couple the foreground plugin read-relaxation to the concrete tool's
-    // worker-backed filesystem containment. The relaxation relies on the
-    // effect-boundary, which only contains the off-hostApi `node:fs` WRITE
-    // residual when this exact plugin worker is ASRT-wrapped; ordinary plugin
-    // tools, degraded hosts, and sandbox-off hosts return false so the pre-exec
-    // ask stands (see ToolExecutor.sandboxFsContainedProvider).
+    // Relax foreground reads only when the worker’s off-HostApi filesystem writes are actually confined.
     isActiveSandboxFilesystemContainedForPluginEffects,
     getWorkspaceRootLifecycle,
     pluginOperationGrants,
@@ -139,8 +112,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
       broadcastPermissionConfigChangedFromHost(ctx.host.desktop?.getAppWindows() ?? []);
     },
   });
-  // Publish it as a live-scope owner so a workspace-root removal sweeps plugin
-  // session grants alongside the conversation loops and the routine engine.
+  // Expose the live permission scope so workspace removal revokes plugin session grants.
   setActivePluginSurfacePermissionScope(pluginSurfacePermissionScope);
   const revokeInvalidatedPluginAccount = (
     pluginId: string,
@@ -203,21 +175,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
     payload: unknown,
     context: PluginToolInvocationContext,
   ): Promise<unknown> => {
-    // Issue #664 P2 — origin-chain propagation. Enter an AsyncLocalStorage
-    // frame so a re-entrant invocation from a plugin handler inherits the
-    // outermost origin instead of its own bare "plugin". `parentOrigin` is the
-    // explicit handoff (tests / future bridges that want to pin the chain
-    // start); the ambient chain (set by an outer invokePluginTool) takes
-    // precedence, so a UI→wrapper→inner chain stays UI all the way down.
-    // `runWithInvocationOrigin` owns that precedence (least-trusted wins:
-    // mcp-app > ui > plugin), so an MCP-App-rooted chain likewise stays
-    // "mcp-app" at every depth and can never be laundered into "ui".
-    //
-    // No shipped path re-enters: `hostApi.callTool` (the original wrapper case)
-    // was removed with cross-plugin tool invocation. The frame is still entered
-    // unconditionally because it is what a returning re-entrant producer would
-    // inherit — and because the origin it carries decides the approval lane
-    // below.
+    // Preserve ambient effective origin across nested dispatch; untrusted app roots can never become trusted UI.
     return runWithInvocationOrigin(context.origin, context.parentOrigin, async () => {
       const effectiveOrigin = currentInvocationOrigin() ?? context.origin;
       const ownerPluginId = context.ownerPluginId;
@@ -262,9 +220,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
           "host-pinned plugin auth provenance does not match the active manifest",
         );
       }
-      // Claim auth publication order before either dispatch path awaits plugin
-      // code. A later status/login/logout invocation supersedes this
-      // completion even when the older handler resolves last.
+      // Claim auth publication order before awaiting so newer invocations supersede older completions.
       const authInvocation = context.authToolKind && ownerPluginId && ownerGenerationId
         ? pluginRuntime.beginPluginAuthInvocation(
             ownerPluginId,
@@ -376,16 +332,7 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
               );
             }
           }
-          // App-only dispatch path — TRUSTED PANEL ONLY (`effectiveOrigin === "ui"`;
-          // an "mcp-app" chain never satisfies the predicate). Routes to the runtime
-          // handler directly, skipping the ToolExecutor and its Step-6 ceiling. The
-          // governed `runWithCeiling` cap is NOT re-added here: it is enforced
-          // STRUCTURALLY inside `PluginRuntime.callDeclaredAppOnlyTool` (the sole
-          // entry point of the bypass), so a hung app-only handler cannot block
-          // the renderer caller even if this dispatch is ever reverted to a
-          // direct `pluginRuntime.callDeclaredAppOnlyTool(...)` call. The
-          // user-activation gate + the #1556 nested-origin error live in
-          // `dispatchAppOnlyRuntimeInvocation`.
+          // The runtime owns the bypass ceiling; this trusted-panel branch still enforces activation constraints.
           const result = await dispatchAppOnlyRuntimeInvocation(
             pluginRuntime,
             toolName,
@@ -560,35 +507,12 @@ export async function setupPluginToolExecutor(ctx: BootContext): Promise<void> {
             sessionId: invocationSessionId,
             ...(pluginAuthLifecycle ? { pluginAuthLifecycle } : {}),
             permissionContext: pluginSurfacePermissionScope.createPermissionContext(context, {
-              // THE approval lane for this surface, and the only input to it:
-              // `false` lets a Layer-1 out-of-allowed-dir target raise the
-              // directory approval prompt, `true` hard-denies it into the deferred queue.
-              //
-              // It follows the *effective* chain origin (#664 P2), so a UI-rooted
-              // chain keeps `headless: false` at every depth and the user's outer
-              // approval is honoured. An MCP-App chain is foreground too — the
-              // user is looking at the card and CAN be asked. (Splitting "ui" and
-              // "mcp-app" changed WHO may reach the ungoverned app-only bypass,
-              // not whether a card's governed call can prompt the user.)
-              //
-              // `"plugin"` — the least-trusted floor of `resolveEffectiveOrigin`
-              // — has had NO producer since cross-plugin tool invocation was
-              // removed (`hostApi.callTool`, 1d6183b5): the three shipped
-              // producers dispatch "ui" (`callFromUi`) or "mcp-app"
-              // (`callFromApp`, `createExternalToolCallSource`). So this reads
-              // `false` on every reachable chain today, and the `"plugin"` arm is
-              // the fail-closed default a future re-entrant producer inherits.
-              // If such a producer returns, THIS line is where its lane is
-              // decided — and "was a foreground turn running" is not the
-              // dispatched origin: it is the ambient `EffectGateContext.headless`
-              // (permissions/effect-enforcement.ts), which the executor binds
-              // around `tool.execute` from `permissionContext.headless` and which
-              // already answers exactly that question for the plugin effect gate.
+              // Effective origin selects approval handling: foreground may prompt; headless directory access fails closed.
+              // Untrusted app cards may prompt through governed execution but never receive the panel bypass.
+              // Bare plugin origin remains a fail-closed headless default for nested producers.
               headless: effectiveOrigin === "plugin",
               trustOrigin: "plugin-emitted",
-              // The user-gesture credit is the trusted PANEL's alone: an "mcp-app"
-              // chain never carries `userAction` (callFromApp does not accept one),
-              // and the explicit origin check keeps that true even if it ever did.
+              // User-gesture credit belongs only to trusted panels, never app-origin chains.
               pluginPanelUserAction: effectiveOrigin === "ui" && context.userAction === true,
               ...(pluginOperation ? { pluginOperation } : {}),
               ...(context.expectedMcpServerId

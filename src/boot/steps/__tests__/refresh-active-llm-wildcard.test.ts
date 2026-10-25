@@ -1,19 +1,3 @@
-/**
- * Unit tests for `createRefreshActiveLlmWildcard` (#893 / PR #894 Cycle 3).
- *
- * The factory replaces the inline closure that previously lived in
- * `boot.ts` so the debounce + vendor-change-restart contract can be
- * verified without spinning up a full Electron bootstrap.
- *
- * Each test pins one piece of the contract:
- *   1. First call seeds `lastWildcardVendor` and DOES NOT restart plugins
- *   2. Vendor change after the seed triggers a debounced restart sweep
- *   3. Bursty calls within the debounce window coalesce to ONE sweep
- *   4. Same-vendor calls are no-ops once seeded (no extra restarts)
- *   5. Subscription selection clears the legacy API vendor slot
- *   6. Wildcard slot always exposes `hostApiVendor` only (no `hostApiKey`)
- *   7. `restartPlugin` rejection is logged but does not crash the timer
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { activeHostApiVendor, createRefreshActiveLlmWildcard } from "../refresh-active-llm-wildcard.js";
 
@@ -33,7 +17,6 @@ function makeDeps(initial: { vendor?: string } = {}) {
       listPluginIds,
       restartPlugin,
       cancelPendingRestarts,
-      // Default 200 ms — tests use a real fake timer.
     },
     setOverride,
     clearOverride,
@@ -57,11 +40,9 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
 
     refresh();
 
-    // Wildcard slot received the non-secret vendor metadata.
     expect(ctx.setOverride).toHaveBeenCalledWith({ hostApiVendor: "openai" });
-    // The stale `hostApiKey` slot is always swept.
+    // Always remove stale secret slots from wildcard metadata.
     expect(ctx.clearOverride).toHaveBeenCalledWith(["hostApiKey", "hostApiVendor"]);
-    // First call must not restart any plugin — that would churn on boot.
     vi.advanceTimersByTime(1_000);
     expect(ctx.restartPlugin).not.toHaveBeenCalled();
   });
@@ -74,11 +55,9 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     ctx.setVendor("claude");
     refresh();
 
-    // Within the debounce window — restart has NOT fired yet.
     vi.advanceTimersByTime(199);
     expect(ctx.restartPlugin).not.toHaveBeenCalled();
 
-    // At the boundary the debounced sweep runs over every plugin id.
     vi.advanceTimersByTime(1);
     expect(ctx.restartPlugin).toHaveBeenCalledTimes(2);
     expect(ctx.restartPlugin).toHaveBeenCalledWith("plugin-a");
@@ -90,7 +69,6 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     const { refresh } = createRefreshActiveLlmWildcard(ctx.deps);
 
     refresh();
-    // Rapid IPC churn: vendor → key → baseUrl patched in one IPC.
     ctx.setVendor("claude");
     refresh();
     vi.advanceTimersByTime(50);
@@ -100,12 +78,10 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     ctx.setVendor("azure-foundry");
     refresh();
 
-    // Still inside the debounce window relative to the LAST refresh.
     vi.advanceTimersByTime(199);
     expect(ctx.restartPlugin).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1);
-    // Exactly one sweep — coalesced across the burst.
     expect(ctx.restartPlugin).toHaveBeenCalledTimes(2);
   });
 
@@ -119,8 +95,7 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
 
     vi.advanceTimersByTime(1_000);
     expect(ctx.restartPlugin).not.toHaveBeenCalled();
-    // The wildcard slot is still written each call so a fresh boot or
-    // pluginRuntime swap can re-seed without an external trigger.
+    // Write wildcard metadata on every call so replacement runtimes can be seeded.
     expect(ctx.setOverride).toHaveBeenCalledTimes(3);
   });
 
@@ -148,8 +123,7 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     refresh();
     vi.advanceTimersByTime(200);
 
-    // Every `setWildcardConfigOverride` call must carry `hostApiVendor`
-    // ONLY — no `hostApiKey`, no `llmApiKey`, no provider secret.
+    // Wildcard overrides must contain vendor metadata only, never provider secrets.
     for (const call of ctx.setOverride.mock.calls) {
       const payload = call[0] as Record<string, unknown>;
       expect(Object.keys(payload)).toEqual(["hostApiVendor"]);
@@ -171,11 +145,9 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     refresh();
     vi.advanceTimersByTime(200);
 
-    // Both restart attempts are issued even though the first rejects.
     expect(ctx.deps.restartPlugin).toHaveBeenCalledWith("plugin-a");
     expect(ctx.deps.restartPlugin).toHaveBeenCalledWith("plugin-b");
-    // Flush microtasks so the swallowed rejection settles before the
-    // test exits — vitest would otherwise surface it as unhandled.
+    // Drain swallowed rejections before the test exits.
     await vi.runAllTimersAsync();
   });
 
@@ -189,11 +161,9 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
 
     dispose();
     vi.advanceTimersByTime(1_000);
-    // Timer was cleared — no plugins were restarted post-dispose.
     expect(ctx.restartPlugin).not.toHaveBeenCalled();
 
-    // Disposal is terminal for shutdown safety: a late settings event cannot
-    // schedule a fresh plugin restart after teardown begins.
+    // Disposal is terminal; late settings events must not schedule restarts.
     ctx.setVendor("gemini");
     refresh();
     vi.advanceTimersByTime(1_000);
@@ -214,9 +184,7 @@ describe("createRefreshActiveLlmWildcard (#893 / PR #894 Cycle 3)", () => {
     refresh();
     vi.advanceTimersByTime(200);
 
-    // The timer has fired and both PluginRuntime restart operations are now
-    // pending. `dispose()` must reach the runtime cancellation boundary; a
-    // timer-only cleanup would be too late to prevent a candidate publish.
+    // Once restart work starts, disposal must cancel at the runtime boundary to prevent publication.
     expect(ctx.deps.restartPlugin).toHaveBeenCalledTimes(2);
     dispose();
     dispose();

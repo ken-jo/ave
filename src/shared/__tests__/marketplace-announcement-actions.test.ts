@@ -1,14 +1,4 @@
-/**
- * Validation and version-gating of the `actions` array on a server
- * announcement row.
- *
- * This is the trust boundary: the marketplace validates on the way in, and the
- * app validates again on the way out, because an announcement is content
- * fetched over the network and the app has to hold up regardless of what
- * arrives. Every case below asserts a DROP rather than a correction — a
- * malformed entry must yield no button, never a button pointing somewhere it
- * was not asked to.
- */
+/** Drop malformed network-supplied actions rather than correcting them into unintended destinations. */
 import { describe, expect, it } from "vitest";
 import {
   announcementActionLabel,
@@ -169,9 +159,7 @@ describe("parseMarketplaceAnnouncementActions", () => {
     });
 
     it("fails closed when the running version is unresolvable", () => {
-      // `getAveAppVersion` answers "unknown" when it cannot find package.json.
-      // A gated button then hides rather than pointing at a place that may not
-      // exist in this build.
+      // Hide version-gated buttons when the running app version is unknown.
       expect(
         parseMarketplaceAnnouncementActions([settingsAction({ min_app_version: "0.1.0" })], "unknown"),
       ).toEqual([]);

@@ -187,7 +187,6 @@ describe("ensureAveHomePrivate", () => {
   });
   it.runIf(process.platform === "win32").each(["home", "secrets", "file", "directory"])("reports retained explicit extra entries on the real %s DACL", (target) => {
     const dir = home();
-    // The message carries the whole result, so a refusal shows its category and reason.
     const protectedHome = ensureAveHomePrivate(dir);
     expect(protectedHome, refusal(protectedHome)).toMatchObject({ enforcement: "win32-dacl" });
     const path = target === "home" ? dir : target === "secrets" ? join(dir, "secrets") : join(dir, "secrets", target);
@@ -210,7 +209,6 @@ describe("ensureAveHomePrivate", () => {
     expect(write).toBeGreaterThan(-1);
     expect(command.indexOf("[System.IO.FileAttributes]::ReparsePoint")).toBeLessThan(write);
     expect(command.indexOf("'Directory is owned by another account'")).toBeLessThan(write);
-    // The same owner rule as isOwnerOnlyDacl.
     expect(command).toContain("$owner -ne $sid -and -not ($elevated -and $owner -eq 'S-1-5-32-544')");
     expect(command.slice(write, command.indexOf("\n", write))).toContain("'/L'");
   });

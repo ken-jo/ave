@@ -1,17 +1,4 @@
-/**
- * The skip vocabulary and its rendering.
- *
- * `BootstrapSkipReason` is closed so the renderer can translate it, and the
- * table that renders it sits beside the union for the same reason. That only
- * holds if the table covers the union and the keys it names exist, so both are
- * checked here.
- *
- * The message-key check has to live somewhere: `t(TABLE[code])` is a computed
- * key, and the literal scan in `src/i18n/__tests__/used-keys-exist.test.ts`
- * matches `t("literal")` only — a key reached through a table is invisible to
- * it, resolves to itself at runtime, and ships as a raw dotted string in the
- * UI. Nothing else would catch that before someone looked at the app.
- */
+/** Check computed message keys explicitly; literal translation-key scans cannot see table lookups. */
 import { describe, expect, it } from "vitest";
 import {
   BOOTSTRAP_SKIP_MESSAGE_KEY,

@@ -1,7 +1,4 @@
-/**
- * Which git the marketplace runs (design §9.1), stored as
- * `settings.marketplace.git.mode`. Unset means `auto`.
- */
+/** Unset runtime mode means auto. */
 const GIT_RUNTIME_MODES = ["auto", "system", "managed"] as const;
 
 export type GitRuntimeMode = (typeof GIT_RUNTIME_MODES)[number];

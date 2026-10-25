@@ -3,59 +3,24 @@ import { isStagedSendOrigin } from "./staged-origins.js";
 export type ChatInputOrigin =
   | "user-keyboard"
   | "plugin-emitted"
-  /**
-   * MCP App (`ui/message`) — an untrusted sandboxed app frame asked for its text
-   * to enter the conversation. NEVER `user-keyboard`: the host cannot verify a
-   * gesture claim made inside an untrusted iframe, so app text is staged for an
-   * explicit user click (no active turn) or injected as round-boundary guidance
-   * (active turn), and its tool calls are treated as non-user provenance.
-   * Provenance travels in the `<app-message source="app:<serverId>">` envelope —
-   * see `shared/mcp-app-message-source.ts`.
-   */
+  /** App messages remain untrusted after user confirmation; stage or inject them with an app-message provenance envelope. */
   | "app-emitted"
-  /**
-   * MCP server prompt (`prompts/get`) — the USER explicitly selected a prompt the
-   * server declared, but the returned messages are SERVER-authored. Never
-   * `user-keyboard`: the user chose to run it, not what it says, so the text is
-   * staged with untrusted provenance and its tool calls are non-user provenance.
-   * Provenance travels in the `<mcp-prompt source="mcp-prompt:<serverId>">`
-   * envelope — see `shared/staged-origins.ts`.
-   */
+  /** A user-selected server prompt is still server-authored and must never gain keyboard provenance. */
   | "mcp-prompt-emitted"
   /** User-selected template whose text came from an installed agent plugin. */
   | "plugin-prompt-emitted"
   | "llm-tool-arg"
   | "agent-message"
   | "file-content"
-  /**
-   * Text submitted by a host-bound local non-renderer surface (for example the
-   * loopback API or a future local CLI). The
-   * transport mints this value; request bodies cannot elevate it to
-   * `user-keyboard`, so tool trust, memory capture, and request anchors remain
-   * non-keyboard by default.
-   */
+  /** The transport mints local-surface provenance; request bodies cannot elevate it to keyboard intent. */
   | "surface-user"
-  /**
-   * Text from the native Tailnet controller. This is intentionally distinct
-   * from local surfaces: its host-owned controller authority survives through
-   * the tool boundary, where every authority-bearing action is local one-shot
-   * approved and never consumes a remembered grant.
-   */
+  /** Native remote-controller authority requires local one-shot approval at effects and cannot use remembered grants. */
   | "tailnet-surface"
-  /**
-   * Text admitted from an explicitly paired external chat platform. The
-   * provider webhook has already been verified by a host-owned adapter; it
-   * still carries a separate remote-controller authority through the tool
-   * boundary, so it can never inherit local or Tailnet grants.
-   */
+  /** Verified paired webhooks carry separate controller authority and cannot inherit grants from another transport. */
   | "platform-bridge"
   | "queue-auto";
 
-/**
- * Non-forgeable authority attached by the conversation command port, never
- * parsed from an external chat payload. The actor id is a host-produced digest
- * rather than a raw Tailnet login.
- */
+/** Only the command port mints authority; actor ids are digests rather than raw remote logins. */
 export interface TailnetPairingShareBinding {
   /** Local durable pairing record id; never a raw Tailnet identity. */
   readonly pairingId: string;
@@ -69,29 +34,20 @@ export interface TailnetPairingShareBinding {
   readonly scope: string;
 }
 
-/**
- * Host-private revocation guard for an already admitted paired controller turn.
- *
- * The capability is only supplied by the main-process pairing store. It is
- * never serialized, exposed to a renderer, or parsed from a remote command.
- * P1 direct Tailnet control has no binding/guard and retains its existing
- * allow-once semantics.
- */
+/** Pairing-store guards stay host-private and unserialized; direct control retains allow-once semantics. */
 export interface TailnetPairedShareGuard {
   isCurrent(binding: TailnetPairingShareBinding): boolean;
 }
 
-
 export interface TailnetControllerAuthority {
   readonly kind: "tailnet-controller";
   readonly actorId: `tailnet:${string}`;
-  /** Present only for the explicit P2 paired-sharing ingress. */
+  /** Present only for paired-sharing ingress. */
   readonly pairedShare?: TailnetPairingShareBinding;
   /** Host-private final-boundary revocation check for paired shares. */
   readonly pairedShareGuard?: TailnetPairedShareGuard;
 }
 
-/** Opaque host record for one paired external platform route. */
 export interface PlatformBridgeBinding {
   /** Local durable bridge record id; never a provider account or channel id. */
   readonly bridgeId: string;
@@ -110,11 +66,7 @@ export interface PlatformBridgeGuard {
   isCurrent(binding: PlatformBridgeBinding): boolean;
 }
 
-/**
- * Host-owned authority carried by a verified, explicitly paired platform
- * webhook. It is intentionally distinct from a Tailnet controller: provider
- * identity, pairing route, and policy do not cross either transport boundary.
- */
+/** Provider identity, route pairing, and policy stay isolated across controller transports. */
 export interface PlatformBridgeAuthority {
   readonly kind: "platform-bridge";
   readonly actorId: string;
@@ -122,17 +74,9 @@ export interface PlatformBridgeAuthority {
   readonly bridgeGuard: PlatformBridgeGuard;
 }
 
-/** Common remote-controller policy carrier for Tailnet and future platforms. */
 export type RemoteControllerAuthority = TailnetControllerAuthority | PlatformBridgeAuthority;
 
-/**
- * Test a paired controller share at an authority-bearing boundary.
- *
- * Direct P1 Tailnet control deliberately has neither field and preserves its
- * existing local allow-once behavior. A malformed partial P2 authority, a
- * revoked binding, or a guard failure must instead deny: no caller may treat a
- * missing P2 guard as an implied durable share.
- */
+/** Malformed, partial, revoked, or failing paired authority denies; missing guards never imply a durable share. */
 function isTailnetPairedShareCurrent(
   authority: TailnetControllerAuthority | undefined,
 ): boolean {
@@ -148,11 +92,7 @@ function isTailnetPairedShareCurrent(
 
 }
 
-/**
- * Recheck an admitted remote authority immediately before an effect boundary.
- * Tailnet P1 direct control has no durable binding and remains valid for its
- * active connection; platform ingress is paired-only and always has a guard.
- */
+/** Recheck immediately before effects; direct control is connection-bound and platform ingress always requires pairing. */
 export function isRemoteControllerAuthorityCurrent(
   authority: RemoteControllerAuthority | undefined,
 ): boolean {
@@ -167,35 +107,16 @@ export function isRemoteControllerAuthorityCurrent(
   }
 }
 
-/**
- * Which remote controller stands behind a turn, as recorded by host-owned
- * state. Derived from the authority union rather than re-declared, so a new
- * controller kind cannot enter the system with no marker of its own.
- */
+/** Derive record markers from the authority union so every controller kind has a marker. */
 export type RemoteControllerOrigin = RemoteControllerAuthority["kind"];
 
-/**
- * Project an admitted authority onto the marker a host record carries.
- *
- * The single authority for that value. A host record must never re-derive "this
- * came from a remote turn" from a localizable free-text reason, from a renderer
- * payload, or from a second copy of the authority's shape: the authority object
- * is minted by the conversation command port and is the only non-forgeable
- * evidence that a remote controller is behind the turn. `undefined` in means
- * `undefined` out — a turn with no admitted controller is not remote, and there
- * is no other value that could mean it.
- */
+/** Only admitted host authority proves remote provenance; never infer it from localized text or renderer payloads. */
 export function remoteControllerOriginOf(
   authority: RemoteControllerAuthority | undefined,
 ): RemoteControllerOrigin | undefined {
   return authority?.kind;
 }
-/**
- * The origins whose text arrives inside a provenance envelope. Named so the
- * staged-origin registry can be a TOTAL `Record` over them: every lookup by a
- * literal member is then compile-checked and cannot be `undefined`, which removes
- * the defensive `!`/throw at each module-level lookup.
- */
+/** The staged registry is total over these origins so extending the union requires registration. */
 export type StagedChatInputOrigin = Extract<
   ChatInputOrigin,
   "plugin-emitted" | "app-emitted" | "mcp-prompt-emitted" | "plugin-prompt-emitted"
@@ -217,11 +138,7 @@ export interface ChatSendPayload {
   personaPromptId?: string;
 }
 
-
-/**
- * Public payload accepted by non-renderer surfaces. The host, not the caller,
- * adds the actual ChatSendInputOrigin at the conversation command boundary.
- */
+/** External payloads omit actual provenance; the host adds it at the command boundary. */
 export interface ExternalChatSendPayload {
   input: string;
   attachments?: unknown;
@@ -236,7 +153,6 @@ export interface UserKeyboardIntent {
   userActivation: true;
 }
 
-
 /**
  * Turn-entry provenance. Do not pass this through as the tool invocation
  * provenance without reclassifying at the model/tool boundary.
@@ -245,13 +161,7 @@ export function isUserKeyboardOrigin(origin: ChatInputOrigin): boolean {
   return origin === "user-keyboard";
 }
 
-/**
- * Origins whose turns are submitted by a surface OTHER than the desktop
- * renderer (loopback/local API, Tailnet controller, paired chat-platform
- * bridge). The desktop transcript echoes its own submissions optimistically at
- * send time, so this is the single predicate deciding that a turn's
- * `user.message` timeline event still needs a visible user row there.
- */
+/** Non-renderer turns need transcript echo; renderer submissions already create optimistic rows. */
 export function isExternalSurfaceInputOrigin(
   origin: string | undefined,
 ): origin is Extract<ChatInputOrigin, "surface-user" | "tailnet-surface" | "platform-bridge"> {
@@ -261,10 +171,7 @@ export function isExternalSurfaceInputOrigin(
 }
 
 export function isChatSendInputOrigin(value: unknown): value is ChatSendInputOrigin {
-  // The staged half is DERIVED from the staged-origin registry. Listing those
-  // literals here by hand is how a registered origin gets silently rejected at
-  // the send gate: the type union widens, the runtime guard does not, and tsc
-  // sees nothing because the guard is a hand-written predicate.
+  // Derive staged guard membership from the registry so runtime checks cannot miss new registered origins.
   return value === "user-keyboard"
     || value === "queue-auto"
     || value === "surface-user"
@@ -279,17 +186,12 @@ export function hasUserKeyboardIntent(value: unknown): value is UserKeyboardInte
   return payload.inputOrigin === "user-keyboard" && payload.userActivation === true;
 }
 
-/**
- * The one answer every mutation IPC domain gives when a request arrives
- * without user-keyboard intent. Shared so the renderer sees one error code
- * whichever domain refused.
- */
+/** Share the missing-keyboard-intent error code across mutation IPC domains. */
 export const USER_KEYBOARD_REQUIRED = Object.freeze({
   ok: false as const,
   error: "user-keyboard-required" as const,
 });
 
-/** Whether an IPC mutation payload carries a valid `intent` field. */
 export function hasUserKeyboardIntentPayload(payload: unknown): boolean {
   return typeof payload === "object" && payload !== null
     && hasUserKeyboardIntent((payload as { intent?: unknown }).intent);

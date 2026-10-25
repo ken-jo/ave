@@ -1,9 +1,3 @@
-/**
- * createRoutineEngine — unit test.
- *
- * Verifies the factory wires a RoutineEngine that delegates to a
- * ConversationLoop created by the provided factory.
- */
 import { describe, it, expect, vi } from "vitest";
 import { createRoutineEngine } from "../routine.js";
 
@@ -47,7 +41,6 @@ describe("createRoutineEngine", () => {
       "schedule-daily",
       expect.any(String),
     );
-    // routine-engine calls loop.runTurn(prePrompt, undefined, signal, options).
     expect(mockLoop.runTurn).toHaveBeenCalledWith(
       "오늘 업무 맥락 정리",
       undefined,

@@ -1,9 +1,3 @@
-/**
- * The boot step that builds the alerts pipeline: its predecessor answer comes
- * from the installed packages, the loaded plugins and the revocation feed;
- * its cards go to the live main window; and an uninstall anywhere in the host
- * reaches it through `plugin.uninstalled`.
- */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
@@ -123,7 +117,6 @@ describe("setupAlerts", () => {
     const callback = async () => {
       enter();
       await raiseRequested;
-      // The external release also bounds failure cleanup when the regression returns.
       await Promise.race([ctx.alertsService.raise("fixturemail", { kind: "reply", key: "startup" }).then(() => { raised = true; }), released]);
       await released;
     };
@@ -135,7 +128,6 @@ describe("setupAlerts", () => {
     const readConfig = vi.mocked(ctx.settingsService.getPluginConfig);
     const readCount = readConfig.mock.calls.length;
     const reconcile = ctx.alertsService.reconcileMigration();
-    // Let external reconciliation reach config acquisition before requesting the callback.
     await new Promise<void>((resolve) => setImmediate(resolve));
     raise();
     try {
@@ -170,9 +162,7 @@ describe("setupAlerts", () => {
     writeFileSync(ctx.pluginPaths.registryPath, JSON.stringify({ version: 1, plugins: [] }));
     await ctx.alertsService.reconcileMigration();
     expect(records).toEqual({});
-    // Clearing the records queues one more reconciliation that reads the
-    // registry; let it close the file before teardown removes the home
-    // (Windows cannot remove a directory holding an open file).
+    // Drain reconciliation before removing its registry directory; Windows refuses open-file deletion.
     await ctx.alertsService.flush();
   });
 
@@ -184,7 +174,6 @@ describe("setupAlerts", () => {
       successors: { plugins: [{ pluginId: "fixturemail" }], hostKinds: [] }, consumedBy: [],
     } };
     let current = true;
-    // Lose readiness during the locked read, before the durable write begins.
     vi.mocked(ctx.settingsService.getPluginConfig).mockImplementationOnce(() => {
       current = false;
       return {};
@@ -226,7 +215,6 @@ describe("setupAlerts", () => {
     } finally {
       release();
       await lifecycle;
-      // Queued after the deferred retry: drain it without another reconciliation.
       await withPluginInstallLock("fixturemail", async () => {});
     }
     expect(ctx.settingsService.getPluginConfig("fixturemail")).toEqual(superseded ? {} : { allowed: ["original"] });
@@ -397,8 +385,7 @@ describe("setupAlerts", () => {
     expect(ctx.alertsService.listOpen()[0]?.source.pluginId).toBe("@host");
     expect(send).toHaveBeenCalledWith(ALERTS.kindsChanged);
     expect(send).toHaveBeenCalledWith(OVERLAY_V1.show, expect.objectContaining({ source: expect.objectContaining({ pluginId: "@host" }) }));
-    // The card is addressed to the dedicated Suggestions conversation, which
-    // exists (and rose in the list) before the card went out.
+    // Create and promote the Suggestions conversation before sending its card.
     expect(touchSessionTranscript).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: true });
     await ctx.alertsService.flush();
   });

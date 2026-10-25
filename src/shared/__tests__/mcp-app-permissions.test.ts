@@ -1,10 +1,4 @@
-/**
- * `mcp-app-permissions` — the single mapping table from a resource's declared
- * `_meta.ui.permissions` to (1) the inner-frame `allow` attribute and (2) the Electron
- * session grant. These are pure-function tests of the HOST-COMPUTED, fail-closed policy;
- * the real-<webview> proof that Chromium HONORS the result lives in
- * `test/e2e/ui/mcp-app-permissions.spec.ts`.
- */
+/** Pure tests cover computed policy; browser enforcement is verified in test/e2e/ui/mcp-app-permissions.spec.ts. */
 import { describe, it, expect } from "vitest";
 import {
   MCP_APP_PERMISSION_FEATURES,
@@ -28,7 +22,6 @@ describe("the host capability table", () => {
 
 describe("buildMcpAppAllowAttr — the host-computed inner-frame allow-list", () => {
   it("declared ⇒ exactly the declared, table-known tokens, in TABLE order", () => {
-    // Declaration order is geolocation-then-camera; the output is table order.
     expect(buildMcpAppAllowAttr({ geolocation: {}, camera: {} })).toBe("camera; geolocation");
     expect(buildMcpAppAllowAttr({ camera: {}, microphone: {}, geolocation: {} })).toBe(
       "camera; microphone; geolocation",
@@ -58,7 +51,6 @@ describe("isElectronPermissionGranted — the fail-closed session decision", () 
     expect(isElectronPermissionGranted(undefined, "geolocation")).toBe(false);
     expect(isElectronPermissionGranted({}, "geolocation")).toBe(false);
     expect(isElectronPermissionGranted({ geolocation: {} }, "notifications")).toBe(false);
-    // clipboardWrite is not in the table, so declaring it grants nothing at this layer.
     expect(isElectronPermissionGranted({ clipboardWrite: {} }, "clipboard-sanitized-write")).toBe(
       false,
     );
@@ -82,10 +74,7 @@ describe("isElectronPermissionGranted — the fail-closed session decision", () 
   });
 
   it("a `media` ask/check with an INDETERMINATE kind is fail-closed → DENIED (not a coarse-match grant)", () => {
-    // Regression guard for the fail-OPEN bug: previously a kindless `media` decision fell
-    // back to a coarse permission-string match and granted, so a mic-only card could be
-    // handed `media` for a CAMERA request whose `mediaTypes` arrived empty. Now: no
-    // resolvable kind ⇒ deny, for every media declaration.
+    // Unknown media kind must deny; a microphone declaration cannot authorize an indeterminate camera request.
     expect(isElectronPermissionGranted({ microphone: {} }, "media")).toBe(false);
     expect(isElectronPermissionGranted({ microphone: {} }, "media", [])).toBe(false);
     expect(isElectronPermissionGranted({ camera: {} }, "media")).toBe(false);
@@ -95,8 +84,7 @@ describe("isElectronPermissionGranted — the fail-closed session decision", () 
   });
 
   it("the indeterminate-kind DENY is media-only: a kindless feature (geolocation) still grants on a declared match", () => {
-    // geolocation has no media kind, so the indeterminate-kind rule must NOT touch it — a
-    // declared match is the grant even though no kind is (or could be) supplied.
+    // Non-media grants do not require a media kind.
     expect(isElectronPermissionGranted({ geolocation: {} }, "geolocation")).toBe(true);
     expect(isElectronPermissionGranted({ geolocation: {}, microphone: {} }, "geolocation")).toBe(
       true,

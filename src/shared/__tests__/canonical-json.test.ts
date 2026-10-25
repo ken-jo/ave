@@ -1,12 +1,4 @@
-/**
- * Unit tests for canonicalStringify (H-1 undefined asymmetry fix, R-5).
- *
- * Verifies that canonicalStringify behaves identically to JSON.stringify for
- * all cases that JSON.stringify handles, and correctly serialises undefined
- * top-level values as "null" (RFC 8259).
- *
- * Issue: #691 PR-A4 Round 5
- */
+/** Canonical JSON sorts object keys and maps top-level undefined to null. */
 import { describe, it, expect } from "vitest";
 import { canonicalStringify } from "../canonical-json.js";
 
@@ -56,13 +48,11 @@ describe("canonicalStringify", () => {
 
   it("produces same result as JSON.stringify for objects with no undefined values", () => {
     const obj = { z: 3, a: 1, m: 2 };
-    // JSON.stringify preserves insertion order; canonicalStringify sorts keys
-    // so equality only holds when there are no undefined values AND keys are sorted.
+    // Equality with ordinary JSON requires sorted keys and no undefined values.
     const sorted = Object.fromEntries(Object.entries(obj).sort(([a], [b]) => a.localeCompare(b)));
     expect(canonicalStringify(obj)).toBe(JSON.stringify(sorted));
   });
 
-  // Issue #797 — defense-in-depth: cycle guard + depth cap
   describe("cycle guard + depth cap (#797)", () => {
     it("does not stack-overflow on a self-referencing object", () => {
       const obj: Record<string, unknown> = { a: 1 };
@@ -89,9 +79,7 @@ describe("canonicalStringify", () => {
     });
 
     it("sibling objects sharing structure across separate calls each serialize cleanly", () => {
-      // Each top-level call starts with a fresh WeakSet, so a shared
-      // subgraph referenced from two distinct root objects does NOT
-      // count as a cycle from either root's perspective.
+      // Each root gets its own cycle set; sharing across calls is not a cycle.
       const shared = { x: 1 };
       const a = { shared };
       const b = { shared };
@@ -100,10 +88,7 @@ describe("canonicalStringify", () => {
     });
 
     it("a shared (non-cyclic) sub-object referenced twice in ONE tree serializes both, not [Circular]", () => {
-      // Path-scoped cycle detection: `shared` appears under two sibling keys
-      // of the same root but is NOT a cycle. The old add-only WeakSet wrongly
-      // flagged the second occurrence "[Circular]", breaking key symmetry /
-      // HMAC stability for shared sub-objects.
+      // Detect cycles by ancestor path so sibling shared objects keep stable canonical hashes.
       const shared = { x: 1 };
       const root = { a: shared, b: shared };
       const out = canonicalStringify(root);

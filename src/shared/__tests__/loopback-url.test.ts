@@ -1,14 +1,9 @@
-/**
- * The two gates that asked "is this http URL local?" and answered differently.
- */
 import { describe, expect, it } from "vitest";
 import { isLoopbackHttpUrl, isLoopbackUrlHostname } from "../loopback-url.js";
 
 describe("isLoopbackHttpUrl", () => {
   it("accepts the whole 127.0.0.0/8 block, not just 127.0.0.1", () => {
-    // mcp-governance matched 127.0.0.1 exactly, so a legitimate MCP server on
-    // 127.0.0.2 was told it needed HTTPS while the marketplace provider gate
-    // admitted the same address.
+    // The entire loopback address range is local, not only its first address.
     expect(isLoopbackHttpUrl("http://127.0.0.1:11434/")).toBe(true);
     expect(isLoopbackHttpUrl("http://127.0.0.2:9000/")).toBe(true);
     expect(isLoopbackHttpUrl("http://127.255.255.254/")).toBe(true);
@@ -24,9 +19,7 @@ describe("isLoopbackHttpUrl", () => {
   });
 
   it("refuses *.localhost", () => {
-    // The one behaviour change: `foo.localhost` resolves through the same
-    // /etc/hosts and DNS that can point it at a remote address, and Node's
-    // getaddrinfo does not implement the RFC 6761 loopback mapping.
+    // Subdomains of localhost can resolve remotely through hosts or DNS; runtime lookup does not guarantee loopback.
     expect(isLoopbackHttpUrl("http://ollama.localhost/")).toBe(false);
     expect(isLoopbackHttpUrl("http://evil.localhost:8080/")).toBe(false);
   });

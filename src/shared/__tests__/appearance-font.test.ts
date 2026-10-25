@@ -5,12 +5,7 @@ import {
   isValidFontFamilyOverride,
 } from "../appearance-font.js";
 
-// These guards are the SoT shared by the main-process settings store (write-time
-// validation) and the renderer preload (frame-0 theme-prime validation before it
-// paints `--ave-font-size-scale` / `--ave-font-family` on documentElement).
-// They are security-load-bearing on the preload path: a tampered
-// `--ave-initial-theme=` argv must not be able to inject an arbitrary scale or
-// a CSS-injection font-family.
+// Shared guards protect persisted settings and initial-theme argv from CSS injection before first paint.
 describe("appearance-font — shared frame-0 / write-time guards", () => {
   it("exposes exactly the four discrete size-scale presets", () => {
     expect([...FONT_SIZE_SCALE_VALUES]).toEqual([0.75, 0.875, 1, 1.125]);
@@ -52,7 +47,6 @@ describe("appearance-font — shared frame-0 / write-time guards", () => {
   it("rejects empty, over-length, and non-string values", () => {
     expect(isValidFontFamilyOverride("")).toBe(false);
     expect(isValidFontFamilyOverride("A".repeat(257))).toBe(false);
-    // The longest installed font stack (a 64-character package name) is still a valid selection.
     expect(isValidFontFamilyOverride(installedFontStack(`a${"b".repeat(62)}c`))).toBe(true);
     expect(isValidFontFamilyOverride(123)).toBe(false);
     expect(isValidFontFamilyOverride(undefined)).toBe(false);

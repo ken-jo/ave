@@ -1,29 +1,16 @@
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
-/**
- * Producer-driven coverage for `setupWorkflowStores` wiring.
- *
- * The gate that pops the first-use skill modal must be the SAME instance the
- * tool executor uses. This exercises the real producer — `setupWorkflowStores`
- * — rather than hand-assembling `WorkflowToolDeps`, so a wiring regression in
- * the boot step (not just in the tool) is what turns it red.
- */
+/** Drive setupWorkflowStores to verify first-use approval shares the executor’s gate instance. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 
-// `mkdtempSync`, not `join(tmpdir(), random)`. The latter builds a path and
-// then creates it non-exclusively, so anything already sitting at that path —
-// including a symlink planted in the shared temp dir — is followed by the
-// `mkdirSync`/`writeFileSync` below. `mkdtempSync` creates the directory
-// atomically and fails if it exists.
+// Create temp directories atomically so existing paths or planted symlinks cannot be followed.
 const TEST_HOME = mkdtempSync(join(tmpdir(), "ave-wf-gate-"));
 process.env.AVE_HOME = TEST_HOME;
 
-// The SSRF guard resolves DNS before it fetches, which would make this test ask
-// the network what it thinks of a hostname. The wiring is the claim under test,
-// so the guard is replaced by a recorder for the transport it was handed.
+// Record transport wiring without DNS requests; SSRF behavior is covered separately.
 const guardCalls: { fetchImpl: unknown }[] = [];
 vi.mock("../../../core/network-guard.js", () => ({
   fetchPublicHttpResponse: async (_url: string, opts: { fetchImpl: unknown }) => {
@@ -97,7 +84,6 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
 
     expect(result.isError).toBe(false);
     expect(result.output.startsWith('<ave-skill name="demo"')).toBe(true);
-    // The modal reached the very gate the BootContext carries.
     expect(probe.requests).toHaveLength(1);
     expect(probe.requests[0]?.toolName).toBe("skill_load");
     expect(probe.requests[0]?.args).toEqual({ skillName: "demo" });
@@ -105,10 +91,7 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
   });
 
   it("starts the idle scheduler with no plugin installed", async () => {
-    // The shared idle consumers — preference refresh and memory consolidation —
-    // each return early when the scheduler is absent, so an absent scheduler
-    // disables idle work outright instead of degrading it. Nothing a plugin
-    // supplies may stand between boot and this object.
+    // Build the idle scheduler independently of plugin input; its absence disables idle consumers.
     const { ctx } = makeCtx();
 
     await setupWorkflowStores(ctx, []);
@@ -139,12 +122,7 @@ describe("setupWorkflowStores — tool and idle-scheduler wiring", () => {
   });
 });
 
-/**
- * A headless turn builds a window like any other launch, so "is there a
- * surface" cannot answer "is there anyone to ask". These two run the same card
- * through the same producer and differ only in argv — without the pair, a fix
- * that silenced the card everywhere would still look green.
- */
+/** A headless launch can have a window; argv must decide whether anyone can answer approvals. */
 describe("setupWorkflowStores — ask_user_question on a headless turn", () => {
   const CARD = {
     questions: [{ question: "Which way?", choices: ["left", "right"] }],
@@ -189,8 +167,7 @@ describe("setupWorkflowStores — ask_user_question on a headless turn", () => {
     const tool = registry.findByName("ask_user_question");
     expect(tool, "ask_user_question must be registered by the boot step").toBeDefined();
 
-    // The interactive call parks on the gate by design, so abort it rather
-    // than leave a five-minute timer behind.
+    // Abort the parked interactive gate so its timer does not outlive the test.
     const abort = new AbortController();
     const pending = tool!.execute(CARD, { ...toolCtx("sess-ask"), abortSignal: abort.signal });
     await vi.waitFor(() => expect(sent.length).toBeGreaterThan(0));
@@ -217,12 +194,7 @@ describe("setupWorkflowStores — ask_user_question on a headless turn", () => {
   });
 });
 
-/**
- * `net.fetch` throws on a redirect in every mode that would let the caller see
- * it, so a tool that guards each hop has to be handed the single-hop transport
- * instead. Nothing in a Node-run test can exercise that Electron behaviour, but
- * the wiring is what broke, and the wiring is checkable here.
- */
+/** Per-hop guards need single-hop transport; the desktop fetch API throws on visible redirects. */
 describe("setupWorkflowStores — web_fetch transport", () => {
   beforeEach(() => {
     guardCalls.length = 0;

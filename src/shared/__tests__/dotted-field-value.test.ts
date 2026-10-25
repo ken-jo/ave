@@ -1,11 +1,4 @@
-/**
- * `getDottedFieldValue` — the selection step both path-argument consumers use.
- *
- * Asserted here directly AND through both real consumers, because the contract
- * that matters is "the reviewer and the pipeline select the same values from
- * the same call". Testing only the helper would pass even if a consumer stopped
- * calling it.
- */
+/** Exercise both consumers so reviewer and pipeline cannot silently diverge from shared field selection. */
 import { describe, expect, it } from "vitest";
 import { join, resolve } from "node:path";
 import { getDottedFieldValue } from "../dotted-field-value.js";
@@ -26,15 +19,13 @@ describe("getDottedFieldValue", () => {
   });
 
   it("refuses to index INTO an array", () => {
-    // `files.0` must not resolve, or a tool declaring it would report one path
-    // where `files` reports two.
+    // Array indexes must not resolve to a single path when the declared field represents several.
     expect(getDottedFieldValue({ files: ["x", "y"] }, "files.0")).toBeUndefined();
   });
 
   it("returns undefined for an empty segment rather than the container", () => {
     expect(getDottedFieldValue({ a: { b: "v" } }, "a..b")).toBeUndefined();
     expect(getDottedFieldValue({ a: { b: "v" } }, ".a")).toBeUndefined();
-    // The whole-input case: an empty declaration must not select the input.
     expect(getDottedFieldValue({ a: "v" }, "")).toBeUndefined();
   });
 
@@ -44,8 +35,7 @@ describe("getDottedFieldValue", () => {
   });
 
   it("does not reach a prototype-only key through a declared field", () => {
-    // A plugin declares `pathFields` in its manifest, so the field NAME is
-    // attacker-influenced. A prototype key must not yield a usable string.
+    // Manifest-supplied field names are untrusted; prototype keys must not yield usable values.
     expect(getDottedFieldValue({}, "toString")).toBe(Object.prototype.toString);
     expect(typeof getDottedFieldValue({}, "toString")).not.toBe("string");
   });
@@ -98,8 +88,7 @@ describe("patch-envelope path fields", () => {
   ].join("\n");
 
   it("selects the files the patch names for the pipeline's target paths", () => {
-    // A native absolute cwd, so the expected paths carry this platform's root
-    // and separators (`D:\work\src\a.ts` on Windows).
+    // Use native absolute paths so expectations preserve this platform’s root and separators.
     const work = resolve("/work");
     expect(extractTargetFilePaths(toolWith(["patch#patch-envelope"]), { patch }, work)).toEqual([
       join(work, "src", "a.ts"),

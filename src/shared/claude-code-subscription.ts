@@ -1,11 +1,4 @@
-/**
- * Browser-safe contract for the Claude Code CLI subscription runtime.
- *
- * Credentials stay inside the official CLI home. Ave never reads token files
- * and never projects executable paths, auth URLs, or raw CLI output to the
- * renderer. This is connection setup only; chat still requires host-side
- * safety verification and the normal Ave tool bridge.
- */
+/** Credentials stay in the CLI home; never project paths, auth URLs, or raw output. Chat still requires host safety verification and tool gates. */
 
 export const CLAUDE_CODE_SUBSCRIPTION_PROVIDER_ID = "claude-code" as const;
 

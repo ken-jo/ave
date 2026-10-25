@@ -40,10 +40,7 @@ export const ImagePreparationRequestSchema = z.object({
 }).strict();
 type ImagePreparationRequest = z.infer<typeof ImagePreparationRequestSchema>;
 
-/**
- * Controller-validated request for an already-read image. The source bytes are
- * carried on the child stdin rather than serialized into argv or JSON.
- */
+/** Validated image bytes travel over child stdin, never argv or JSON. */
 export const ImagePreparationBytesRequestSchema = z.object({
   source: z.literal("stdin"),
   inputBytes: z.number().int().positive().max(IMAGE_PREPARATION_POLICY.maxInputBytes),

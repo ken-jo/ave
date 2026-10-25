@@ -18,12 +18,7 @@ type ShellEnvironmentTransition =
   | { kind: "unset"; name: string }
   | { kind: "set"; assignment: ShellAssignment }
   | { kind: "cwd"; path: ShellWord };
-/**
- * The program name a command word runs, for command-name rules. Git Bash on
- * win32 runs `C:\...\bash.exe`, `bash.exe` and `BASH` all as bash: it
- * splits on either separator, appends `.exe`, and looks names up without case.
- * Builtins still match exactly; callers compare the raw head for those.
- */
+/** On win32, normalize both separators, .exe suffixes, and case for external program names; builtins require the exact raw head. */
 export function stripCommandPath(word: string): string {
   if (sep !== "\\") return word.slice(word.lastIndexOf("/") + 1);
   if (word === ":" || word === ".") return word;
@@ -32,12 +27,10 @@ export function stripCommandPath(word: string): string {
   return leaf.replace(/\.(?:exe|com|bat|cmd)$/, "");
 }
 
-/** A command word the shell runs as a path rather than through PATH. */
 export function namesCommandPath(word: string): boolean {
   return word.includes("/") || (sep === "\\" && word.includes("\\"));
 }
 
-/** Wrappers whose option grammar changes the effective executed command. */
 const SHELL_EXECUTION_WRAPPERS: ReadonlySet<string> = new Set([
   "command", "env", "timeout", "nice", "ionice", "nohup", "stdbuf", "time", "watch", "xargs",
 ]);
@@ -63,8 +56,7 @@ export function effectiveShellWords(
     if (head === undefined) return result(words.length ? "Unresolved executed command" : undefined);
     const verb = stripCommandPath(head);
     if (!SHELL_EXECUTION_WRAPPERS.has(verb)) return result();
-    // The `command` builtin and `time` keyword match only their exact name; a
-    // win32 case or `.exe` variant names some other program.
+    // Case or .exe variants of command and time are external programs, not the builtin or keyword.
     if ((verb === "command" || verb === "time") && head !== verb && !namesCommandPath(head)) return result();
     if (verb === "xargs" || verb === "watch") return result(`Unsupported stream or string execution wrapper: ${verb}`);
     if (namesCommandPath(head)) wrapperPaths.push(words[0]!);

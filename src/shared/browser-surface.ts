@@ -1,46 +1,14 @@
-/**
- * Wire types between a main window's renderer and the main-process registry
- * of the browser tabs (guest `<webview>`s) and workspace surfaces it hosts.
- *
- * Main is authoritative for what agent tools may touch; the renderer mirrors
- * it. Tab ids are opaque strings the renderer mints and keeps unique within
- * its window; where a tab is mounted (side panel, main area) is the
- * renderer's business and never part of this contract.
- *
- * Channels (CHANNELS.browser / CHANNELS.surface in contract/app-contract.ts):
- *   bindTab      invoke  renderer→main  {@link BrowserTabBindRequest} → {@link BrowserTabBindResult}
- *   stop         invoke  renderer→main  {@link BrowserTabStopRequest} (stop or user navigation)
- *   tabOp        event   main→renderer  {@link BrowserTabOpRequest}
- *   control      event   main→renderer  {@link BrowserTabControlState}
- *   getSessionBindings invoke renderer→main → {@link SessionTabBindingsState}
- *   sessionBindingsChanged event main→renderer {@link SessionTabBindingsState}
- *   setActive    invoke  renderer→main  {@link ActiveWorkspaceSurface} | null
- */
+/** Main owns tab authority; renderer-issued ids are unique per window and omit UI placement. */
 
-/** The workspace surfaces a window can show and agent tools can default to. */
 type WorkspaceSurfaceKind = "browser" | "terminal";
 
-/**
- * The surface the user is looking at in one window — a HINT, not an
- * authority. A tool that is not told which tab to use defaults to the active
- * tab of its kind; an explicit tab id always wins, and every listing still
- * shows all tabs. `null` clears it.
- */
+/** Active surface is a default-selection hint, never authority; explicit tab ids win. */
 export interface ActiveWorkspaceSurface {
   readonly kind: WorkspaceSurfaceKind;
   readonly tabId: string;
 }
 
-/**
- * Bind a browser tab to the guest `<webview>` that renders it. Sent after the
- * webview attaches (its `getWebContentsId()`), and again whenever the tab is
- * remounted with a new guest. Main accepts only a live guest of the side
- * browser's partition hosted by the sender's own window.
- *
- * `requestId` is set when the tab was created in answer to a
- * {@link BrowserTabOpRequest} `new` — that is how main knows the agent
- * opened it. A renderer never claims agent provenance otherwise.
- */
+/** Accept only live guests in the expected partition and sender window; requestId proves agent-created tab provenance. */
 export interface BrowserTabBindRequest {
   readonly tabId: string;
   readonly webContentsId: number;
@@ -59,11 +27,7 @@ export interface BrowserTabStopRequest {
   readonly tabId: string;
 }
 
-/**
- * Main asks the window's renderer to change its tab UI. Main resolves the
- * agent's request when it observes the result: a bind carrying `requestId`
- * (new), the guest going away (close), or the tab bound and active (select).
- */
+/** Complete operations from observed bind, activation, or destruction rather than renderer claims. */
 export type BrowserTabOpRequest =
   /**
    * `sessionId` names the conversation the tab is opened for (a sub-agent's
@@ -74,14 +38,9 @@ export type BrowserTabOpRequest =
   | { readonly requestId: string; readonly op: "close"; readonly tabId: string }
   /** Focus this existing renderer slot without selecting or moving another surface. */
   | { readonly requestId: string; readonly op: "focus"; readonly tabId: string }
-  /**
-   * The agent's action in `tabId` is done: give keyboard focus back to what
-   * held it in the window before the action took it. Not awaited by main;
-   * main sees it land as the page losing focus.
-   */
+  /** Restore the window’s prior keyboard focus after tool actions without awaiting a renderer acknowledgement. */
   | { readonly requestId: string; readonly op: "restore-focus"; readonly tabId: string };
 
-/** Validate a main→renderer {@link BrowserTabOpRequest}; null when malformed. */
 export function parseBrowserTabOpRequest(value: unknown): BrowserTabOpRequest | null {
   if (!isRecord(value)) return null;
   const record = value as { requestId?: unknown; op?: unknown; url?: unknown; active?: unknown; tabId?: unknown };
@@ -159,7 +118,6 @@ export interface BrowserControlLease {
 }
 
 export interface BrowserTabControlView {
-  /** Main-issued tool handle. */
   readonly tabId: string;
   /** Embedded chrome slot id; native popup windows have no renderer slot. */
   readonly rendererTabId: string | null;
@@ -175,11 +133,7 @@ export interface BrowserTabControlView {
   readonly openerTabId: string | null;
 }
 
-/**
- * Full authoritative snapshot scoped to the caller's main window. Revision
- * increases on each published change for that window's lifetime. Subscribe
- * before fetching and discard snapshots older than the latest received one.
- */
+/** Subscribe before fetching state and discard stale revisions; snapshots are authoritative only within their window. */
 export interface BrowserTabControlState {
   readonly revision: number;
   readonly tabs: readonly BrowserTabControlView[];
@@ -189,7 +143,6 @@ export interface BrowserTabControlState {
 export interface BrowserTabsApi {
   bindTab(request: BrowserTabBindRequest): Promise<BrowserTabBindResult>;
   getState(): Promise<BrowserTabControlState>;
-  /** Embedded workspace slots grouped by creator, direct parent, and pane chat. */
   getSessionBindings(): Promise<SessionTabBindingsState>;
   onSessionBindingsChanged(handler: (state: SessionTabBindingsState) => void): () => void;
   /** Embedded chrome operations take renderer slot ids, never tool handles. Stop also clears origin provenance. */

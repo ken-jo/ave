@@ -1,9 +1,4 @@
-/**
- * Permission policy Layer 8 slash-origin sanitizer.
- *
- * Non-user-origin text can be displayed or sent as ordinary prompt text, but
- * it must not retain a leading slash that would dispatch host commands.
- */
+/** Non-user text may enter prompts but must lose a leading slash before it can dispatch privileged commands. */
 export function stripLeadingSlash(input: string): string {
   let output = input;
   while (output.trimStart().startsWith("/")) {

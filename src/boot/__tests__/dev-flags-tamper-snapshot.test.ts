@@ -1,20 +1,4 @@
-/**
- * Round-4 — verifies the tamper-detect snapshot defeats the
- * `main.ts` env scrub.
- *
- * Threat model: a packaged binary launched with `AVE_DEV=1` in the user
- * environment must emit a single audit-log line listing the tampered vars,
- * so operators can detect supply-chain or local-launcher tampering. The
- * `main.ts:67-73` scrub deletes those vars from `process.env` before
- * `plugin-runtime.ts` calls `shouldWarnPackagedFlagsIgnored()`. If the
- * helper read live `process.env`, the scrub would silently disable the
- * audit log.
- *
- * The fix snapshots presence at module-load time (which runs before the
- * scrub due to ESM import order). These tests verify both the snapshot
- * read and the test-only override that lets us exercise warn-true /
- * warn-false branches.
- */
+/** Snapshot tampered environment flags at module load, before the startup scrub removes them. */
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -56,14 +40,11 @@ describe("dev-flags tamper snapshot", () => {
   });
 
   it("survives a simulated process.env scrub (the round-4 regression)", () => {
-    // Simulate the boot snapshot capturing AVE_DEV at import time.
     _setTamperedSnapshotForTest(["AVE_DEV", "AVE_PLUGINS_DIR"]);
 
-    // Simulate `main.ts`'s scrub running afterwards.
     delete process.env.AVE_DEV;
     delete process.env.AVE_PLUGINS_DIR;
 
-    // Helper still reports tampered because it reads the snapshot.
     expect(shouldWarnPackagedFlagsIgnored(true)).toBe(true);
     expect(tamperedVarsAtBoot()).toEqual(["AVE_DEV", "AVE_PLUGINS_DIR"]);
   });
@@ -119,15 +100,12 @@ describe("dev-flags tamper snapshot", () => {
   });
 
   it("clearing the override restores the real snapshot", () => {
-    // First call without override → captures whatever the real snapshot is.
     _setTamperedSnapshotForTest(null);
     const realSnapshot = tamperedVarsAtBoot();
 
-    // Apply override → returns override.
     _setTamperedSnapshotForTest(["FAKE_OVERRIDE_VAR"]);
     expect(tamperedVarsAtBoot()).toEqual(["FAKE_OVERRIDE_VAR"]);
 
-    // Clear override → returns real snapshot again.
     _setTamperedSnapshotForTest(null);
     expect(tamperedVarsAtBoot()).toEqual(realSnapshot);
   });
@@ -135,8 +113,6 @@ describe("dev-flags tamper snapshot", () => {
 
 describe("isPackagedElectronProcess — the pre-boot answer the logger uses", () => {
   it("is packaged when Electron runs without defaultApp, whatever AVE_DEV says", () => {
-    // logger.ts and services.ts used to treat AVE_DEV=1 as "not packaged";
-    // dev-flags ignores the flag in a packaged build, and now so do they.
     expect(isPackagedElectronProcess({ versions: { electron: "32.0.0" } })).toBe(true);
     expect(isPackagedElectronProcess({ versions: { electron: "32.0.0" }, defaultApp: true })).toBe(false);
     expect(isPackagedElectronProcess({ versions: {} })).toBe(false);
@@ -146,8 +122,7 @@ describe("isPackagedElectronProcess — the pre-boot answer the logger uses", ()
 
 describe("isE2eTestRuntime", () => {
   it("requires AVE_E2E=1 AND NODE_ENV=test — AVE_E2E alone is not the harness", () => {
-    // The plugin bundle-snapshot IPC and the preload env flag accepted
-    // AVE_E2E=1 on its own; the whitelist and managed-bootstrap gates did not.
+    // E2E flags alone must not unlock bundle snapshots, preload access, or managed bootstrap.
     expect(isE2eTestRuntime({ AVE_E2E: "1", NODE_ENV: "test" })).toBe(true);
     expect(isE2eTestRuntime({ AVE_E2E: "1" })).toBe(false);
     expect(isE2eTestRuntime({ AVE_E2E: "1", NODE_ENV: "development" })).toBe(false);

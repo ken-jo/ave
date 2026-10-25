@@ -1,22 +1,7 @@
 import { createAlertMigrationPorts } from "../../../__tests__/support/alert-migration.js";
 import { createBootHostFixture, createDesktopHostFixture } from "../../../__tests__/support/host-runtime.js";
 import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-transport.js";
-/**
- * HostApi window targeting — a host→renderer send must go to the CURRENT main
- * window, not the one captured at boot.
- *
- * `showOrCreateMainWindow` (tray "Open Ave", dock `activate`, `ave://` deep
- * link) calls `createWindow()` when the previous main window is gone, which
- * registers a NEW BrowserWindow. `initPluginRuntime` runs once at boot, so the
- * `mainWindow` it captured is by then a destroyed handle: an overlay proposal
- * sent to it is a silent no-op while `triggerConversation` still answers
- * `{ accepted: true }`.
- *
- * Driven through the REAL producer (`initPluginRuntime` → captured
- * `createHostApi` → `hostApi.triggerConversation`) rather than by calling
- * `createHostApiFactory` directly, so deleting `getMainWindow` from the
- * `createHostApiFactory({...})` call site is caught here.
- */
+/** Resolve the live main window for every send; the boot-captured window can be destroyed and reopened. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
@@ -32,8 +17,7 @@ const runtimeTestState = vi.hoisted(() => ({
   capturedRuntimeOptions: null as Record<string, unknown> | null,
   readPluginRegistry: vi.fn(async () => ({ version: 1, plugins: [] })),
   runtime: {
-    // boot installs each loaded plugin's partition policy before starting any
-    // of them, so the double needs the cheap half of startAll too.
+    // Install partition policies before starting plugins.
     load: vi.fn(async () => {}),
     startAll: vi.fn(async () => {}),
     listToolNames: vi.fn(() => [] as string[]),
@@ -125,7 +109,6 @@ interface FakeWindow {
   webContents: { send: ReturnType<typeof vi.fn> };
 }
 
-/** The main store's `touch` of the dedicated Suggestions conversation. */
 const suggestionsTouch = vi.fn();
 
 function makeWindow(destroyed = false): FakeWindow {
@@ -157,11 +140,7 @@ type CreateHostApi = (
   installPluginId: string | null,
 ) => OverlayHostApi;
 
-/**
- * Boot the plugin runtime exactly as `boot.ts` does and hand back the overlay
- * HostApi for one plugin. `bootWindow` is what boot captured; `getMainWindow`
- * is the live registry `showOrCreateMainWindow` re-registers into.
- */
+/** Drive the boot producer so missing live-window wiring is observable. */
 async function overlayHostApi(input: {
   bootWindow: FakeWindow | null;
   getMainWindow?: () => FakeWindow | null;
@@ -208,7 +187,6 @@ async function overlayHostApi(input: {
     shellOpenExternal: vi.fn(),
     approvalGate: { requestAndWait: vi.fn() } as never,
     routinesStore: { list: () => [] } as never,
-    // This harness has no Work Board; the proposal verbs are not exercised here.
     getWorkBoardStore: () => undefined,
     getAlertsService: () => input.alertsService,
   });
@@ -275,7 +253,6 @@ describe("hostApi.triggerConversation overlay send targets the live main window"
       manifest: { id: "plugin-a", name: "Mail tools", capabilities: ["host:overlay"] },
     });
 
-    // Close + reopen: the boot handle is destroyed and a new window registers.
     bootWindow.destroyed = true;
     const reopened = makeWindow();
     current = reopened;
@@ -296,10 +273,9 @@ describe("hostApi.triggerConversation overlay send targets the live main window"
       source: { kind: "plugin", pluginId: "plugin-a" },
       pluginDisplayName: "Mail tools",
       running: false,
-      // Addressed to the dedicated Suggestions conversation, never the focused one…
+      // Cards target the Suggestions conversation, which must exist before sending.
       originSessionId: SUGGESTIONS_SESSION_ID,
     });
-    // …which exists, and rose in the list, before the card was sent.
     expect(suggestionsTouch).toHaveBeenCalledWith(SUGGESTIONS_SESSION_ID, { bump: true });
     expect(suggestionsTouch.mock.invocationCallOrder.at(-1)!)
       .toBeLessThan(reopened.webContents.send.mock.invocationCallOrder.at(-1)!);
@@ -443,11 +419,7 @@ describe("hostApi.triggerConversation for a plugin that declares alerts", () => 
   });
 });
 
-/**
- * The HostApi door to the alert pipeline: each start registers the plugin's
- * kinds, a raise and a withdrawal are scoped to the calling plugin, and the
- * host's `alert.*` events reach a subscriber only for its own alerts.
- */
+/** Alert registration, mutations, and event delivery remain scoped to the calling plugin. */
 describe("hostApi.raiseAlert, withdrawAlert and alert events", () => {
   const kinds = [{
     id: "reply",

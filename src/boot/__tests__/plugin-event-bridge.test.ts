@@ -1,22 +1,4 @@
-/**
- * Generic plugin event bridge (manifest.emittedEvents driven).
- *
- * Every assertion here drives the ONE production bridge,
- * `registerPluginEventBridge` from `boot/steps/ipc-bridge.ts`. This file used
- * to carry a local re-implementation ("mirrors real registerPluginEventBridge")
- * that three of the tests called instead; the mirror had the
- * private-namespace skip and production did not, so the
- * "does NOT forward private-namespace events" assertion could not fail no
- * matter what production did. Do not reintroduce a local bridge here.
- *
- * Verifies:
- * - Two plugins with different emittedEvents both get forwarded to webContents.
- * - A private-namespace event is NOT forwarded (declared or host-derived).
- * - dispose() tears down handlers so no further sends occur.
- * - The manifest shape those fake runtimes feed the bridge is the shape the
- *   REAL PluginRuntime produces — pinned by the producer-driven suite at the
- *   bottom, which loads a plugin from disk and bridges its real manifest.
- */
+/** Drive the production bridge; a local mirror can hide namespace-filtering failures. */
 import { describe, it, expect, afterEach } from "vitest";
 import { rm } from "node:fs/promises";
 import { emitEvent } from "../types.js";
@@ -30,8 +12,6 @@ import {
   makeTestPluginEntrySource,
   type TestPluginRuntimeFixture,
 } from "../../plugins/__tests__/test-helpers.js";
-
-// ─── Stubs ───────────────────────────────────────────────────────────────────
 
 function makeFakeWindow() {
   const sent: Array<{ channel: string; eventType: string; data: unknown }> = [];
@@ -70,8 +50,6 @@ function makeRuntime(
 function bridge(runtime: ReturnType<typeof makeRuntime>, win: ReturnType<typeof makeFakeWindow>) {
   return registerPluginEventBridge(runtime as unknown as never, win as unknown as never);
 }
-
-// ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("plugin event bridge — manifest.emittedEvents", () => {
   it("production bridge does not register undeclared legacy event literals", () => {
@@ -118,8 +96,7 @@ describe("plugin event bridge — manifest.emittedEvents", () => {
     );
 
     emitEvent("audit.log.entry", { secret: true });
-    // The public sibling from the SAME manifest still bridges — proves the
-    // skip is namespace-scoped, not "this manifest was dropped entirely".
+    // The public sibling proves filtering applies per namespace rather than per manifest.
     emitEvent("meeting.status.changed", { status: "started" });
 
     expect(win._sent.map((s) => s.eventType)).toEqual(["meeting.status.changed"]);
@@ -153,7 +130,7 @@ describe("plugin event bridge — manifest.emittedEvents", () => {
 
     dispose();
     emitEvent("meeting.status.changed", { status: "stopped" });
-    expect(win._sent).toHaveLength(1); // no new sends after dispose
+    expect(win._sent).toHaveLength(1);
   });
 
   it("deduplicates when two plugins declare the same emittedEvent", () => {
@@ -168,21 +145,18 @@ describe("plugin event bridge — manifest.emittedEvents", () => {
 
     emitEvent("calendar.event.created", { id: "ev1" });
 
-    // Should fire exactly once, not twice
     expect(win._sent).toHaveLength(1);
 
     dispose();
   });
 });
 
-// ─── R3 — host-derived <id>.auth.changed (exercises the REAL bridge) ──────────
-
 describe("plugin event bridge — host-derived <id>.auth.changed (R3)", () => {
   const AUTH: PluginManifest["auth"] = { statusTool: "x_status", loginTool: "x_login" };
 
   it("bridges ${id}.auth.changed when auth is declared but emittedEvents omits it", () => {
     const win = makeFakeWindow();
-    const dispose = bridge(makeRuntime([{ id: "samplemail", auth: AUTH }]), win); // no emittedEvents[]
+    const dispose = bridge(makeRuntime([{ id: "samplemail", auth: AUTH }]), win);
 
     emitEvent("samplemail.auth.changed", { authenticated: true });
 
@@ -197,9 +171,8 @@ describe("plugin event bridge — host-derived <id>.auth.changed (R3)", () => {
     const win = makeFakeWindow();
     const dispose = bridge(makeRuntime([{ id: "foo-bar", auth: AUTH }]), win);
 
-    // The dash form is bridged...
     emitEvent("foo-bar.auth.changed", { authenticated: false });
-    // ...the underscore-mirrored form is NOT (that would be the #131 regression).
+    // The underscore alias must not bridge alongside the canonical dash form.
     emitEvent("foo_bar.auth.changed", { authenticated: false });
 
     expect(win._sent).toHaveLength(1);
@@ -217,7 +190,6 @@ describe("plugin event bridge — host-derived <id>.auth.changed (R3)", () => {
 
     emitEvent("sampleportal.auth.changed", { authenticated: true });
 
-    // Exactly one forward — the derived name deduped against the declared one.
     expect(win._sent).toHaveLength(1);
     expect(win._sent[0].eventType).toBe("sampleportal.auth.changed");
 
@@ -226,7 +198,7 @@ describe("plugin event bridge — host-derived <id>.auth.changed (R3)", () => {
 
   it("does NOT derive auth.changed for a plugin without an auth block", () => {
     const win = makeFakeWindow();
-    const dispose = bridge(makeRuntime([{ id: "plain-plugin" }]), win); // no auth, no emittedEvents
+    const dispose = bridge(makeRuntime([{ id: "plain-plugin" }]), win);
 
     emitEvent("plain-plugin.auth.changed", { authenticated: true });
 
@@ -236,14 +208,7 @@ describe("plugin event bridge — host-derived <id>.auth.changed (R3)", () => {
   });
 });
 
-// ─── Producer-driven — a REAL PluginRuntime feeds the REAL bridge ─────────────
-//
-// The suites above hand-build the `listPluginManifests()` rows. This one does
-// not: it installs a plugin on disk, starts a real `PluginRuntime`, and passes
-// that runtime straight into `registerPluginEventBridge`. It is the evidence
-// that a private-namespace `emittedEvents` entry actually SURVIVES manifest
-// validation and reaches the bridge — i.e. that the skip is reachable and not
-// a guard against a manifest shape no producer can make.
+// The real loader must preserve private events so the bridge guard is reachable.
 
 describe("plugin event bridge — real PluginRuntime producer", () => {
   let fixture: TestPluginRuntimeFixture | undefined;
@@ -270,9 +235,7 @@ describe("plugin event bridge — real PluginRuntime producer", () => {
     const runtime = makeTestPluginRuntime(fixture);
     await runtime.startAll();
 
-    // Premise: the real loader really does hand the bridge both names. Without
-    // this, a validator that silently dropped `audit.log.entry` would make the
-    // assertion below pass for the wrong reason.
+    // Assert the loader retained the private event to avoid passing through upstream filtering.
     const produced = runtime.listPluginManifests().find((m) => m.pluginId === "producer-plugin");
     expect(produced?.manifest.emittedEvents).toEqual([
       "producer-plugin.status.changed",

@@ -1,73 +1,7 @@
-/**
- * What may be typed into the user's terminal as one agent command
- * (`terminal_run`).
- *
- * The text reaches an interactive shell's line editor as keystrokes, so the
- * characters themselves are instructions: a newline submits a second command
- * the approval card never showed as its own line, a tab triggers completion,
- * ESC starts an editor or terminal sequence (bracketed-paste markers among
- * them), and Ctrl-C/Ctrl-U/Ctrl-D signal the shell or rewrite the line.
- * Characters a reader cannot see — format and default-ignorable characters,
- * non-ASCII spaces, the braille blank, a combining mark stacked on ASCII, a
- * long run of whitespace that pushes the rest off the card — make the card
- * show a different command from the one the shell reads. All of these are
- * refused; there is no escape or "paste mode" that lets them through.
- *
- * The line must also be one the shell runs exactly as approved and at once,
- * and the same in every shell the terminal may run, because the permission
- * rules read it as bash:
- *  - history expansion (`!!`, `!$`, `!name`, a leading `^old^new`, the `r`
- *    and `fc` re-run commands) would run text the user never saw, so a `!` may
- *    only precede whitespace, `=`, `(` or the end of the line, where no
- *    interactive shell expands it;
- *  - a `#` comment is a comment in bash but ordinary text in an interactive
- *    zsh without `interactivecomments`, so `ls # ; rm -rf x` would run the
- *    `rm` the rules never saw; an unquoted `#` that starts a word is refused
- *    whatever the shell's options;
- *  - zsh reads constructs bash reads as plain text, found by running every
- *    accepted command of a corpus in both shells and comparing what ran with
- *    what the rules read (terminal-command-differential.test.ts): a word
- *    starting with `=` is a path lookup (`ls =rm` passes `/bin/rm`; as a
- *    redirect target it names that file), `$=x`, `$+x`, `$~x`, `$^x` and
- *    their `${…}` forms are parameter flags, `>!` is a clobbering redirect,
- *    `nocorrect`, `noglob` and `-` are precommand modifiers, `repeat N cmd` runs `cmd` (bash runs a program
- *    named `repeat`), `command NAME=v cmd` assigns and runs `cmd` (bash runs
- *    a program named `NAME=v`), and a command of redirections alone runs
- *    `$NULLCMD` or `$READNULLCMD` (`cat`, a pager) where bash runs nothing;
- *  - a construct the shell analysis does not model (`case`,
- *    `declare`/`typeset`/`local`, `let`, `((…))`, `select`, `coproc`, a glob
- *    with parentheses, which zsh reads as glob qualifiers that can run code),
- *    or a command name taken from a variable, cannot be checked for any of
- *    this, so it is refused too;
- *  - an unfinished construct (an open quote, a here-document, a trailing
- *    operator or backslash) leaves the shell waiting at a continuation prompt
- *    with the terminal half-typed, so the line must parse as one complete
- *    shell command.
- *
- * The command also must not change the shell for the user's later commands:
- * no function definitions, no assignments to the variables a shell runs or
- * resolves later commands through (prompt and hook variables, `PATH`, `IFS`,
- * `TMOUT`, …) — with `NAME=value` or through `read`, `mapfile`, `getopts` or
- * `printf -v` — no builtins that install aliases, traps, hooks, options, key
- * bindings, limits, a umask, terminal settings or scheduled commands, and no
- * reference to the shell integration's own `__ave_*` names
- * (its marker nonce among them).
- *
- * Nor may it print the shell's own state: prompt expansion (`print -P`,
- * `${…@P}`) and any reference to the prompt, hook or line-editor variables,
- * bash's `${…@A}`/`${…@K}` declarations, variable listings (`export`,
- * `readonly`, `integer` or `float` bare or with `-p`; `compgen`; `set`,
- * `typeset`, `declare` and `local` are refused already), `vared`, and
- * `print -z`/`-s`/`-S` (the line editor's buffer stack and the history;
- * `history` itself is refused as shell state).
- *
- * Pure: shared by the tool (before any approval is asked) and the PTY write
- * (which re-checks the characters it is handed).
- */
+/** Terminal input is keystrokes, not a script: reject invisible editing controls, history expansion, shell-dependent syntax, and persistent shell-state changes. Tool approval and PTY write share this admission rule. */
 import { analyzeShell, shellWordHasSingleField, staticShellWord, type ShellRedirect, type ShellStatement, type ShellWord } from "./shell-analysis.js";
 import { analyzeShellTestExpression } from "./shell-test-expression.js";
 
-/** Characters one command may hold — the length a block records (terminal-blocks.ts). */
 export const MAX_TERMINAL_COMMAND_CHARS = 4096;
 /** Longest run of whitespace a command may hold, so nothing hides past the card's edge. */
 export const MAX_TERMINAL_COMMAND_WHITESPACE_RUN = 16;
@@ -91,14 +25,8 @@ export type TerminalCommandTextProblem =
 /** C0 controls (tab, LF and CR included), DEL and the C1 controls. */
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f-\u009f]/u;
 const LINE_BREAK = /[\n\r\u2028\u2029]/u;
-/**
- * Characters that render as nothing or as blank space a reader takes for an
- * ordinary space: format characters, default-ignorable code points (fillers,
- * variation selectors, tags), every space separator except U+0020, and the
- * braille pattern blank.
- */
+/** Reject invisible formats, default-ignorables, non-ASCII separators, and braille blanks that can conceal the executed text. */
 const INVISIBLE_CHARACTER = /[\p{Cf}\p{Default_Ignorable_Code_Point}\p{Zs}\u2800]/u;
-/** A combining mark, judged by what it attaches to ({@link hasHiddenCombiningMark}). */
 const COMBINING_MARK = /\p{M}/u;
 const NON_ASCII = /[^\u0000-\u007f]/u;
 /** A `!` an interactive bash or zsh would expand. */
@@ -114,38 +42,22 @@ const STATE_CHANGING_COMMAND_WORDS: ReadonlySet<string> = new Set([
 ]);
 /** Builtins that evaluate code or arithmetic strings the shell analysis does not read. */
 const UNCHECKED_COMMAND_WORDS: ReadonlySet<string> = new Set(["zpty", "zregexparse", "zformat"]);
-/**
- * Builtins that assign the variables named by their arguments without
- * assignment syntax: `read NAME`, `mapfile NAME`, `getopts spec NAME`,
- * `printf -v NAME`. Every argument naming a variable is judged like the left
- * side of `NAME=value`.
- */
+/** Treat argument-based variable writes like assignment syntax, including read, mapfile, getopts, and printf -v. */
 const VARIABLE_SETTING_COMMAND_WORDS: ReadonlySet<string> = new Set(["read", "mapfile", "readarray", "getopts", "printf", "zparseopts", "wait"]);
 /** Builtins that list the shell's variables or completions, or edit a variable in the line editor. */
 const INTROSPECTION_COMMAND_WORDS: ReadonlySet<string> = new Set(["compgen", "vared"]);
 /** Declaration builtins that list every variable (and its value) when given nothing to declare, or `-p`. */
 const LISTING_DECLARATION_WORDS: ReadonlySet<string> = new Set(["export", "readonly", "integer", "float"]);
-/**
- * Variables that hold the prompt, its hooks or the line editor's settings.
- * Their values are the shell integration's (the prompt prints the B marker
- * of the moment); a command neither reads nor expands them.
- */
+/** Prompt, hook, and editor variables may contain integration state; commands must neither read nor expand them. */
 const PROMPT_VARIABLE = /^\{?#?(?:PS[0-9]|SPROMPT|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|PROMPT_COMMAND|PROMPT_EOL_MARK|prompt|rprompt|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit|zsh_directory_name)_functions|zle_[A-Za-z_]+|widgets)(?![A-Za-z0-9_])/u;
-/** Wrappers that run their first non-option argument as a command in the shell itself. */
 const COMMAND_WRAPPERS: ReadonlySet<string> = new Set(["builtin", "command", "time"]);
-/** Declaration builtins whose `NAME=value` arguments assign in the shell itself. */
 const DECLARATION_COMMAND_WORDS: ReadonlySet<string> = new Set(["export", "declare", "typeset", "local", "readonly", "integer", "float"]);
-/**
- * Variables an interactive shell runs or resolves every later command
- * through: prompt and hook variables, the command search path, word
- * splitting, and startup files.
- */
+/** These variables can alter later command execution, resolution, splitting, or startup. */
 const SHELL_STATE_VARIABLES = /^(?:PROMPT_COMMAND|PROMPT_EOL_MARK|prompt|rprompt|PS[0-9]|SPROMPT|PROMPT[0-9]?|RPROMPT[0-9]?|RPS[0-9]|(?:precmd|preexec|chpwd|periodic|zshaddhistory|zshexit|zsh_directory_name)_functions|TRAP[A-Z]+|PATH|path|IFS|CDPATH|cdpath|FPATH|fpath|BASH_ENV|ENV|ZDOTDIR|HISTFILE|HISTCONTROL|HISTIGNORE|TMOUT|MAIL|MAILCHECK|MAILPATH|mailpath|PERIOD|LD_PRELOAD|LD_LIBRARY_PATH|DYLD_[A-Z_]+|__ave_\w*)$/u;
 /** Executable registries must not be changed, even by command-scoped assignments. */
 const EXECUTABLE_REGISTRY_VARIABLE = /^(?:(?:dis_)?(?:functions|functions_source|aliases|galiases|saliases|builtins|commands)|widgets|BASH_ALIASES|BASH_CMDS)$/u;
 const ASSIGNMENT_WORD = /^([A-Za-z_][A-Za-z0-9_]*)(?:\[[^\]]*\])?\+?=/u;
 
-/** The first reason `command` may not be typed into a terminal, or null when it may. */
 export function terminalCommandTextProblem(command: string): TerminalCommandTextProblem | null {
   if (command.trim() === "") return "empty";
   if (command.length > MAX_TERMINAL_COMMAND_CHARS) return "too-long";
@@ -155,9 +67,7 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
   if (new RegExp(`\\s{${MAX_TERMINAL_COMMAND_WHITESPACE_RUN + 1},}`, "u").test(command)) return "whitespace-run";
   if (hasHistoryExpansion(command) || command.trimStart().startsWith("^")) return "history-expansion";
   if (command.includes("__ave_")) return "shell-integration";
-  // A parameter named at run time — zsh flags such as `${(P)name}` and
-  // `${(e)…}`, bash's `${!name}` — could read any variable, the shell
-  // integration's among them, whatever its spelling here.
+  // Runtime-indirect parameter names can reach any variable, including protected integration state.
   if (/\$\{[(!]/u.test(command)) return "unchecked-construct";
   const expansion = expansionProblem(command);
   if (expansion !== null) return expansion;
@@ -175,7 +85,6 @@ export function terminalCommandTextProblem(command: string): TerminalCommandText
   return statementProblem(analysis.program);
 }
 
-/** True when `command` is free of every character this module refuses (the PTY write's re-check). */
 export function hasOnlyTypeableCharacters(command: string): boolean {
   return !LINE_BREAK.test(command) && !CONTROL_CHARACTER.test(command) && !hasInvisibleCharacter(command);
 }
@@ -187,12 +96,7 @@ function hasInvisibleCharacter(command: string): boolean {
   return hasHiddenCombiningMark(command);
 }
 
-/**
- * A combining mark may follow a non-ASCII letter (or another such mark), as
- * in scripts that write vowels with marks. On anything else — an ASCII
- * letter, a digit, punctuation, a space — it changes how a character looks
- * without changing what the shell reads.
- */
+/** Combining marks may follow non-ASCII letters or their marks; on ASCII, digits, punctuation, or spaces they can disguise shell text. */
 function hasHiddenCombiningMark(command: string): boolean {
   let base: string | null = null;
   for (const ch of command) {
@@ -205,13 +109,7 @@ function hasHiddenCombiningMark(command: string): boolean {
   return false;
 }
 
-/**
- * An unquoted `#` at the start of a word: a comment to bash, text to a zsh
- * without `interactivecomments`. Inside a `${…}` parameter expansion a `#`
- * is an operator (`${#x}`, `${x#p}`, `${x##p}`), never a comment. A line
- * whose quotes or expansions this scan cannot close is counted as holding
- * one, so an odd construct never hides a comment from it.
- */
+/** Word-leading unquoted # differs between interactive shells; parameter-expansion # is an operator. Unclosed syntax fails closed. */
 function hasUnquotedComment(command: string): boolean {
   const chars = [...command];
   /** Open double quotes and `${` expansions, innermost last. */
@@ -278,11 +176,7 @@ function hasUnquotedComment(command: string): boolean {
   return open.length > 0 || singleQuoted || ansiQuoted;
 }
 
-/**
- * Each character of `command` that the shell reads outside single quotes and
- * `$'…'`, and that no backslash escapes: where `$` expands and `!` recalls
- * history, in both zsh and bash (double quotes included).
- */
+/** Scan unescaped characters outside single and ANSI-C quotes; double quotes still permit parameter and history expansion. */
 function* liveCharacters(command: string): Generator<{ readonly index: number; readonly char: string }> {
   let quote: "none" | "double" | "single" | "ansi" = "none";
   for (let i = 0; i < command.length; i++) {
@@ -320,11 +214,7 @@ function* liveCharacters(command: string): Generator<{ readonly index: number; r
   }
 }
 
-/**
- * A `!` the shell would read as history expansion (`!!`, `!$`, `!name`): one
- * outside single quotes, unescaped, not before whitespace, `=`, `(` or the
- * end of the line, where no interactive shell expands it.
- */
+/** History expansion excludes only unescaped ! before whitespace, =, (, or end of line. */
 function hasHistoryExpansion(command: string): boolean {
   for (const { index, char } of liveCharacters(command)) {
     if (char === "!" && !/^(?:[\s=(]|$)/u.test(command.slice(index + 1, index + 2))) return true;
@@ -332,15 +222,7 @@ function hasHistoryExpansion(command: string): boolean {
   return false;
 }
 
-/**
- * The first problem with a `$` expansion the shell would perform:
- *  - zsh's parameter flags (`$=x` splits, `$+x` tests, `$~x` globs, `$^x`
- *    distributes; also in `${…}` form), which bash reads as the text `$=x`,
- *    and the rules with it;
- *  - bash's `${…@X}` transformations, which expand a prompt (`@P`) or print
- *    declarations (`@A`, `@K`);
- *  - any reference to the prompt, its hooks or the line editor's settings.
- */
+/** Reject shell-specific parameter flags, prompt/declaration transformations, and references to protected prompt or editor variables. */
 function expansionProblem(command: string): TerminalCommandTextProblem | null {
   for (const { index, char } of liveCharacters(command)) {
     if (char !== "$") continue;
@@ -359,11 +241,7 @@ function startsWithEquals(word: ShellWord): boolean {
   return /^=./u.test(word.source.raw);
 }
 
-/**
- * A redirect target zsh reads differently: `=cmd`, or the `!` of zsh's
- * clobbering `>!`/`>>!` (bash writes to a file named `!` and passes the
- * next word to the command).
- */
+/** Path lookup and clobbering redirect syntax can resolve differently across shells. */
 function zshRedirectTarget(redirect: ShellRedirect): boolean {
   return redirect.target !== undefined && (startsWithEquals(redirect.target) || redirect.target.source.raw.startsWith("!"));
 }
@@ -401,19 +279,12 @@ function statementProblem(statement: ShellStatement): TerminalCommandTextProblem
     case "while":
       return statementProblem(statement.condition) ?? statementProblem(statement.body);
     case "unsupported":
-      // A construct the analysis does not model (case, declare/typeset/local,
-      // let, ((…)), select, coproc) cannot be checked for the rules above;
-      // neither can a command name taken from a variable (commandProblem).
+      // Unmodeled constructs and dynamic command names cannot prove the admission rules.
       return "unchecked-construct";
   }
 }
 
-/**
- * Command substitutions inside words run commands too. So does a glob with
- * parentheses in zsh: `*(e:'cmd':)` and `*(+cmd)` are glob qualifiers that
- * run code for each match, where bash reads an extended glob (shell-analysis
- * leaves an ExtGlob word unanalysed).
- */
+/** Substitutions and parenthesized glob qualifiers can execute nested code; an unanalyzed extended glob grants no proof. */
 function firstWordsProblem(words: readonly ShellWord[]): TerminalCommandTextProblem | null {
   for (const word of words) {
     for (const part of word.parts) {
@@ -458,8 +329,7 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   }
   const head = words[index];
   if (head === undefined) return null;
-  // A command name taken from a variable could be any builtin
-  // (`c=alias; $c ls=rm`), so none of the checks below could hold.
+  // A dynamic command name could resolve to any forbidden builtin.
   if (staticWords[index] === undefined) return "unchecked-construct";
   if (head.startsWith("=") || DIVERGENT_COMMAND_WORDS.has(head)) return "shell-divergent";
   // `command NAME=v cmd`: zsh assigns and runs cmd, bash runs a program named `NAME=v`.
@@ -473,26 +343,21 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
     const form = command.testForm ?? (head === "[" ? "bracket" : "test");
     if (!analyzeShellTestExpression(form, command.words.slice(index), staticWords.slice(index), "bash").ok) return "unchecked-construct";
   }
-  // The callback is evaluated as shell text, including when -C is attached
-  // or clustered after -t. Option operands such as -d C are only data.
+  // Completion callbacks evaluate shell text, including attached or clustered options; option operands remain data.
   if ((head === "mapfile" || head === "readarray") && hasUncheckedArrayReadOptions(args)) return "shell-state";
   if (INTROSPECTION_COMMAND_WORDS.has(head)) return "shell-introspection";
-  // `print -P` and `echo -P` expand prompt escapes; `print -z` pushes onto
-  // the line editor's buffer stack and `print -s`/`-S` onto the history.
+  // Prompt-print options expand protected state; buffer-stack and history options persist text beyond this command.
   if (head === "echo" && leadingOptions(args).some((option) => /^-[A-Za-z]*[PzsS]/u.test(option))) {
     return "shell-introspection";
   }
-  // `export`, `readonly`, `integer`, `float` with nothing to declare, or with
-  // `-p`, list every such variable with its value.
+  // Bare declaration builtins or -p print variables and their values.
   if (LISTING_DECLARATION_WORDS.has(head)) {
     const options = leadingOptions(args);
-    // The analysis lowers `NAME=value` and `NAME` operands to assignments.
     const declares = command.assignments.length > 0 || options.length < args.length;
     if (!declares || options.some((option) => /^-[A-Za-z]*p/u.test(option))) return "shell-introspection";
   }
   if (head === "printf") {
-    // Only the `-v` operand names a variable; an option taken from a
-    // variable could be `-v` itself.
+    // Only -v identifies printf assignment targets; a dynamic option could itself be -v.
     if (staticArgs[0] === undefined && args.length > 0) return "shell-state";
     const v = args.findIndex((arg, i) => i < leadingOptions(args).length && /^-[A-Za-z]*v$/u.test(arg));
     if (v >= 0 && staticArgs[v + 1] === undefined) return "shell-state";
@@ -514,7 +379,6 @@ function commandProblem(command: Extract<ShellStatement, { kind: "command" }>): 
   return null;
 }
 
-/** Read the options before the array operand, consuming each option's own argument. */
 function hasUncheckedArrayReadOptions(args: readonly string[]): boolean {
   for (let i = 0; i < args.length; i++) {
     const arg = args[i]!;
@@ -531,7 +395,6 @@ function hasUncheckedArrayReadOptions(args: readonly string[]): boolean {
   return false;
 }
 
-/** Read option operands before judging formatted output or prompt/history effects. */
 function printOptionsProblem(args: readonly (string | undefined)[], words: readonly ShellWord[]): TerminalCommandTextProblem | null {
   let echoOptions = false;
   for (let index = 0; index < args.length; index++) {
@@ -562,8 +425,7 @@ function printOptionsProblem(args: readonly (string | undefined)[], words: reado
 }
 
 function isUnsafeAssignedVariableName(name: string): boolean {
-  // Subscripts are arithmetic, even when the name was single quoted:
-  // assigning values[$(cmd)] runs cmd inside the builtin itself.
+  // Array subscripts evaluate arithmetic even in quoted variable names and may execute substitutions.
   if (/[\[\]$`]/u.test(name.replace(/\[[0-9]+\]$/u, ""))) return true;
   const base = name.split("[")[0]!;
   return SHELL_STATE_VARIABLES.test(base) || EXECUTABLE_REGISTRY_VARIABLE.test(base);
@@ -587,8 +449,7 @@ function hasUncheckedPrintfFormat(args: readonly (string | undefined)[], words: 
   for (let offset = 0; offset < format.length; offset++) {
     if (format[offset] !== "%") continue;
     if (format[offset + 1] === "%") { offset++; continue; }
-    // Positional operands and extensions with another format grammar are not
-    // shared by both shells. Unknown or unfinished directives fail closed.
+    // Unknown or unfinished format directives and non-shared extensions fail closed.
     const directive = /^%[-+ #0']*(\*|[0-9]+)?(?:\.(\*|[0-9]*))?[hlL]?([diouxXeEfFgGaAbcsqn])/u.exec(format.slice(offset));
     if (directive === null || directive[3] === "n") return true;
     if (directive[1] === "*") operands.push("field");
@@ -598,15 +459,13 @@ function hasUncheckedPrintfFormat(args: readonly (string | undefined)[], words: 
   }
   if (operands.every((operand) => operand === "text")) return false;
   for (let argument = index + 1; argument < args.length; argument++) {
-    // Splitting or removing a text operand could shift later data into a
-    // numeric slot. The format repeats while surplus arguments remain.
+    // Splitting text operands may shift later data into numeric slots; surplus arguments repeat the format.
     if (!shellWordHasSingleField(words[argument]!)) return true;
     const operand = operands[(argument - index - 1) % operands.length];
     if (operand === "text") continue;
     const value = args[argument];
     if (value === undefined) return true;
-    // Width and precision use arithmetic directly; only conversion operands
-    // share the quote-prefixed character literal form in both shells.
+    // Width and precision are arithmetic; quote-prefixed character literals apply only to conversions.
     if (operand === "field") {
       if (!/^[+-]?(?:0[xX][\da-fA-F]+|[0-9]+)$/u.test(value)) return true;
     } else if (!/^(?:['"][\s\S]*|[+-]?(?:0[xX][\da-fA-F]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?))$/u.test(value)) return true;
@@ -614,7 +473,6 @@ function hasUncheckedPrintfFormat(args: readonly (string | undefined)[], words: 
   return false;
 }
 
-/** The leading option words of a builtin's arguments, up to `--` or the first operand. */
 function leadingOptions(args: readonly string[]): string[] {
   const options: string[] = [];
   for (const arg of args) {
@@ -624,14 +482,7 @@ function leadingOptions(args: readonly string[]): string[] {
   return options;
 }
 
-/**
- * The variables a {@link VARIABLE_SETTING_COMMAND_WORDS} builtin assigns.
- * Over-inclusive on purpose: for `read`, `mapfile`, `readarray` and `vared`
- * every word is a candidate (an option's argument such as a prompt or a
- * delimiter is judged too); zsh's `read 'name?prompt'` names `name`. `printf`
- * assigns only the name after `-v` (`-v NAME` or `-vNAME`); `getopts` the
- * second and later words.
- */
+/** Over-approximate assignment targets rather than miss a write; printf uses -v targets, getopts uses its second and later words, and read-like builtins treat every word as a candidate. */
 function assignedVariableNames(head: string, args: readonly string[]): string[] {
   const nameOf = (word: string): string => word.replace(/^-[A-Za-z]*/u, "").split("?")[0]!;
   if (head === "printf") {

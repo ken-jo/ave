@@ -1,18 +1,4 @@
-/**
- * Boot step — the model catalog refresh (design `model-capability-catalog.md` §7).
- *
- * Runs once after boot and then re-checks every hour; each check sends a
- * request only when the cached copy is older than a day
- * (`MODEL_CATALOG_REFRESH_INTERVAL_MS`), so a launch inside that day sends
- * nothing. Whether it may run is decided at each check — the
- * `AVE_MODEL_CATALOG` pin, the managed policy file, then the user's switch —
- * so turning the switch off stops the next check without a restart.
- *
- * What it fetches only replaces the cache; the catalog in force changes at the
- * next launch (`installBootModelCatalog`). Interactive launches only: a
- * headless one-shot run makes no discretionary connection, and resolves
- * against whatever the cache or the pin already holds.
- */
+/** Interactive refresh updates only the next-launch cache; check consent and pins on every pass. */
 import type { SettingsService } from "../../data/settings-store.js";
 import { createLogger } from "../../lib/logger.js";
 import { registerShutdownHook } from "../../main/app-shutdown.js";
@@ -24,7 +10,7 @@ import { refreshModelCatalogCache } from "../../core/model-catalog/refresh.js";
 
 const log = createLogger("model-catalog");
 
-/** How often a running app looks at the cache's age; the request itself is daily at most. */
+/** Check hourly; fetch at most daily. */
 const CHECK_EVERY_MS = 60 * 60 * 1000;
 
 export function wireModelCatalogRefresh(input: {
@@ -75,6 +61,6 @@ export function wireModelCatalogRefresh(input: {
     clearInterval(timer);
     controller.abort();
   });
-  // The first check, for a caller that wants to know when it settled; boot does not wait.
+  // Expose the first check for callers that need to await it; boot does not block.
   return first;
 }

@@ -372,8 +372,7 @@ describe("setupPluginToolExecutor production auth wiring", () => {
     ).resolves.toEqual({ authenticated: true });
     expect(transitionLease).not.toHaveBeenCalled();
     expect(mocks.dispatchAppOnlyRuntimeInvocation).not.toHaveBeenCalled();
-    // The lifecycle observes inside the executor boundary. A second boot-level
-    // observation would be after lease release and reintroduce the race.
+    // Observe lifecycle inside the executor boundary, before lease release.
     expect(mocks.observePluginAuthResult).toHaveBeenCalledTimes(1);
   });
 
@@ -434,37 +433,19 @@ describe("setupPluginToolExecutor production auth wiring", () => {
   });
 });
 
-/**
- * WHICH APPROVAL LANE a plugin-surface invocation lands in — the one `headless`
- * field the boot step hands the executor, and the only thing that decides whether
- * a Layer-1 out-of-allowed-dir target can raise the directory modal
- * (`requestOutOfAllowedDirectoryAccess`) or is hard-denied into the deferred queue
- * ("headless out-of-allowed-dir requires manual directory approval").
- *
- * The lane follows the chain's EFFECTIVE origin, resolved by
- * `runWithInvocationOrigin`, so it is pinned here per origin AND across a nested
- * hop. The nested case is the one with no other coverage: it is the whole point of
- * the AsyncLocalStorage chain, and the boot step reads it through
- * `currentInvocationOrigin()` rather than the dispatched `context.origin`.
- *
- * The background lane is pinned at the other end too: a headless ConversationLoop
- * hands `headless: true` down (rationale-host-wiring.test.ts), and Layer 1 turns
- * that into the hard deny (tools/__tests__/executor.test.ts).
- */
+/** The effective origin, including nested hops, selects interactive versus headless approval handling. */
 describe("setupPluginToolExecutor approval lane by effective chain origin", () => {
   const okResult = [{ tool_use_id: "result", content: "ok", durationMs: 1 }];
 
   beforeEach(() => {
     vi.clearAllMocks();
-    // Take the governed ToolExecutor path, not the app-only runtime bypass —
-    // the bypass never builds a permission context at all.
+    // Use the governed executor; the app-only bypass creates no permission context.
     mocks.isAppOnlyRuntimeInvocation.mockReturnValue(false);
     mocks.resolvePluginOperationAccount.mockReturnValue(undefined);
     mocks.observePluginAuthResult.mockReturnValue({});
     mocks.executeAll.mockResolvedValue(okResult);
   });
 
-  /** `headless` of the Nth executor invocation, in dispatch order. */
   function laneOfExecutorCall(index: number): unknown {
     const options = mocks.executeAll.mock.calls[index]?.[1] as
       | { permissionContext?: { headless?: unknown } }
@@ -514,9 +495,7 @@ describe("setupPluginToolExecutor approval lane by effective chain origin", () =
   it("keeps a nested plugin-origin hop on the outer chain's foreground lane", async () => {
     const ctx = makeContext();
     await setupPluginToolExecutor(ctx);
-    // Stands in for a handler that re-enters the delegate while the outer
-    // invocation's async frame is still live: the inner dispatch says "plugin",
-    // and only the ambient chain can say otherwise.
+    // The inner call says plugin; only the ambient chain retains the outer origin.
     mocks.executeAll.mockImplementationOnce(async () => {
       await dispatch(ctx, "plugin", "inner_tool");
       return okResult;

@@ -1,4 +1,3 @@
-/** Resolve profile complexity tiers from the active catalog's model families. */
 import {
   LLM_VENDORS,
   llmVendorModelOptions,
@@ -7,19 +6,10 @@ import {
 import { activeModelCatalog } from "./model-catalog/active.js";
 import { resolveCatalogKey } from "./model-catalog/resolve.js";
 
-/**
- * Complexity tiers an agent profile may declare in its `model:`
- * frontmatter. Anything outside this union is treated as an explicit
- * vendor-specific model ID and passed through unchanged.
- */
+/** Unknown complexity strings remain explicit model ids rather than tiers. */
 export const MODEL_COMPLEXITY_LEVELS = ["low", "mid", "high"] as const;
 export type ModelComplexityLevel = (typeof MODEL_COMPLEXITY_LEVELS)[number];
 
-/**
- * Runtime guard for `unknown` inputs (e.g. profile frontmatter parsed
- * from disk). Strings outside the union return false; callers should
- * treat such values as a vendor-specific model ID, not a tier.
- */
 export function isModelComplexityLevel(
   value: unknown,
 ): value is ModelComplexityLevel {
@@ -41,8 +31,7 @@ function complexityMapForVendor(vendor: LLMVendor): Readonly<Record<ModelComplex
   const options = llmVendorModelOptions(vendor);
   const families = COMPLEXITY_FAMILIES[vendor];
   const select = (level: ModelComplexityLevel): string => {
-    // Deployment aliases and gateways retain the parent route: a public
-    // catalog cannot name the account-specific target to send a tier to.
+    // Account-scoped aliases and gateways retain the parent route because public catalogs cannot name their target.
     if (!families) return "";
     return options.find((id) => {
       const model = resolveCatalogKey(activeModelCatalog(), vendor, id)?.model;
@@ -61,12 +50,7 @@ export const MODEL_COMPLEXITY_MAP = Object.freeze(Object.defineProperties(
   }])),
 ));
 
-/**
- * Resolve `(vendor, level)` to a concrete model ID. Returns `null` when
- * either argument is missing, the tier is undefined for that vendor, or the
- * vendor is handshake-only (empty catalog → empty mapped model) — in every
- * case the caller must apply the design-intent parent-model fallback.
- */
+/** Missing or unsupported tiers return null; callers must inherit the parent model. */
 export function resolveModelForComplexity(
   vendor: LLMVendor | null | undefined,
   level: ModelComplexityLevel | null | undefined,
@@ -74,22 +58,11 @@ export function resolveModelForComplexity(
   if (!vendor || !level) return null;
   const vendorMap = MODEL_COMPLEXITY_MAP[vendor];
   if (!vendorMap) return null;
-  // `|| null` (not `?? null`): handshake-only vendors (openai-compatible) map
-  // every tier to the empty default model, which must resolve to the
-  // parent-model fallback, not an empty-string model id.
+  // Empty ids mean parent fallback, not a sendable model id.
   return vendorMap[level] || null;
 }
 
-/**
- * Verify every tier in the map points at a model also listed in
- * `llmVendorModelOptions(vendor)`. Called from the unit test; kept
- * in the source file so a future contributor adding a new vendor or
- * tier can quickly assert their addition stays self-consistent.
- *
- * Returns the list of `(vendor, tier, model)` triples that DO NOT
- * appear in the vendor's option list. An empty array means the map
- * is self-consistent.
- */
+/** Report tier models absent from the vendor’s options so policy choices remain self-consistent. */
 export function findOrphanedComplexityModels(): Array<{
   vendor: LLMVendor;
   level: ModelComplexityLevel;
@@ -106,9 +79,7 @@ export function findOrphanedComplexityModels(): Array<{
     const options = llmVendorModelOptions(vendor);
     for (const level of MODEL_COMPLEXITY_LEVELS) {
       const model = tiers[level];
-      // Handshake-only vendors (openai-compatible) have no static catalog and
-      // map every tier to the empty model → parent-model fallback. There is no
-      // catalog entry to verify, so they are not orphans.
+      // Handshake-only empty mappings are intentional parent fallbacks, not orphaned models.
       if (!model) continue;
       if (!options.includes(model)) {
         orphans.push({ vendor, level, model });

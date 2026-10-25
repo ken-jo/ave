@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createLifecycleCallbacks } from "../plugin-runtime/lifecycle.js";
 
-// Lifecycle callbacks must schedule inheritance without awaiting a mutation
-// that can need the install lock held by the callback's caller.
+// Schedule inheritance without awaiting mutations that may need the caller-held install lock.
 describe("alert inheritance lifecycle wakeups", () => {
   it("retries on admission and retirement without holding either callback open", async () => {
     let finish!: () => void;

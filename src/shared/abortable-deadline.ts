@@ -1,4 +1,3 @@
-/** Neutral async deadline boundary with a linked AbortController. */
 type AbortableDeadlineTerminationReason =
   | "deadline"
   | "caller-abort"
@@ -22,14 +21,7 @@ function errorFrom(value: unknown, fallback: string): Error {
   return value instanceof Error ? value : new Error(String(value ?? fallback));
 }
 
-/**
- * Resolve after `ms`, or reject with the signal's reason as soon as `signal`
- * aborts — including when it is already aborted on entry. The timer is
- * cleared on abort and the listener removed on expiry, so neither outlives
- * the other. Every retry loop and cooldown in the app waits through this;
- * the abort-aware contract comes from the marketplace artifact download,
- * whose retries must stop the moment the install is cancelled.
- */
+/** Abort rejects immediately with the signal reason; expiry and abort clean up each other’s timer or listener. */
 export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   if (signal?.aborted) return Promise.reject(errorFrom(signal.reason, "aborted"));
   return new Promise((resolve, reject) => {
@@ -45,14 +37,7 @@ export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
-/**
- * Settle with `operation`, or reject with `timeoutError()` if `timeoutMs`
- * passes first. The timer is cleared on every exit. The operation is not
- * cancelled — the caller owns whatever it must do with late work — but its
- * eventual rejection is observed by the race, so it never goes unhandled.
- * This is the plain wait bound; use {@link runWithAbortableDeadline} when the
- * work can be told to stop.
- */
+/** Bound waiting without cancelling work; late rejections stay observed and the caller owns cancellation. */
 export async function raceWithTimeout<T>(
   operation: PromiseLike<T>,
   timeoutMs: number,
@@ -69,11 +54,7 @@ export async function raceWithTimeout<T>(
   }
 }
 
-/**
- * Run one task under a caller-linked, hard wall-clock deadline. The linked
- * signal lets cooperative work stop; Promise.race also bounds work that ignores
- * AbortSignal. Boundary causes are typed instead of inferred from error text.
- */
+/** Link caller cancellation and a hard deadline; the race also bounds work that ignores the signal. */
 export async function runWithAbortableDeadline<T>(
   task: (signal: AbortSignal) => Promise<T>,
   options: AbortableDeadlineOptions,

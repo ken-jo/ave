@@ -1,12 +1,4 @@
-/**
- * Boot step — the plugin alerts pipeline.
- *
- * Built after the marketplace and before plugins start: every plugin start
- * registers its declared kinds with the service, and a boot-time cleanup
- * replay that finishes an uninstall must already find the service listening
- * for `plugin.uninstalled`. The expiry sweep is started later by main.ts via
- * `services.startAlerts` and stopped in `shutdown()`.
- */
+/** Build before plugins start so registration and uninstall replay see the alert service; main starts expiry later. */
 import { AlertsService } from "../../alerts/service.js";
 import { predecessorBlocks } from "../../alerts/gate.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
@@ -29,17 +21,12 @@ import { stageInSuggestionsSession } from "../../main/suggestions-session.js";
 
 const log = createLogger("alerts");
 
-/**
- * Build the service onto `ctx.alertsService`. Returns the `plugin.uninstalled`
- * unsubscribe: the app listens for its whole life, a test host lets go.
- */
+/** Keep the uninstall subscription for app lifetime; test hosts may dispose it. */
 export async function setupAlerts(ctx: BootContext): Promise<() => void> {
   const { settingsService, pluginMarketplace, bootAuditLogger, notificationService } = ctx;
   let disposed = false;
   const pendingConfigRetries = new Set<string>();
-  // Lock order: a contended lifecycle lock is acquired outside the alert lane,
-  // then reconciliation enters the lane while owning that lock. Inside the
-  // lane, only reentrant or synchronously reserved uncontended locks are allowed.
+  // Acquire contended lifecycle locks outside the alert lane; inside it, allow only reentrant or reserved locks.
   const retryConfig = AsyncResource.bind((pluginId: string) => {
     if (disposed || pendingConfigRetries.has(pluginId)) return;
     pendingConfigRetries.add(pluginId);
@@ -52,9 +39,7 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     const win = ctx.getMainWindow();
     return win && !win.isDestroyed() ? win : null;
   };
-  // Capture the host boot context, outside any plugin lifecycle hook. A
-  // registration may migrate config while start holds its lifecycle lock;
-  // its restart must queue behind that start rather than re-enter it.
+  // Capture host context outside lifecycle hooks so config-migration restarts queue behind startup.
   const restartMigratedPlugin = AsyncResource.bind((pluginId: string) => {
     if (!shouldRestartAfterPluginConfigWrite({ mutatedCleartextConfig: true, restartUnsafe: false })) return;
     void ctx.pluginRuntime.restartPlugin(pluginId, { skipPreparation: true }).then((result) => {
@@ -104,8 +89,7 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
     locale: getLocale,
     predecessorBlocks: async (name, sourceHint) => {
       const row = (await pluginMarketplace.listInstalledPackages()).find((entry) => entry.name === name) ?? null;
-      // A package whose manifest cannot be read has no version to judge, so it
-      // is not revoked: it keeps blocking rather than let two plugins alert.
+      // Unreadable manifests cannot be judged revoked and must keep blocking duplicate alerts.
       const revoked = row?.version != null
         && revocationRegistry.evaluate("plugin", name, row.version).kind === "block";
       return predecessorBlocks({
@@ -115,8 +99,7 @@ export async function setupAlerts(ctx: BootContext): Promise<() => void> {
       });
     },
     overlay: {
-      // An alert card is addressed to the dedicated Suggestions conversation
-      // (the renderer routes it there), so that conversation exists first.
+      // Create the Suggestions conversation before sending its alert card.
       show: (card) => {
         stageInSuggestionsSession(ctx.memoryManager);
         liveWindow()?.webContents.send(OVERLAY_V1.show, card);

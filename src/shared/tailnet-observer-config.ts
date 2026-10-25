@@ -1,31 +1,11 @@
-/**
- * Shared vocabulary for the local-owner Tailnet observer configuration surface.
- *
- * The observer used to be configurable only through boot environment
- * variables, which a packaged app has no way to set — the capability existed
- * and no user could reach it. This is the contract that lets the Settings tab
- * read and propose that configuration without becoming a way for a webpage to
- * widen Tailnet policy: every mutation still crosses the host, carries a fresh
- * local keyboard intent, and is persisted to a host-owned file rather than to
- * the renderer-writable settings store.
- */
+/** Every configuration mutation requires fresh local keyboard intent and host-owned persistence; renderer settings must not widen network policy. */
 
 import { isRecord } from "./is-record.js";
 import { hasControlChars } from "./display-safe-text.js";
 
-/** Where a key's effective value came from. */
 type TailnetObserverConfigSourceView = "file" | "env-override" | "unset";
 
-/**
- * How the listener decides a Tailnet request may reach it at all.
- *
- * `tailnet-identity` accepts any human identity Tailscale Serve vouches for and
- * leaves observe-versus-control entirely to Ave's own share permission; the
- * pairing code is what turns such an identity into a share. `app-capability`
- * additionally requires a grant written into the tailnet policy file, which
- * only a tailnet administrator can do. Neither is a default — a configuration
- * that names no authorization is refused rather than resolved.
- */
+/** Identity authorization requires pairing and a share; app-capability additionally requires administrator policy. Missing authorization is rejected. */
 export type TailnetAuthorization =
   | { readonly kind: "tailnet-identity" }
   | { readonly kind: "app-capability"; readonly capability: string };
@@ -42,13 +22,7 @@ export const TAILNET_OBSERVER_CONFIG_KEYS = [
 
 export type TailnetObserverConfigKeyView = (typeof TAILNET_OBSERVER_CONFIG_KEYS)[number];
 
-/**
- * A complete configuration with defaults filled in.
- *
- * Unset strings are `""` rather than absent: this crosses an IPC boundary into
- * form state, and a field that is sometimes missing is a field every consumer
- * has to re-decide the default for.
- */
+/** Use empty strings for unset fields so IPC form defaults are unambiguous. */
 export interface TailnetObserverConfigView {
   readonly enabled: boolean;
   readonly authorization: TailnetAuthorization;
@@ -59,24 +33,12 @@ export interface TailnetObserverConfigView {
   readonly webOrigin: string;
 }
 
-/**
- * What this desktop's Tailscale install actually says about itself.
- *
- * Every one of these values used to be something the person had to read out of
- * a terminal or an admin console and retype into this app, which is precisely
- * where the setup went wrong without telling anyone. Each state is named: there
- * is no "assume it is fine" reading, and no invented tailnet or MagicDNS name.
- */
+/** Report probed install states explicitly; never invent an account or DNS name. */
 const TAILSCALE_ENVIRONMENT_STATES = [
-  /** The node is up, signed in, and answering. */
   "ready",
-  /** Tailscale is installed but this node has no login. */
   "logged-out",
-  /** Tailscale is installed and logged in, but the backend is not running. */
   "stopped",
-  /** No Tailscale CLI on this desktop. */
   "cli-not-found",
-  /** The CLI ran and did not answer with a status this app can read. */
   "cli-failed",
 ] as const;
 
@@ -84,26 +46,18 @@ type TailscaleEnvironmentState = (typeof TAILSCALE_ENVIRONMENT_STATES)[number];
 
 export interface TailscaleEnvironmentView {
   readonly state: TailscaleEnvironmentState;
-  /** The Tailscale account this node is signed in as, when it is signed in. */
   readonly login: string | null;
   /** This node's MagicDNS name without the trailing dot, or null when it has none. */
   readonly dnsName: string | null;
   readonly tailnetName: string | null;
-  /** Whether `tailscale serve` already fronts something on this node. */
   readonly serveConfigured: boolean;
   /** The loopback port Serve forwards to, when it forwards to one. */
   readonly serveTargetPort: number | null;
-  /**
-   * What the CLI printed when it could not answer.
-   *
-   * Carried verbatim on purpose: "Tailscale said no" with the sentence removed
-   * is the failure this surface exists to end.
-   */
+  /** Preserve command diagnostics so the owner can act on the actual failure. */
   readonly detail: string | null;
 }
 
 export interface TailnetObserverSnapshot {
-  /** What the host-owned file holds, defaults filled in. */
   readonly saved: TailnetObserverConfigView;
   /** File plus environment overrides — what the next boot would resolve. */
   readonly effective: TailnetObserverConfigView;
@@ -116,32 +70,14 @@ export interface TailnetObserverSnapshot {
   readonly lastStartError: string | null;
   /** Whether paired-sharing setup failed at boot, leaving owner controls off. */
   readonly pairedSharingBootstrapFailed: boolean;
-  /**
-   * Whether a device on this desktop's own Tailscale account is paired and
-   * approved without the approval click.
-   *
-   * Off by default, and it widens nothing else: a different Tailscale login
-   * still needs an invitation code and still needs approving here, and an
-   * admitted device still sees no transcript until a conversation is shared
-   * with it.
-   */
+  /** Same-account auto-approval defaults off; other accounts still need invitation and approval, and every device still needs an explicit conversation share. */
   readonly ownDeviceAdmission: boolean;
-  /** What this desktop's Tailscale install says about itself. */
   readonly environment: TailscaleEnvironmentView;
-  /** The web origin derived from this node's MagicDNS name; never typed in. */
+  /** Derive the web origin from the probed DNS name, never renderer input. */
   readonly derivedWebOrigin: string | null;
-  /**
-   * The exact `tailscale serve` command this app would run, or null when there
-   * is nothing to put behind Serve yet. Shown before it runs, never after.
-   */
+  /** Show the exact command before execution; null means no listener is ready. */
   readonly serveCommand: string | null;
-  /**
-   * Named reason the saved configuration could not be read, or null.
-   *
-   * A damaged file used to make the whole surface fail, leaving a Refresh
-   * button and no way to save over it. The reason is reported instead, and the
-   * form stays reachable so the owner can write a good configuration on top.
-   */
+  /** Report unreadable saved configuration without disabling the form, so the owner can replace it. */
   readonly configFileError: string | null;
 }
 
@@ -161,13 +97,7 @@ export type TailnetObserverMutationResult =
   | { readonly ok: true }
   | { readonly ok: false; readonly error: TailnetObserverErrorCode };
 
-/**
- * The outcome of running `tailscale serve` on the owner's behalf.
- *
- * Success hands back the reachable URL so nobody has to assemble it. Failure
- * carries what the command printed, because "could not be completed" is what
- * made the terminal unavoidable in the first place.
- */
+/** Return the reachable URL on success and command output on failure. */
 export type TailnetServeResult =
   | { readonly ok: true; readonly url: string }
   | {
@@ -176,22 +106,8 @@ export type TailnetServeResult =
       readonly output: string | null;
     };
 
-/** Whether guided setup had to run Serve, or found it already pointing here. */
 type TailnetGuidedServeOutcome = "configured" | "already-configured";
 
-/**
- * The outcome of the one-press setup the host decides for itself.
- *
- * The manual form asks seven questions, and six of them have exactly one answer
- * a first-time owner can give: the port only has to be free, the boundary is
- * the identity one the pairing code already backs, and the web origin is
- * derived rather than typed. This is that whole configuration as a single
- * operation, so the only thing left on screen is the address to open.
- *
- * The port is reported because it is the one value the host may have had to
- * choose differently from the default, and the snapshot comes back so the
- * caller does not have to re-read what it just caused.
- */
 export type TailnetGuidedSetupResult =
   | {
       readonly ok: true;
@@ -203,42 +119,23 @@ export type TailnetGuidedSetupResult =
   | {
       readonly ok: false;
       readonly error: TailnetObserverErrorCode;
-      /**
-       * What Tailscale printed, when the step that failed was the Serve run.
-       *
-       * The sentence for a failed Serve says its output is below, and the
-       * certificate case in particular needs Tailscale's own words rather than
-       * a classification of them — dropping it here would leave a promise on
-       * screen with nothing under it.
-       */
+      /** Preserve failed command output, especially certificate diagnostics promised by the failure message. */
       readonly output: string | null;
     };
 
-/** The private `window.aveApi.tailnetObserver` namespace. */
 export interface TailnetObserverConfigApi {
   snapshot(): Promise<TailnetObserverSnapshotResult>;
   apply(config: TailnetObserverConfigView): Promise<TailnetObserverMutationResult>;
   /** Put the running listener behind Tailscale Serve, after the owner approved the command. */
   configureServe(): Promise<TailnetServeResult>;
-  /** Choose, persist, and start the whole recommended configuration in one press. */
   guidedSetup(): Promise<TailnetGuidedSetupResult>;
-  /**
-   * Admit, or stop admitting, this desktop's own Tailscale account without an
-   * approval click. Which account that is comes from the host's own probe —
-   * the renderer says only on or off, never whose device it is.
-   */
+  /** Renderer supplies only on/off; host probes the account eligible for same-account admission. */
   setOwnDeviceAdmission(enabled: boolean): Promise<TailnetObserverMutationResult>;
 }
 
 export const DEFAULT_TAILNET_OBSERVER_VIEW_PORT = 46_173;
 
-/**
- * Whether a string is usable as an app-capability grant name.
- *
- * A capability key is a token spliced into grant strings, so a SPACE in one
- * would split it in two; prototype-pollution names are refused because the key
- * indexes the parsed capability header object.
- */
+/** Reject spaces that split grant tokens and prototype-sensitive keys that index parsed headers. */
 export function isTailnetAppCapabilityKey(value: unknown): value is string {
   return typeof value === "string"
     && value.length > 0
@@ -250,7 +147,6 @@ export function isTailnetAppCapabilityKey(value: unknown): value is string {
     && !value.includes(" ");
 }
 
-/** Validate an authorization choice crossing a trust boundary in either direction. */
 export function parseTailnetAuthorization(value: unknown): TailnetAuthorization | null {
   if (!isRecord(value)) return null;
   if (value.kind === "tailnet-identity") {
@@ -266,7 +162,6 @@ export function parseTailnetAuthorization(value: unknown): TailnetAuthorization 
   return null;
 }
 
-/** Validate a config view crossing a trust boundary in either direction. */
 export function parseTailnetObserverConfigView(
   value: unknown,
 ): TailnetObserverConfigView | null {
@@ -460,9 +355,7 @@ export function parseTailnetServeResult(value: unknown): TailnetServeResult | nu
       ? Object.freeze({ ok: true as const, url: value.url })
       : null;
   }
-  // A gate that rejected before the command was reached — an unauthorized
-  // frame, a missing keyboard intent — has no command output to carry. That is
-  // a valid failure with `output: null`, not an unparseable one.
+  // Failures before command execution legitimately have null output.
   const output = value.output === undefined ? null : value.output;
   if (value.ok === false && typeof value.error === "string" && isOptionalText(output)) {
     return Object.freeze({ ok: false as const, error: value.error, output });

@@ -1,13 +1,5 @@
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
-/**
- * The boot sweep refuses, in a test process, a sandbox root inside the
- * developer's real `~/.ave` (other than `test-tmp`): what is there belongs to a
- * running app, and a sweep deletes it.
- *
- * `homedir()` is a throwaway directory here, never the real one, so a guard
- * that stopped working would empty that directory — which these cases see —
- * and nothing of the developer's.
- */
+/** Use a synthetic home: a failed sweep guard must never delete a running app’s data. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import {
@@ -57,7 +49,6 @@ beforeEach(() => {
 afterEach(async () => {
   vi.unstubAllEnvs();
   for (const dir of scratch) {
-    // A sweep that did not reclaim them leaves modes and flags rm cannot pass.
     await makeTestTreeWritable(dir);
     rmSync(dir, { recursive: true, force: true });
   }
@@ -84,8 +75,7 @@ describe("the sandbox sweep in a test process", () => {
   });
 
   it.skipIf(!canCreateSymlinks())("refuses a root named by its real path when HOME is reached through a link", async () => {
-    // HOME is `<link>`, which resolves to the planted home: `/tmp/<x>` against
-    // `/private/tmp/<x>` on macOS, here made explicit on every platform.
+    // Resolve home symlinks before comparison, including macOS /tmp aliases.
     const links = mkdtempSync(join(tmpdir(), "ave-sweep-guard-link-"));
     scratch.push(links);
     const realHome = realpathSync(fake.home);
@@ -108,9 +98,7 @@ describe("the sandbox sweep in a test process", () => {
   it("sweeps a root under ~/.ave/test-tmp, which is the tests' own", async () => {
     const root = join(ave, "test-tmp", "sbx-case", "home");
     mkdirSync(join(root, "stale"), { recursive: true });
-    // What a confined process can leave in its own directory, which a plain
-    // `rm` cannot take: a directory it closed to its owner, and on macOS a
-    // file and a directory it made user-immutable.
+    // Confined processes can leave owner-inaccessible directories and user-immutable files.
     const closed = join(root, "closed");
     mkdirSync(join(closed, "inner"), { recursive: true });
     writeFileSync(join(closed, "inner", "file"), "x");

@@ -1,18 +1,4 @@
-/**
- * Token Estimation — shared primitive
- *
- * Pure, dependency-free token-count heuristics. Lives in shared/ alongside
- * pricing-data, context-budget, and tool-result-stub so any layer can size a
- * string without an upward dependency on engine/. Architecture §4.6.2: the
- * prompts/ layer must not depend on engine/, and engine/ is the downward
- * assembler — estimateTokens is a leaf primitive that belongs below both.
- *
- * `engine/auto-compact.ts` re-exports these for existing engine callers, so
- * moving the source here is import-transparent to the rest of the engine.
- */
-
-
-
+/** Keep token estimation dependency-free below both prompts and engine so neither layer needs an upward import. */
 
 export function countHangul(text: string): number {
   let count = 0;
@@ -22,9 +8,6 @@ export function countHangul(text: string): number {
   }
   return count;
 }
-
-
-
 
 export function estimateTokens(text: string): number {
   if (text.length === 0) return 1;

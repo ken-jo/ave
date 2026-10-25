@@ -10,44 +10,25 @@ export type SafeThemePayload = {
 };
 
 const ALLOWED_BUNDLE_IDS = new Set<string>(BUNDLE_IDS);
-/** Installed theme packages, set by main once the content store is loaded. */
 let installedThemeIds = new Set<string>();
 
-/** Replace the installed theme ids a theme broadcast may name besides the compiled-in bundles. */
 export function setInstalledThemeIds(ids: readonly string[]): void {
   installedThemeIds = new Set(ids);
 }
 
 const ALLOWED_SHELLS = new Set(["light", "dark"]);
 const PLUGIN_TOKEN_NAMES: Set<string> = new Set(AVE_TOKEN_NAMES);
-// Token values the host is allowed to hand a plugin frame, composed from the
-// shapes `bundleToPluginTokens` actually emits.
-//
-// Anything this rejects is dropped silently and the plugin keeps its own
-// static fallback for that token — which may be a dark-theme value, so a dropped
-// token shows up as a dark chip in a light shell rather than as an error. That
-// is what a flat `hsl()`-only pattern did to the seven derived tinted tokens
-// (`--ave-*-bg-subtle`, `--ave-primary-bg-strong`, `--ave-surface-hover`,
-// `--ave-focus-shadow`): every one is a `color-mix()` string, so every one was
-// filtered out of every payload, and the tokens the host added specifically so
-// plugins would stop hand-rolling their own mixes never arrived. `hsla()` — the
-// input-bar placeholder — was dropped for the same reason.
-//
-// Composed rather than written flat so widening stays legible: a value is a
-// color, a single non-nested `color-mix` of two colors, a length, a font
-// weight, or a duration. Nothing else parses, so no `url(...)`, no unbalanced
-// text, and no second function call can ride in behind a valid prefix.
+// Accept only token shapes emitted by bundleToPluginTokens; rejected values leave the plugin fallback in place.
+// Allow colors, one non-nested color mix, lengths, weights, and durations; reject URLs and trailing function calls.
 const _HSL = String.raw`hsla?\(\s*-?\d+(?:\.\d+)?\s*,\s*\d+(?:\.\d+)?%\s*,\s*\d+(?:\.\d+)?%\s*(?:,\s*(?:0|1|0?\.\d+)\s*)?\)`;
 const _HEX = String.raw`#(?:[0-9a-fA-F]{8}|[0-9a-fA-F]{6}|[0-9a-fA-F]{4}|[0-9a-fA-F]{3})`;
 const _COLOR = `(?:${_HSL}|${_HEX}|transparent)`;
-// String.raw, not a plain template: `\s` and `\d` would otherwise collapse to
-// the bare letters and the pattern would match nothing.
+// String.raw preserves regex backslashes.
 const _COLOR_MIX = String.raw`color-mix\(in srgb,\s*${_COLOR}\s+\d+(?:\.\d+)?%\s*,\s*${_COLOR}\s*\)`;
 const _LENGTH = String.raw`\d+(?:\.\d+)?(?:rem|em|px|%)`;
 const _WEIGHT = String.raw`[1-9]00`;
 const _DURATION = String.raw`\d+(?:\.\d+)?ms`;
-// The three motion easing tokens; four numbers in 0..1 (the x pair must be, the
-// y pair may overshoot, which the bundle's own curves do not).
+// Easing tokens use four numbers in 0..1; bundled curves do not overshoot.
 const _NUM = String.raw`-?\d+(?:\.\d+)?`;
 const _EASING = String.raw`cubic-bezier\(\s*${_NUM}\s*,\s*${_NUM}\s*,\s*${_NUM}\s*,\s*${_NUM}\s*\)`;
 const SAFE_TOKEN_VALUE = new RegExp(
@@ -56,11 +37,7 @@ const SAFE_TOKEN_VALUE = new RegExp(
 
 let lastThemePayload: SafeThemePayload | null = null;
 
-/**
- * The last validated host theme is replayed to webviews registered after the
- * renderer's most recent broadcast. It remains null during the short window
- * before the renderer publishes its first theme, when the plugin's fallback applies.
- */
+/** Replay the last validated theme to late webviews; null leaves their fallback active until the first broadcast. */
 
 export function cloneThemePayload(payload: SafeThemePayload): SafeThemePayload {
   const clone: SafeThemePayload = {
@@ -102,8 +79,7 @@ export function validateThemePayload(payload: unknown):
     }
   }
   safe.tokens = safeTokens;
-  // Fonts intentionally remain host-owned. The theme event has no fonts
-  // channel, so an inbound legacy field must not enter the replay cache.
+  // Fonts are host-owned and must not enter this cache through legacy fields.
   if (candidate.colorScheme === "light" || candidate.colorScheme === "dark") {
     safe.colorScheme = candidate.colorScheme;
   }
@@ -114,8 +90,7 @@ export function validateThemePayload(payload: unknown):
 export function recordValidatedTheme(payload: unknown):
   | { ok: true; safe: SafeThemePayload }
   | { ok: false; error: string } {
-  // Validation and cache replacement stay one operation: invalid input never
-  // disturbs the last known-good replay payload.
+  // Invalid input must leave the last known-good payload intact.
   const result = validateThemePayload(payload);
   if (!result.ok) return result;
   const safe = cloneThemePayload(result.safe);

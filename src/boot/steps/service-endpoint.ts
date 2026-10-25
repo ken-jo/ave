@@ -1,11 +1,4 @@
-/**
- * The app's service endpoint client (design §11): the managed policy's
- * `service.baseUrl`, else the build constant. An unpackaged build may point it
- * at a staging base with `AVE_SERVICE_BASE_URL`, which may then be plain http
- * on a loopback host; a packaged build never reads that variable. A staging
- * run keeps its move record in its own file, so it never drops the move a
- * production build accepted.
- */
+/** Only unpackaged staging may use loopback HTTP overrides; keep staging move records separate from production. */
 import { join } from "node:path";
 import type { TelemetrySettings } from "../../data/settings-store.js";
 import { AVE_SERVICE_BASE_URL, ServiceClient, readPolicyServiceBase } from "../../marketplace/service/client.js";
@@ -14,12 +7,7 @@ import { getAveAppVersion } from "../../shared/app-version.js";
 import { aveHome } from "../../shared/ave-home.js";
 import { readDevelopmentEnvVar } from "../dev-flags.js";
 
-/**
- * The telemetry client's endpoint source (design §11): the service document is
- * read for telemetry only for a user who opted in — now, when they already
- * have, and otherwise at the first event or flush after they do. Without
- * consent it answers null and never touches the service.
- */
+/** Without telemetry consent, return null without reading the service document. */
 export function consentedTelemetryEndpoint(
   settings: () => TelemetrySettings,
   service: Pick<ServiceClient, "ensureResolved" | "telemetryEndpoint">,

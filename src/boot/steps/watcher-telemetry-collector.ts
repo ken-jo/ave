@@ -1,21 +1,16 @@
 
 
-
-
-
 import { appendFile, mkdir, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 
-const MAX_FILE_BYTES = 10 * 1024 * 1024; // 10 MB
+const MAX_FILE_BYTES = 10 * 1024 * 1024;
 
 type EventHandlerUnsubscribe = () => void;
 
 export interface WatcherTelemetryCollectorOptions {
   /** Absolute path to the JSONL file (e.g. ~/.ave/logs/watcher-poll.jsonl) */
   filePath: string;
-
-
 
   subscribe: (
     type: string,
@@ -45,7 +40,6 @@ export function startWatcherTelemetryCollector(
   const { filePath, subscribe, log } = opts;
   const sessionId = randomUUID();
 
-
   let writeChain: Promise<void> = Promise.resolve();
 
   const enqueue = (record: Record<string, unknown>): void => {
@@ -59,7 +53,6 @@ export function startWatcherTelemetryCollector(
   const handler = (data: unknown): void => {
     const payload = (data ?? {}) as PollCompletedPayload;
     if (typeof payload.state !== "string" || typeof payload.ms !== "number") {
-
       return;
     }
     enqueue({
@@ -95,7 +88,6 @@ async function maybeRotate(filePath: string): Promise<void> {
   try {
     size = (await stat(filePath)).size;
   } catch {
-
     return;
   }
   if (size < MAX_FILE_BYTES) return;
