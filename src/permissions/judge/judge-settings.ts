@@ -18,7 +18,7 @@
 import { isAbsolute } from "node:path";
 import { isIP } from "node:net";
 import { classifyAddress } from "../../core/network-guard.js";
-import { isLLMVendor, LLM_VENDOR_MODEL_OPTIONS, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
+import { isLLMVendor, llmVendorModelOptions, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { JudgeCategory } from "./judge-contract.js";
 import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
 
@@ -223,7 +223,7 @@ export interface JudgeModelCatalog {
 
 /** Static-only catalog, for callers that have no live `llm` settings (tests, schema checks). */
 const STATIC_JUDGE_MODEL_CATALOG: JudgeModelCatalog = {
-  optionsFor: (vendor) => LLM_VENDOR_MODEL_OPTIONS[vendor],
+  optionsFor: (vendor) => llmVendorModelOptions(vendor),
 };
 
 /**

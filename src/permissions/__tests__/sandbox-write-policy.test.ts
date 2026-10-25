@@ -3,7 +3,8 @@ import * as filesystem from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
+import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { permissionSettingsPath } from "../permission-settings-store.js";
 import { egressGrantFilePath } from "../egress-grants.js";
@@ -45,15 +46,33 @@ describe("mandatory sandbox control-file writes", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it.each([
-    ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
-    ".git", ".vscode",
-  ])("protects missing %s in every writable root", (entry) => {
+  // The shared floor's own list, so a new entry cannot fall off the sandbox
+  // floor unnoticed; `.git/*` controls are covered by the Git tests below.
+  it.each([".git", ...PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry))])("protects missing %s in every writable root", (entry) => {
     const roots = [join(root, "project"), join(root, "temp")];
     const denies = buildMandatorySandboxWritePolicy(roots).denyWrite;
     for (const base of roots) {
       if (entry === ".git" && process.platform === "linux") expect(denies).not.toContain(join(base, entry));
       else expect(denies).toContain(join(base, entry));
+    }
+  });
+
+  it("hands only the .git marker and its children to the Git control policy", () => {
+    expect(PROTECTED_ROOT_ENTRIES.filter(isSandboxGitMetadataEntry))
+      .toEqual([".git", ".git/hooks", ".git/config", ".git/modules"]);
+    const project = join(root, "project");
+    const marker = join(project, ".git");
+    mkdirSync(join(marker, "modules", "inner", "hooks"), { recursive: true });
+    mkdirSync(join(marker, "hooks"));
+    writeFileSync(join(marker, "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(marker, "config"), "existing control");
+    writeFileSync(join(marker, "modules", "inner", "HEAD"), "ref: refs/heads/main\n");
+    writeFileSync(join(marker, "modules", "inner", "config"), "existing control");
+    const denies = buildMandatorySandboxWritePolicy([project]).denyWrite;
+    for (const entry of [".gitconfig", ".githooks", ".husky", ".claude/hooks"]) expect(denies).toContain(join(project, entry));
+    for (const path of [marker, join(marker, "modules"), join(marker, "modules", "inner")]) expect(denies).not.toContain(path);
+    for (const path of [join(marker, "hooks"), join(marker, "config"), join(marker, "modules", "inner", "hooks"), join(marker, "modules", "inner", "config")]) {
+      expect(denies).toContain(path);
     }
   });
 
@@ -315,8 +334,9 @@ describe("mandatory sandbox control-file writes", () => {
   });
 
   it("bounds missing ancestry and Linux routing components independently", () => {
-    const withinMissingLimit = join(root, ...Array.from({ length: 63 }, (_, index) => `missing-${index}`));
-    const beyondMissingLimit = join(withinMissingLimit, "missing-63");
+    // The deepest protected root entry (`.claude/settings.json`) adds two components.
+    const withinMissingLimit = join(root, ...Array.from({ length: 62 }, (_, index) => `missing-${index}`));
+    const beyondMissingLimit = join(withinMissingLimit, "missing-62");
     const buildWithoutLinuxRouting = (path: string) => process.platform === "win32"
       ? buildMandatorySandboxWritePolicy([path])
       : withPlatform("darwin", () => buildMandatorySandboxWritePolicy([path]));
@@ -325,7 +345,7 @@ describe("mandatory sandbox control-file writes", () => {
 
     if (process.platform === "win32") return;
     const existingComponents = root.split(sep).filter(Boolean).length;
-    const linuxMissingLimit = 64 - existingComponents - 1;
+    const linuxMissingLimit = 64 - existingComponents - 2;
     const withinRoutingLimit = join(root, ...Array.from(
       { length: linuxMissingLimit },
       (_, index) => `routing-${index}`,

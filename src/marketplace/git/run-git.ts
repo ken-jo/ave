@@ -133,6 +133,8 @@ export interface GitResult {
 }
 
 export interface GitRunnerOptions {
+  /** Substitute the command deadline's scheduler; cancellation still waits for child close. */
+  _scheduleTimeoutForTest?: (expire: () => void, delayMs: number) => () => void;
   git: GitExecutable;
   /** Generated file for `GIT_CONFIG_GLOBAL` (see global-config.ts). */
   globalConfigPath: string;
@@ -451,6 +453,7 @@ export class GitRunner {
       let stderr = "";
       let failure: Error | null = null;
       let settled = false;
+      let termination: void | Promise<void>;
 
       const signalGroup = (signal: NodeJS.Signals) => {
         try {
@@ -464,7 +467,13 @@ export class GitRunner {
         failure = error;
         if (process.platform === "win32") {
           // TerminateProcess leaves no cleanup either way; taskkill /T takes the tree.
-          forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+          termination = forceKillManagedChildProcess(child, `marketplace git ${command} stopped`);
+          // Do not depend on inherited pipes closing after a failed tree pass.
+          void Promise.resolve(termination).then(() => {
+            child.stdout.destroy();
+            child.stderr.destroy();
+            finish(() => reject(error));
+          });
           return;
         }
         // SIGTERM first so git removes its lock files, then the whole group.
@@ -473,7 +482,11 @@ export class GitRunner {
           if (!settled) signalGroup("SIGKILL");
         }, FORCE_KILL_AFTER_MS).unref();
       };
-      const timer = setTimeout(() => {
+      const scheduleTimeout = this.options._scheduleTimeoutForTest ?? ((expire: () => void, delayMs: number) => {
+        const timer = setTimeout(expire, delayMs);
+        return () => clearTimeout(timer);
+      });
+      const cancelTimeout = scheduleTimeout(() => {
         stop(
           options.remote
             ? new MarketplaceError("SOURCE_UNREACHABLE", `git ${command} timed out after ${options.timeoutMs} ms`, {
@@ -509,9 +522,10 @@ export class GitRunner {
       const finish = (outcome: () => void) => {
         if (settled) return;
         settled = true;
-        clearTimeout(timer);
+        cancelTimeout();
         options.signal?.removeEventListener("abort", onAbort);
-        outcome();
+        if (termination) void termination.then(outcome);
+        else outcome();
       };
       child.on("error", (error: NodeJS.ErrnoException) => {
         finish(() =>

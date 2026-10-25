@@ -16,7 +16,7 @@ import { describe, expect, it } from "vitest";
 import { resolve } from "node:path";
 import { ScriptHookManager } from "../script-hook-manager.js";
 import type { HookConfigEntry } from "../hook-config.js";
-import type { LifecycleHookEvent } from "../script-hook-types.js";
+import type { LifecycleEventPayload, LifecycleHookEvent } from "../script-hook-types.js";
 import { hasExecutable } from "./test-helpers.js";
 
 const FIXTURE_ROOT = resolve(__dirname, "..", "..", "..", "test", "fixtures", "hooks");
@@ -204,6 +204,33 @@ describe("#811 m2 — NON-BLOCKING semantics (observe-only)", () => {
 });
 
 describe("#811 m2 — trust boundary + matcher", () => {
+  it.each<{ event: LifecycleHookEvent; matcher: string; payload: LifecycleEventPayload; other: LifecycleEventPayload }>([
+    { event: "PostToolUseFailure", matcher: "write_file", payload: { toolName: "write_file" }, other: { toolName: "read_file" } },
+    { event: "PermissionDenied", matcher: "write_file", payload: { toolName: "write_file" }, other: { toolName: "read_file" } },
+    { event: "PreCompact", matcher: "manual", payload: { reason: "manual" }, other: { reason: "auto-compact" } },
+    { event: "PreCompact", matcher: "auto", payload: { reason: "auto-compact" }, other: { reason: "manual" } },
+    { event: "PostCompact", matcher: "manual", payload: { reason: "manual" }, other: { reason: "auto-compact" } },
+    { event: "PostCompact", matcher: "auto", payload: { reason: "auto-compact" }, other: { reason: "manual" } },
+    { event: "SubagentStart", matcher: "worker", payload: { agentType: "worker" }, other: { agentType: "reviewer" } },
+    { event: "SubagentStop", matcher: "worker", payload: { agentType: "worker" }, other: { agentType: "reviewer" } },
+    { event: "SessionEnd", matcher: "load-session", payload: { reason: "load-session" }, other: { reason: "new-conversation" } },
+    { event: "SessionStart", matcher: "resume", payload: { sessionSource: "resume" }, other: { sessionSource: "clear" } },
+    { event: "Notification", matcher: "permission_prompt", payload: { notificationType: "permission_prompt" }, other: { notificationType: "agent_completed" } },
+  ])("filters $event by its event payload ($matcher)", async ({ event, matcher, payload, other }) => {
+    const m = new ScriptHookManager();
+    m.setTrustedRegistry([], [lifecycleEntry(event, ["node", ECHO], { matcher })]);
+    expect((await m.runLifecycleEvent(event, "session-example", "unknown", payload)).results).toHaveLength(1);
+    expect((await m.runLifecycleEvent(event, matcher, "unknown", other)).results).toEqual([]);
+    expect((await m.runLifecycleEvent(event, matcher, "unknown", {})).results).toEqual([]);
+  });
+
+  it.each(["SessionStart", "Notification"] as const)("never uses the session ID for %s matching", async (event) => {
+    const m = new ScriptHookManager();
+    m.setTrustedRegistry([], [lifecycleEntry(event, ["node", ECHO], { matcher: "^session-allowed$" })]);
+    expect((await m.runLifecycleEvent(event, "session-allowed", "unknown")).results).toEqual([]);
+    expect((await m.runLifecycleEvent(event, "session-other", "unknown", { reason: "session-allowed" })).results).toEqual([]);
+  });
+
   it.skipIf(!HAS_NODE)("an untrusted / quarantined hook never fires (not in the trusted registry)", async () => {
     const m = new ScriptHookManager();
     // Simulate quarantine: the entry was NEVER installed into the trusted
@@ -214,15 +241,15 @@ describe("#811 m2 — trust boundary + matcher", () => {
     expect(m.size()).toBe(0);
   });
 
-  it.skipIf(!HAS_NODE)("matcher subject is the sessionId — a non-matching session is skipped", async () => {
+  it.skipIf(!HAS_NODE)("Stop ignores the matcher for every session", async () => {
     const m = new ScriptHookManager();
-    m.setTrustedRegistry([], [lifecycleEntry("Stop", ["node", ECHO], { matcher: "sess-allowed*" })]);
+    m.setTrustedRegistry([], [lifecycleEntry("Stop", ["node", ECHO], { matcher: "^sess-allowed.*$" })]);
 
     const matched = await m.runLifecycleEvent("Stop", "sess-allowed-1", "unknown");
     expect(matched.results).toHaveLength(1);
 
     const skipped = await m.runLifecycleEvent("Stop", "sess-other", "unknown");
-    expect(skipped.results).toEqual([]);
+    expect(skipped.results).toHaveLength(1);
     expect(skipped.decision).toBe("allow");
   });
 

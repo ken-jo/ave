@@ -3,13 +3,13 @@
  *
  * `artifact-store-test-helpers.test.ts` already proves the retry rule by
  * mocking `rm` to reject. What it cannot show is that the rule is aimed at the
- * condition that actually occurs, and two things about that condition are
- * counter-intuitive enough to be worth pinning against the OS:
+ * condition that actually occurs:
  *
  *   - a handle THIS process holds never produces the `EPERM` refusal, so "we
  *     forgot to await a write" cannot be the cause of the reported failures;
- *   - `rmSync`'s own `maxRetries`/`retryDelay` does not apply to it, so the
- *     ~500ms budget the old teardown appeared to have was never spent.
+ *   - a foreign lock must prevent deletion for as long as it is held, even
+ *     when the caller supplies a retry budget. The lock must outlive that
+ *     budget rather than expire while a synchronous removal is waiting.
  *
  * The lock is taken by a separate process with `FileShare.None`, which is what
  * a scanner does and what Node's `fs` never does. Windows-only by nature: the
@@ -17,6 +17,7 @@
  * assert there.
  */
 import { describe, it, expect } from "vitest";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import {
@@ -54,53 +55,75 @@ async function stopForeignLock(child: ChildProcess): Promise<void> {
 }
 
 /**
- * Hold `file` from another process without sharing delete, then poll until the
- * lock is observably in force. Polling rather than sleeping is what makes this
- * deterministic: the assertions never run before the condition exists.
+ * Hold `file` from another process without sharing delete. Wait for its ready
+ * message before probing access: polling with openSync can itself prevent the
+ * child from acquiring its exclusive handle.
  */
-async function holdForeignLock(file: string, holdMs: number): Promise<ChildProcess> {
+async function holdForeignLock(file: string, holdMs?: number): Promise<ChildProcess> {
   const child = spawn(
     "powershell.exe",
     [
       "-NoProfile",
       "-NonInteractive",
       "-Command",
-      `$f=[System.IO.File]::Open('${file}','Open','ReadWrite','None');`
-        + ` Start-Sleep -Milliseconds ${holdMs}; $f.Close()`,
+      `$ErrorActionPreference='Stop'; $f=[System.IO.File]::Open('${file}','Open','ReadWrite','None');`
+        + " try { [Console]::Out.WriteLine('locked'); [Console]::Out.Flush(); "
+        + (holdMs === undefined ? "$null=[Console]::In.ReadLine()" : `Start-Sleep -Milliseconds ${holdMs}`)
+        + " } finally { $f.Dispose() }",
     ],
-    { stdio: "ignore" },
+    // With no duration the parent owns the lock lifetime, including while
+    // synchronous removal blocks its event loop. Teardown stops the owner.
+    { stdio: ["pipe", "pipe", "pipe"], env: windowsPowerShellEnv() },
   );
-  const deadline = Date.now() + 10_000;
-  for (;;) {
+  let stderr = "";
+  child.stderr?.setEncoding("utf8").on("data", (chunk: string) => { stderr += chunk; });
+  const readiness = new AbortController();
+  const timeout = setTimeout(() => readiness.abort(), 10_000);
+  try {
+    if (!child.stdout) throw new Error("foreign lock owner has no readiness pipe");
+    const [message] = await Promise.race([
+      once(child.stdout, "data", { signal: readiness.signal }),
+      once(child, "exit", { signal: readiness.signal }).then(() => {
+        throw new Error(`foreign lock owner exited before locking: ${stderr}`);
+      }),
+    ]);
+    if (String(message).trim() !== "locked") throw new Error("invalid foreign lock readiness message");
     try {
       closeSync(openSync(file, "r+"));
-    } catch {
-      return child; // the foreign handle is in force
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "EPERM" || code === "EBUSY" || code === "EACCES") return child;
+      throw error;
     }
-    if (Date.now() > deadline) throw new Error("foreign lock never took hold");
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    throw new Error("foreign lock did not deny access");
+  } catch (error) {
+    if (child.pid) await stopForeignLock(child);
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    readiness.abort();
   }
 }
 
 describe.skipIf(!isWindows)("scratch-directory teardown under a foreign lock", () => {
-  it("is refused outright by a bare rmSync, retries included", async () => {
+  it("refuses a foreign-locked tree even after its retry budget", async () => {
     const { dir, file } = makeTree();
     let child: ChildProcess | undefined;
     try {
-      child = await holdForeignLock(file, 1_500);
-      const started = Date.now();
+      child = await holdForeignLock(file);
       // Intentional behavior probe; fixture teardown stays in the finally block.
       expect(() =>
         rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 }),
       ).toThrow(/EPERM|EBUSY|EACCES/);
-      // The tell from the bug reports: it gives up at once. Whatever budget
-      // `maxRetries` implies, none of it is spent on this error.
-      expect(Date.now() - started).toBeLessThan(200);
       expect(existsSync(dir)).toBe(true);
+      expect(existsSync(file)).toBe(true);
+      expect(child.exitCode).toBeNull();
+      expect(() => closeSync(openSync(file, "r+"))).toThrow(/EPERM|EBUSY|EACCES/);
     } finally {
       if (child) await stopForeignLock(child);
       await cleanupTmpDir(dir);
     }
+    expect(existsSync(dir)).toBe(false);
   });
 
   it("succeeds through the retry ladder once the lock clears", async () => {

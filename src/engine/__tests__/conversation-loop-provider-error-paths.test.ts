@@ -54,7 +54,7 @@ function buildLoop(provider: LLMProvider | null): ConversationLoop {
   const routeEngine = new RouteEngine();
   const loop = new ConversationLoop({
     settingsService: {
-      get: () => fakeLlmSettings(),
+      get: () => fakeLlmSettings({ model: "gpt-5.4-mini" }),
       getSecret: () => "test-key",
     },
     systemPromptBuilder: { build: () => "system" },

@@ -28,7 +28,8 @@
  *    tamper-detect log catches stale launchers.
  *  - `AVE_DEV_NO_SANDBOX` → `AVE_WIN_NO_SANDBOX` (separated from the dev
  *    mask; it's a Windows-only sandbox bypass for corp/VDI boxes, not a
- *    dev-mode flag).
+ *    dev-mode flag). Retired with the unpackaged `ave://` registration it
+ *    fed; now a scrubbed tombstone.
  *  - `devLinkedEntryAllowed()` and `devLinkedInstallAllowed()` removed
  *    along with the dev:link script. There is no longer a "linked entry"
  *    concept — every plugin install (admin / user / local-dev) lives
@@ -136,27 +137,6 @@ export function isDevModeUnlocked(packaged: boolean = isPackagedCached): boolean
 export function devPluginReloadEnabled(packaged: boolean = isPackagedCached): boolean {
   if (packaged) return false;
   return envEquals(process.env.AVE_DEV_RELOAD, "1");
-}
-
-/**
- * Re-inject `--no-sandbox` into the OS-registered `ave://` protocol command
- * so OS-launched second instances on corp/VDI boxes can clear Chromium's
- * sandbox init failure. Hard-gated on `!packaged` for the same reason as
- * every other dev flag — a packaged binary that inherits this env var must
- * not silently weaken Chromium sandboxing.
- *
- * Named `AVE_WIN_NO_SANDBOX` rather than `AVE_DEV_NO_SANDBOX` to
- * make the Windows-only intent explicit and decouple it from the dev-mode
- * mask (this flag is needed for `bun run start` on corp Windows even
- * outside a dev session).
- */
-export function devNoSandboxAllowed(
-  packaged: boolean = isPackagedCached,
-  platform: NodeJS.Platform = process.platform,
-): boolean {
-  if (packaged) return false;
-  if (platform !== "win32") return false;
-  return envEquals(process.env.AVE_WIN_NO_SANDBOX, "1");
 }
 
 /**

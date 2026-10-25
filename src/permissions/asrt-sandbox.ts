@@ -7,8 +7,8 @@ import { spawn } from "node:child_process";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
@@ -30,6 +30,7 @@ import { buildMandatorySandboxWritePolicy, isGrantPathWithin, restrictSandboxGit
 export { isGrantPathWithin } from "./sandbox-write-policy.js";
 import { egressInvocationOwner, onEgressInvocationReleased, openEgressInvocation } from "./egress-invocations.js";
 import { asrtInvocationListenersSupported, noteAsrtUnixSocketPolicy } from "./egress-identity.js";
+import { defaultHooksDir } from "../hooks/hook-discovery.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -373,9 +374,9 @@ export interface PerCommandFilesystem {
   /**
    * Reads this wrap may hold inside the protected read floor, each one also
    * named in `allowRead`. Without it every `allowRead` entry under the floor
-   * is withheld. Only two composers set it: the builtin shell, for the
-   * configured saved-session root, and a plugin's child and workers, for a
-   * declared `hostDirectory` that pierces the floor (`certs`). Anything else
+   * is withheld. Composers set it for an exact user hook script, the builtin
+   * shell's configured saved-session root, or a plugin's declared
+   * `hostDirectory` that pierces the floor (`certs`). Anything else
    * is refused (see {@link readGrantsOutsideReadDenies}).
    */
   readonly floorPierces?: readonly string[];
@@ -1141,9 +1142,6 @@ export function isAsrtSandboxActive(): boolean {
  *   - the cwd / working tree, the plugin's own sandbox root, system dirs
  *     (`/usr`, `/lib`, `/bin`), `$TMPDIR` — a legit tool/worker needs these.
  *     They are never on this list.
- *   - macOS Keychain DBs (~/Library/Keychains) and browser cookie stores — these
- *     are encrypted-at-rest and outside ASRT's filesystem threat model; consciously
- *     excluded so a future reader knows they were not forgotten.
  *
  * PLATFORM: every entry is a LITERAL absolute path (NO glob chars). On macOS the
  * stripped path is a recursive seatbelt subpath; on Linux bwrap deny-binds the
@@ -1296,11 +1294,24 @@ function writeRootsOutsideReadDenies(roots: readonly string[], floor: readonly s
 /**
  * The only reads a wrap may ask to hold inside the floor: the configured
  * saved-session root and a host directory catalog row that pierces the floor.
+ * Exact user hook files are checked separately when a wrap names its pierces.
  * A ceiling, not a grant — each wrap names its own in `floorPierces`.
  */
 function floorPierceCeiling(): string[] {
   return [...getConfiguredSessionReadPolicy().allowRead, ...hostDirectoryFloorPierces()]
     .map((path) => canonicalizePathForMatch(path));
+}
+
+/** Only regular files physically beneath the hook directory can pierce its read floor. */
+function isHookScriptRead(path: string): boolean {
+  const canonical = resolve(canonicalizePathForMatch(path));
+  const root = caseFoldForMatch(resolve(defaultHooksDir()));
+  if (!caseFoldForMatch(canonical).startsWith(`${root}${sep}`)) return false;
+  try {
+    return lstatSync(canonical).isFile();
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1317,7 +1328,7 @@ function readGrantsOutsideReadDenies(
 ): string[] {
   const ceiling = floorPierceCeiling();
   for (const pierce of floorPierces) {
-    if (!ceiling.includes(canonicalizePathForMatch(pierce))) {
+    if (!ceiling.includes(canonicalizePathForMatch(pierce)) && !isHookScriptRead(pierce)) {
       throw new Error(`sandbox: ${pierce} is not a read the host lets re-open the protected floor`);
     }
   }
@@ -1355,47 +1366,53 @@ function readDenyCoversPath(denied: string, canonicalPath: string, normalized = 
   }
 }
 
+function sensitiveDenyHomes(): string[] {
+  return policyHomeAnchors();
+}
+
 function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readablePrimarySessionRoot?: string): string[] {
-  const home = homedir();
+  const homes = sensitiveDenyHomes();
   const ave = aveHome();
+  const aveHomes = [ave, ...homes.map((home) => join(home, ".ave"))];
   // Electron userData dir — exact path when provided by a trusted caller;
-  // otherwise derived from os.homedir() + per-platform literal (NO `electron`
-  // import — keeps this module safe for any non-renderer context).
+  // otherwise derived from each home and platform layout, without a
+  // desktop runtime import — safe for any non-renderer context.
   // FIX 1 (security MINOR): Linux base honors XDG_CONFIG_HOME, mirroring
   // Electron's own resolution: `process.env.XDG_CONFIG_HOME || ~/.config`.
-  const electronUserData =
-    userDataDir ??
+  const electronUserData = userDataDir !== undefined
+    ? [process.platform === "win32" ? userDataDir.replace(/[/\\]+$/, "") + sep : userDataDir]
+    : homes.map((home) =>
     (process.platform === "darwin"
       ? join(home, "Library", "Application Support", "Ave")
       : process.platform === "win32"
-        ? join(home, "AppData", "Roaming", "Ave")
+        ? join(home, "AppData", "Roaming", "Ave") + sep
         : join(
             // Linux: mirror Electron's XDG_CONFIG_HOME resolution.
             process.env.XDG_CONFIG_HOME ?? join(home, ".config"),
             "Ave",
-          ));
+          )));
   const raw = [
     // ── The sensitive-path table, projected to literal absolute paths ──
     // Projected from the single authority, SENSITIVE_PATH_ENTRIES in
     // src/permissions/sensitive-paths.ts, which the in-process host-tool guard
     // projects into globs. Do NOT hand-add a `join(home, …)` entry here — add a
     // row to that table and BOTH surfaces deny it.
-    ...SENSITIVE_PATH_ENTRIES.filter((entry) => {
-      if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
-      const entryPath = canonicalizePathForMatch(join(ave, ...entry.segments));
-      return caseFoldForMatch(entryPath) !== caseFoldForMatch(readablePrimarySessionRoot);
-    }).map((entry) => {
+    ...SENSITIVE_PATH_ENTRIES.flatMap((entry) => {
+      let paths: string[];
       switch (entry.anchor) {
         case "ave-home":
-          return join(ave, ...entry.segments);
+          paths = aveHomes.map((home) => join(home, ...entry.segments));
+          break;
         case "home":
-          return join(home, ...entry.segments);
+          paths = homes.map((home) => join(home, ...entry.segments));
+          break;
         case "root":
           // POSIX-rooted (`/etc/…`). Kept literal rather than `join`ed so the
           // string stays a seatbelt/bwrap subpath on the platforms that have
           // it; on win32 it names nothing and ASRT skips it (No-Fallback: a
           // path that does not exist is harmless to list).
-          return "/" + entry.segments.join("/");
+          paths = ["/" + entry.segments.join("/")];
+          break;
         default: {
           // Fail closed: an unrecognised anchor must not silently push
           // `undefined` into the deny list ASRT is configured from.
@@ -1405,6 +1422,11 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
           );
         }
       }
+      // A missing directory leaf needs its separator to avoid a file placeholder.
+      return paths.filter((path) => {
+        if (readablePrimarySessionRoot === undefined || entry.anchor !== "ave-home" || entry.access !== "read-only") return true;
+        return caseFoldForMatch(canonicalizePathForMatch(path)) !== caseFoldForMatch(readablePrimarySessionRoot);
+      }).map((path) => process.platform === "win32" && entry.kind === "dir" ? path + sep : path);
     }),
     // Operator-selected external keys can live inside a granted workspace.
     // Keep the same frozen literal targets as the in-process host guard.
@@ -1415,13 +1437,15 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
     // Not a table row: the EXACT dir is only knowable at runtime from
     // `app.getPath("userData")`. The host guard pins the per-platform DEFAULT
     // locations as static globs in SENSITIVE_PATH_PATTERNS instead.
-    electronUserData,
+    ...electronUserData,
   ];
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of raw) {
-    if (!seen.has(p)) {
-      seen.add(p);
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
+    if (!seen.has(key)) {
+      seen.add(key);
       out.push(p);
     }
   }
@@ -1471,10 +1495,10 @@ function getDefaultSensitiveDenyPaths(userDataDir: string | undefined, readableP
  * @returns deduped, order-stable absolute paths to deny writes of.
  */
 export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSettings?.userDataDir): string[] {
-  const home = homedir();
+  const homes = sensitiveDenyHomes();
   const readDeny = getDefaultSensitiveDenyPaths(userDataDir);
   // Non-device default grants are removed at the runtime source, so no compensating cache denies are needed.
-  const writePersistence = [
+  const homeWritePersistence = homes.flatMap((home) => [
     // ── POSIX shell startup files — a write here re-executes on the next shell ──
     join(home, ".zshenv"),
     join(home, ".zprofile"),
@@ -1487,9 +1511,12 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
     join(home, ".bash_logout"),
     join(home, ".profile"),
     // ── XDG config root — autostart entries, systemd --user units, app config ──
-    join(home, ".config"),
+    join(home, ".config") + (process.platform === "win32" ? sep : ""),
     // ── macOS per-user Launch Agents — launchd runs the plist at login ──
-    join(home, "Library", "LaunchAgents"),
+    join(home, "Library", "LaunchAgents") + (process.platform === "win32" ? sep : ""),
+  ]);
+  const writePersistence = [
+    ...homeWritePersistence,
     // ── User crontab spool + system cron drop-ins (a crontab edit re-executes
     //    outside the sandbox) ──
     "/usr/lib/cron/tabs", // macOS user crontab spool
@@ -1508,8 +1535,10 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
   const seen = new Set<string>();
   const out: string[] = [];
   for (const p of [...readDeny, ...writePersistence]) {
-    if (!seen.has(p)) {
-      seen.add(p);
+    // Lexical key: a link alias is a separate spelling the sandbox must deny.
+    const key = caseFoldForMatch(resolve(p));
+    if (!seen.has(key)) {
+      seen.add(key);
       out.push(p);
     }
   }
@@ -2098,14 +2127,14 @@ let appOwnedTempRootReady = false;
 
 /**
  * Whose temp directory a confined process gets: a plugin, covering its child,
- * its workers and its bundled hooks, or one MCP stdio server.
+ * its workers and its bundled hooks, one MCP stdio server, or a user command hook.
  */
 export interface SandboxTempPrincipal {
-  readonly kind: "plugin" | "mcp";
+  readonly kind: "plugin" | "mcp" | "hook";
   readonly id: string;
 }
 
-const SANDBOX_TEMP_PRINCIPAL_KINDS: ReadonlySet<string> = new Set(["plugin", "mcp"]);
+const SANDBOX_TEMP_PRINCIPAL_KINDS: ReadonlySet<string> = new Set(["plugin", "mcp", "hook"]);
 
 /**
  * The longest id, in UTF-8 bytes, that names a temp directory. Its hex form

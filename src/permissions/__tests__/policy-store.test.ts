@@ -3,6 +3,7 @@
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { mkdir, open } from "node:fs/promises";
+import { dirname, parse, resolve } from "node:path";
 import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { makeTestPolicy } from "./test-helpers.js";
@@ -15,6 +16,7 @@ type MockFileStore = Record<string, string>;
 const files: MockFileStore = {};
 const readErrors: Record<string, NodeJS.ErrnoException> = {};
 const symbolicLinks = new Set<string>();
+const directories = new Set<string>();
 const { policyErrors } = vi.hoisted(() => ({ policyErrors: vi.fn() }));
 
 vi.mock("../../lib/logger.js", () => ({
@@ -24,9 +26,17 @@ vi.mock("../../lib/logger.js", () => ({
 vi.mock("node:fs/promises", () => ({
   mkdir: vi.fn(async () => undefined),
   lstat: vi.fn(async (path: string) => {
-    if (files[path] !== undefined || symbolicLinks.has(path)) {
-      return { isSymbolicLink: () => symbolicLinks.has(path) };
+    if (files[path] !== undefined || symbolicLinks.has(path) || directories.has(path)) {
+      return {
+        isSymbolicLink: () => symbolicLinks.has(path),
+        isDirectory: () => directories.has(path),
+      };
     }
+    throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
+  }),
+  stat: vi.fn(async (path: string) => {
+    if (directories.has(path)) return { isDirectory: () => true };
+    if (files[path] !== undefined) return { isDirectory: () => false };
     throw Object.assign(new Error(`ENOENT: ${path}`), { code: "ENOENT" });
   }),
   readFile: vi.fn(async (path: string) => {
@@ -52,8 +62,8 @@ vi.mock("node:fs/promises", () => ({
 
 // ─── Helpers ─────────────────────────────────────────
 
-const USER_PATH  = "/tmp/ave-test/policy.json";
-const ADMIN_PATH = "/tmp/ave-admin/policy.json";
+const USER_PATH  = resolve("/tmp/ave-test/policy.json");
+const ADMIN_PATH = resolve("/tmp/ave-admin/policy.json");
 
 function writeFile(path: string, obj: object): void {
   files[path] = JSON.stringify(obj, null, 2) + "\n";
@@ -63,11 +73,12 @@ function writeFile(path: string, obj: object): void {
 
 describe("policy-store", () => {
   beforeEach(() => {
-    delete files[USER_PATH];
-    delete files[ADMIN_PATH];
-    delete readErrors[USER_PATH];
-    delete readErrors[ADMIN_PATH];
+    for (const path of Object.keys(files)) delete files[path];
+    for (const path of Object.keys(readErrors)) delete readErrors[path];
     symbolicLinks.clear();
+    directories.clear();
+    // Missing directories still have an existing filesystem root.
+    directories.add(parse(ADMIN_PATH).root);
     vi.clearAllMocks();
   });
 
@@ -280,6 +291,39 @@ describe("policy-store", () => {
     expect(result.requireExplicitApproval).toBe(true);
     expect(result.managed).toBe(true);
     expect(isPolicyUserEditable(result)).toBe(false);
+  });
+
+  it.each([false, true])("a missing admin policy permits user edits (directory exists: %s)", async (directoryExists) => {
+    if (directoryExists) directories.add(dirname(ADMIN_PATH));
+    writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+
+    const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+
+    expect(loaded.source).toBe("user");
+    expect(loaded.managed).toBe(false);
+    expect(loaded.requireExplicitApproval).toBe(false);
+    expect(isPolicyUserEditable(loaded)).toBe(true);
+    await expect(savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH))
+      .resolves.toMatchObject({ managed: false, requireExplicitApproval: false });
+    expect(policyErrors).not.toHaveBeenCalled();
+  });
+
+  it.each(["file", "dangling link"])("an admin policy below a %s ancestor stays managed after ENOENT", async (kind) => {
+    const parent = dirname(ADMIN_PATH);
+    if (kind === "file") files[parent] = "not a directory";
+    else symbolicLinks.add(parent);
+    writeFile(USER_PATH, makeTestPolicy({ requireExplicitApproval: false }));
+
+    const loaded = await loadPolicy(USER_PATH, ADMIN_PATH);
+
+    expect(loaded.source).toBe("merged");
+    expect(loaded.managed).toBe(true);
+    expect(loaded.requireExplicitApproval).toBe(true);
+    expect(isPolicyUserEditable(loaded)).toBe(false);
+    await expect(savePolicy({ requireExplicitApproval: false }, USER_PATH, ADMIN_PATH))
+      .rejects.toThrow("Policy is managed by IT (admin-dir file exists)");
+    expect(mkdir).not.toHaveBeenCalled();
+    expect(open).not.toHaveBeenCalled();
   });
 
   it("a dangling admin symlink requires explicit approval and locks edits", async () => {

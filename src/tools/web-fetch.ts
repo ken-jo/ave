@@ -8,6 +8,11 @@ import { htmlToMarkdown } from "./html-to-markdown.js";
 import { neutralizeFenceClose, neutralizeFenceOpen } from "../shared/fence-sanitizer.js";
 
 const MAX_RESPONSE_BYTES = 2 * 1024 * 1024;
+const canonicalWebFetchTools = new WeakSet<object>();
+
+export function isCanonicalWebFetchTool(tool: unknown): tool is Tool {
+  return typeof tool === "object" && tool !== null && canonicalWebFetchTools.has(tool);
+}
 /**
  * The network guard's hop timer ends when the headers arrive, so the body
  * read needs its own bound: a server trickling a body under the byte cap
@@ -261,7 +266,7 @@ function webFetchCategoryForInput(input: unknown): "network" {
  * throws on every mode that would allow that.
  */
 export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
-  return createDynamicTool({
+  const tool = createDynamicTool({
     name: "web_fetch",
     description: t("be_tools.webFetchDescription"),
     source: "builtin",
@@ -292,6 +297,7 @@ export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
         // link-local / metadata endpoints are rejected per hop (incl. redirect
         // chain) and bad schemes / embedded credentials are refused up front.
         const response = await fetchPublicHttpResponse(url, {
+          authorizeTarget: context.authorizeNetworkTarget,
           allowPrivateNetworks: allowPrivateNetwork,
           fetchImpl: singleHopFetch,
           signal: context.abortSignal,
@@ -358,4 +364,6 @@ export function createWebFetchTool(singleHopFetch: typeof fetch): Tool {
       }
     },
   });
+  canonicalWebFetchTools.add(tool);
+  return tool;
 }

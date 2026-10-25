@@ -525,6 +525,7 @@ describe("terminal_run", () => {
     });
 
     it("keeps typing into the sealed terminal when the user switches terminals while the card is open", async () => {
+      vi.useFakeTimers();
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-2"), readyTracker(), WINDOW);
       let active = "terminal:aaaaaaaa-1";
@@ -532,16 +533,21 @@ describe("terminal_run", () => {
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
       active = "terminal:aaaaaaaa-2";
-      await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      const pending = tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      await vi.runAllTimersAsync();
+      await pending;
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
     });
 
     it("fails as not verified when the shell never reports starting the typed command", async () => {
+      vi.useFakeTimers();
       registerTerminalBlockTracker(terminalSessionFixture("terminal:aaaaaaaa-1"), readyTracker(), WINDOW);
       const deps = depsWith();
       const tool = createTerminalRunTool(deps);
       const scope = await tool.approvalMemoryScope!({ command: "ls" }, { cwd: "/workspace", sessionId: "main" });
-      const result = await tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      const pending = tool.execute({ command: "ls", waitSeconds: 0 }, ctxFor(scope));
+      await vi.runAllTimersAsync();
+      const result = await pending;
       expect(deps.typed).toEqual([["terminal:aaaaaaaa-1", WINDOW, "ls"]]);
       expect(result.isError).toBe(true);
       expect(body(result.output as string)).toMatchObject({ typed: true, finished: false, error: expect.stringContaining("terminal:aaaaaaaa-1") });

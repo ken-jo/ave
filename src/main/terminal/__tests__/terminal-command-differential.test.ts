@@ -35,11 +35,13 @@
  * ...), and background jobs (which may run after their records are read),
  * are not run; the summary counts them.
  */
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, truncateSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { setTimeout as sleep } from "node:timers/promises";
+import { open } from "node:fs/promises";
 import { basename, join } from "node:path";
-import { spawnSync } from "node:child_process";
+import { execFile, spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { promisify } from "node:util";
 import { afterAll, describe, expect, it } from "vitest";
 import * as nodePty from "node-pty";
 import { installShellIntegration } from "../shell-integration.js";
@@ -406,8 +408,11 @@ function makeRig(root: string, shimNames: ReadonlySet<string>): Rig {
   const shim = join(shims, ".shim");
   writeFileSync(shim, [
     "#!/bin/sh",
-    `f=$(/usr/bin/mktemp '${calls}/call.XXXXXX') || exit 97`,
-    "printf '%s\\0' \"${0##*/}\" \"$@\" > \"$f\"",
+    // One record per shim process. Keep real executable lookup and argv, but
+    // avoid starting another process just to allocate the record's filename.
+    `f='${calls}/call.'$$`,
+    "set -C",
+    "printf '%s\\0' \"${0##*/}\" \"$@\" > \"$f\" || exit 97",
     "exit 0",
     "",
   ].join("\n"), { mode: 0o755 });
@@ -431,16 +436,9 @@ interface Session {
   close(): Promise<void>;
 }
 
-async function until(condition: () => boolean, timeoutMs: number): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
-  while (!condition()) {
-    if (Date.now() > deadline) return false;
-    await sleep(5);
-  }
-  return true;
-}
+const liveSessions = new Set<() => Promise<void>>();
 
-async function openSession(shellPath: string, rig: Rig): Promise<Session> {
+async function openSession(shellPath: string, rig: Rig, promptTokens?: string): Promise<Session> {
   const name = basename(shellPath);
   const home = join(rig.root, `home-${name}`);
   mkdirSync(home);
@@ -454,13 +452,70 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
   const notFoundProgram = join(rig.root, `command-not-found-${name}`);
   writeFileSync(notFoundProgram, [
     "#!/bin/sh",
-    `f=$(/usr/bin/mktemp '${rig.calls}/call.XXXXXX') || exit 97`,
-    "printf '%s\\0' command-not-found \"$@\" > \"$f\"",
+    `f='${rig.calls}/call.'$$`,
+    "set -C",
+    "printf '%s\\0' command-not-found \"$@\" > \"$f\" || exit 97",
     "exit 127",
     "",
   ].join("\n"), { mode: 0o755 });
   const rc = join(home, name === "zsh" ? ".zshrc" : ".bash_profile");
-  writeFileSync(rc, ubuntuLikeNotFoundHandler(name, notFoundProgram) + readFileSync(rc, "utf-8"));
+  const integration = readFileSync(rc, "utf-8");
+  const instrument = (source: string, anchor: string, replacement: string): string => {
+    if (source.split(anchor).length !== 2) throw new Error("Expected one shell integration instrumentation anchor");
+    return source.replace(anchor, replacement);
+  };
+  let tracedIntegration = integration;
+  if (name === "bash") {
+    tracedIntegration = instrument(tracedIntegration, '  __ave_at_prompt=1\n}', '  __ave_close_fence\n  __ave_at_prompt=1\n}');
+    tracedIntegration = instrument(tracedIntegration, '[ "$BASH_COMMAND" = "__ave_precmd" ]', '[[ "$BASH_COMMAND" = "__ave_precmd" || "$BASH_COMMAND" = "__ave_begin_fence" ]]');
+  }
+  // Per-character encoding was already excluded from the executable trace.
+  // Disable only that bookkeeping, with native local-option restoration so
+  // every command and builtin still runs with the original global xtrace.
+  const encoder = name === "bash" ? "__ave_encode() {\n" : "__ave_encode() {\n  emulate -L zsh\n";
+  tracedIntegration = instrument(tracedIntegration, encoder, encoder + (name === "bash" ? "  local -\n  set +x\n" : "  unsetopt xtrace\n"));
+  let promptFixture = "";
+  if (promptTokens !== undefined) {
+    // Each session reads its immutable cryptographic token stream through
+    // its own descriptor. Exhaustion is an error, never a reused token.
+    const tokenSource = '  ave_token="$(/usr/bin/od -An -N16 -tx1 /dev/urandom 2>/dev/null)"\n  ave_token="${ave_token//[^0-9a-f]/}"';
+    tracedIntegration = instrument(tracedIntegration, tokenSource, '  if ! IFS= read -r ave_token <&8; then printf "Prompt token fixture exhausted\\n" >&2; exit 98; fi');
+    promptFixture = `exec 8<'${promptTokens}'\n`;
+    // Query the actual bindings on every prompt using native builtins and a
+    // per-session file instead of forking to capture their standard output.
+    const bindings = join(rig.root, "prompt-bindings");
+    if (name === "zsh") {
+      tracedIntegration = instrument(tracedIntegration, '  [[ "$(bindkey -lL main)" == *vi* ]]',
+        `  local ave_keymap\n  bindkey -lL main >'${bindings}'\n  IFS= read -r ave_keymap <'${bindings}'\n  [[ "$ave_keymap" == *vi* ]]`);
+      if (process.platform === "darwin") {
+        // Query current traps with the native builtin as well. The focused
+        // default-prompt case retains the production pipe and its child wait.
+        const traps = join(rig.root, "prompt-traps");
+        tracedIntegration = instrument(tracedIntegration,
+          "  { builtin trap && builtin printf '\\0'; } | IFS= builtin read -r -d '' ave_traps",
+          `  { builtin trap && builtin printf '\\0'; } >'${traps}' || return 1\n  IFS= builtin read -r -d '' ave_traps <'${traps}' || return 1`);
+        tracedIntegration = instrument(tracedIntegration,
+          '  if (( pipestatus[1] == 0 && pipestatus[2] == 0 )) && [[ -z "$ave_traps" ]]; then builtin trap - INT; fi',
+          '  if [[ -z "$ave_traps" ]]; then builtin trap - INT; fi');
+      }
+    } else {
+      tracedIntegration = instrument(tracedIntegration, '  [[ "$__ave_paste" = 1 && "$(bind -v)" == *"enable-bracketed-paste on"* ]]',
+        `  local -a ave_binding_options\n  bind -v >'${bindings}'\n  mapfile -t ave_binding_options <'${bindings}'\n  [[ "$__ave_paste" = 1 && "${"${ave_binding_options[*]}"}" == *"enable-bracketed-paste on"* ]]`);
+    }
+  }
+  const fencePath = join(rig.root, "descendants-finished");
+  expect(spawnSync("mkfifo", [fencePath]).status).toBe(0);
+  // Opening this descriptor immediately before Enter gives every native
+  // descendant a writer. The prompt closes the shell's own copy; EOF then
+  // proves process substitutions finished before their records are read.
+  const fenceHooks = [
+    `__ave_begin_fence() { exec 9>'${fencePath}'; printf f >&9; __ave_fence_open=1; }`,
+    '__ave_close_fence() { if [ "${__ave_fence_open:-0}" = 1 ]; then exec 9>&-; __ave_fence_open=0; fi; return 0; }',
+    name === "zsh"
+      ? "zle -N __ave_begin_fence; bindkey '^[[98~' __ave_begin_fence; add-zsh-hook precmd __ave_close_fence"
+      : `bind -x '"\\e[98~":__ave_begin_fence'`,
+  ].join("\n");
+  writeFileSync(rc, ubuntuLikeNotFoundHandler(name, notFoundProgram) + tracedIntegration + "\n" + promptFixture + fenceHooks + "\n");
   const pty = nodePty.spawn(shellPath, ["-l", "-i"], {
     cwd: rig.box,
     cols: 200,
@@ -468,15 +523,96 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     env: { PATH: "/usr/bin:/bin", HOME: home, TERM: "xterm-256color", LANG: TERMINAL_TEST_UTF8_LOCALE, ...env },
   });
   const tracker = new TerminalBlockTracker({ nonce: NONCE, marksPromptEnd: true });
+  const changes = new Set<() => void>();
+  const until = (condition: () => boolean, timeoutMs: number): Promise<boolean> => new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (value: boolean, error?: unknown) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      changes.delete(check);
+      if (error !== undefined) reject(error);
+      else resolve(value);
+    };
+    const check = () => {
+      try {
+        if (condition()) finish(true);
+        else if (tracker.hasExited()) finish(false);
+      } catch (error) { finish(false, error); }
+    };
+    const timer = setTimeout(() => finish(false), timeoutMs);
+    changes.add(check);
+    check();
+  });
   // The shell's latest output, for the report of a command that left it not ready.
   let recentOutput = "";
+  let editorOutput = "";
   pty.onData((data) => {
     tracker.recordOutput(data);
     recentOutput = (recentOutput + data).slice(-600);
+    editorOutput = (editorOutput + data).slice(-2048);
+    for (const check of changes) check();
   });
-  const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); resolve(); }));
-  if (!await until(() => tracker.promptEndCount() > 0, 10_000)) throw new Error(`${name} did not start`);
-  await sleep(100);
+  const exited = new Promise<void>((resolve) => pty.onExit(() => { tracker.recordExit(); for (const check of changes) check(); resolve(); }));
+  let fence: { cancel(): Promise<void> } | undefined;
+  const beginFence = async () => {
+    const reader = spawn("/bin/cat", [fencePath], { stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    let errors = "";
+    reader.stdout.on("data", (data: Buffer) => { output += data.toString(); });
+    reader.stderr.on("data", (data: Buffer) => { errors += data.toString(); });
+    const closed = new Promise<{ code: number | null; error?: Error }>((resolve) => {
+      reader.on("error", (error) => resolve({ code: null, error }));
+      reader.on("close", (code) => resolve({ code }));
+    });
+    // Hold a writer until the command returns, including the interval before
+    // its native editor callback opens FD 9. Neither FIFO open can lose EOF.
+    const writer = await open(fencePath, "w");
+    let finished: Promise<{ code: number | null; error?: Error }> | undefined;
+    const finish = () => finished ??= (async () => {
+      await writer.close();
+      return new Promise<{ code: number | null; error?: Error }>((resolve) => {
+        const timer = setTimeout(() => {
+          reader.kill("SIGKILL");
+          resolve({ code: null, error: new Error("A descendant kept the command-completion FIFO open") });
+        }, 3_000);
+        void closed.then((result) => { clearTimeout(timer); resolve(result); });
+      });
+    })();
+    fence = { cancel: async () => {
+      reader.kill("SIGKILL");
+      // Cleanup is bounded and makes no assertions that could mask the
+      // command failure. Completion is checked by the command's own caller.
+      try { await finish(); } catch (error) { process.stderr.write(`FIFO cleanup: ${String(error)}\n`); }
+    } };
+    return async () => {
+      const result = await finish();
+      fence = undefined;
+      if (result.error) throw result.error;
+      expect(result.code, errors).toBe(0);
+      expect(output).toBe("f");
+    };
+  };
+  const close = async () => {
+    try { pty.kill("SIGKILL"); } catch { /* gone */ }
+    await exited;
+    await fence?.cancel();
+    liveSessions.delete(close);
+  };
+  liveSessions.add(close);
+  if (!await until(() => tracker.promptEndCount() > 0, 10_000)) throw new Error(`${name} did not start: ${JSON.stringify(recentOutput)}`);
+
+  const waitForEditor = async () => {
+    if (tracker.promptState() !== "ready") throw new Error(`${name}: prompt is ${tracker.promptState()} after ${previous}`);
+    // Observe the native editor's enable sequence and B in this prompt's
+    // output, including split reads. The two shells emit them in opposite orders.
+    const editorReady = name === "zsh"
+      ? /\u001b\]133;B;[0-9a-f]{32}\u0007[\s\S]*\u001b\[\?2004h/u
+      : /\u001b\[\?2004h[\s\S]*\u001b\]133;B;[0-9a-f]{32}\u0007/u;
+    if (!await until(() => editorReady.test(editorOutput.slice(editorOutput.lastIndexOf(`\u001b]133;A;${NONCE}\u0007`))), 3_000)) {
+      throw new Error(`${name}: line editor did not enable paste after ${previous} (${JSON.stringify(recentOutput)})`);
+    }
+  };
 
   let previous = "(start)";
   const stuck: string[] = [];
@@ -484,27 +620,19 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     const typeOnce = () => typeLineAtPrompt({
       blocks: tracker,
       isLive: () => !tracker.hasExited(),
-      write: (data) => pty.write(data),
+      write: (data) => pty.write(data === "\r" && fence ? "\u001b[98~\r" : data),
       // The operating-system check is pty-manager's, tested on its own; here
       // the shell is known to be the foreground process.
       verify: async () => ({ ok: true, cwd: canonicalizePathForMatch(tracker.currentCwd() ?? "") }),
       missing: "no terminal",
     }, line);
-    let typed = await typeOnce();
-    // A loaded host can be slow to redraw the prompt after the reset.
-    for (let attempt = 0; !typed.ok && typed.reason === "no-fresh-prompt" && attempt < 3; attempt++) typed = await typeOnce();
+    await waitForEditor();
+    const typed = await typeOnce();
     if (!typed.ok) {
       // The previous command left the shell not ready for the next one:
-      // a failure of its own; clear the line and go on.
+      // a failure of its own, reported without retrying the command.
       stuck.push(`${name}: ${JSON.stringify(previous)} left the shell ${typed.reason} (edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)})`);
-      const prompts = tracker.promptEndCount();
-      pty.write("\u0003");
-      await until(() => tracker.promptEndCount() > prompts, 3_000);
-      await sleep(200);
-      typed = await typeOnce();
-      if (!typed.ok) {
-        throw new Error(`${name}: not typed (${typed.reason}): ${line} (after ${previous}; prompt ${tracker.promptState()}; prompt ends ${tracker.promptEndCount()}; edit line ${JSON.stringify(tracker.editLineText())}; output ${JSON.stringify(recentOutput)}; stuck ${JSON.stringify(stuck)})`);
-      }
+      throw new Error(`${name}: not typed (${typed.reason}): ${line} (after ${previous}; prompt ${tracker.promptState()}; prompt ends ${tracker.promptEndCount()}); ${stuck.at(-1)}`);
     }
     previous = line;
     const prompts = tracker.promptEndCount();
@@ -515,7 +643,7 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
     }
     // The next line is typed only at a ready prompt (the shell may still be
     // writing after its prompt marker).
-    await until(() => tracker.promptState() === "ready", 3_000);
+    if (!await until(() => tracker.promptState() === "ready", 3_000)) return { blockId: typed.firstBlockId, hung: true };
     return { blockId: typed.firstBlockId, hung: false };
   };
 
@@ -553,15 +681,14 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
       if (tracker.currentCwd() !== rig.box) await typeAndWait(`cd '${rig.box}'`);
       truncateSync(trace, 0);
       for (const call of readdirSync(rig.calls)) rmSync(join(rig.calls, call));
+      const finishDescendants = /[<>]\(/u.test(command) ? await beginFence() : undefined;
       const { blockId, hung } = await typeAndWait(command);
-      // The shell does not wait for a process substitution's program; give
-      // it time to start, and let every program finish writing its record.
-      if (/[<>]\(/u.test(command)) await sleep(200);
-      await until(() => readdirSync(rig.calls).every((call) => statSync(join(rig.calls, call)).size > 0), 2_000);
+      await finishDescendants?.();
       const executed: Executed[] = [];
       for (const call of readdirSync(rig.calls)) {
         const argv = readFileSync(join(rig.calls, call), "utf-8").split("\0");
-        argv.pop();
+        expect(argv.pop(), `Complete argv record for ${command}`).toBe("");
+        expect(argv.length, command).toBeGreaterThan(0);
         executed.push({ via: "program", argv });
       }
       for (const raw of readFileSync(trace, "utf-8").split("\n")) {
@@ -585,10 +712,7 @@ async function openSession(shellPath: string, rig: Rig): Promise<Session> {
       const block = blockId === null ? null : tracker.get(blockId);
       return { command, shell: name, executed, recorded: block?.command ?? null, hung };
     },
-    async close() {
-      try { pty.kill(); } catch { /* gone */ }
-      await Promise.race([exited, sleep(3_000)]);
-    },
+    close,
   };
 }
 
@@ -665,9 +789,32 @@ function plan(baseCommands: readonly string[] = BASE_COMMANDS): Plan {
 }
 
 const opened: string[] = [];
-afterAll(() => {
+afterAll(async () => {
+  await Promise.all([...liveSessions].map((close) => close()));
   for (const root of opened.splice(0)) rmSync(root, { recursive: true, force: true, maxRetries: 5 });
 });
+
+const executeShell = promisify(execFile);
+
+/** Share interpreter startup while keeping each probe's state in a subshell. */
+async function runProbeBatch(shellPath: string, root: string, scripts: readonly string[], interactive = false): Promise<string[]> {
+  const script = scripts.map((body, index) => `(
+${body}
+)
+__ave_probe_status=$?
+printf '\\000%s:%s\\000' '${index}' "$__ave_probe_status"`).join("\n");
+  const result = await executeShell(shellPath, [interactive ? "-fic" : "-fc", script], {
+    encoding: "utf8",
+    cwd: root,
+    env: { ...process.env, HOME: root, ZDOTDIR: root, ENV: "", BASH_ENV: "", LC_ALL: TERMINAL_TEST_UTF8_LOCALE },
+  });
+  const frames = result.stdout.split("\0");
+  expect(frames, result.stderr).toHaveLength(scripts.length * 2 + 1);
+  return scripts.map((_body, index) => {
+    expect(frames[index * 2 + 1], result.stderr).toBe(`${index}:0`);
+    return frames[index * 2]!;
+  });
+}
 
 describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated is what the shell runs", () => {
   it("runs mixed formats and refuses unchecked numeric operands before typing", async () => {
@@ -682,7 +829,7 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
     }
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-printf-")));
     opened.push(root);
-    for (const shellPath of SHELLS) {
+    const results = await Promise.allSettled(SHELLS.map(async (shellPath) => {
       const session = await openSession(shellPath, makeRig(join(root, basename(shellPath)), new Set()));
       try {
         for (const command of [...TERMINAL_PRINTF_DATA_COMMANDS, ...TERMINAL_PRINT_DATA_COMMANDS]) {
@@ -701,10 +848,11 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
       } finally {
         await session.close();
       }
-    }
+    }));
+    for (const result of results) if (result.status === "rejected") throw result.reason;
   });
 
-  it("observes hidden arithmetic in mixed, repeated, positional and star operands", () => {
+  it("observes hidden arithmetic in mixed, repeated, positional and star operands", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-printf-arithmetic-")));
     opened.push(root);
     const commands = [
@@ -728,39 +876,32 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
       "print -v output -f '%d' 'printfProbe=7'",
       "print -Rf '%d' 'printfProbe=7'",
     ].map((command) => ({ command, problem: "unchecked-construct" })));
-    for (const { command, problem } of commands) {
-      expect(terminalCommandTextProblem(command)).toBe(problem);
-      for (const shellPath of SHELLS) {
-        const result = spawnSync(shellPath, ["-fc", `printfProbe=0; text=; ${command}; printf '\\n%s' "$printfProbe"`], {
-          encoding: "utf-8",
-          cwd: root,
-          env: { ...process.env, HOME: root, ZDOTDIR: root, ENV: "", BASH_ENV: "", LC_ALL: TERMINAL_TEST_UTF8_LOCALE },
-        });
-        expect(result.error).toBeUndefined();
-        expect(result.status).toBe(0);
-        expect(result.stdout.endsWith(shellPath === ZSH ? "\n7" : "\n0"), JSON.stringify({ shellPath, command, stdout: result.stdout, stderr: result.stderr })).toBe(true);
+    for (const { command, problem } of commands) expect(terminalCommandTextProblem(command)).toBe(problem);
+    const batches = await Promise.allSettled(SHELLS.map((shellPath) => runProbeBatch(shellPath, root,
+      commands.map(({ command }) => `printfProbe=0; text=; ${command}; printf '\\n%s' "$printfProbe"`))));
+    for (const [shellIndex, batch] of batches.entries()) {
+      if (batch.status === "rejected") throw batch.reason;
+      const shellPath = SHELLS[shellIndex]!;
+      for (const [index, { command }] of commands.entries()) {
+        const stdout = batch.value[index]!;
+        expect(stdout.endsWith(shellPath === ZSH ? "\n7" : "\n0"), JSON.stringify({ shellPath, command, stdout })).toBe(true);
       }
     }
   });
 
-  it("observes protected destination writes from attached print targets", () => {
+  it("observes protected destination writes from attached print targets", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-print-target-")));
     opened.push(root);
-    for (const [command, expected] of [
+    const cases = [
       ["print -rvPATH changed", "changed"],
       ["print -nrvPATH changed", "changed"],
       ["print -C1 -rvPATH changed", "changed\n"],
       ["print -RvPATH changed", "changed"],
-    ] as const) {
-      expect(terminalCommandTextProblem(command)).toBe("shell-state");
-      const result = spawnSync(ZSH!, ["-fc", `PATH=original; ${command}; builtin printf '%s' "$PATH"`], {
-        encoding: "utf-8",
-        cwd: root,
-        env: { ...process.env, HOME: root, ZDOTDIR: root, ENV: "", BASH_ENV: "", LC_ALL: TERMINAL_TEST_UTF8_LOCALE },
-      });
-      expect(result.error).toBeUndefined();
-      expect(result.status).toBe(0);
-      expect(result.stdout, command).toBe(expected);
+    ] as const;
+    for (const [command] of cases) expect(terminalCommandTextProblem(command)).toBe("shell-state");
+    const outputs = await runProbeBatch(ZSH!, root, cases.map(([command]) => `PATH=original; ${command}; builtin printf '%s' "$PATH"`));
+    for (const [index, [command, expected]] of cases.entries()) {
+      expect(outputs[index], command).toBe(expected);
     }
   });
 
@@ -773,6 +914,62 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
     expect(hasUnboundedArrayRead("mapfile -u1 lines < list")).toBe(true);
     const command = "mapfile -t -n1 lines < list";
     expect(plan([command]).runs.some((run) => run.command === command)).toBe(true);
+  });
+
+  it("keeps native prompt subprocesses ready after pipelines", async () => {
+    // Keep the shipped prompt subprocesses real at this integration boundary;
+    // the larger classifier matrix prebuilds entropy and captures bindings
+    // with native builtins instead of repeatedly forking for bookkeeping.
+    const { runs } = plan(["git log --oneline | head -5"]);
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-native-prompt-")));
+    opened.push(root);
+    const results = await Promise.allSettled(SHELLS.map(async (shellPath) => {
+      const session = await openSession(shellPath, makeRig(join(root, basename(shellPath)), new Set(["git", "head", "rm"])));
+      try {
+        for (const { command, commands } of runs) {
+          const outcome = await session.run(command);
+          expect(outcome.hung, command).toBe(false);
+          expect(outcome.recorded, command).toBe(command);
+          expect(outcome.executed.length, command).toBeGreaterThan(0);
+          for (const executed of outcome.executed) {
+            expect(commands.some((argv) => covers(argv, executed)), JSON.stringify({ command, executed })).toBe(true);
+          }
+        }
+        expect(session.stuck).toEqual([]);
+      } finally { await session.close(); }
+    }));
+    for (const result of results) if (result.status === "rejected") throw result.reason;
+  });
+
+  it("preserves configured traps and default interrupt options while preparing prompts", async () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-prompt-traps-")));
+    opened.push(root);
+    const cases = [
+      { setup: ":", marker: "" },
+      { setup: "trap 'printf list-handler' INT", marker: "list-handler" },
+      { setup: "TRAPINT() { printf function-handler; return 130; }", marker: "function-handler" },
+      { setup: "trap '' INT", marker: "trap -- '' INT" },
+      { setup: "trap 'printf unrelated-handler' USR1", marker: "unrelated-handler" },
+      { setup: "read() { return 1; }; trap 'printf shadowed-read-handler' INT", marker: "shadowed-read-handler" },
+    ];
+    const fixtures = cases.map(({ setup }, index) => {
+      const home = join(root, String(index));
+      mkdirSync(home);
+      installShellIntegration(home, ZSH!, { nonce: NONCE, sandboxEnv: { HOME: home, XDG_CONFIG_HOME: join(home, "config") } });
+      return { home, script: `source '${join(home, ".zshrc")}'; unsetopt traps_async; ${setup}
+builtin trap > '${join(home, "before")}'
+__ave_precmd
+builtin trap > '${join(home, "after")}'
+print -r -- "$options[trapsasync]"` };
+    });
+    const output = await runProbeBatch(ZSH!, root, fixtures.map(({ script }) => script), true);
+    for (const [index, { home }] of fixtures.entries()) {
+      const before = readFileSync(join(home, "before"), "utf8");
+      if (cases[index]!.marker) expect(before).toContain(cases[index]!.marker);
+      else expect(before).toBe("");
+      expect(readFileSync(join(home, "after"), "utf8")).toBe(before);
+      expect(output[index]!.endsWith("off\n")).toBe(true);
+    }
   });
 
   it("runs no simple command, in zsh or bash, that the permission classifier did not evaluate", async () => {
@@ -789,6 +986,17 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
     const root = realpathSync(mkdtempSync(join(tmpdir(), "ave-diff-")));
     opened.push(root);
 
+    // Each session gets a disjoint immutable stream of real cryptographic
+    // tokens. Reserve for cwd restoration and the protocol's internal resets.
+    const tokensPerSession = (Math.ceil(runs.length / SESSIONS_PER_SHELL) + 2) * 16;
+    const streamCount = SHELLS.length * SESSIONS_PER_SHELL;
+    const tokens = randomBytes(16 * tokensPerSession * streamCount).toString("hex").match(/.{32}/gu)!;
+    const tokenPaths = Array.from({ length: streamCount }, (_unused, index) => {
+      const path = join(root, `prompt-tokens-${index}`);
+      writeFileSync(path, tokens.slice(index * tokensPerSession, (index + 1) * tokensPerSession).join("\n") + "\n", { mode: 0o400 });
+      return path;
+    });
+
     const mismatches: string[] = [];
     const recordedDiffers: string[] = [];
     const hung: string[] = [];
@@ -796,9 +1004,9 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
     // Each shell runs the corpus in SESSIONS_PER_SHELL parts at once, each
     // session with its own sandbox, shims and call records.
     const parts = Array.from({ length: SESSIONS_PER_SHELL }, (_, part) => runs.filter((_run, i) => i % SESSIONS_PER_SHELL === part));
-    await Promise.all(SHELLS.flatMap((shellPath) => parts.map(async (part, index) => {
+    const results = await Promise.allSettled(SHELLS.flatMap((shellPath, shellIndex) => parts.map(async (part, index) => {
       const rig = makeRig(join(root, `${basename(shellPath)}-${index}`), shimNames);
-      const session = await openSession(shellPath, rig);
+      const session = await openSession(shellPath, rig, tokenPaths[shellIndex * SESSIONS_PER_SHELL + index]!);
       try {
         for (const { command, commands } of part) {
           const outcome = await session.run(command);
@@ -815,6 +1023,8 @@ describe.runIf(SHELLS.length === 2)("terminal_run: what the classifier evaluated
         await session.close();
       }
     })));
+    const errors = results.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+    if (errors.length > 0) throw new AggregateError(errors.map((result) => result.reason), errors.map((result) => String(result.reason)).join("\n"));
 
     process.stdout.write(`[terminal_run differential] candidates=${candidates} validator-refused=${refused} classifier-unparsed=${unparsed} not-run=${notRun} run=${runs.length} (${hidden} hiding code) x ${SHELLS.length} shells, hung=${hung.length}, stuck=${stuckAfter.length}, mismatches=${mismatches.length}, recorded-differs=${recordedDiffers.length}\n`);
     for (const line of [...mismatches, ...recordedDiffers, ...hung.map((h) => `hung ${h}`), ...stuckAfter.map((h) => `stuck ${h}`)]) console.info(line);

@@ -10,6 +10,7 @@ import { PermissionManager } from "../../permissions/permission-manager.js";
 import { BashAstValidator } from "../../main/bash-ast-validator.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
+import { shellQuote } from "../../lib/shell-resolver.js";
 import { backgroundShellManager, createBashKillTool } from "../shell-tools.js";
 
 describe("ToolExecutor background shell session control", () => {
@@ -107,8 +108,9 @@ describe("ToolExecutor background shell session control", () => {
   it.each(["command", "cmd", "script", "shellCommand"])(
     "still applies containment when a session-control call carries %s",
     async (field) => {
+      // Quoted so bash keeps a Windows path's backslashes and names the file.
       const result = await kill("owner", {
-        [field]: `cat ${join(homedir(), ".ssh", "id_rsa")}`,
+        [field]: `cat ${shellQuote(join(homedir(), ".ssh", "id_rsa"))}`,
       });
 
       expect(result.is_error).toBe(true);

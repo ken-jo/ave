@@ -255,8 +255,40 @@ describe("browser tools", () => {
       guest.url = url;
       return { handle: outcome.tabId, guest };
     };
-    return { run, cards, page, tabs, userTab, agentTab, ops, browserTools };
+    return { run, cards, page, tabs, userTab, agentTab, ops, browserTools, manager };
   }
+
+  it.each([BROWSER_TOOL.navigate, BROWSER_TOOL.tabNew])("applies domain deny rules before %s", async (name) => {
+    const { run, cards, page, agentTab, ops, manager } = harness({ mode: "allow" });
+    const tab = await agentTab("https://example.com/");
+    const initialOps = ops.length;
+    await manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action: "deny" }, { kind: "user" });
+    const result = await run(name, { ...(name === BROWSER_TOOL.navigate ? { tabId: tab.handle } : {}), url: "https://evil.com/x" });
+    expect(result).toMatchObject({ isError: true, output: expect.stringContaining("WebFetch(domain:evil.com)") });
+    expect(cards).toHaveLength(0);
+    expect(page.calls).toHaveLength(0);
+    expect(ops).toHaveLength(initialOps);
+  });
+
+  it.each([
+    [BROWSER_TOOL.navigate, "allow"], [BROWSER_TOOL.navigate, "ask"],
+    [BROWSER_TOOL.tabNew, "allow"], [BROWSER_TOOL.tabNew, "ask"],
+  ] as const)("retains site approval for %s with a domain %s rule", async (name, action) => {
+    const { run, cards, agentTab, manager, ops, tabs } = harness({ mode: action === "ask" ? "allow" : "default" });
+    const tab = await agentTab("https://example.com/");
+    await manager.addRulePersist({ pattern: "WebFetch(domain:evil.com)", action }, { kind: "user" });
+    const initialOps = ops.length;
+    const opening = run(name, { ...(name === BROWSER_TOOL.navigate ? { tabId: tab.handle } : {}), url: "https://evil.com/x" });
+    if (name === BROWSER_TOOL.tabNew) {
+      await vi.waitFor(() => expect(ops.slice(initialOps).at(-1)?.op).toBe("new"));
+      const guest = new FakeGuest(500, "about:blank");
+      tabs.guestAttached(guest, 1);
+      tabs.bindTab(1, { tabId: "renderer-500", webContentsId: 500, requestId: ops.at(-1)!.requestId! });
+    }
+    expect((await opening).isError).toBe(false);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!.approvalMemory).toMatchObject({ scope: { kind: "browser-origin", origin: browserOrigin("https://evil.com") } });
+  });
 
   it("reads an agent tab without asking, but asks before the first read of a user tab", async () => {
     const { run, cards, page, userTab, agentTab } = harness();

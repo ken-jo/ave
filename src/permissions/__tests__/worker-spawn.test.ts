@@ -21,9 +21,11 @@
  *   - win32 + gate ON → dedicated holder PID ACL grant + srt-win wrapped TCP
  *     worker, no shared all-plugin grant and no UDS injection.
  */
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeAll, afterAll, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
 import { egressInvocationOwner } from "../egress-invocations.js";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { PassThrough } from "node:stream";
 import { join } from "node:path";
 
@@ -181,6 +183,28 @@ function setEnvForTest(values: Record<string, string | undefined>): () => void {
 }
 
 const REAL_PLATFORM = process.platform;
+
+/**
+ * The control socket lives under the Ave home, and a Unix socket path is
+ * limited to 103 bytes on macOS. The per-file test home sits under
+ * `$HOME/.ave/test-tmp/<run>/<file>`, so with a HOME of a little over 20 bytes the
+ * longest plugin/worker pair here passes the limit and every gate-ON case
+ * fails with the length error instead of testing what it names. These cases
+ * run in a short Ave home of their own; `/tmp` rather than `os.tmpdir()`,
+ * which on macOS is itself about 50 bytes. The guard allows it: it is outside
+ * the account's `~/.ave`.
+ */
+const REAL_AVE_HOME = process.env.AVE_HOME;
+let shortAveHome: string;
+beforeAll(() => {
+  shortAveHome = mkdtempSync(join(REAL_PLATFORM === "win32" ? tmpdir() : "/tmp", "ave-ws-"));
+  process.env.AVE_HOME = shortAveHome;
+});
+afterAll(() => {
+  if (REAL_AVE_HOME === undefined) delete process.env.AVE_HOME;
+  else process.env.AVE_HOME = REAL_AVE_HOME;
+  rmSync(shortAveHome, { recursive: true, force: true });
+});
 const REAL_SYSTEM_ROOT = process.env.SystemRoot;
 const REAL_WINDIR = process.env.WINDIR;
 
@@ -324,6 +348,39 @@ describe("spawnWorker — gate OFF (default)", () => {
 });
 
 // ─── Gate ON (macOS) — wrapped spawn + UDS + reviewer ───────
+
+describe("spawnWorker — control socket path length", () => {
+  it("refuses a socket path past the platform limit before creating, registering or spawning anything", async () => {
+    setProcessPlatform("darwin");
+    gateActive = true;
+    setActiveSandboxCapability({
+      kind: "asrt",
+      confidence: "verified",
+      platform: "darwin",
+      reason: "ASRT (Seatbelt) active — fs+process+network contained",
+      confines: { filesystem: true, process: true, network: true },
+    });
+    // A deep account home: the production layout under it cannot hold the socket.
+    process.env.AVE_HOME = join(shortAveHome, "a-very-long-account-home-directory-name", ".ave");
+    try {
+      await expect(spawnWorker({
+        pluginId: "local-indexer",
+        workerId: "embed",
+        command: "/opt/worker",
+        args: ["--serve"],
+        allowReadPaths: ["/opt/worker"],
+        allowWritePaths: ["/data/index"],
+        udsArgName: "--uds",
+      })).rejects.toThrow(/worker control socket for local-indexer\/embed: socket path is \d+ bytes, over this platform's \d+-byte limit/);
+    } finally {
+      process.env.AVE_HOME = shortAveHome;
+    }
+    expect(mkdirMock).not.toHaveBeenCalled();
+    expect(registerUdsMock).not.toHaveBeenCalled();
+    expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+    expect(spawnMock).not.toHaveBeenCalled();
+  });
+});
 
 describe("spawnWorker — gate ON (macOS)", () => {
   it("registers the socketDir on the shared config, wraps with allowWrite=[socketDir,…] (FS jail only), marks wrapped, socketPath non-null", async () => {

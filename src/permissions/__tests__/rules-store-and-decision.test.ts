@@ -106,7 +106,7 @@ describe("Store A (user-global permissions.json)", () => {
     [{ pattern: "Bash(git push --force)", action: "allow" }, /refused allow prefix/],
     [{ pattern: "Bash(*)", action: "allow" }, /bare \*/],
     [{ pattern: "Bash(git  status)", action: "deny" }, /single spaces/],
-    [{ pattern: "Mcp(github)", action: "allow" }, /not enforced yet/],
+    [{ pattern: "Mcp(demo:*)", action: "allow" }, /tool name/],
     [{ pattern: "web_fetch", action: "maybe" }, /unknown action/],
   ])("treats an out-of-language rule as corrupt: %j", async (rule, message) => {
     writeFileSync(permissionsFile, JSON.stringify({ version: 1, rules: [rule], mode: "default", updatedAt: "" }));
@@ -741,11 +741,13 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     "cat \"$HOME/Library/Application Support/Firefox/Profiles/abc.default/logins.json\"",
     "cat \"$HOME/Library/Application Support/Firefox/Profiles/abc.default/key4.db\"",
     "cat ~/.mozilla/firefox/abc.default/cookies.sqlite", "cat ~/.mozilla/firefox/abc.default/key4.db",
+    // The whole profile root is floored, so a random profile name or a glob stays inside.
+    "cat ~/.mozilla/firefox/profiles.ini", "cat ~/.mozilla/firefox/*/log*ns.json",
   ])("floors the secret store read %s", (command) => {
     expect(shellSensitivePathSignal(command, project)).not.toBeNull();
   });
 
-  it.each(["cat /proc/self/cmdline", "cat /proc/self/status", "cat ~/.mozilla/firefox/profiles.ini", "cat \"$HOME/Library/Application Support/Code/User/settings.json\""])(
+  it.each(["cat /proc/self/cmdline", "cat /proc/self/status", "cat ~/.config/nvim/init.lua", "cat \"$HOME/Library/Application Support/Code/User/settings.json\""])(
     "leaves the non-secret read %s alone", (command) => {
       expect(shellSensitivePathSignal(command, project)).toBeNull();
     },

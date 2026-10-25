@@ -106,6 +106,7 @@ function applyFreshSessionState(
   self.sessionAdditionalDirectories = [];
   applyProjectContext(self, project);
   self.sessionStartFiredFor = null;
+  self.sessionSource = "clear";
   self.turnAdditionalDirectories = [];
   self.history.clear();
   self.cumulativeUsage = { inputTokens: 0, outputTokens: 0 };
@@ -209,6 +210,7 @@ export function initializeConversation(
     throw new Error("conversation-loop:initialization-requires-pristine-session");
   }
   applyFreshSessionState(self, kind, project);
+  self.sessionSource = "startup";
 }
 
 export async function newConversation(
@@ -305,6 +307,7 @@ export async function loadSession(
     self.sessionEpoch += 1;
     // #811 m2 — switched-into session ⇒ SessionStart re-fires on its next turn.
     self.sessionStartFiredFor = null;
+    self.sessionSource = "resume";
     const sessionMeta = self.deps.memoryManager.loadSessionMetadata(sessionId);
     self.sessionKind = sessionMeta?.sessionKind ?? "main";
     self.sessionRoutineId = sessionMeta?.routineId ?? null;

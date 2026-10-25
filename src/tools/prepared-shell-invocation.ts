@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { getPolicyHome } from "../shared/policy-home.js";
 import { getBashCapabilities, resolveShell, shellEnvForChild, shellPathForHostPath, shellQuote, type ResolvedShellCommand } from "../lib/shell-resolver.js";
 import { createSandboxProcessHome, type SandboxProcessHome } from "../permissions/sandbox-process-home.js";
 import type { HostShellExecutionPlan } from "../permissions/host-shell-execution-plan.js";
@@ -43,13 +44,15 @@ export function prepareShellInvocation(identity: ShellInvocationIdentity, signal
   const shell = Object.freeze({ ...selected });
   const wrapperBaseline = captureSandboxEnvironmentBaseline();
   const safe = shellEnvForChild(shell, identity.plan.mode === "plain" ? buildHostShellChildEnv() : buildSafeChildEnv());
-  const hostHome = safe.HOME;
+  const hostHome = getPolicyHome(safe);
   let home: SandboxProcessHome | undefined;
   try {
     if (identity.plan.mode === "asrt") {
       home = createSandboxProcessHome();
       const temporary = join(home.path, "tmp");
-      mkdirSync(temporary, { mode: 0o700 });
+      // On Windows the profile's TEMP/TMP is this same directory and already
+      // exists; the HOME itself was just created fresh, so nothing else can.
+      mkdirSync(temporary, { recursive: process.platform === "win32", mode: 0o700 });
       Object.assign(safe, home.env, { TMPDIR: temporary, TMP: temporary, TEMP: temporary });
     }
     // Bash initializes PWD from its actual cwd. Pin the same initial value for

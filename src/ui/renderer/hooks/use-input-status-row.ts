@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 import type { SandboxCapabilityInfo } from "../../../shared/sandbox-capability-info.js";
 import type { AveApi } from "../types.js";
 import { shortVendorLabel } from "./status-bar/vendor-label.js";
+import { t } from "../../../i18n/runtime.js";
 import {
   isSubscriptionRuntimeId,
   subscriptionRuntimeDescriptor,
@@ -76,9 +77,11 @@ export function useInputStatusRow(api: AveApi): InputStatusRow {
       const activeRuntime = settings.llm?.activeChatRuntime;
       if (activeRuntime?.kind === "subscription" && isSubscriptionRuntimeId(activeRuntime.provider)) {
         const model = typeof activeRuntime.model === "string" ? activeRuntime.model.trim() : "";
-        // The plan's brand ("ChatGPT", "Claude"), never the runtime's own name.
-        const label = subscriptionRuntimeDescriptor(activeRuntime.provider).planName;
-        setVendorModel(model.length > 0 ? `${label} · ${model}` : label);
+        const descriptor = subscriptionRuntimeDescriptor(activeRuntime.provider);
+        // A CLI with no chosen model runs its own default; say so rather than
+        // name a model Ave did not pick.
+        const unchosen = descriptor.offersCliDefaultModel ? `${descriptor.planName} · ${t("llmTab.cliDefaultModel")}` : descriptor.planName;
+        setVendorModel(model.length > 0 ? `${descriptor.planName} · ${model}` : unchosen);
         return;
       }
       const provider = settings.llm?.provider ?? "";

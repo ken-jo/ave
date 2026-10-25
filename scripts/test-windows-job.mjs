@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { windowsPowerShellEnv } from "./lib/windows-powershell-env.mjs";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
@@ -50,7 +51,7 @@ try {
   copyFileSync(new URL('./build-windows-job.ps1', import.meta.url), buildScript);
   copyFileSync(new URL('../native/windows-job/launcher.cpp', import.meta.url), join(buildRoot, 'native/windows-job/launcher.cpp'));
   const build = () => execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', buildScript, '-Arch', process.arch], {
-    env: { ...process.env, TEST: 'must-not-expand' }, encoding: 'utf8',
+    env: windowsPowerShellEnv({ ...process.env, TEST: 'must-not-expand' }), encoding: 'utf8',
   });
   const pathHelper = join(buildRoot, `resources/windows-job/${process.arch}/ave-job.exe`);
   build();
@@ -112,7 +113,7 @@ try {
   const direct=[];
   for(let i=0;i<15;i++){const start=performance.now();await once(spawn(process.execPath,['-e',''],{stdio:'ignore'}),'close');direct.push(performance.now()-start);}
   run=launch(process.execPath,['-e','setInterval(()=>{},1000)']);
-  const rss=execFileSync('powershell.exe',['-NoProfile','-Command',`(Get-Process -Id ${run.child.pid}).WorkingSet64`],{encoding:'utf8'}).trim();
+  const rss=execFileSync('powershell.exe',['-NoProfile','-Command',`(Get-Process -Id ${run.child.pid}).WorkingSet64`],{encoding:'utf8',env:windowsPowerShellEnv()}).trim();
   run.child.stdin.end();await deadline(run.done);
   const median=values=>values.sort((a,b)=>a-b)[Math.floor(values.length/2)];
   console.log(JSON.stringify({helperMedianMs:median(elapsed),directMedianMs:median(direct),helperWorkingSetBytes:Number(rss)}));

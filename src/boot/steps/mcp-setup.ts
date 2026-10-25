@@ -10,6 +10,8 @@
  */
 import { McpGovernance } from "../../mcp/mcp-governance.js";
 import { McpManager } from "../../mcp/mcp-manager.js";
+import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
+import { requireDesktopHost } from "../host-runtime.js";
 import { createElicitationResolverFactory } from "../../mcp/mcp-elicitation-resolver.js";
 // #885 b3 — the disconnect sink now lives in `mcp/` because BOTH server arms need
 // it: McpManager (external) here, and PluginLoopbackManager (in-process plugin
@@ -40,6 +42,20 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     // in app-state, set at main.ts after window creation).
     createMcpServerDisconnectedSink(),
     ctx.settingsService,
+    {
+      redirectCatchers: new AuthRedirectCatchers(),
+      openAuthorizationUrl: (url) => requireDesktopHost(ctx.host).shellOpenExternal(url),
+      secrets: {
+        getSecret: (key) => ctx.settingsService.getEncryptedSecret(key),
+        // The session checks canStoreEncrypted() before any flow starts; this guard keeps a write fail-closed.
+        setSecret: async (key, value) => {
+          if (!ctx.settingsService.isSecretStorageEncrypted()) throw new Error("MCP authorization requires encrypted storage");
+          await ctx.settingsService.setSecret(key, value);
+        },
+        deleteSecret: (key) => ctx.settingsService.deleteSecret(key),
+        canStoreEncrypted: () => ctx.settingsService.isSecretStorageEncrypted(),
+      },
+    },
   );
   try {
     const configs = await mcpManager.loadFromConfig();

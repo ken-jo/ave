@@ -7,6 +7,8 @@ import { isPiiRedactionEnabled, maskSensitiveData } from "../audit/dlp-filter.js
 import { emitEffectShadowLog } from "../permissions/reviewer/risk-shadow-log.js";
 import { runWithEffectLedger, type EffectLedger } from "../permissions/effect-ledger.js";
 import { runWithToolExecutionCwd } from "./execution-context.js";
+import { isCanonicalWebFetchTool } from "./web-fetch.js";
+import { screenEgressRequest } from "../permissions/reviewer/risk-classifier.js";
 import { runWithEffectGateContext } from "../permissions/effect-enforcement.js";
 import { CHOKEPOINT_EFFECT } from "../permissions/effect-kind.js";
 import type { HostShellExecutionPermitBinding } from "../permissions/host-shell-execution-permit.js";
@@ -693,6 +695,34 @@ export async function executeAuthorizedToolInvocation(
   const ownerPluginSandboxRoot = tool.pluginId ? resolveOwnerPluginSandboxRoot(tool.pluginId) : undefined;
   const executionContext: ToolExecutionContext = {
     cwd: executionCwd,
+    ...(isCanonicalWebFetchTool(tool) && services.permissionManager && typeof finalInput.url === "string" ? {
+      authorizeNetworkTarget: (() => {
+        const initialUrl = new URL(finalInput.url as string);
+        // Completed per-call asks retain their mandatory layer after the
+        // authorization stage changes the decision to allow.
+        const hasPerCallApproval = permissionResult?.decision === "allow" && permissionResult.layer <= 2;
+        let scopedFetch = false;
+        let first = true;
+        return async (url: URL): Promise<void> => {
+          const rules = await services.permissionManager!.checkNetworkRules(url.href, executionCwd, finalInput.allowPrivateNetwork === true);
+          const initial = first && url.href === initialUrl.href;
+          first = false;
+          if (initial && (rules.decision === "allow" || rules.decision === "ask")) scopedFetch = true;
+          const screen = screenEgressRequest({ url: url.href, allowPrivateNetwork: finalInput.allowPrivateNetwork === true });
+          const initialApproval = initial && hasPerCallApproval;
+          const approvedOrigin = hasPerCallApproval && url.origin === initialUrl.origin;
+          // One approval covers ordinary redirects within that origin;
+          // restrictions and fresh sensitive requests still apply per hop.
+          if (rules.decision === "deny"
+            || (!initialApproval && rules.floor)
+            || (!initial && (scopedFetch || hasPerCallApproval) && screen.outcome === "screened")
+            || (rules.decision === "ask" && !approvedOrigin)
+            || ((scopedFetch || hasPerCallApproval) && !initial && rules.decision !== "allow" && !approvedOrigin)) {
+            throw new Error("Network destination requires a new permission decision");
+          }
+        };
+      })(),
+    } : {}),
     extraAllowedDirectories: [...new Set(invocationRuntimeAllowedDirectories)],
     blockReadsOutsideWorkingDirectories,
     // Owner plugin sandbox root — same derivation the reviewer uses
@@ -1243,7 +1273,7 @@ export async function executeAuthorizedToolInvocation(
       tool.pluginGeneration !== undefined,
     );
     if (isError) {
-      await services.auditWriter.fireLifecycleEvent(
+      const failureHooks = await services.auditWriter.fireLifecycleEvent(
         "PostToolUseFailure",
         sessionId,
         invocationPermissionContext,
@@ -1253,6 +1283,9 @@ export async function executeAuthorizedToolInvocation(
           durationMs: Date.now() - startTime,
         },
       );
+      if (failureHooks.result?.decision === "deny" && failureHooks.result.results.length > 0) {
+        content = `${content}\n\n[Script Hook Feedback]\n${failureHooks.result.reason}`;
+      }
     }
   }
 

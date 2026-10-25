@@ -16,11 +16,40 @@ import {
   removeFixtureRepo,
   startGitHttpServer,
 } from "../../__tests__/fixtures/git-http-server.js";
-import { createTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { createTestGitRunner as buildTestGitRunner, type TestGitRunner } from "../../__tests__/fixtures/git-runner.js";
+import { AskpassBroker } from "../askpass.js";
 import { BareRepo } from "../repo.js";
 import { classifyRemoteFailure, GIT_TIMEOUTS_MS, GitRunner, type GitRemote, type GitResult } from "../run-git.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { gitFixtureEnv } from "../../../__tests__/support/git-fixture-env.mjs";
+
+// Each immutable token view owns a real broker; matching views share its
+// listener and detected executable. Runner configs and tickets stay private.
+let sharedRuntime: TestGitRunner;
+const tokenBrokers = new Map<string, Promise<AskpassBroker>>();
+beforeAll(async () => {
+  sharedRuntime = await buildTestGitRunner();
+});
+afterAll(async () => {
+  const results = await Promise.allSettled([
+    ...[...tokenBrokers.values()].map(async (broker) => (await broker).close()),
+    sharedRuntime.cleanup(),
+  ]);
+  const errors = results.flatMap((result) => result.status === "rejected" ? [result.reason] : []);
+  if (errors.length) throw new AggregateError(errors, "runner fixture cleanup failed");
+});
+async function createRunner(options: Omit<NonNullable<Parameters<typeof buildTestGitRunner>[0]>, "runtime"> = {}): Promise<TestGitRunner> {
+  const { tokens = {}, ...configuration } = options;
+  const snapshot = Object.freeze({ ...tokens });
+  if (Object.keys(snapshot).length === 0) return buildTestGitRunner({ ...configuration, runtime: sharedRuntime });
+  const key = JSON.stringify(Object.entries(snapshot).sort(([a], [b]) => a.localeCompare(b)));
+  let broker = tokenBrokers.get(key);
+  if (!broker) {
+    broker = AskpassBroker.start({ getToken: (host) => snapshot[host] ?? null });
+    tokenBrokers.set(key, broker);
+  }
+  return buildTestGitRunner({ ...configuration, runtime: { git: sharedRuntime.git, broker: await broker } });
+}
 
 function remote(url: string, allowHttp = true, useToken = true): GitRemote {
   return { url: normalizeSourceUrl(url), sourceId: "fixture", allowHttp, useToken, credentialsAllowed: true, addressPolicy: () => "allow" };
@@ -44,9 +73,33 @@ async function expectCode(promise: Promise<unknown>, code: string): Promise<Mark
 describe("GitRunner invocation contract", () => {
   let t: TestGitRunner;
   beforeAll(async () => {
-    t = await createTestGitRunner({ resolveProxy: async () => "PROXY proxy.corp.example:3128; DIRECT", tokens: { "github.com": "stored-token" } });
+    t = await createRunner({ resolveProxy: async () => "PROXY proxy.corp.example:3128; DIRECT", tokens: { "github.com": "stored-token" } });
   });
   afterAll(async () => t.cleanup());
+
+  it("keeps a runner's token view when another runner has different tokens", async () => {
+    const tokens: Record<string, string> = { "github.com": "first-token" };
+    const first = await createRunner({ tokens });
+    const github = remote("https://github.com/acme/tools");
+    const gitlab = remote("https://gitlab.com/acme/tools");
+    try {
+      const before = await first.runner.configArgs(github);
+      expect(before).toContain("credential.helper=");
+      const second = await createRunner({ tokens: { "gitlab.com": "second-token" } });
+      try {
+        expect(await first.runner.configArgs(github)).toEqual(before);
+        expect(await first.runner.configArgs(gitlab)).not.toContain("credential.helper=");
+        expect(await second.runner.configArgs(github)).not.toContain("credential.helper=");
+        expect(await second.runner.configArgs(gitlab)).toContain("credential.helper=");
+        delete tokens["github.com"];
+        expect(await first.runner.configArgs(github)).toEqual(before);
+      } finally {
+        await second.cleanup();
+      }
+    } finally {
+      await first.cleanup();
+    }
+  });
 
   it("builds the environment from scratch", () => {
     process.env.MARKETPLACE_TEST_LEAK_CANARY = "secret";
@@ -108,7 +161,7 @@ describe("GitRunner proxy from PAC", () => {
     ["SOCKS5 socks.corp.example:1080; DIRECT", "http.proxy=socks5://socks.corp.example:1080"],
     ["DIRECT", "http.proxy="],
   ])("maps %j", async (pac, flag) => {
-    const t = await createTestGitRunner({ resolveProxy: async () => pac });
+    const t = await createRunner({ resolveProxy: async () => pac });
     try {
       expect(await t.runner.configArgs(remote("https://github.com/acme/tools"))).toContain(flag);
     } finally {
@@ -125,7 +178,7 @@ describe("GitRunner proxy from PAC", () => {
     ["SOCKS5 169.254.169.254:1080", "address-metadata"],
   ])("refuses the literal proxy of %j before git starts, on the preflight and on a call (§18.3 #3)", async (pac, reason) => {
     const lookups: string[] = [];
-    const t = await createTestGitRunner({ resolveProxy: async () => pac, lookup: async (host) => (lookups.push(host), ["1.1.1.1"]) });
+    const t = await createRunner({ resolveProxy: async () => pac, lookup: async (host) => (lookups.push(host), ["1.1.1.1"]) });
     const spawn = vi.spyOn(GitRunner.prototype as unknown as { spawnGit: () => Promise<GitResult> }, "spawnGit");
     try {
       const target = remote("https://git.example.com/acme/tools");
@@ -144,7 +197,7 @@ describe("GitRunner proxy from PAC", () => {
     const routes = ["PROXY checked.test:3128", "PROXY unchecked.test:3128"];
     let asked = 0;
     const lookups: string[] = [];
-    const t = await createTestGitRunner({
+    const t = await createRunner({
       resolveProxy: async () => routes[Math.min(asked++, routes.length - 1)]!,
       lookup: async (host) => (lookups.push(host), ["127.0.0.1"]),
     });
@@ -168,7 +221,7 @@ describe("GitRunner proxy from PAC", () => {
   });
 
   it("refuses a proxy git cannot use instead of going direct", async () => {
-    const t = await createTestGitRunner({ resolveProxy: async () => "QUIC quic.corp.example:443" });
+    const t = await createRunner({ resolveProxy: async () => "QUIC quic.corp.example:443" });
     try {
       await expectCode(t.runner.configArgs(remote("https://github.com/acme/tools")), "SOURCE_UNREACHABLE");
     } finally {
@@ -191,7 +244,7 @@ describe("GitRunner against a smart-HTTP server", () => {
     head = repo.commit({ "README.md": "hello\n" }, "initial");
     server = await startGitHttpServer({ root });
     otherServer = await startGitHttpServer({ root });
-    t = await createTestGitRunner();
+    t = await createRunner();
   });
   afterAll(async () => {
     await t.cleanup();
@@ -216,7 +269,7 @@ describe("GitRunner against a smart-HTTP server", () => {
   it("pins the remote's host to its one lookup's answer with http.curloptResolve, and looks it up no second time (§18.2.4)", async () => {
     // A rebinding resolver: the fixture's address to the first lookup, the metadata address to any later one.
     const lookups: string[] = [];
-    const pinned = await createTestGitRunner({
+    const pinned = await createRunner({
       lookup: async (host) => {
         lookups.push(host);
         return lookups.length === 1 ? ["127.0.0.1"] : ["169.254.169.254"];
@@ -235,7 +288,7 @@ describe("GitRunner against a smart-HTTP server", () => {
   });
 
   it("starts no git when the one lookup answers only refused addresses", async () => {
-    const refused = await createTestGitRunner({ lookup: async () => ["169.254.169.254"] });
+    const refused = await createRunner({ lookup: async () => ["169.254.169.254"] });
     try {
       const url = server.url("tools").replace("127.0.0.1", "market.test");
       const error = await expectCode(
@@ -290,24 +343,42 @@ describe("GitRunner against a smart-HTTP server", () => {
   });
 
   it("reports an unreachable remote on timeout", async () => {
-    server.hang("slow");
-    const error = await expectCode(
-      t.runner.run(["ls-remote", server.url("slow")], { remote: remote(server.url("slow")), timeoutMs: 300 }),
-      "SOURCE_UNREACHABLE",
-    );
-    expect(error.message).toContain("timed out");
+    const requested = server.hang("timeout");
+    let expire!: () => void;
+    const cancel = vi.fn();
+    const schedule = vi.fn((callback: () => void, _delayMs: number) => {
+      expire = callback;
+      return cancel;
+    });
+    const timed = await createRunner({ _scheduleTimeoutForTest: schedule });
+    try {
+      const result = expectCode(
+        timed.runner.run(["ls-remote", server.url("timeout")], { remote: remote(server.url("timeout")), timeoutMs: 300 }),
+        "SOURCE_UNREACHABLE",
+      );
+      // The real transport is running; only its deadline is driven in process.
+      await requested;
+      expect(schedule).toHaveBeenCalledWith(expect.any(Function), 300);
+      expire();
+      const error = await result;
+      expect(error.message).toContain("timed out");
+      expect(cancel).toHaveBeenCalledOnce();
+    } finally {
+      await timed.cleanup();
+    }
   });
 
   it("stops on abort", async () => {
-    server.hang("slow");
+    const requested = server.hang("abort");
     const controller = new AbortController();
-    const pending = t.runner.run(["ls-remote", server.url("slow")], {
-      remote: remote(server.url("slow")),
+    const pending = expect(t.runner.run(["ls-remote", server.url("abort")], {
+      remote: remote(server.url("abort")),
       timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
       signal: controller.signal,
-    });
-    setTimeout(() => controller.abort(new Error("cancelled by test")), 100);
-    await expect(pending).rejects.toThrow("cancelled by test");
+    })).rejects.toThrow("cancelled by test");
+    await requested;
+    controller.abort(new Error("cancelled by test"));
+    await pending;
   });
 
   it("caps buffered output", async () => {
@@ -350,8 +421,12 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("answers with the stored token for the ticket's host", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    // Releasing a borrowed runner must leave its suite-owned broker available.
+    const released = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    await released.cleanup();
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     try {
+      expect(t.broker).toBe(released.broker);
       const result = await t.runner.run(["ls-remote", server.url("private-tools")], {
         remote: remote(server.url("private-tools")),
         timeoutMs: GIT_TIMEOUTS_MS.lsRemote,
@@ -367,7 +442,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   it("reports SOURCE_AUTH_REQUIRED without a token and with a wrong one", async () => {
     const cases: Array<Record<string, string>> = [{}, { "127.0.0.1": "wrong" }];
     for (const tokens of cases) {
-      const t = await createTestGitRunner({ tokens });
+      const t = await createRunner({ tokens });
       try {
         await expectCode(
           t.runner.run(["ls-remote", server.url("private-tools")], {
@@ -383,7 +458,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("keeps the token out of the user's credential helpers", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     const store = join(t.dir, "stored-credentials");
     // Forward slashes: a raw Windows path is not a valid unquoted config value.
     writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store.replaceAll("\\", "/")}\n`);
@@ -400,7 +475,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("offers no token to a source that does not declare token auth", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     server.seen.length = 0;
     try {
       await expectCode(
@@ -417,7 +492,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("sends no credential over http without token-unencrypted, a stored token included (§18.2.2)", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token" } });
     const store = join(t.dir, "stored-credentials");
     writeFileSync(store, "http://x-access-token:s3cret-token@127.0.0.1\n");
     writeFileSync(join(t.dir, "gitconfig"), `[credential]\n\thelper = store --file=${store.replaceAll("\\", "/")}\n`);
@@ -441,7 +516,7 @@ describe("GitRunner authentication through the askpass broker", () => {
 
   it("reaches an http source only once unencrypted is confirmed, at its one checked address, and signs in only with token-unencrypted (§18.2.2, §18.2.4)", async () => {
     const lookups: string[] = [];
-    const t = await createTestGitRunner({ tokens: { "market.test": "s3cret-token" }, lookup: async (host) => (lookups.push(host), ["127.0.0.1"]) });
+    const t = await createRunner({ tokens: { "market.test": "s3cret-token" }, lookup: async (host) => (lookups.push(host), ["127.0.0.1"]) });
     // git cannot resolve market.test itself: every request reaches the fixture only through the pinned address.
     const url = server.url("private-tools").replace("127.0.0.1", "market.test");
     const normalized = normalizeSourceUrl(url);
@@ -482,7 +557,7 @@ describe("GitRunner authentication through the askpass broker", () => {
   });
 
   it("never gives a token to a ticket bound to another host", async () => {
-    const t = await createTestGitRunner({ tokens: { "127.0.0.1": "s3cret-token", "localhost": "other" } });
+    const t = await createRunner({ tokens: { "127.0.0.1": "s3cret-token", "localhost": "other" } });
     server.seen.length = 0;
     try {
       // The ticket is bound to `localhost`, while git prompts for 127.0.0.1.

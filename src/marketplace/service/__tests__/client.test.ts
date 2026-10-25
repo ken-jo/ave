@@ -7,6 +7,7 @@ import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
 import {
   AVE_SERVICE_BASE_URL,
   ServiceClient,
@@ -113,10 +114,12 @@ describe("readPolicyServiceBase", () => {
   it("throws on an ENOTDIR policy path instead of falling back to the public base", async () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
-    await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: "ENOTDIR" });
+    // The read error is the OS's: Windows reports a path through a file as ENOENT.
+    await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: process.platform === "win32" ? "ENOENT" : "ENOTDIR" });
   });
 
-  it("throws on a dangling policy symlink instead of falling back to the public base", async () => {
+  it("throws on a dangling policy symlink instead of falling back to the public base", async ({ skip }) => {
+    requireSymlinkCapability(dir, "file", skip);
     const path = join(dir, "policy.json");
     symlinkSync(join(dir, "missing-target.json"), path, "file");
     await expect(readPolicyServiceBase(path)).rejects.toMatchObject({ code: "ENOENT" });

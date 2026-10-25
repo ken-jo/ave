@@ -1,5 +1,6 @@
 import { readBoundedTextWindow } from "../shared/bounded-tool-output.js";
 import { ToolOutputArtifactStore } from "./tool-output-artifact-store.js";
+import { deleteCodeCheckpoints } from "./code-checkpoints.js";
 import { MAX_TOOL_RESULT_ARTIFACT_BYTES, MAX_TOOL_OUTPUT_PREVIEW_CHARS, normalizeToolOutputArtifactInfo, type ToolOutputCapture, type ToolOutputArtifactInfo } from "../shared/tool-output-artifact.js";
 export { MAX_TOOL_RESULT_ARTIFACT_BYTES } from "../shared/tool-output-artifact.js";
 import { isValidSessionId } from "../shared/session-id.js";
@@ -1464,8 +1465,8 @@ export class MemoryManager implements PromptMemorySource {
   /**
    * Stable coordination target for metadata save/detach/delete.
    *
-   * Locking the metadata file itself is unsafe because withFileLock must touch
-   * a missing target before acquisition. A delete between detach's directory
+   * Locking the metadata file itself is unsafe because withFileLock touches
+   * a missing target inside the lock. A delete between detach's directory
    * snapshot and lock acquisition could therefore recreate the deleted path.
    * This sidecar survives session deletion and gives all three operations one
    * inode-independent serialization point.
@@ -3491,6 +3492,7 @@ export class MemoryManager implements PromptMemorySource {
     }
     await withFileLock(this.sessionMetadataLockPath(sessionId), async () => {
       this.detachedProjectRootsBySession.delete(sessionId);
+      await deleteCodeCheckpoints(sessionId);
       this.detachedWireTerminalTombstones.delete(sessionId);
       const jsonlPath = join(this.sessionsDir, `${sessionId}.jsonl`);
       unlinkIfPresent(jsonlPath);

@@ -10,14 +10,22 @@ import { userApprovalFilePath } from "./user-approval-store.js";
 import { getAdminPolicyPath, userPolicyPath } from "./policy-store.js";
 import { permissionsFilePath } from "./permissions-store.js";
 import { projectRulesDirectory } from "./rules/project-rule-files.js";
-import { canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
+import { PROTECTED_ROOT_ENTRIES, canonicalizePathForMatch, caseFoldForMatch } from "./sensitive-paths.js";
 import { sandboxQuarantineRoot } from "./sandbox-quarantine.js";
 
-/** Control files remain unwritable even when their containing directory is granted. */
-const PROTECTED_ROOT_ENTRIES = [
-  ".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile", ".gitconfig",
-  ".vscode",
-] as const;
+/**
+ * The shared control-file floor, minus the `.git` marker and its children.
+ * Inside the sandbox `.git/*` controls are owned by `addGitControlPaths`,
+ * `GIT_CONTROL_ENTRIES`, `MAC_GIT_CONTROL_GLOBS` and the Linux per-command
+ * rescan: they deny hooks, config and the other execution controls at any
+ * depth (including `.git/modules/**` and `.git/worktrees/*`) and deny a
+ * missing marker, without freezing object and ref stores or making bwrap
+ * create absent controls as mount points. `.gitconfig` and `.githooks` stay.
+ */
+export function isSandboxGitMetadataEntry(entry: string): boolean {
+  return entry === ".git" || entry.startsWith(".git/");
+}
+const SANDBOX_PROTECTED_ROOT_ENTRIES = PROTECTED_ROOT_ENTRIES.filter(entry => !isSandboxGitMetadataEntry(entry));
 
 /** Linux discovery depth; the admitted root is depth zero. */
 export const SANDBOX_GIT_SCAN_DEPTH = 3;
@@ -664,7 +672,7 @@ export function buildMandatorySandboxWritePolicy(
   }));
   const paths = new Set([
     ...rootSnapshots.flatMap(({ original, physical }) => [original, physical]).flatMap((root) =>
-      PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
+      SANDBOX_PROTECTED_ROOT_ENTRIES.map((entry) => join(root, entry))),
     permissionSettingsPath(),
     userApprovalFilePath(),
     egressGrantFilePath(),

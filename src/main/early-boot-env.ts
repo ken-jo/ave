@@ -96,11 +96,8 @@ export function runEarlyBootEnv(): void {
   // them to flip in packaged builds creates a confusing forensic signal.
   //
   // The prefix scrub catches `AVE_DEV_CONSOLE` (renamed from
-  // `AVE_ENABLE_DEV_CONSOLE`) automatically. `AVE_WIN_NO_SANDBOX` is the
-  // Windows-only sandbox bypass — it was previously named
-  // `AVE_DEV_NO_SANDBOX`, which made it incorrectly look like a dev flag;
-  // the rename moves it out of the dev mask but it's still hard-gated on
-  // `!app.isPackaged` by `dev-flags.ts:devNoSandboxAllowed()`.
+  // `AVE_ENABLE_DEV_CONSOLE`) automatically. `AVE_WIN_NO_SANDBOX` (formerly
+  // `AVE_DEV_NO_SANDBOX`) is a retired tombstone, scrubbed like the others.
   if (app.isPackaged) {
     scrubPackagedProcessEnv(process.env);
     // Force NODE_ENV=production in packaged builds so downstream gates

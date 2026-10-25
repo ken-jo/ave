@@ -36,6 +36,14 @@ function rules(input: { allow?: string[]; deny?: string[]; ask?: string[] }): Sh
 }
 
 describe("rule specifier grammar", () => {
+  it.each(["src/**", "**/x", "**"])("accepts whole recursive path segments: %s", (path) => {
+    expect(() => parseRuleSpecifier(`Edit(${path})`)).not.toThrow();
+  });
+
+  it.each(["src**", "**x", "a/**b", "a/**b/**", "***"])("rejects partial recursive path segments: %s", (path) => {
+    expect(() => parseRuleSpecifier(`Edit(${path})`)).toThrow("** must be a whole path segment");
+  });
+
   it("round-trips every kind in canonical form", () => {
     for (const text of [
       "Bash(git status *)",
@@ -66,11 +74,11 @@ describe("rule specifier grammar", () => {
     ["Bash(git st*)", /shell syntax or a wildcard/],
     ["Bash(ls; rm *)", /shell syntax/],
     ["Bash(echo $(id) *)", /shell syntax/],
-    ["Edit(relative/**)", /absolute/],
+    ["Edit(../relative/**)", /normalized/],
     ["Edit(/a/../b/**)", /normalized/],
-    ["Edit(/a/*.ts)", /trailing \/\*\*/],
+    ["Edit(/a/[ab].ts)", /unsupported/],
     ["WebFetch(example.com)", /domain:/],
-    ["WebFetch(domain:*.com)", /registrable/],
+    ["WebFetch(domain:*.com)", /at least two labels after \*\./],
     ["WebFetch(domain:a.*.com)", /invalid host/],
     ["WebFetch(domain:Example.com)", /lower case/],
     ["Mcp(a b)", /server id/],
@@ -78,6 +86,14 @@ describe("rule specifier grammar", () => {
   ])("rejects %s", (text, message) => {
     expect(() => parseRuleSpecifier(text)).toThrow(RuleSpecifierError);
     expect(() => parseRuleSpecifier(text)).toThrow(message);
+  });
+
+  it("accepts a wildcard over a public suffix and matches every site below it", () => {
+    const host = parseRuleSpecifier("WebFetch(domain:*.co.uk)");
+    if (host.kind !== "webfetch") throw new Error();
+    expect(matchesWebFetchHost(host, "bbc.co.uk")).toBe(true);
+    expect(matchesWebFetchHost(host, "news.example.co.uk")).toBe(true);
+    expect(matchesWebFetchHost(host, "co.uk")).toBe(false);
   });
 
   it("matches hosts and MCP tools exactly (pure matchers for P1c)", () => {

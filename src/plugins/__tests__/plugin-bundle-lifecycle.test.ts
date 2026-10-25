@@ -58,7 +58,11 @@ function makeLifecycle(
   });
 }
 
-async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } }), withContent = false) {
+async function fixture(
+  hookContent = JSON.stringify({ hooks: { PreToolUse: [] } }),
+  withContent = false,
+  mcpDescriptor: Record<string, unknown> = { transport: "http", url: "https://portal.example.test/mcp" },
+) {
   const root = mkdtempSync(join(tmpdir(), "ave-bundle-life-"));
   roots.push(root);
   const pluginRoot = join(root, "plugin");
@@ -94,7 +98,7 @@ async function fixture(hookContent = JSON.stringify({ hooks: { PreToolUse: [] } 
   await writeFile(join(pluginRoot, "plugin.json"), JSON.stringify(agentPluginsDocument(manifest)), "utf8");
   await writeFile(join(pluginRoot, "skills", "checkin", "SKILL.md"), "---\nname: checkin\ndescription: Checkin workflow\n---\nUse the portal checkin API.", "utf8");
   await writeFile(join(pluginRoot, "hooks", "policy.json"), hookContent, "utf8");
-  await writeFile(join(pluginRoot, "mcp", "portal.json"), JSON.stringify({ transport: "http", url: "https://portal.example.test/mcp" }), "utf8");
+  await writeFile(join(pluginRoot, "mcp", "portal.json"), JSON.stringify(mcpDescriptor), "utf8");
   await mkdir(join(cacheRoot, "sampleportal"), { recursive: true });
   const payloadFiles = [
     "plugin.json",
@@ -233,6 +237,61 @@ describe("PluginBundleLifecycle", () => {
       /live projections without an active bundle generation/,
     );
     expect(durableCommit).toHaveBeenCalledOnce();
+  });
+
+  it("offers an app plugin's OAuth MCP server as a bundled credential and reconnects it by republishing the generation", async () => {
+    const oauth = { scopes: ["portal.read"], clientId: "portal-desktop" };
+    const { root, pluginRoot, cacheRoot, manifest } = await fixture(undefined, false,
+      { transport: "http", url: "https://portal.example.test/mcp", auth: "oauth", oauth });
+    const prepareBundledGeneration = vi.fn(async () => ({
+      predecessorServerIds: [], predecessorToolNames: [], records: [],
+      registryReplacement: { publish: vi.fn(), cancel: vi.fn(), replacementTools: [] }, published: false,
+    }));
+    const publishBundledGeneration = vi.fn((prepared: { published: boolean }) => { prepared.published = true; });
+    const lifecycle = makeLifecycle({
+      pluginRuntime: {
+        getPluginManifest: () => manifest,
+        getPluginRoot: () => pluginRoot,
+        getRuntimeGenerationProjection: () => runtimeProjection(manifest, pluginRoot),
+        prepareRuntimeGeneration: vi.fn(() => ({ pluginId: manifest.id, handOver: vi.fn(), publish: vi.fn() })),
+        prepareRuntimeRemoval: vi.fn(() => ({ pluginId: manifest.id, publish: vi.fn() })),
+        postPublishRuntimeGeneration: vi.fn(),
+        publishRuntimeGeneration: vi.fn(),
+        unpublishRuntimeGeneration: vi.fn(),
+        prepareRuntimeRetirement: vi.fn(() => []),
+      },
+      receiptCacheRoot: cacheRoot,
+      skillStore: new SkillStore({ userDir: join(root, "user-skills") }),
+      hookManager: new ScriptHookManager(),
+      mcpManager: {
+        bundledServerIdsForPlugin: vi.fn(() => []),
+        prepareBundledGeneration,
+        publishBundledGeneration,
+        discardBundledGeneration: vi.fn(async () => undefined),
+        retirePublishedMcpReplacement: vi.fn(async () => undefined),
+        disconnectBundledGeneration: vi.fn(async () => undefined),
+      } as never,
+    });
+    const installed = new Set(["sampleportal", "disabled-plugin"]);
+    const source = lifecycle.bundledMcpCredentialSource(async () => installed);
+    expect(source.list()).toEqual([]);
+    await lifecycle.activate("sampleportal");
+    expect(source.list()).toEqual([{ packageName: "sampleportal", serverName: "portal", transport: "http",
+      url: "https://portal.example.test/mcp", auth: "oauth", oauth }]);
+    // The installed set comes from the install record, not from what is loaded.
+    await expect(source.installedPackages()).resolves.toBe(installed);
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(1);
+    await source.reconnect("sampleportal", "portal");
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
+    expect(prepareBundledGeneration).toHaveBeenLastCalledWith(
+      { pluginId: "sampleportal", generationId: lifecycle.getActive("sampleportal")?.generationId },
+      [expect.objectContaining({ config: expect.objectContaining({ auth: "oauth", oauth }) })],
+      lifecycle.mcpTrust,
+    );
+    expect(publishBundledGeneration).toHaveBeenCalledTimes(2);
+    await expect(source.reconnect("sampleportal", "missing")).rejects.toThrow("plugin MCP 'sampleportal:missing' is not active");
+    await expect(source.reconnect("disabled-plugin", "portal")).rejects.toThrow("plugin 'disabled-plugin' has no active bundle generation");
+    expect(prepareBundledGeneration).toHaveBeenCalledTimes(2);
   });
 
   it("publishes Skills, keeps executable bundles fail-closed, approves exact owners, and tears down", async () => {

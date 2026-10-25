@@ -25,9 +25,10 @@
  *    does not fix this class: an outstanding write of ours could not have
  *    produced the error in the first place.
  *
- * 2. `rmSync`'s own `maxRetries`/`retryDelay` does not cover it. Against a
- *    foreign lock it fails immediately — 0ms, no retry — so the budget it
- *    appears to offer is not applied to this error at all.
+ * 2. Synchronous retry behavior varies across supported runtime versions:
+ *    older versions refuse a foreign lock immediately, while newer versions
+ *    honor the retry budget. Async teardown uses one explicit retry policy
+ *    without blocking the event loop, regardless of the runtime version.
  *
  * Delegates to the production `retryOnTransientFsLock` rather than open-coding
  * a second ladder: that helper owns the retryable codes and the delay curve,
@@ -36,8 +37,9 @@
  */
 import type { ChildProcess } from "node:child_process";
 import { once } from "node:events";
-import { rmdirSync, unlinkSync } from "node:fs";
+import { lstatSync, readdirSync, rmdirSync, unlinkSync } from "node:fs";
 import { rm } from "node:fs/promises";
+import { join } from "node:path";
 
 import { retryOnTransientFsLock } from "../../lib/transient-fs-lock-retry.js";
 
@@ -65,6 +67,21 @@ export function removeLinkOnly(path: string): void {
     if (code === "ENOENT") return;
     if (code !== "EPERM" && code !== "EISDIR") throw error;
     rmdirSync(path);
+  }
+}
+
+/**
+ * Remove every link under `dir`, at any depth, with {@link removeLinkOnly},
+ * so a recursive removal of `dir` after it has no link left to walk into.
+ * Each entry is judged by `lstat`, which reports a Windows junction as a link;
+ * a directory is descended into only when it is not one.
+ */
+export function removeLinksUnder(dir: string): void {
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name);
+    const entry = lstatSync(path);
+    if (entry.isSymbolicLink()) removeLinkOnly(path);
+    else if (entry.isDirectory()) removeLinksUnder(path);
   }
 }
 

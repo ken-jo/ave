@@ -23,6 +23,10 @@ const TOOL_TURN_PARAMS: StreamTurnParams = {
   }],
 };
 
+const RESPONSE_WIRE_CAPABILITIES = {
+  reasoning: { supported: true, source: "endpoint-report", control: "reasoning" },
+} as const;
+
 const CHAT_TEXT_CHUNK = {
   id: "fixture-response",
   model: TURN_PARAMS.model,
@@ -198,11 +202,13 @@ describe("provider stream completion", () => {
 
   it.each(WIRE_COMPLETION_FIXTURES)(
     "rejects EOF without a provider terminal event on $route",
-    async ({ vendor, model, partialChunks }) => {
+    async ({ route, vendor, model, partialChunks }) => {
       const fixture = createResponseFixture(vendor);
       for (const chunk of partialChunks) fixture.sendData(chunk);
       fixture.close();
-      const events = await collect(fixture.provider.streamTurn({ ...TURN_PARAMS, model }));
+      const events = await collect(fixture.provider.streamTurn({ ...TURN_PARAMS, model,
+        ...(route === "responses" ? { modelCapabilities: RESPONSE_WIRE_CAPABILITIES } : {}),
+      }));
       expect(events[0]).toMatchObject({ type: "text_delta", text: "Partial result" });
       expect(events.at(-1)).toMatchObject({ type: "error" });
       expect(events.some((event) => event.type === "message_complete")).toBe(false);
@@ -212,11 +218,13 @@ describe("provider stream completion", () => {
 
   it.each(WIRE_COMPLETION_FIXTURES)(
     "preserves a response with its provider terminal event on $route",
-    async ({ vendor, model, partialChunks, finishChunks }) => {
+    async ({ route, vendor, model, partialChunks, finishChunks }) => {
       const fixture = createResponseFixture(vendor);
       for (const chunk of [...partialChunks, ...finishChunks]) fixture.sendData(chunk);
       fixture.close();
-      expect(await collect(fixture.provider.streamTurn({ ...TURN_PARAMS, model }))).toEqual([
+      expect(await collect(fixture.provider.streamTurn({ ...TURN_PARAMS, model,
+        ...(route === "responses" ? { modelCapabilities: RESPONSE_WIRE_CAPABILITIES } : {}),
+      }))).toEqual([
         { type: "text_delta", text: "Partial result" },
         expect.objectContaining({ type: "message_complete", stopReason: "end_turn" }),
       ]);

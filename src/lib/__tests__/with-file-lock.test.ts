@@ -6,7 +6,7 @@
  *   from the critical section, not from plain reads — this is by design).
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync } from "node:fs";
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -57,6 +57,22 @@ describe("withFileLock", () => {
       writeFileSync(newFile, JSON.stringify({ created: true }), "utf-8");
     });
     expect(existsSync(newFile)).toBe(true);
+  });
+
+  it("a waiting caller does not open the target before it holds the lock", async () => {
+    // A waiting caller's handle on the target makes the holder's atomic
+    // rename onto it fail with EPERM on Windows. The touch is observable when
+    // the holder has removed the target: an unlocked open recreates it.
+    let waiter: Promise<void> | undefined;
+    await withFileLock(testFile, async () => {
+      rmSync(testFile);
+      waiter = withFileLock(testFile, async () => {});
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      expect(existsSync(testFile)).toBe(false);
+      writeFileSync(testFile, "{}", "utf-8");
+    });
+    await waiter;
+    expect(readFileSync(testFile, "utf-8")).toBe("{}");
   });
 
   it("stale lock recovery — removes leftover .lock dir and acquires fresh lock", async () => {
