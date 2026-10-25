@@ -86,6 +86,13 @@ import {
   SubscriptionAttachmentTransportError,
   type SubscriptionPromptAttachment,
 } from "./subscription-attachment-input.js";
+import {
+  ChatGptPlanRuntimeError,
+  configuredChatGptPlanRuntimeDeps,
+  createChatGptPlanRuntime,
+  notConfiguredChatGptPlanStatus,
+  type ChatGptPlanRuntime,
+} from "./chatgpt-plan/runtime.js";
 
 // Renderer input selects an allowlisted runtime ID only, never command, arguments, environment, home, or cwd.
 
@@ -405,6 +412,8 @@ export interface SubscriptionRuntimeServiceCreateOptions {
     options: ConstructorParameters<typeof ClaudeCodeConversationRuntime>[0],
   ) => ClaudeCodeConversationRuntime;
   readonly audit?: SubscriptionRuntimeAuditSink;
+  /** Plan usage runs no CLI. Null means boot configured no secret store or network stack, and the runtime reports not-configured. Defaults to the boot-configured runtime. */
+  readonly chatGptPlanRuntime?: ChatGptPlanRuntime | null;
   // Test seam for a namespace whose directories do not exist. Production claims every runtime directory for the current account (see {@link claimPrivateOwnership}).
   readonly claimRuntimeDirectories?: (paths: readonly string[]) => Promise<void>;
 }
@@ -422,7 +431,7 @@ function isConnectedAndReady(status: {
 
 // The same native prompt budget governs capabilities and request construction.
 export function getSubscriptionImageAttachmentLimits(runtimeId: SubscriptionRuntimeId) {
-  return runtimeId === "codex"
+  return runtimeId === "codex" || runtimeId === "chatgpt-plan"
     ? DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS
     : ACP_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS;
 }
@@ -560,6 +569,7 @@ function codexRuntimeErrorCode(
 // Maps every provider-specific failure to the stable renderer-safe union.
 export function subscriptionRuntimeErrorCode(error: unknown): SubscriptionRuntimeErrorCode {
   if (error instanceof SubscriptionRuntimeServiceError) return error.code;
+  if (error instanceof ChatGptPlanRuntimeError) return error.code;
   if (error instanceof CodexUserRuntimeError) return codexRuntimeErrorCode(error.code);
   if (error instanceof CodexAppServerError) {
     switch (error.code) {
@@ -1055,6 +1065,7 @@ export class SubscriptionRuntimeService {
       options: ConstructorParameters<typeof ClaudeCodeConversationRuntime>[0],
     ) => ClaudeCodeConversationRuntime,
     private readonly audit?: SubscriptionRuntimeAuditSink,
+    private readonly chatGptPlan: ChatGptPlanRuntime | null = null,
   ) {}
 
   static async create(
@@ -1110,6 +1121,12 @@ export class SubscriptionRuntimeService {
       resolveRuntime: () => codexRuntimeLocator.resolve(),
       lastKnownVersion: () => codexRuntimeLocator.lastKnownVersion(),
     });
+    const planDeps = configuredChatGptPlanRuntimeDeps();
+    const chatGptPlanRuntime = options.chatGptPlanRuntime !== undefined
+      ? options.chatGptPlanRuntime
+      : planDeps
+        ? createChatGptPlanRuntime(planDeps, openExternal)
+        : null;
     const claudeCodeClient = options.claudeCodeClient ?? new ClaudeCodeSubscriptionClient({
       runtimeHome: claudeHome,
       workspaceDir: claudeWorkspace,
@@ -1132,6 +1149,7 @@ export class SubscriptionRuntimeService {
       options.createClaudeCodeConversationRuntime
         ?? ((runtimeOptions) => new ClaudeCodeConversationRuntime(runtimeOptions)),
       options.audit,
+      chatGptPlanRuntime,
     );
   }
 
@@ -1140,6 +1158,7 @@ export class SubscriptionRuntimeService {
     this.assertRunning();
     return this.withStableErrors(async () => {
       if (runtimeId === "codex") return this.projectCodexStatus(await this.codexClient.getStatus());
+      if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         return this.projectClaudeCodeStatus(await this.claudeCodeClient.getStatus());
       }
@@ -1150,6 +1169,8 @@ export class SubscriptionRuntimeService {
   // Error projection without forcing a new runtime start or credential refresh.
   getCachedStatus(runtimeId: SubscriptionRuntimeId): SubscriptionRuntimeStatus | undefined {
     if (this.stopped) return undefined;
+    // A projection of the stored record only; reading it makes no request.
+    if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
     if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
       // A projection only: an error response must not also revoke a proof.
       return this.claudeCodeStatusProjection(this.claudeCodeClient.getCachedStatus());
@@ -1209,6 +1230,8 @@ export class SubscriptionRuntimeService {
         this.safelyVerified.add("codex");
         return this.projectCodexStatus(status);
       }
+      // No executable or isolated transport to prove: chat is available exactly when a plan-usage grant is stored.
+      if (runtimeId === "chatgpt-plan") return this.chatGptPlanStatus();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         const status = await this.claudeCodeClient.verify();
         this.assertRunning();
@@ -1245,6 +1268,12 @@ export class SubscriptionRuntimeService {
         const result = await this.codexClient.startDeviceCodeLogin();
         return this.projectCodexStatus(result.status);
       }
+      if (runtimeId === "chatgpt-plan") {
+        if (method !== "browser") {
+          throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
+        }
+        return this.requireChatGptPlan().startLogin();
+      }
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         if (method !== "browser") {
           throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
@@ -1279,6 +1308,7 @@ export class SubscriptionRuntimeService {
     await this.stopSessionsFor(runtimeId);
     return this.withStableErrors(async () => {
       if (runtimeId === "codex") return this.projectCodexStatus(await this.codexClient.cancelLogin());
+      if (runtimeId === "chatgpt-plan") return this.requireChatGptPlan().cancelLogin();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         return this.projectClaudeCodeStatus(await this.claudeCodeClient.cancelLogin());
       }
@@ -1292,6 +1322,7 @@ export class SubscriptionRuntimeService {
     await this.stopSessionsFor(runtimeId);
     return this.withStableErrors(async () => {
       if (runtimeId === "codex") return this.projectCodexStatus(await this.codexClient.logout());
+      if (runtimeId === "chatgpt-plan") return this.requireChatGptPlan().logout();
       if (isClaudeCodeSubscriptionProviderId(runtimeId)) {
         return this.projectClaudeCodeStatus(await this.claudeCodeClient.logout());
       }
@@ -1300,6 +1331,13 @@ export class SubscriptionRuntimeService {
       }
       return this.projectAcpStatus(await this.acpRegistry.logout(runtimeId));
     });
+  }
+
+  /** Dismiss the runtime's notice. Only plan usage carries notices; any other runtime refuses. */
+  async acknowledgeNotice(runtimeId: SubscriptionRuntimeId): Promise<SubscriptionRuntimeStatus> {
+    this.assertRunning();
+    if (runtimeId !== "chatgpt-plan") throw new SubscriptionRuntimeServiceError("subscription-provider-not-supported");
+    return this.requireChatGptPlan().acknowledgeNotice();
   }
 
   async listModels(runtimeId: SubscriptionRuntimeId): Promise<{
@@ -1315,6 +1353,8 @@ export class SubscriptionRuntimeService {
           models: catalogChatModelIds("claude").map((id) => ({ id, displayName: id, isDefault: false })),
         };
       }
+      // The signed-in account's own list; a failure is an error, never an empty catalog.
+      if (runtimeId === "chatgpt-plan") return this.requireChatGptPlan().listModels();
       if (runtimeId !== "codex") return { status: await this.getStatus(runtimeId), models: [] };
       const result = await this.codexClient.listModels();
       return {
@@ -1336,6 +1376,10 @@ export class SubscriptionRuntimeService {
     this.assertRunning();
     const safeSelection = validSelection(selection);
     if (!safeSelection) throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
+    // Plan usage talks to the Responses API through its own transport (chatGptPlanTransport); it has no CLI text session.
+    if (safeSelection.provider === "chatgpt-plan") {
+      throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
+    }
     const safeFallbackSelection = options.fallbackSelection === undefined
       ? undefined
       : validSelection(options.fallbackSelection);
@@ -1410,12 +1454,14 @@ export class SubscriptionRuntimeService {
           });
           return await this.trackVerifiedSession(runtime, safetyEpoch);
         }
+        const acpProvider = effectiveSelection.provider;
+        if (!isAcpRuntime(acpProvider)) throw new SubscriptionRuntimeServiceError("subscription-chat-unavailable");
         const mcpServers = bridge.tools.length === 0
           ? []
           : [await bridge.startMcpServer()];
         this.assertSafetyEpoch(effectiveSelection.provider, safetyEpoch);
         let unsafeHostRequest = false;
-        const session = await this.acpRegistry.openTextSession(effectiveSelection.provider, {
+        const session = await this.acpRegistry.openTextSession(acpProvider, {
           onHostRequest: (request) => {
             unsafeHostRequest = true;
             this.rejectUnsafeRequest(effectiveSelection.provider, request.kind);
@@ -1448,6 +1494,7 @@ export class SubscriptionRuntimeService {
       this.activeSessions.clear();
       await Promise.allSettled(sessions.map((session) => session.stop()));
       this.safelyVerified.clear();
+      this.chatGptPlan?.stop();
       this.codexClient.stop();
       await Promise.all([
         this.acpRegistry.stopAll(),
@@ -1462,6 +1509,17 @@ export class SubscriptionRuntimeService {
     if (this.stopped) {
       throw new SubscriptionRuntimeServiceError("subscription-operation-failed");
     }
+  }
+
+  /** The plan-usage runtime, for the inference transport. Throws not-configured when boot supplied none. */
+  requireChatGptPlan(): ChatGptPlanRuntime {
+    this.assertRunning();
+    if (!this.chatGptPlan) throw new SubscriptionRuntimeServiceError("subscription-runtime-not-configured");
+    return this.chatGptPlan;
+  }
+
+  private chatGptPlanStatus(): SubscriptionRuntimeStatus {
+    return this.chatGptPlan ? this.chatGptPlan.getStatus() : notConfiguredChatGptPlanStatus();
   }
 
   private projectCodexStatus(status: CodexSubscriptionStatus): SubscriptionRuntimeStatus {

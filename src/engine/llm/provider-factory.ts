@@ -48,6 +48,7 @@ class LazyVercelProvider implements LLMProvider {
             {
               vertexProject: cfg.vertexProject,
               vertexLocation: cfg.vertexLocation,
+              ...(cfg.openaiWire ? { openaiWire: cfg.openaiWire } : {}),
             },
           ] as const;
           return cfg.providerMetadata
@@ -65,6 +66,11 @@ class LazyVercelProvider implements LLMProvider {
     const inner = await this.getInner();
     yield* inner.streamTurn(params);
   }
+}
+
+/** The bare lazy SDK wire, for a connection that owns its own request policy (ChatGPT plan usage). */
+export function createVercelTransport(config: ProviderConfig): LLMProvider {
+  return new LazyVercelProvider(config);
 }
 
 export function createProvider(config: ProviderConfig): LLMProvider {

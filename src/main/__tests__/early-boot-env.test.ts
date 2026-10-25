@@ -1,6 +1,6 @@
 // Chromium resolver overrides bypass the Node DNS checks used by the SSRF guard and must stay disabled.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -35,10 +35,8 @@ vi.mock("../ensure-workspace-cwd.js", () => ({
 
 import { runEarlyBootEnv } from "../early-boot-env.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { writeSettingsFile as writeSettings } from "./support/settings-file.js";
 
-function writeSettings(userDataPath: string, settings: unknown) {
-  writeFileSync(join(userDataPath, "ave-settings.json"), JSON.stringify(settings), "utf-8");
-}
 
 describe("runEarlyBootEnv", () => {
   let userDataPath: string;

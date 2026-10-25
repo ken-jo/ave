@@ -1223,6 +1223,17 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     auditSubscriptionMutation("cancel-login", providerValue, result.ok ? "succeeded" : "failed", result.ok ? undefined : result.error);
     return result;
   });
+  ipcMain.handle(CHANNELS.settings.subscriptionAcknowledgeNotice, async (e, providerValue: unknown) => {
+    if (!validateHostRendererSender(e)) {
+      auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionAcknowledgeNotice, e);
+      return UNAUTHORIZED_FRAME;
+    }
+    if (!isSubscriptionRuntimeId(providerValue)) {
+      return { ok: false as const, error: "subscription-provider-not-supported" as const };
+    }
+    // Dismissing a notice changes no credential or selection; it is not audited as a mutation.
+    return runSubscriptionMutation(providerValue, (runtime, provider) => runtime.acknowledgeNotice(provider));
+  });
   ipcMain.handle(CHANNELS.settings.subscriptionLogout, async (e, providerValue: unknown) => {
     if (!validateHostRendererSender(e)) {
       auditUnauthorized(auditLogger, CHANNELS.settings.subscriptionLogout, e);
@@ -1278,7 +1289,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       }
       const model = normalizeSubscriptionModel(modelValue);
       const descriptor = subscriptionRuntimeDescriptor(providerValue);
-      if (model === null || (model !== undefined && !descriptor.supportsModelSelection)) {
+      if (
+        model === null
+        || (model !== undefined && !descriptor.supportsModelSelection)
+        || (model === undefined && descriptor.requiresModelSelection === true)
+      ) {
         auditSubscriptionMutation("use-for-chat", providerValue, "rejected", "subscription-chat-unavailable");
         return { ok: false as const, error: "subscription-chat-unavailable" as const };
       }

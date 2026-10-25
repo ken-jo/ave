@@ -286,6 +286,12 @@ export interface VercelProviderExtras {
   vertexProject?: string;
   /** Vertex AI — GCP region (default "us-central1"). */
   vertexLocation?: string;
+  /**
+   * Pins the `openai` slot to the Responses wire for every model. A connection
+   * whose route accepts only `POST /v1/responses` sets it, so a model id
+   * outside the known Responses families can never select Chat Completions.
+   */
+  openaiWire?: "responses";
 }
 
 export class VercelUnifiedProvider implements LLMProvider {
@@ -334,7 +340,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         yield { type: "error", error: "Model does not support image input", code: "image-input-unsupported", classification: "model" };
         return;
       }
-      const useOpenAIResponsesAliases = usesOpenAIResponsesWire(slot, params.model, capabilities.reasoning, baseUrl);
+      const useOpenAIResponsesAliases = this.usesResponsesWire(params.model, capabilities.reasoning, baseUrl);
       // Only this slot's provider caches up to explicit breakpoints; the
       // `openai` / `azure-foundry` slots cache automatically, keyed by
       // `promptCacheKey` below.
@@ -401,6 +407,7 @@ export class VercelUnifiedProvider implements LLMProvider {
         model: params.model,
         enableThinking: params.enableThinking === true,
         budgetTokens: budget,
+        ...(params.reasoningEffort !== undefined ? { requestedEffort: params.reasoningEffort } : {}),
         baseUrl,
         catalogModel: params.catalogModel,
         ...(capabilities.reasoning !== undefined ? { reasoning: capabilities.reasoning } : {}),
@@ -694,6 +701,15 @@ export class VercelUnifiedProvider implements LLMProvider {
     }
   }
 
+  private usesResponsesWire(
+    modelId: string,
+    reasoning: Parameters<typeof usesOpenAIResponsesWire>[2],
+    baseUrl: string | undefined,
+  ): boolean {
+    return (this.vendorSlot === "openai" && this.extras.openaiWire === "responses")
+      || usesOpenAIResponsesWire(this.vendorSlot, modelId, reasoning, baseUrl);
+  }
+
   private resolveModel(
     modelId: string,
     openAIResponsesWire: boolean,
@@ -738,7 +754,8 @@ export class VercelUnifiedProvider implements LLMProvider {
         ...(this.baseUrl ? { baseURL: this.baseUrl } : {}),
         ...(this.customFetch ? { fetch: this.customFetch } : {}),
       });
-      // Responses API for every model the catalog says reasons; Chat
+      // Responses API for every model the catalog says reasons, or for every
+      // model when the connection pins `openaiWire: "responses"`; Chat
       // Completions for the rest (reasoning-plan.ts usesOpenAIResponsesWire).
       return openAIResponsesWire
         ? openai.responses(modelId)
