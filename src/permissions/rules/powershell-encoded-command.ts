@@ -1,16 +1,27 @@
 // The scripts a shell input hands to PowerShell as `-EncodedCommand` (UTF-16LE base64). The text is otherwise opaque, so the host decodes it to run
 // the destructive and credential floors on what will actually execute, to refuse an allow rule for it, and to show the person the decoded command.
-// Decoding fails closed: an encoded-command argument whose payload the host cannot fully decode (missing, not base64, not text, past the payload
-// limit), quoting it cannot balance, or a parameter boundary it cannot place, is `hidden` code, which the permission manager treats as a destructive
-// floor (a forced modal, never an allow rule).
+//
+// It reads the argv each shell's own lexer produced (`powerShellLaunchArgv` for PowerShell, the bash rule shape for bash): the same unescaped view
+// of the command the rule matcher uses, so an escape, quote or dash spelling the lexer resolves cannot hide a parameter from this reader alone.
+// It fails closed: a launched shell (`pwsh`, `powershell`, `cmd`, `bash`, `sh`, ...) whose argv is not fully literal (a variable, splat,
+// subexpression, backtick or caret escape), input the lexer cannot read, an encoded payload it cannot fully decode, or an encoded-looking word
+// after `-Command`/`-File`, is `hidden` code: the permission manager treats it as a destructive floor (a forced modal, never an allow rule).
+import type { ShellRuleDialect } from "../../shared/permissions-events.js";
+import { powerShellLaunchArgv } from "./powershell-exfiltration.js";
+import { analyzeShellForRules } from "./shell-rule-matcher.js";
+import type { ShellCommandInput } from "./shell-prefix-policy.js";
 
 // `-EncodedCommand` and every prefix PowerShell accepts for it (`-e`, `-ec`, `-enc`, ...), behind any dash PowerShell's parser accepts as a parameter
 // prefix (hyphen-minus, en dash, em dash, horizontal bar) or `/`, with an optional `:value`.
 const ENCODED_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
-// `-Command` / `-c`, `-CommandWithArgs` / `-cwa` and `-File` / `-f`, behind the same dashes: after one, the rest is the script or its arguments.
-const SCRIPT_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:c|command|cwa|commandwithargs|f|file)(?::[\s\S]*)?$/i;
-const POWERSHELL_NAME_RE = /^(?:pwsh|powershell)(?:\.exe)?$/i;
-const MENTIONS_POWERSHELL_RE = /pwsh|powershell/i;
+// `-Command` / `-c` and `-CommandWithArgs` / `-cwa`: the rest is a script. `-File` / `-f`: the rest is a script path and its arguments.
+const COMMAND_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:c|command|cwa|commandwithargs)(?::([\s\S]*))?$/i;
+const FILE_PARAMETER_RE = /^[-\u2013\u2014\u2015/](?:f|file)(?::[\s\S]*)?$/i;
+// A launched shell named anywhere in unreadable input.
+const MENTIONS_LAUNCHER_RE = /(?:^|[^A-Za-z0-9_-])(?:pwsh|powershell|cmd|bash|sh|zsh|dash|ksh)(?:\.exe)?(?![A-Za-z0-9_-])/i;
+
+const POWERSHELL_LAUNCHERS = new Set(["pwsh", "powershell"]);
+const POSIX_LAUNCHERS = new Set(["bash", "sh", "zsh", "dash", "ksh"]);
 
 const MAX_PAYLOADS = 8;
 const MAX_DEPTH = 4;
@@ -18,46 +29,8 @@ const MAX_DEPTH = 4;
 export interface EncodedPowerShell {
   /** The decoded scripts, in order. */
   readonly scripts: string[];
-  /** Encoded code the host could not fully read: an undecodable payload, unbalanced quoting, or an ambiguous parameter boundary. */
+  /** Code the host could not fully read inside a launched shell; see the module comment. */
   readonly hidden: boolean;
-}
-
-/** Words of each command in `text`, quotes honored: `;`, `&`, `|`, a newline and brackets split commands only outside quotes, so a quoted value
- *  keeps its separators and line breaks. A word's value has its quotes removed. Null when a quote is never closed. */
-function commandWords(text: string): string[][] | null {
-  const commands: string[][] = [];
-  let words: string[] = [];
-  let word: string | null = null;
-  let quote: "'" | '"' | null = null;
-  const endWord = () => {
-    if (word !== null) words.push(word);
-    word = null;
-  };
-  const endCommand = () => {
-    endWord();
-    if (words.length > 0) commands.push(words);
-    words = [];
-  };
-  for (const char of text) {
-    if (quote !== null) {
-      if (char === quote) quote = null;
-      else word = (word ?? "") + char;
-      continue;
-    }
-    if (char === "'" || char === '"') {
-      quote = char;
-      word = word ?? "";
-    } else if (/[;&|\n(){}]/.test(char)) {
-      endCommand();
-    } else if (/\s/.test(char)) {
-      endWord();
-    } else {
-      word = (word ?? "") + char;
-    }
-  }
-  if (quote !== null) return null;
-  endCommand();
-  return commands;
 }
 
 function decodePayload(raw: string): string | null {
@@ -71,51 +44,105 @@ function decodePayload(raw: string): string | null {
   return /^[^\u0000-\u0008\u000B\u000C\u000E-\u001F\uFFFD]*$/.test(text) ? text : null;
 }
 
-function isPowerShellHead(word: string): boolean {
+/** The program a command word names: the path, trailing dots (Win32 strips them) and an executable extension dropped, lower-cased. */
+function programOf(word: string): string {
   const base = word.slice(Math.max(word.lastIndexOf("\\"), word.lastIndexOf("/")) + 1).replace(/\.+$/, "");
-  return POWERSHELL_NAME_RE.test(base);
+  return base.replace(/\.(?:exe|com|cmd|bat)$/i, "").toLowerCase();
 }
 
-function inspect(text: string, depth: number, scripts: string[]): boolean {
-  if (!MENTIONS_POWERSHELL_RE.test(text)) return false;
-  if (depth > MAX_DEPTH) return true;
-  const commands = commandWords(text);
-  if (commands === null) return true;
-  let hidden = false;
-  for (const words of commands) {
-    // A quoted word can carry a whole nested command line (`cmd /c "pwsh -enc ..."`, `-ArgumentList '-enc ...'`); it is read the same way.
-    for (const word of words) {
-      if (word.length > 0 && /\s/.test(word) && inspect(word, depth + 1, scripts)) hidden = true;
+type Argv = readonly (string | null)[];
+
+class Reader {
+  readonly scripts: string[] = [];
+  hidden = false;
+
+  constructor(private readonly cwd: string | undefined) {}
+
+  text(dialect: ShellRuleDialect, input: ShellCommandInput, depth: number): void {
+    const text = typeof input === "string" ? input : input.command;
+    if (depth > MAX_DEPTH) {
+      if (MENTIONS_LAUNCHER_RE.test(text)) this.hidden = true;
+      return;
     }
-    for (let head = 0; head < words.length; head += 1) {
-      if (!isPowerShellHead(words[head]!)) continue;
-      let scriptStarted = false;
-      for (let index = head + 1; index < words.length; index += 1) {
-        const word = words[index]!;
-        const encoded = ENCODED_PARAMETER_RE.exec(word);
-        if (encoded !== null) {
-          // After -Command/-File an encoded-looking word is either the script's own argument or a parameter the host misplaced: it cannot tell, so
-          // the code is hidden (`pwsh -WorkingDirectory -c -enc ...`).
-          if (scriptStarted) {
-            hidden = true;
-            continue;
-          }
-          const payload = encoded[1] ?? words[index + 1];
-          if (encoded[1] === undefined) index += 1;
-          const script = payload === undefined || scripts.length >= MAX_PAYLOADS ? null : decodePayload(payload);
-          if (script === null) hidden = true;
-          else scripts.push(script);
-          continue;
-        }
-        if (SCRIPT_PARAMETER_RE.test(word)) scriptStarted = true;
+    // The bash shape is the one the matcher and floors already computed for this input (same parse, same cwd).
+    const commands = dialect === "bash" ? bashArgv(input, this.cwd) : powerShellLaunchArgv(text);
+    if (commands === null) {
+      if (MENTIONS_LAUNCHER_RE.test(text)) this.hidden = true;
+      return;
+    }
+    for (const argv of commands) this.command(argv, depth);
+  }
+
+  private command(argv: Argv, depth: number): void {
+    const head = argv[0];
+    if (typeof head !== "string") return;
+    const program = programOf(head);
+    const powershell = POWERSHELL_LAUNCHERS.has(program);
+    const posix = POSIX_LAUNCHERS.has(program);
+    const cmd = program === "cmd";
+    if (!powershell && !posix && !cmd) return;
+    // What a launched shell runs must be fixed before it starts.
+    if (argv.includes(null)) {
+      this.hidden = true;
+      return;
+    }
+    const args = argv.slice(1) as string[];
+    if (powershell) this.powershell(args, depth);
+    else if (posix) this.posix(args, depth);
+    else this.cmd(args, depth);
+  }
+
+  private powershell(args: readonly string[], depth: number): void {
+    for (let index = 0; index < args.length; index += 1) {
+      const arg = args[index]!;
+      const encoded = ENCODED_PARAMETER_RE.exec(arg);
+      if (encoded !== null) {
+        const payload = encoded[1] ?? args[index + 1];
+        if (encoded[1] === undefined) index += 1;
+        const script = payload === undefined || this.scripts.length >= MAX_PAYLOADS ? null : decodePayload(payload);
+        if (script === null) this.hidden = true;
+        else this.scripts.push(script);
+        continue;
+      }
+      const command = COMMAND_PARAMETER_RE.exec(arg);
+      if (command !== null || FILE_PARAMETER_RE.test(arg)) {
+        const rest = args.slice(index + 1);
+        // An encoded-looking word after the script starts is either the script's argument or a parameter the host misplaced: it cannot tell.
+        if (rest.some((word) => ENCODED_PARAMETER_RE.test(word))) this.hidden = true;
+        if (command !== null) this.text("powershell", [command[1] ?? "", ...rest].join(" ").trim(), depth + 1);
+        return;
       }
     }
   }
-  return hidden;
+
+  private posix(args: readonly string[], depth: number): void {
+    // `-c <script>`, the flag possibly combined (`-lc`, `-ec`).
+    const flag = args.findIndex((arg) => /^-[A-Za-z]*c[A-Za-z]*$/.test(arg));
+    if (flag === -1) return;
+    const script = args[flag + 1];
+    if (script !== undefined) this.text("bash", script, depth + 1);
+  }
+
+  private cmd(args: readonly string[], depth: number): void {
+    // cmd's own escapes and expansions (`^`, `%VAR%`, `!VAR!`) change the line before it runs.
+    if (args.some((arg) => /[\^%!]/.test(arg))) {
+      this.hidden = true;
+      return;
+    }
+    const run = args.findIndex((arg) => /^\/[ck]$/i.test(arg));
+    if (run === -1) return;
+    this.text("powershell", args.slice(run + 1).join(" "), depth + 1);
+  }
 }
 
-export function inspectEncodedPowerShell(command: string): EncodedPowerShell {
-  const scripts: string[] = [];
-  const hidden = inspect(command, 0, scripts);
-  return { scripts, hidden };
+function bashArgv(input: ShellCommandInput, cwd: string | undefined): Argv[] | null {
+  const shape = analyzeShellForRules(input, cwd);
+  if (!shape.ok) return null;
+  return shape.commands.map((command) => command.argv.map((word) => word ?? null));
+}
+
+export function inspectEncodedPowerShell(command: ShellCommandInput, dialect: ShellRuleDialect, cwd?: string): EncodedPowerShell {
+  const reader = new Reader(cwd);
+  reader.text(dialect, command, 0);
+  return { scripts: reader.scripts, hidden: reader.hidden };
 }

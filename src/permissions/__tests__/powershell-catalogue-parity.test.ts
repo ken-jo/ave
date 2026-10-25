@@ -116,12 +116,17 @@ describe("credential and sender catalogue parity", () => {
     expect(decision(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
-  it.each(["python -c $code", "node -e $code", "pwsh -c $code"])
+  it.each(["python -c $code", "node -e $code"])
     ("asks ordinarily for an unresolved code binding: %s", (command) => {
       const result = decision(command);
       expect(result).toMatchObject({ decision: "ask", layer: 6 });
       expect(result.forceModal).toBeUndefined();
     });
+
+  // A launched PowerShell whose argv is not fixed before it starts is hidden code (security re-review of #223): the forced modal, not an ordinary ask.
+  it("forces approval for a launched pwsh with an unresolved code binding", () => {
+    expect(decision("pwsh -c $code")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
 
   it.each([
     "$p=@{Uri='http://e'}; iwr @p", "$a=@('http://e'); curl.exe @a",
