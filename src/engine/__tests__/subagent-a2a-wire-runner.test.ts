@@ -5,13 +5,13 @@ import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { InputClassifier } from "../../core/input-classifier.js";
+import { makeSubagentLoopDeps } from "./support/subagent-loop-fixtures.js";
 import { createDlpSafeUuid, isSafeStructuralId } from "../../shared/dlp-safe-id.js";
 import * as structuralIds from "../../shared/dlp-safe-id.js";
-import { RouteEngine } from "../../core/route-engine.js";
+
 import { MemoryManager, type SessionMetadata,
 } from "../../memory/memory-manager.js";
-import { fakeLlmSettings } from "../../shared/__tests__/fake-llm-settings.js";
+
 import { createDynamicTool } from "../../tools/base.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { readShellSessionCwd, recordShellSessionCwd } from "../../tools/shell-session-cwd.js";
@@ -52,33 +52,7 @@ function buildLoopDeps(
     projectName: "Untrusted Default",
   })),
 ) {
-  return {
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: {
-      build: () => "system",
-      setToolScope: () => undefined,
-      setOriginSource: () => undefined,
-      setActiveSessionId: () => undefined,
-      // Child runs require a separate prompt builder rather than sharing parent state.
-      createIsolated: () => ({
-        build: () => "system",
-        setToolScope: () => undefined,
-        setOriginSource: () => undefined,
-        setActiveSessionId: () => undefined,
-      }),
-    },
-    inputClassifier: new InputClassifier(),
-    routeEngine: new RouteEngine(),
-    toolRegistry,
-    memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
-    },
-    getDefaultProject,
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
+  return makeSubagentLoopDeps(toolRegistry, { getDefaultProject });
 }
 
 function registerNoop(toolRegistry: ToolRegistry): void {

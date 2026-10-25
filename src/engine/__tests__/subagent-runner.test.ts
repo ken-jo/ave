@@ -11,8 +11,8 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { createDynamicTool } from "../../tools/base.js";
-import { InputClassifier } from "../../core/input-classifier.js";
-import { RouteEngine } from "../../core/route-engine.js";
+import { makeSubagentLoopDeps as buildLoopDeps, patchLoopProvider } from "./support/subagent-loop-fixtures.js";
+
 import {
   SubAgentRunner,
   resolveSubAgentModel,
@@ -96,6 +96,14 @@ function fakeSubAgentMemoryManager(memory: Partial<PromptMemorySource> = {}) {
   } as unknown as ConstructorParameters<typeof SubAgentRunner>[0]["subAgentMemoryManager"];
 }
 
+function makeRunner(toolRegistry: ToolRegistry) {
+  return new SubAgentRunner({
+    parentDeps: buildLoopDeps(toolRegistry),
+    toolRegistry,
+    subAgentMemoryManager: fakeSubAgentMemoryManager(),
+  });
+}
+
 function createInMemoryMailboxNamespace() {
   let stored: unknown;
   let rejectNextWrite = false;
@@ -119,36 +127,7 @@ function createInMemoryMailboxNamespace() {
   };
 }
 
-function buildLoopDeps(toolRegistry: ToolRegistry) {
-  const inputClassifier = new InputClassifier();
-  const routeEngine = new RouteEngine();
-  return {
-    settingsService: {
-      get: () => fakeLlmSettings(),
-      getSecret: () => "test-key",
-    },
-    systemPromptBuilder: {
-      build: () => "system",
-      setToolScope: () => undefined,
-      setOriginSource: () => undefined,
-      setActiveSessionId: () => undefined,
-      // Child runs require a separate prompt builder rather than sharing parent state.
-      createIsolated: () => ({
-        build: () => "system",
-        setToolScope: () => undefined,
-        setOriginSource: () => undefined,
-        setActiveSessionId: () => undefined,
-      }),
-    },
-    inputClassifier,
-    routeEngine,
-    toolRegistry,
-    memoryManager: {
-      saveSession: () => Promise.resolve(),
-      listSessions: () => [],
-    },
-  } as unknown as ConstructorParameters<typeof ConversationLoop>[0];
-}
+
 
 describe("SubAgentRunner checkpoint child lifetime", () => {
   it.each([
@@ -275,17 +254,7 @@ describe("SubAgentRunner — authorization terminal propagation", () => {
       toolRegistry,
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       const result = await runner.spawn({
@@ -357,17 +326,7 @@ describe("SubAgentRunner — shared SkillOverlay teardown", () => {
       toolRegistry,
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       const result = await runner.spawn({
@@ -419,11 +378,7 @@ describe("SubAgentRunner — maxRounds bound", () => {
     const parentLoop = new ConversationLoop(buildLoopDeps(toolRegistry));
     (parentLoop as { provider: LLMProvider | null }).provider = provider;
 
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     // Patch child loops too because each spawn constructs a fresh loop.
     const origConstructor = ConversationLoop.prototype as unknown as {
       hasProvider: () => boolean;
@@ -484,27 +439,8 @@ describe("SubAgentRunner — maxRounds bound", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     try {
       const result = await runner.spawn({
         toolScope: PARENT_ALL_TOOL_SCOPE,
@@ -657,11 +593,7 @@ describe("SubAgentRunner — maxRounds bound", () => {
 describe("SubAgentRunner — provider-status activity", () => {
   it("publishes a retry status snapshot before the child completes its answer", async () => {
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -719,11 +651,7 @@ describe("SubAgentRunner — provider-status activity", () => {
 
   it("clears a status-only retry before an errored child result is published", async () => {
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -768,27 +696,8 @@ describe("SubAgentRunner — cross-agent DLP boundary", () => {
       ],
     ]);
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     const onActivity = vi.fn();
 
     try {
@@ -820,11 +729,7 @@ describe("SubAgentRunner — cross-agent DLP boundary", () => {
   it("masks a child failure across returned, tracked, and error callback surfaces", async () => {
     const secret = "ghp_" + "e".repeat(24);
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -1431,11 +1336,7 @@ describe("SubAgentRunner — what each tool scope grants", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
@@ -1501,11 +1402,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       }),
     );
 
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
 
     const scoped = toolRegistry.createScopedView(["bash"]);
     expect(scoped.findByName("bash")).toBeDefined();
@@ -1558,22 +1455,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       toolRegistry,
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1633,17 +1515,7 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       toolRegistry,
       subAgentMemoryManager: fakeSubAgentMemoryManager(),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1690,22 +1562,8 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
       { type: "text_delta", text: "done" },
       { type: "message_complete", stopReason: "end_turn" },
     ]]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1761,27 +1619,8 @@ describe("SubAgentRunner — sourceTools allowlist", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({
@@ -1826,17 +1665,7 @@ describe("SubAgentRunner — the child's agent context", () => {
         getAgentsCustomMd: () => "CHILD own rules",
       }),
     });
-    const hasProviderSpy = vi
-      .spyOn(ConversationLoop.prototype as unknown as { hasProvider: () => boolean }, "hasProvider")
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { refreshProvider: () => void },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       await runner.spawn({ toolScope: PARENT_ALL_TOOL_SCOPE, title: "child", instructions: "summarize", maxRounds: 1 });
@@ -2062,27 +1891,8 @@ describe("SubAgentRunner — unknown mode audit warn", () => {
         { type: "message_complete", stopReason: "end_turn" },
       ],
     ]);
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const runner = makeRunner(toolRegistry);
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     const warnSpy = vi
       .spyOn(console, "warn")
       .mockImplementation(() => undefined);
@@ -2151,22 +1961,7 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
       subAgentMemoryManager,
     });
 
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
 
     try {
       const result = await runner.spawn({
@@ -2220,22 +2015,7 @@ describe("SubAgentRunner — subagent session namespace isolation (PR-A)", () =>
       toolRegistry,
       subAgentMemoryManager,
     });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     try {
       const result = await runner.spawn({
         toolScope: PARENT_ALL_TOOL_SCOPE,
@@ -2298,22 +2078,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
       toolRegistry,
       subAgentMemoryManager,
     });
-    const hasProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
-        "hasProvider",
-      )
-      .mockReturnValue(true);
-    const refreshProviderSpy = vi
-      .spyOn(
-        ConversationLoop.prototype as unknown as {
-          refreshProvider: () => void;
-        },
-        "refreshProvider",
-      )
-      .mockImplementation(function (this: ConversationLoop) {
-        (this as { provider: LLMProvider | null }).provider = provider;
-      });
+    const { hasProviderSpy, refreshProviderSpy } = patchLoopProvider(provider);
     return {
       run: () => runner.spawn(input),
       restore: () => {
@@ -2531,11 +2296,7 @@ describe("SubAgentRunner — resume metadata + subagent SessionKind (PR-B)", () 
 describe("SubAgentRunner A2A bus facade", () => {
   it("fails closed and returns inert mailbox results when boot has no bus", async () => {
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
 
     await expect(
       runner.deliverToParent({
@@ -2907,11 +2668,7 @@ describe("spawn cancellation signal", () => {
   it("hands the run's abort signal to the child turn", async () => {
     // Cancellation during spawn setup must reach the later turn even before abortCurrentTurn can.
     const toolRegistry = new ToolRegistry();
-    const runner = new SubAgentRunner({
-      parentDeps: buildLoopDeps(toolRegistry),
-      toolRegistry,
-      subAgentMemoryManager: fakeSubAgentMemoryManager(),
-    });
+    const runner = makeRunner(toolRegistry);
     const hasProviderSpy = vi
       .spyOn(
         ConversationLoop.prototype as unknown as { hasProvider: () => boolean },
