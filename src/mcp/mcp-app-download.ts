@@ -2,6 +2,7 @@
  * The user save dialog authorizes the destination after parsing succeeds. */
 import { basename } from "node:path";
 import { base64DecodedLength } from "../shared/json-representable.js";
+import { isRecord } from "../shared/is-record.js";
 
 /** Bound total decoded size from encoded length before allocating any buffer. */
 export const MCP_APP_DOWNLOAD_MAX_BYTES = 25 * 1024 * 1024;
@@ -30,12 +31,6 @@ export type McpAppDownloadParse =
 
 const MIME_TYPE_RE = /^[A-Za-z0-9!#$&^_.+-]+\/[A-Za-z0-9!#$&^_.+-]+$/;
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  return value && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 function invalid(error: string, message: string): McpAppDownloadParse {
   return { kind: "invalid", error, message };
 }
@@ -57,8 +52,7 @@ export function sanitizeDownloadFilename(raw: unknown): string {
 
 /** Reject the entire request on any invalid item; partial acceptance would expose a probing channel. */
 export function parseMcpAppDownload(params: unknown): McpAppDownloadParse {
-  const record = asRecord(params);
-  const contents = record?.contents;
+  const contents = isRecord(params) ? params.contents : undefined;
   if (!Array.isArray(contents) || contents.length === 0) {
     return invalid("invalid-contents", "contents must be a non-empty array");
   }
@@ -72,9 +66,8 @@ export function parseMcpAppDownload(params: unknown): McpAppDownloadParse {
   const files: McpAppDownloadFile[] = [];
   let totalBytes = 0;
 
-  for (const item of contents) {
-    const block = asRecord(item);
-    if (!block) return invalid("invalid-content-block", "each content item must be an object");
+  for (const block of contents) {
+    if (!isRecord(block)) return invalid("invalid-content-block", "each content item must be an object");
 
     if (block.type === "resource_link") {
       return invalid(
@@ -86,8 +79,8 @@ export function parseMcpAppDownload(params: unknown): McpAppDownloadParse {
       return invalid("invalid-content-block", `unsupported content type '${String(block.type)}'`);
     }
 
-    const resource = asRecord(block.resource);
-    if (!resource) return invalid("invalid-content-block", "resource must be an object");
+    const resource = block.resource;
+    if (!isRecord(resource)) return invalid("invalid-content-block", "resource must be an object");
 
     const mimeType = resource.mimeType;
     if (mimeType !== undefined && (typeof mimeType !== "string" || !MIME_TYPE_RE.test(mimeType))) {

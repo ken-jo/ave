@@ -169,10 +169,10 @@ function normalizeModelCatalogRefresh(input: unknown): "auto" | "off" {
 }
 
 export function normalizeActiveChatRuntime(input: unknown): ActiveChatRuntime {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+  if (!isRecord(input)) {
     return { kind: "api" };
   }
-  const raw = input as Record<string, unknown>;
+  const raw = input;
   if (raw.kind === "api") return { kind: "api" };
   if (raw.kind !== "subscription" || !isSubscriptionRuntimeId(raw.provider)) {
     return { kind: "api" };
@@ -506,10 +506,10 @@ function normalizeLlmModelListCache(
   installedProviderIds: readonly MarketplaceEligibleLLMVendor[],
   installedProviderPresets?: readonly MarketplaceInstalledProviderPreset[],
 ): LlmModelListCache {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return {};
+  if (!isRecord(input)) return {};
   const result: LlmModelListCache = {};
-  for (const value of Object.values(input as Record<string, unknown>)) {
-    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+  for (const value of Object.values(input)) {
+    if (!isRecord(value)) continue;
     const entry = value as Partial<LlmModelListCacheEntry>;
     if (!isLLMVendor(entry.vendor)) continue;
     if (!isLlmProviderEnabled(entry.vendor, installedProviderIds)) continue;
@@ -913,7 +913,7 @@ function autoUpdateSwitches(
   input: unknown,
   normalizeKey: (key: string) => string | null,
 ): Record<string, AutoUpdateSwitch> | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
+  if (!isRecord(input)) return undefined;
   const switches = Object.create(null) as Record<string, AutoUpdateSwitch>;
   for (const [rawKey, value] of Object.entries(input)) {
     const key = normalizeKey(rawKey);
@@ -995,8 +995,8 @@ export function normalizeAppearance(input: unknown): AppearanceSettings {
 }
 
 function normalizeAppearanceFont(input: unknown): AppearanceFontSettings | undefined {
-  if (!input || typeof input !== "object" || Array.isArray(input)) return undefined;
-  const o = input as Record<string, unknown>;
+  if (!isRecord(input)) return undefined;
+  const o = input;
   const out: AppearanceFontSettings = {};
   if (typeof o.family === "string") {
     if (o.family === "system") {
@@ -1024,11 +1024,10 @@ export function isWebViewPreferredFlow(value: unknown): value is WebViewPreferre
 }
 
 export function normalizeWebView(input: unknown): WebViewSettings {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+  if (!isRecord(input)) {
     return { ...DEFAULT_SETTINGS.webView };
   }
-  const obj = input as { preferredFlow?: unknown };
-  const raw = obj.preferredFlow;
+  const raw = input.preferredFlow;
   if (isWebViewPreferredFlow(raw)) {
     return { preferredFlow: raw };
   }
@@ -1107,31 +1106,10 @@ export const SIDE_PANEL_SPLIT_KEYS = [
 ] as const satisfies readonly (keyof SystemSettings)[];
 
 export function normalizeSystem(input: unknown): SystemSettings {
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+  if (!isRecord(input)) {
     return { ...DEFAULT_SETTINGS.system };
   }
-  const obj = input as {
-    turnCompletionSoundEnabled?: unknown;
-    closeBehavior?: unknown;
-    appMode?: unknown;
-    localApiServer?: unknown;
-    hardwareAcceleration?: unknown;
-    corpCaEnabled?: unknown;
-    corpCaCommonName?: unknown;
-    corpCaDebugLog?: unknown;
-    launchAtStartup?: unknown;
-    launchMinimized?: unknown;
-    shutdownCleanupTimeoutMs?: unknown;
-    sidePanelWidth?: unknown;
-    sidebarWidth?: unknown;
-    sidebarActiveTab?: unknown;
-    activeView?: unknown;
-    mainLayout?: unknown;
-    settingsTab?: unknown;
-    pinnedProjectRoots?: unknown;
-    archivedProjectRoots?: unknown;
-    projectLabels?: unknown;
-  } & Record<(typeof SIDE_PANEL_SPLIT_KEYS)[number], unknown>;
+  const obj = input;
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
   acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
@@ -1225,10 +1203,10 @@ export function normalizeSystem(input: unknown): SystemSettings {
 /** Use shared diagnostics bounds so invalid retention values cannot persist. */
 export function normalizeDiagnostics(input: unknown): DiagnosticsSettings {
   const base = DEFAULT_SETTINGS.diagnostics;
-  if (!input || typeof input !== "object" || Array.isArray(input)) {
+  if (!isRecord(input)) {
     return { ...base };
   }
-  const obj = input as Record<string, unknown>;
+  const obj = input;
   const result: DiagnosticsSettings = { ...base };
   if (typeof obj.includeCrashDumps === "boolean") {
     result.includeCrashDumps = obj.includeCrashDumps;
@@ -1258,26 +1236,12 @@ export function normalizeUpstreamProxy(input: unknown): UpstreamProxySettings {
 /** Validate telemetry shapes at both boundaries; request-time endpoint policy owns HTTPS and host authorization. */
 export function normalizeTelemetry(input: unknown): TelemetrySettings {
   const result: TelemetrySettings = { ...DEFAULT_SETTINGS.telemetry };
-  if (!input || typeof input !== "object" || Array.isArray(input)) return result;
-  const obj = input as {
-    enabled?: unknown;
-    endpoint?: unknown;
-    sentryDsn?: unknown;
-    crashReportEndpoint?: unknown;
-    crashReportingEnabled?: unknown;
-    telemetryPromptAnswered?: unknown;
-  };
-  acceptField(result, "enabled", obj.enabled, isBooleanValue, "telemetry", STORED_FIELD);
-  acceptField(
-    result, "crashReportingEnabled", obj.crashReportingEnabled,
-    isBooleanValue, "telemetry", STORED_FIELD,
-  );
-  acceptField(
-    result, "telemetryPromptAnswered", obj.telemetryPromptAnswered,
-    isBooleanValue, "telemetry", STORED_FIELD,
-  );
+  if (!isRecord(input)) return result;
+  for (const key of ["enabled", "crashReportingEnabled", "telemetryPromptAnswered"] as const) {
+    acceptField(result, key, input[key], isBooleanValue, "telemetry", STORED_FIELD);
+  }
   for (const key of TELEMETRY_TEXT_KEYS) {
-    acceptTelemetryText(result, key, obj[key], STORED_FIELD);
+    acceptTelemetryText(result, key, input[key], STORED_FIELD);
   }
   return result;
 }
@@ -1287,9 +1251,8 @@ export const TELEMETRY_TEXT_KEYS = ["endpoint", "sentryDsn", "crashReportEndpoin
 /** Require real booleans; truthy strings must not enable document moves on update. */
 export function normalizeHomeDocs(input: unknown): HomeDocsSettings {
   const result: HomeDocsSettings = { ...DEFAULT_SETTINGS.homeDocs };
-  if (!input || typeof input !== "object" || Array.isArray(input)) return result;
-  const obj = input as { keepLatest?: unknown };
-  acceptField(result, "keepLatest", obj.keepLatest, isBooleanValue, "homeDocs", STORED_FIELD);
+  if (!isRecord(input)) return result;
+  acceptField(result, "keepLatest", input.keepLatest, isBooleanValue, "homeDocs", STORED_FIELD);
   return result;
 }
 
@@ -1315,8 +1278,8 @@ export function acceptTelemetryText(
 /** Round budgets require valid positive integers and have no upper clamp; enforce timer bounds where timers are armed. */
 export function normalizeChat(input: unknown): ChatSettings {
   const result: ChatSettings = { ...DEFAULT_SETTINGS.chat };
-  if (!input || typeof input !== "object" || Array.isArray(input)) return result;
-  const chat = input as Record<string, unknown>;
+  if (!isRecord(input)) return result;
+  const chat = input;
   if (typeof chat.systemPrompt === "string") result.systemPrompt = chat.systemPrompt;
   if (typeof chat.autoCompact === "boolean") result.autoCompact = chat.autoCompact;
   if (isProcessingDisplayLevel(chat.processingDisplayLevel)) {

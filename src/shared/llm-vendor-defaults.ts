@@ -1,6 +1,7 @@
 /** Browser-safe vendor and default configuration shared by settings and provider selection. */
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "./model-host-policy.js";
 import { catalogChatModelIds, vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
+import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
 
 export const OPENAI_COMPATIBLE_PRESET_VENDOR_IDS = [
   "openrouter",
@@ -413,7 +414,7 @@ function normalizeLlmOutputTokenLimit(value: unknown): number {
 
 /** A stored output limit the user set: a positive safe integer, else none. */
 function explicitLlmOutputTokenLimit(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+  return isPositiveSafeInteger(value) ? value : undefined;
 }
 
 export type LlmOutputTokenLimitSource = "user" | "host-default";
@@ -436,7 +437,7 @@ export function getLlmThinkingBudgetLimit(outputTokenLimit?: number): number {
 
 /** Normalize user input without changing raw internal generation parameters. */
 export function normalizeLlmThinkingBudgetTokens(value: unknown, outputTokenLimit?: number): number {
-  const budget = typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+  const budget = isNonNegativeSafeInteger(value)
     ? value
     : DEFAULT_THINKING_BUDGET_TOKENS;
   return Math.min(budget, getLlmThinkingBudgetLimit(outputTokenLimit));
@@ -688,8 +689,7 @@ export function llmRouteImageInput(
 }
 
 function normalizeLlmContextWindow(value: unknown): number | undefined {
-  if (typeof value !== "number" || !Number.isSafeInteger(value) || value <= 0) return undefined;
-  return value;
+  return isPositiveSafeInteger(value) ? value : undefined;
 }
 
 export function getLlmVendorSettings(
