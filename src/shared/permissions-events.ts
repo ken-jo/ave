@@ -61,6 +61,9 @@ export interface ShellRuleApproval {
   projectCwd: string;
   /** Directory a project rule applies to (the repository root when one is found); display only. */
   projectRoot: string;
+  /** The scripts the command hands to PowerShell as `-EncodedCommand`, decoded, for the card to show; absent when there are none. A command with
+   * one never has an exact allow rule (its code is hidden in the command line). */
+  decodedCommands?: readonly string[];
   /** "Allow for session" is offered: a saveable rule and a conversation to hold it. */
   sessionAllowed: boolean;
   /** "Always allow in this project" and "Always allow everywhere" are offered. */

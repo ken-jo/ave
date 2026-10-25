@@ -50,7 +50,8 @@ describe("PowerShell(...) rule grammar", () => {
 
   it("takes the canonical command and parameter spelling an edited rule is saved in", () => {
     expect(normalizeRuleSpecifierInput("  PowerShell(Get-ChildItem   -Recurse  Src) ")).toBe("PowerShell(get-childitem -recurse Src)");
-    expect(normalizeRuleSpecifierInput("PowerShell(gci src *)")).toBe("PowerShell(get-childitem src *)");
+    // An alias is a different literal command name: rule identity never resolves it (it means different programs across editions).
+    expect(normalizeRuleSpecifierInput("PowerShell(gci src *)")).toBe("PowerShell(gci src *)");
     // The stored form must already be canonical: a hand-written alias or capital is refused, never mapped.
     expect(() => validatePermissionRule({ pattern: "PowerShell(Get-ChildItem src)", action: "allow" })).toThrow(/canonical/);
   });
@@ -66,7 +67,7 @@ describe("PowerShell(...) rule grammar", () => {
 describe("PowerShell rule shape", () => {
   it("reads literal simple commands in canonical form and names anything else opaque", () => {
     expect(powerShellRuleShape("Get-ChildItem -Recurse src")).toEqual({ ok: true, commands: [["get-childitem", "-recurse", "src"]], opaque: null });
-    expect(powerShellRuleShape("gci src | Select-Object -First 1")).toEqual({ ok: true, commands: [["get-childitem", "src"], ["select-object", "-first", "1"]], opaque: null });
+    expect(powerShellRuleShape("gci src | Select-Object -First 1")).toEqual({ ok: true, commands: [["gci", "src"], ["select-object", "-first", "1"]], opaque: null });
     expect(powerShellRuleShape("$x = gci src")).toMatchObject({ ok: true, opaque: "assignment" });
     // A non-literal argument stays visible as null, so a deny prefix still sees the literal words before it.
     expect(powerShellRuleShape("Remove-Item $env:TEMP")).toEqual({ ok: true, commands: [["remove-item", null]], opaque: "non-literal argument" });
@@ -80,8 +81,9 @@ describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) r
     expect(powershell("Get-ChildItem src", false)).toMatchObject({ decision: "ask", layer: 6 });
     manager.setRules([{ pattern: "PowerShell(get-childitem src)", action: "allow" }]);
     expect(powershell("Get-ChildItem src", false)).toMatchObject({ decision: "allow", layer: 3 });
-    // The same command by alias or case is the same canonical argv.
-    expect(powershell("gci src", false)).toMatchObject({ decision: "allow", layer: 3 });
+    // The same cmdlet in another case is the same canonical argv; an alias is not (it can name another program).
+    expect(powershell("GET-CHILDITEM src", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("gci src", false)).toMatchObject({ decision: "ask" });
     expect(powershell("GET-CHILDITEM src", false)).toMatchObject({ decision: "allow", layer: 3 });
     // Any other argument, a second command or an expansion is not covered.
     expect(powershell("Get-ChildItem src -Recurse", false)).toMatchObject({ decision: "ask" });
@@ -130,8 +132,90 @@ describe("unsandboxed PowerShell runs unasked only on an exact PowerShell(...) r
 
   it("applies a session PowerShell rule to its conversation only", () => {
     manager.addSessionRule("conversation-a", "PowerShell(get-childitem src)");
-    expect(powershell("gci src", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow", layer: 3 });
-    expect(powershell("gci src", false, { sessionId: "conversation-b" })).toMatchObject({ decision: "ask" });
+    expect(powershell("Get-ChildItem src", false, { sessionId: "conversation-a" })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("Get-ChildItem src", false, { sessionId: "conversation-b" })).toMatchObject({ decision: "ask" });
+  });
+});
+
+// Security review of #223: a native program's arguments are case-sensitive data, and an alias can name a different program per edition or platform.
+describe("PowerShell rule identity keeps native arguments and command names literal", () => {
+  it.each([
+    ["git branch -d feature", "git branch -D feature"],
+    ["git clean -n", "git clean -N"],
+    ["git push -n origin", "git push -N origin"],
+    ["git log -s", "git log -S"],
+    ["java -Dfoo=SAFE Main", "java -Dfoo=safe Main"],
+    ["java -Dfoo=SAFE Main", "java -dfoo=SAFE Main"],
+  ])("a rule for %s does not run %s", (allowed, other) => {
+    const rule = buildShellRuleApproval("powershell", allowed, dir, { allow: true, deny: true }).exactRule;
+    expect(rule).toBe(`PowerShell(${allowed})`);
+    manager.setRules([{ pattern: rule!, action: "allow" }]);
+    expect(powershell(allowed, false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell(other, false)).toMatchObject({ decision: "ask" });
+  });
+
+  it("folds a known cmdlet's parameter names but never the value after the colon", () => {
+    expect(normalizeRuleSpecifierInput("PowerShell(Get-ChildItem -Path:Foo)")).toBe("PowerShell(get-childitem -path:Foo)");
+    manager.setRules([{ pattern: "PowerShell(get-childitem -path:Foo)", action: "allow" }]);
+    expect(powershell("Get-ChildItem -PATH:Foo", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("Get-ChildItem -Path:foo", false)).toMatchObject({ decision: "ask" });
+  });
+
+  it("keeps an unknown command's tokens verbatim, its name included", () => {
+    expect(normalizeRuleSpecifierInput("PowerShell(MyTool -Flag X)")).toBe("PowerShell(MyTool -Flag X)");
+  });
+
+  it.each([
+    ["sc", "sc config svc", "PowerShell(set-content config svc)"],
+    ["curl", "curl https://x.test", "PowerShell(invoke-webrequest https://x.test)"],
+    ["wget", "wget https://x.test", "PowerShell(invoke-webrequest https://x.test)"],
+    ["ls", "ls src", "PowerShell(get-childitem src)"],
+    ["rm", "rm build", "PowerShell(remove-item build)"],
+    ["cat", "cat notes.txt", "PowerShell(get-content notes.txt)"],
+  ])("an allow for the cmdlet never runs %s, which is a native program in some editions", (_alias, command, cmdletRule) => {
+    manager.setRules([{ pattern: cmdletRule, action: "allow" }]);
+    expect(powershell(command, false)).toMatchObject({ decision: "ask" });
+  });
+
+  it("an alias allow is its own literal rule, and a cmdlet deny still meets the alias", () => {
+    manager.setRules([{ pattern: "PowerShell(ls src)", action: "allow" }]);
+    expect(powershell("ls src", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("Get-ChildItem src", false)).toMatchObject({ decision: "ask" });
+    manager.setRules([{ pattern: "PowerShell(remove-item *)", action: "deny" }]);
+    expect(powershell("rm build", true)).toMatchObject({ decision: "deny", layer: 1 });
+  });
+});
+
+// Security review of #223: an -EncodedCommand payload meets the same floors as plaintext -Command, and no allow rule covers it.
+describe("PowerShell -EncodedCommand", () => {
+  const encode = (script: string) => Buffer.from(script, "utf16le").toString("base64");
+  const DESTRUCTIVE = "rm -rf /";
+
+  it.each(["powershell", "bash"] as const)("a destructive decoded payload hits the same forced modal as plaintext -Command (%s)", (dialect) => {
+    const run = (command: string) => manager.checkDetailed(dialect, "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect, command, cwd: dir },
+      shellExecution: { runsSandboxed: true },
+    });
+    const plaintext = run(`pwsh -NoProfile -Command "${DESTRUCTIVE}"`);
+    expect(plaintext).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    for (const flag of ["-EncodedCommand", "-enc", "-e", "-ec"]) {
+      expect(run(`pwsh -NoProfile ${flag} ${encode(DESTRUCTIVE)}`)).toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: plaintext.reason });
+    }
+  });
+
+  it("never runs an encoded command on an allow rule, and the card shows the decoded script with no exact rule", () => {
+    const command = `pwsh -EncodedCommand ${encode("Get-ChildItem src")}`;
+    manager.setRules([{ pattern: `PowerShell(${command})`, action: "allow" }]);
+    expect(powershell(command, false)).toMatchObject({ decision: "ask" });
+    const card = buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true });
+    expect(card.exactRule).toBeNull();
+    expect(card.decodedCommands).toEqual(["Get-ChildItem src"]);
+    expect(buildShellRuleApproval("powershell", "Get-ChildItem src", dir, { allow: true, deny: true })).not.toHaveProperty("decodedCommands");
+  });
+
+  it("leaves a payload that is not UTF-16LE text opaque", () => {
+    const card = buildShellRuleApproval("powershell", "pwsh -EncodedCommand AAAA", dir, { allow: true, deny: true });
+    expect(card).not.toHaveProperty("decodedCommands");
   });
 });
 
@@ -157,9 +241,11 @@ describe("the rules a PowerShell card offers", () => {
   });
 
   it("checks an edited rule against the PowerShell matcher", () => {
-    expect(shellRuleCoversCommand("powershell", "PowerShell(get-childitem *)", "allow", "gci src", dir)).toBe(true);
+    expect(shellRuleCoversCommand("powershell", "PowerShell(get-childitem *)", "allow", "Get-ChildItem src", dir)).toBe(true);
+    expect(shellRuleCoversCommand("powershell", "PowerShell(get-childitem *)", "allow", "gci src", dir)).toBe(false);
+    expect(shellRuleCoversCommand("powershell", "PowerShell(get-childitem *)", "deny", "gci src", dir)).toBe(true);
     expect(shellRuleCoversCommand("powershell", "PowerShell(remove-item *)", "deny", "ri build", dir)).toBe(true);
-    expect(shellRuleCoversCommand("powershell", "PowerShell(get-childitem other)", "allow", "gci src", dir)).toBe(false);
+    expect(shellRuleCoversCommand("powershell", "PowerShell(get-childitem other)", "allow", "Get-ChildItem src", dir)).toBe(false);
     expect(shellRuleCoversCommand("powershell", "Bash(gci src)", "allow", "gci src", dir)).toBe(false);
     expect(isWildcardShellRule("PowerShell(get-childitem *)")).toBe(true);
     expect(isWildcardShellRule("PowerShell(get-childitem src)")).toBe(false);

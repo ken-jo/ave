@@ -18,6 +18,7 @@ import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rule
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
 import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { encodedPowerShellPayloads } from "./rules/powershell-encoded-command.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./rules/shell-prefix-values.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
@@ -1231,6 +1232,10 @@ export class PermissionManager {
     const shellExecution = context.shellExecution ?? { runsSandboxed: false };
     const parsedSubject = ruleSubject?.dialect === "bash" ? parseShellCommand(ruleSubject.command) : undefined;
     const powerShellSignals = ruleSubject?.dialect === "powershell" ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd) : undefined;
+    // Scripts handed to PowerShell as `-EncodedCommand` (from either dialect) are decoded and meet the same floors as plaintext `-Command`; no allow
+    // rule covers a command that carries one.
+    const encodedScripts = ruleSubject === undefined ? [] : encodedPowerShellPayloads(ruleSubject.command);
+    const encodedSignals = encodedScripts.map((script) => inspectPowerShellCommand(script, ruleSubject!.cwd));
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
       ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed }
@@ -1238,36 +1243,40 @@ export class PermissionManager {
     const sessionRules = context.sessionId === undefined || ruleSubject === undefined
       ? [] : this.sessionRules.get(approvalConversationRoot(context.sessionId)) ?? [];
     // `Bash(...)` rules match bash and `PowerShell(...)` rules match PowerShell; neither dialect's rules satisfy the other.
-    const shellRuleEvaluation = shellSubject
+    const rawShellRuleEvaluation = shellSubject
       ? evaluateShellSubject(shellSubject, this.rules, projectRules, sessionRules)
       : ruleSubject?.dialect === "powershell"
         ? evaluatePowerShellSubject({
           command: ruleSubject.command,
           exactAllowOnly: !shellExecution.runsSandboxed,
-          floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive ?? powerShellSignals!.ordinaryAsk ?? null,
+          floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive ?? powerShellSignals!.ordinaryAsk
+            ?? (encodedScripts.length > 0 ? "encoded command" : null),
         }, this.rules, projectRules, sessionRules)
         : undefined;
+    const shellRuleEvaluation = encodedScripts.length > 0 && rawShellRuleEvaluation?.decision === "allow"
+      ? { decision: null, reason: "an encoded command is never covered by an allow rule" } as const
+      : rawShellRuleEvaluation;
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
       isDestructiveShellText(ruleSubject.command) ||
+      encodedScripts.some(isDestructiveShellText) ||
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
     // Credential-exfiltration floor: never remembered, never auto-allowed, in any mode, for every host shell (rules/shell-exfiltration.ts, rules/powershell-exfiltration.ts).
-    const shellExfiltration = shellSubject
+    const shellExfiltration = (shellSubject
       ? shellExfiltrationSignal(shellSubject.command, shellSubject.cwd)
       : ruleSubject?.dialect === "powershell"
         ? powerShellSignals!.exfiltration
-        : null;
+        : null) ?? encodedSignals.find((signals) => signals.exfiltration !== null)?.exfiltration ?? null;
     // Sensitive-path floor for shell arguments (same normalization as the exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
     const shellSensitivePath = shellExfiltration !== null
       ? null
-      : shellSubject
+      : (shellSubject
         ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
-        : ruleSubject?.dialect === "powershell"
-          ? powerShellSignals!.sensitive
-          : null;
+        : ruleSubject?.dialect === "powershell" ? powerShellSignals!.sensitive : null)
+          ?? encodedSignals.find((signals) => signals.sensitive !== null)?.sensitive ?? null;
 
     // 1. Deny rules (highest priority, immutable)
     for (const rule of this.rules) {
