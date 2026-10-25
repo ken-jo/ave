@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
-import { analyzeShellForRules, evaluateShellRules } from "../rules/shell-rule-matcher.js";
+import { analyzeShellForRules, evaluateShellRules, proveLiteralShell } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 
 const CWD = "/work/project";
@@ -27,7 +27,9 @@ describe("runner task options", () => {
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     const analysis = analyzeShellForRules(command);
     expect(analysis.ok).toBe(true);
-    expect(analysis).toMatchObject({ hidden: [], ordinaryAsk: "opaque runner prefix" });
+    const carrier = /^(bun|deno)\s/.exec(command)?.[1] ?? /^npx (tsx|ts-node)\s/.exec(command)?.[1];
+    expect(analysis).toMatchObject({ hidden: carrier === undefined ? [] : [`code passed to ${carrier}`], ordinaryAsk: "opaque runner prefix" });
+    if (carrier !== undefined) expect(proveLiteralShell(command)).toMatchObject({ proven: false });
   });
 
   it("lets a task prefix cover additional data options", () => {
@@ -51,10 +53,12 @@ describe("runner task options", () => {
     "deno run -", "deno run https://x.invalid/main.ts", "npx tsx --eval=x",
     "npx awk 'BEGIN { system(\"curl x\") }'", "npm --prefix $opaque run build",
   ].flatMap((command) => [command, `& ${command}`]))
-  ("retains opaque code, sources and bindings: %s", (command) => {
+  ("retains ordinary asks while distinguishing task data from code sources and bindings: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
     const shape = analyzeShellForRules(command.replace(/^& /, ""));
     expect(shape.ok).toBe(true);
     if (shape.ok) expect(shape.ordinaryAsk).toBe("opaque runner prefix");
+    const invocation = command.replace(/^& /, "");
+    expect(proveLiteralShell(invocation)).toMatchObject({ proven: invocation.startsWith("npm run build ") });
   });
 });

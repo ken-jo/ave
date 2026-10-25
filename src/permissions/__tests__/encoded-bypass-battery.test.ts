@@ -3,9 +3,12 @@ import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager, type PermissionRule } from "../permission-manager.js";
-import { inspectEncodedPowerShell } from "../rules/powershell-encoded-command.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
-import { parseShellCommand } from "../rules/shell-prefix-policy.js";
+import * as shellPolicy from "../rules/shell-prefix-policy.js";
+import * as powerShellPolicy from "../rules/powershell-exfiltration.js";
+import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
+import { normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
+import { validatePermissionRule } from "../rules/rule-files.js";
 import {
   __resetSessionStoreForTest,
   canonicalStringify,
@@ -17,29 +20,8 @@ import {
 import type { ShellRuleDialect, UserApprovalScope } from "../../shared/permissions-events.js";
 import { encodeScript } from "./fixtures/encoded-command.js";
 
-// Intended location: src/permissions/__tests__/encoded-bypass-battery.test.ts.
-// Command strings are parser inputs only; this suite never executes them.
-// These are required outcomes, not snapshots of the current implementation.
-// The contract is a flat UTF-16LE Base64 scan, including runs inside tokens and
-// recursively decoded text; it does not depend on a launcher's argument grammar.
-// After removing an encoding BOM, at least 90% of UTF-16 code units must be in
-// U+0009-U+007E, with at least eight such units, to qualify as encoded text.
-// Readable payloads, including data-position payloads, require decoded display.
-// An unresolved encoded flag requires an earlier token in the same command
-// whose basename (without .exe/.com/.cmd/.bat) starts with pwsh or powershell,
-// case-insensitively, or a dynamic program token. Without either trigger, an
-// encoded-looking flag is ordinary data. An earlier matching data token counts.
-// Unresolved encoded operands and stdin-to-interpreter pipelines require the
-// hidden-code floor without claiming their final script is statically known.
-// Here-strings, stop-parsing and command-variable expansion cannot mint exact
-// rules. Literal script-file execution retains its measured mainline behavior.
-// Source dialects are modeled independently of the test host. Installed shells
-// are not prerequisites, including for native Windows stop-parsing fixtures.
-// Layer 2 is the human-only floor, layer 3 a rule/confinement allow, and layer 6
-// the ordinary unsandboxed ask. Headless checks here only exclude an allow;
-// invocation-level denial and audit are outside this unit suite.
-// HIDDEN is asserted through the policy outcome. Inspection may represent it
-// with decoded scripts or its unreadable-code flag; either requires layer 2.
+// Commands are inert parser fixtures. The sandbox owns execution confinement;
+// unsandboxed exact rules require a complete proof of literal argv.
 const DESTRUCTIVE_SCRIPT = "rm -rf /";
 const DESTRUCTIVE_PAYLOAD = "cgBtACAALQByAGYAIAAvAA==";
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
@@ -54,40 +36,23 @@ const LOW_ASCII_SCRIPT = "Write-Output '한글로 작성한 안전한 문자열�
 const KOREAN_SCRIPT = "Write-Output '한글'; Get-Date; Get-Location; Write-Output 'ready';";
 const PAYLOAD_LEFT = DESTRUCTIVE_PAYLOAD.slice(0, 12);
 const PAYLOAD_RIGHT = DESTRUCTIVE_PAYLOAD.slice(12);
-// Each individual noise word decodes to an odd byte count, and joined windows
-// remain mostly zero units. None is qualifying text. A comment keeps the noise
-// inert at execution while still exercising the raw scan's finite work budget.
 const SCAN_NOISE = Array.from({ length: 128 }, (_, index) => `AAAAAAAA${index.toString(16).padStart(4, "0")}`).join(" ");
-// Readable data in a comment must not consume every disclosure slot before the
-// actual command's payload. The final script stays below the depth/byte bounds.
 const DISCLOSURE_NOISE = Array.from({ length: 8 }, (_, index) => encodeScript(`Write-Output ready${index}`)).join(":");
-// Whitespace anywhere inside a base64 run is ignored (as .NET's FromBase64String does), so a payload split into odd-sized chunks still decodes.
 const SPACED_ODD_PAYLOAD = "cgB tAC AAL QBy AGY AIA AvA A==";
-// Over the hard input cap: no scanning, hidden on length alone.
+// Long input remains unproven without entering either dialect parser.
 const OVER_CAP_COMMAND = `echo ${"a".repeat(17_000)}`;
 // A lex that runs out of budget (a long trailing comment) must not read as an empty command.
 const LEX_BUDGET_COMMAND = `pwsh -enc $env:X # ${"x".repeat(10_000)}`;
-
-// A fixture check independent of the production decoder. Count UTF-16 code
-// units, not Unicode code points; a surrogate pair contributes two units.
-function meetsEncodedTextCriterion(script: string): boolean {
-  const text = script.replace(/^\uFEFF/, "");
-  let asciiUnits = 0;
-  for (let index = 0; index < text.length; index += 1) {
-    const unit = text.charCodeAt(index);
-    if (unit >= 0x09 && unit <= 0x7e) asciiUnits += 1;
-  }
-  return asciiUnits >= 8 && asciiUnits * 10 >= text.length * 9;
-}
 
 interface EncodedCase {
   readonly name: string;
   readonly dialect: ShellRuleDialect;
   readonly command: string;
-  // A pre-existing allow snapshot, independent of the card being tested.
-  // Exact literal argv is used where representable; otherwise a launcher prefix.
   readonly allowBody: string;
   readonly decodedScript?: string;
+  readonly exactAllowed?: boolean;
+  readonly offerAllowed?: boolean;
+  readonly visibleFloor?: boolean;
 }
 
 const ENCODED_CASES: readonly EncodedCase[] = [
@@ -110,7 +75,7 @@ const ENCODED_CASES: readonly EncodedCase[] = [
 
 // All payloads below are literal UTF-16LE Base64, including nested encodings.
 const COMPOSED_CASES: readonly EncodedCase[] = [
-  { name: "versioned shell executable", dialect: "bash", command: `ksh93 -c '${INNER_COMMAND}'`, allowBody: "ksh93 *" },
+  { name: "versioned shell executable", dialect: "bash", exactAllowed: true, command: `ksh93 -c '${INNER_COMMAND}'`, allowBody: "ksh93 *" },
   { name: "alternate shell with startup files disabled", dialect: "bash", command: `tcsh -f -c '${INNER_COMMAND}'`, allowBody: "tcsh *" },
   { name: "glued long command option", dialect: "bash", command: `fish --command='${INNER_COMMAND}'`, allowBody: "fish *" },
   { name: "glued long initialization option", dialect: "bash", command: `fish --init-command='${INNER_COMMAND}' -c exit`, allowBody: "fish *" },
@@ -132,20 +97,18 @@ const UTF16_DATA_CASES = [
   { name: "UTF-16LE payload inside a commit message", command: `git commit -m 'snapshot ${DESTRUCTIVE_PAYLOAD}'`, allowBody: "git commit *", decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "UTF-16LE payload inside quoted data passed through a wrapper", command: `env printf %s '${INNER_COMMAND}'`, allowBody: "env *", decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "UTF-16LE Base64 run inside a larger data token", command: `printf %s 'data:${DESTRUCTIVE_PAYLOAD}:end'`, allowBody: "printf *", decodedScript: DESTRUCTIVE_SCRIPT },
-  // An encoded benign script still needs the hidden-code floor. Destructive
-  // text matching alone must not accidentally satisfy every positive case.
   { name: "UTF-16LE payload decoding to a benign script", command: `printf %s ${encodeScript("Get-Date")}`, allowBody: `printf %s ${encodeScript("Get-Date")}`, decodedScript: "Get-Date" },
   { name: "mostly ASCII UTF-16LE payload with a Korean literal", command: `printf %s ${encodeScript(KOREAN_SCRIPT)}`, allowBody: `printf %s ${encodeScript(KOREAN_SCRIPT)}`, decodedScript: KOREAN_SCRIPT },
 ] as const;
 
-const ASCII_THRESHOLD_CASES = [
-  { name: "exactly ninety percent ASCII-range units", script: "Write-Output '한글'; #", qualifies: true },
-  { name: "just below ninety percent ASCII-range units", script: "Write-Output '한글';#", qualifies: false },
-  { name: "exactly eight ASCII-range units", script: "Get-Date", qualifies: true },
-  { name: "only seven ASCII-range units", script: "Get-Dat", qualifies: false },
-  { name: "a surrogate pair counted as two non-ASCII units", script: "Get-Date #😀", qualifies: false },
-  { name: "a UTF-16LE data argument below the ASCII ratio", script: LOW_ASCII_SCRIPT, qualifies: false },
-  { name: "tab and line endings counted as ASCII-range units", script: "\tGet-Date\r\n", qualifies: true },
+const LITERAL_TEXT_CASES = [
+  { name: "exactly ninety percent ASCII-range units", script: "Write-Output '한글'; #" },
+  { name: "just below ninety percent ASCII-range units", script: "Write-Output '한글';#" },
+  { name: "exactly eight ASCII-range units", script: "Get-Date" },
+  { name: "only seven ASCII-range units", script: "Get-Dat" },
+  { name: "a surrogate pair counted as two non-ASCII units", script: "Get-Date #😀" },
+  { name: "a UTF-16LE data argument below the ASCII ratio", script: LOW_ASCII_SCRIPT },
+  { name: "tab and line endings counted as ASCII-range units", script: "\tGet-Date\r\n" },
 ] as const;
 
 // These operands cannot be resolved statically. Even where a literal value
@@ -166,25 +129,21 @@ const UNRESOLVED_OPERAND_CASES: readonly EncodedCase[] = [
   { name: "distribution wrapper with an inner variable operand", dialect: "bash", command: "wsl pwsh -enc $X", allowBody: "wsl *" },
   { name: "environment wrapper with an inner variable operand", dialect: "bash", command: "env pwsh -enc $X", allowBody: "env *" },
   { name: "dynamic called program with a variable operand", dialect: "powershell", command: "& $p -enc $X", allowBody: "pwsh *" },
-  { name: "an earlier matching name in ordinary data from a command shell", dialect: "bash", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
-  { name: "an earlier matching name in ordinary data from a structured shell", dialect: "powershell", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
+  { name: "an earlier matching name in ordinary data from a command shell", exactAllowed: true, dialect: "bash", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
+  { name: "an earlier matching name in ordinary data from a structured shell", exactAllowed: true, dialect: "powershell", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
 ];
 
 const PIPELINE_CASES: readonly EncodedCase[] = [
-  { name: "literal text piped to a shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | sh`, allowBody: "sh *" },
-  { name: "literal text piped to an alternate shell", dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | bash`, allowBody: "bash *" },
-  { name: "literal text piped to an explicit stdin shell", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | pwsh -`, allowBody: "pwsh *" },
-  { name: "literal text piped to an expression evaluator", dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | iex`, allowBody: "iex *" },
+  { name: "literal text piped to a shell", visibleFloor: true, dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | sh`, allowBody: "sh *" },
+  { name: "literal text piped to an alternate shell", visibleFloor: true, dialect: "bash", command: `printf %s '${DESTRUCTIVE_SCRIPT}' | bash`, allowBody: "bash *" },
+  { name: "literal text piped to an explicit stdin shell", visibleFloor: true, dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | pwsh -`, allowBody: "pwsh *" },
+  { name: "literal text piped to an expression evaluator", visibleFloor: true, dialect: "powershell", command: `Write-Output '${DESTRUCTIVE_SCRIPT}' | iex`, allowBody: "iex *" },
   { name: "UTF-8 Base64 decoded into a shell pipeline", dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh`, allowBody: "sh *" },
   { name: "UTF-8 Base64 decoded into a shell through a wrapper", dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | env sh`, allowBody: "env *" },
   { name: "text piped to an interpreter's explicit stdin", dialect: "bash", command: "printf %s 'print(1)' | python3 -", allowBody: "python3 *" },
   { name: "text piped to a command-stdin invocation", dialect: "powershell", command: "Write-Output Get-Date | powershell -Command -", allowBody: "powershell *" },
 ];
 
-// Unknown environment values are intentionally unresolved. TARGET can name a
-// shell and PAYLOAD can contain encoded code; no static value or disclosure is
-// required by the unresolved-operand contract. A child command string is code
-// at the next depth, including when its outer argv word is a quoted literal.
 const BOUNDED_AND_NESTED_CASES: readonly EncodedCase[] = [
   { name: "bash: scan budget", dialect: "bash", command: `# ${SCAN_NOISE}\npwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: `pwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}` },
   { name: "powershell: scan budget", dialect: "powershell", command: `# ${SCAN_NOISE}\npwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: `pwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}` },
@@ -207,17 +166,13 @@ const BOUNDED_AND_NESTED_CASES: readonly EncodedCase[] = [
   { name: "powershell: alternate launcher with a dynamic child", dialect: "powershell", command: "pwsh-preview -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh-preview *" },
   { name: "bash: glued long option feeds a pipeline", dialect: "bash", command: `fish --command='printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh'`, allowBody: "fish *" },
   { name: "powershell: glued long option feeds a pipeline", dialect: "powershell", command: `fish --command='printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh'`, allowBody: "fish *" },
-  // A glued cmd slash option is a cmd (not PowerShell) spelling, so it is driven from the command-shell dialect; the spaced form is also read as a
-  // child command string under PowerShell.
   { name: "bash: glued cmd slash option carries encoded code", dialect: "bash", command: 'cmd /c"pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
   { name: "powershell: spaced cmd slash option carries encoded code", dialect: "powershell", command: 'cmd /c "pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
 ];
 
-// Whitespace inside a base64 run is ignored, so these decode to the readable
-// destructive script and the card must disclose it.
 const WHITESPACE_PAYLOAD_CASES: readonly EncodedCase[] = [
-  { name: "bash: whitespace-split payload in a data position", dialect: "bash", command: `printf %s ${SPACED_ODD_PAYLOAD}`, allowBody: `printf %s ${SPACED_ODD_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
-  { name: "powershell: whitespace-split payload in a data position", dialect: "powershell", command: `printf %s ${SPACED_ODD_PAYLOAD}`, allowBody: `printf %s ${SPACED_ODD_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
+  { name: "bash: whitespace-split payload in a data position", exactAllowed: true, dialect: "bash", command: `printf %s ${SPACED_ODD_PAYLOAD}`, allowBody: `printf %s ${SPACED_ODD_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
+  { name: "powershell: whitespace-split payload in a data position", exactAllowed: true, dialect: "powershell", command: `printf %s ${SPACED_ODD_PAYLOAD}`, allowBody: `printf %s ${SPACED_ODD_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "bash: whitespace-split payload in a quoted encoded operand", dialect: "bash", command: `pwsh -enc '${SPACED_ODD_PAYLOAD}'`, allowBody: "pwsh *", decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "powershell: whitespace-split payload in a quoted encoded operand", dialect: "powershell", command: `pwsh -enc '${SPACED_ODD_PAYLOAD}'`, allowBody: "pwsh *", decodedScript: DESTRUCTIVE_SCRIPT },
 ];
@@ -265,138 +220,141 @@ function check(command: string, dialect: ShellRuleDialect, runsSandboxed: boolea
   });
 }
 
-function savedAllowSnapshot(fixture: EncodedCase): PermissionRule[] {
+
+function storedAllowPattern(fixture: EncodedCase): string {
   const kind = fixture.dialect === "bash" ? "Bash" : "PowerShell";
-  return [
-    { pattern: fixture.dialect, action: "allow" },
-    { pattern: `${kind}(${fixture.allowBody})`, action: "allow" },
-  ];
+  const candidate = normalizeRuleSpecifierInput(`${kind}(${fixture.command})`);
+  try {
+    validatePermissionRule({ pattern: candidate, action: "allow" });
+    const spec = parseRuleSpecifier(candidate);
+    if ((spec.kind === "bash" || spec.kind === "powershell") && !spec.wildcard) return candidate;
+  } catch {
+    // Unrepresentable syntax still exercises a previously saved broad allow.
+  }
+  return `${kind}(${fixture.allowBody})`;
 }
 
-function requireHiddenFloor(fixture: EncodedCase, decodedScript: string | null): void {
-  const inspection = inspectEncodedPowerShell(fixture.command, fixture.dialect, cwd);
-  const card = buildShellRuleApproval(fixture.dialect, fixture.command, cwd, { allow: true, deny: true }, SESSION_ID);
-
-  // Decode expectations come from the literal fixture, never from another
-  // production decoder or from the card's own proposed rule.
-  expect.soft(inspection.hidden || inspection.scripts.length > 0, "hidden code must be recognized").toBe(true);
-  if (decodedScript !== null) {
-    expect.soft(meetsEncodedTextCriterion(decodedScript), "the readable fixture must meet the ASCII-unit criterion").toBe(true);
-    const disclosed = (scripts: readonly string[]) => scripts.map((script) => script.replace(/^\uFEFF/, ""));
-    expect.soft(disclosed(inspection.scripts), "the readable terminal script must be recovered").toContain(decodedScript);
-    expect.soft(disclosed(card.decodedCommands ?? []), "the card must disclose the readable terminal script").toContain(decodedScript);
-  }
-  expect.soft(card.exactRule, "hidden code must not offer an exact allow").toBeNull();
-  expect.soft(card.sessionAllowed).toBe(false);
-  expect.soft(card.persistentAllowed).toBe(false);
-
-  // Seed the manager's loaded-policy snapshot directly, so a future save-time
-  // rejection cannot make coverage of already-stored allows disappear. Some
-  // broad command-shell prefixes are intentionally inert; the exact literal
-  // fixtures also exercise eligible rules independently of those prefixes.
-  // Quoted/grouped argv cannot have a representable exact rule. For those
-  // fixtures the modal and disclosure checks carry the additional coverage;
-  // an inert prefix is not evidence of an otherwise-matching allow.
+function requireLaneBehavior(fixture: EncodedCase): void {
+  const { command, dialect, exactAllowed = false, visibleFloor = false } = fixture;
+  const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
+  const offerAllowed = fixture.offerAllowed ?? exactAllowed;
+  if (offerAllowed) expect.soft(card.exactRule, "literal data can be remembered").not.toBeNull();
+  else expect.soft(card.exactRule, "unproven or sensitive commands cannot be remembered").toBeNull();
+  expect.soft(card.sessionAllowed).toBe(offerAllowed);
+  expect.soft(card.persistentAllowed).toBe(offerAllowed);
   for (const saved of [false, true]) {
-    manager.setRules(saved ? savedAllowSnapshot(fixture) : []);
-    for (const runsSandboxed of [true, false]) {
-      const label = `${runsSandboxed ? "sandboxed" : "unsandboxed"}, ${saved ? "saved allow present" : "no saved allow"}`;
-      expect.soft(check(fixture.command, fixture.dialect, runsSandboxed), label).toMatchObject({
-        decision: "ask", layer: 2, forceModal: true,
-      });
-    }
-    // The caller may turn a human-only ask into a headless denial; it may never
-    // turn that ask into an allow because an exact or broad grant was loaded.
-    for (const runsSandboxed of [true, false]) {
-      expect.soft(check(fixture.command, fixture.dialect, runsSandboxed, true).decision, "headless execution").not.toBe("allow");
-    }
+    // The legacy snapshot also tests rules saved before literal proof existed.
+    const rules: PermissionRule[] = saved ? [
+      { pattern: dialect, action: "allow" },
+      { pattern: storedAllowPattern(fixture), action: "allow" },
+    ] : [];
+    manager.setRules(rules);
+    const ordinary = check(command, dialect, false);
+    expect.soft(ordinary.decision, `unsandboxed, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "ask");
+    expect.soft(check(command, dialect, false, true).decision, `headless, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "deny");
+    const sandboxed = check(command, dialect, true);
+    expect.soft(sandboxed, `sandboxed, saved=${saved}`).toMatchObject(visibleFloor
+      ? { decision: "ask", layer: 2, forceModal: true }
+      : { decision: "allow", layer: 3 });
+    if (!visibleFloor) expect.soft(sandboxed.forceModal).not.toBe(true);
   }
 }
 
-describe("encoded launcher approvals", () => {
-  it.each(ENCODED_CASES)("$name", (fixture) => requireHiddenFloor(fixture, DESTRUCTIVE_SCRIPT));
+const CARRIER_AND_DATA_CASES: readonly EncodedCase[] = [
+  ...ENCODED_CASES,
+  ...COMPOSED_CASES,
+  ...UTF16_DATA_CASES.flatMap((fixture) => (["bash", "powershell"] as const).map((dialect) => ({ ...fixture, dialect, exactAllowed: true }))),
+  ...UNRESOLVED_OPERAND_CASES,
+  ...PIPELINE_CASES,
+  ...BOUNDED_AND_NESTED_CASES,
+  ...WHITESPACE_PAYLOAD_CASES,
+];
+
+describe("literal proof and execution lanes", () => {
+  it.each(CARRIER_AND_DATA_CASES)("$dialect: $name", requireLaneBehavior);
 });
 
-describe("composed encoded launcher approvals", () => {
-  it.each(COMPOSED_CASES)("$name", (fixture) => requireHiddenFloor(fixture, fixture.decodedScript ?? DESTRUCTIVE_SCRIPT));
-});
+const OPAQUE_CARRIER_CASES: readonly EncodedCase[] = [
+  { name: "redirect with a variable operand", dialect: "bash", command: "pwsh -enc $env:PAYLOAD > out.txt", allowBody: "pwsh *" },
+  { name: "redirect with a backtick escaped operand", dialect: "powershell", command: "pwsh -enc cgBtACAALQBy`AGYAIAAvAA== > out.txt", allowBody: "pwsh *" },
+  { name: "caret escape inside a command string", dialect: "powershell", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
+  { name: "caret escape inside a command string from bash", dialect: "bash", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
+  { name: "nine padding chunks before a stdin carrier", dialect: "bash", command: `printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD} | pwsh -Command -`, allowBody: "pwsh *" },
+  { name: "two hundred fifty-six padding chunks in an encoded operand", dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
+  { name: "one hundred kilobyte input", dialect: "bash", command: `echo ${"a".repeat(100_000)}`, allowBody: "echo *" },
+  { name: "stdin to a script-file interpreter", dialect: "bash", command: "printf input | python3 scripts/consume.py", allowBody: "python3 *" },
+  ...(["bash", "powershell"] as const).flatMap((dialect) => [
+    { name: "quoted padding remains literal data", dialect, command: `printf %s '${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "printf *", exactAllowed: true },
+    { name: "quoted padding remains a carrier operand", dialect, command: `pwsh -enc '${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
+    { name: "literal operand after sixty-four decoys", dialect, command: `# ${Array.from({ length: 64 }, (_, index) => encodeScript(`Write-Output decoy${index}`)).join(" ")}
+pwsh -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: "pwsh *" },
+  ]),
+];
 
-describe.each(["bash", "powershell"] as const)("UTF-16LE data positions (%s)", (dialect) => {
-  it.each(UTF16_DATA_CASES)("forces a modal for $name", (fixture) => {
-    requireHiddenFloor({ ...fixture, dialect }, fixture.decodedScript);
-  });
-});
-
-describe("unresolved encoded operands", () => {
-  it.each(UNRESOLVED_OPERAND_CASES)("$name", (fixture) => requireHiddenFloor(fixture, null));
-});
-
-describe("stdin interpreter pipelines", () => {
-  it.each(PIPELINE_CASES)("$name", (fixture) => requireHiddenFloor(fixture, null));
-});
-
-describe("scan bounds and nested code approvals", () => {
-  // When a work bound stops decoding, hidden + layer 2 remains mandatory;
-  // undiscovered text is not asserted. Disclosure cases above stay within the
-  // text byte/depth bounds and must show the executed terminal script itself.
-  it.each(BOUNDED_AND_NESTED_CASES)("$name", (fixture) => requireHiddenFloor(fixture, fixture.decodedScript ?? null));
-});
-
-describe("whitespace-split base64 payloads", () => {
-  it.each(WHITESPACE_PAYLOAD_CASES)("$name", (fixture) => requireHiddenFloor(fixture, fixture.decodedScript ?? null));
-});
-
-describe("worst-case scan performance", () => {
-  // A command at the hard input cap, packed with whitespace-separated base64
-  // chunks, must decide well within the interactive budget: the shared work
-  // budget keeps the scan linear. The threshold has headroom for CI hardware.
-  it("decides a capped worst-case command in under 50 ms", () => {
-    const chunk = "cgB tAC AAL QBy AGY AIA AvA ";
-    const command = `printf %s ${chunk.repeat(Math.floor((16_384 - 16) / chunk.length))}`;
-    // The host parses a bash command once and shares the result with the rule shape; the encoded scan reuses that parse rather than re-parsing.
-    const parsed = parseShellCommand(command);
-    inspectEncodedPowerShell(parsed, "bash", cwd);
-    inspectEncodedPowerShell(command, "powershell", cwd);
-    const start = performance.now();
-    for (let run = 0; run < 10; run += 1) {
-      inspectEncodedPowerShell(parsed, "bash", cwd);
-      inspectEncodedPowerShell(command, "powershell", cwd);
+describe("opaque carriers and padded data", () => {
+  it.each(OPAQUE_CARRIER_CASES)("$dialect: $name", (fixture) => {
+    requireLaneBehavior(fixture);
+    if (fixture.name === "literal operand after sixty-four decoys") {
+      const card = buildShellRuleApproval(fixture.dialect, fixture.command, cwd, { allow: true, deny: true }, SESSION_ID);
+      expect(card.decodedCommands).toEqual([DESTRUCTIVE_SCRIPT]);
     }
-    const perCall = (performance.now() - start) / 20;
-    expect(perCall).toBeLessThan(50);
   });
 });
 
-// Literal file execution is opaque code outside encoded-token inspection.
-// The on-disk text remains inert and is removed by afterEach. Its encoding
-// must not change the mainline policy outcome or create an exact-rule offer.
 describe.each(["bash", "powershell"] as const)("literal file-execution parity (%s)", (dialect) => {
   it.each(FILE_COMMANDS)("preserves the baseline for $name", ({ command }) => {
     const file = join(cwd, "x.ps1");
     writeFileSync(file, Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(DESTRUCTIVE_SCRIPT, "utf16le")]));
     expect(readFileSync(file).toString("utf16le")).toBe(`\uFEFF${DESTRUCTIVE_SCRIPT}`);
+    requireLaneBehavior({ name: "script file", dialect, command, allowBody: command });
     for (const runsSandboxed of [true, false]) {
-      const result = check(command, dialect, runsSandboxed);
-      const expected = runsSandboxed ? FILE_EXECUTION_BASELINE.sandboxed : FILE_EXECUTION_BASELINE.unsandboxed;
-      expect.soft({ decision: result.decision, layer: result.layer }).toEqual(expected);
-      expect.soft(result.forceModal ?? false).toBe(false);
+      manager.setRules([]);
+      expect(check(command, dialect, runsSandboxed)).toMatchObject(runsSandboxed
+        ? FILE_EXECUTION_BASELINE.sandboxed : FILE_EXECUTION_BASELINE.unsandboxed);
     }
-    const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
-    expect.soft(card.exactRule, "the exact-rule offer must preserve the baseline").toBe(FILE_EXECUTION_BASELINE.exactRule);
-    expect.soft(card.sessionAllowed).toBe(false);
-    expect.soft(card.persistentAllowed).toBe(false);
-    expect.soft(card.decodedCommands ?? []).toEqual([]);
+    expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID).decodedCommands ?? []).toEqual([]);
   });
 });
 
-describe.each(["bash", "powershell"] as const)("ASCII-unit payload threshold (%s)", (dialect) => {
-  it.each(ASCII_THRESHOLD_CASES)("classifies $name", ({ name, script, qualifies }) => {
-    expect.soft(meetsEncodedTextCriterion(script), "the fixture's declared boundary").toBe(qualifies);
+describe.each(["bash", "powershell"] as const)("literal encoded data (%s)", (dialect) => {
+  it.each(LITERAL_TEXT_CASES)("treats $name as data", ({ name, script }) => {
     const command = `printf %s ${encodeScript(script)}`;
-    if (qualifies) requireHiddenFloor({ name, dialect, command, allowBody: command }, script);
-    else requireLiteralBehavior(command, dialect);
+    requireLaneBehavior({ name, dialect, command, allowBody: command, exactAllowed: true });
+    expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID).decodedCommands ?? []).toEqual([]);
   });
 });
+
+describe.each(["bash", "powershell"] as const)("permission decision input bounds (%s)", (dialect) => {
+  it.each([16_384, 100_000])("decides %i characters through the complete manager path", (length) => {
+    const command = `printf %s ${"cgB tAC AAL QBy AGY AIA AvA ".repeat(Math.ceil(length / 28))}`.slice(0, length);
+    expect(command.length).toBe(length);
+    expect(command.length).toBeGreaterThan(MAX_LITERAL_COMMAND_LENGTH);
+    const bashParser = vi.spyOn(shellPolicy, "parseShellCommand");
+    const powerShellParser = vi.spyOn(powerShellPolicy, "inspectPowerShellCommand");
+    const powerShellShape = vi.spyOn(powerShellPolicy, "powerShellRuleShape");
+    try {
+      const start = performance.now();
+      const result = check(command, dialect, false);
+      const elapsed = performance.now() - start;
+      expect(result).toMatchObject({ decision: "ask", layer: 6 });
+      process.stdout.write(`permission decision ${dialect} ${length} chars: ${elapsed.toFixed(3)} ms\n`);
+      expect(elapsed).toBeLessThan(250);
+      expect(bashParser).not.toHaveBeenCalled();
+      expect(powerShellParser).not.toHaveBeenCalled();
+      expect(powerShellShape).not.toHaveBeenCalled();
+      const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
+      expect(card.exactRule).toBeNull();
+      expect(bashParser).not.toHaveBeenCalled();
+      expect(powerShellParser).not.toHaveBeenCalled();
+      expect(powerShellShape).not.toHaveBeenCalled();
+    } finally {
+      bashParser.mockRestore();
+      powerShellParser.mockRestore();
+      powerShellShape.mockRestore();
+    }
+  });
+});
+
 
 const BASE64_SHA256 = "47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU=";
 const SHA256_HEX = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
@@ -411,49 +369,35 @@ const LITERAL_COMMANDS = [
   { name: "a literal command-string invocation", command: "pwsh -Command Get-Date" },
   { name: "a hexadecimal hash argument", command: `git show ${SHA256_HEX}` },
   { name: "UTF-8 Base64 passed as ordinary data", command: `printf %s ${UTF8_DATA}` },
-  // These UTF-8 bytes form non-ASCII UTF-16LE units and fail the 90% criterion.
   { name: "longer UTF-8 Base64 passed as ordinary data", command: `printf %s ${LONG_UTF8_DATA}` },
   { name: "a commit message containing UTF-8 Base64 text", command: `git commit -m 'snapshot ${LONG_UTF8_DATA}'` },
   { name: "a wrapper passing plain literal text as data", command: "env printf %s 'record fixture changes'" },
   { name: "an encoded-looking flag passed as print data", command: "printf %s -enc 'not-base64!'" },
   { name: "a slash encoded-looking flag passed as print data", command: "printf %s /enc 'not-base64!'" },
   { name: "a dash-like encoded-looking flag passed as print data", command: "printf %s \u2013enc 'not-base64!'" },
-  { name: "an inline option of a script runtime", command: "node -e 'x'", sandboxedOrdinaryAskAllowed: true },
-  { name: "an inline option of another script runtime", command: "perl -e 'x'", sandboxedOrdinaryAskAllowed: true },
+  { name: "an inline option of a script runtime", command: "node -e 'x'" },
+  { name: "an inline option of another script runtime", command: "perl -e 'x'" },
   { name: "a search pattern option", command: "grep -e foo" },
   { name: "a text substitution option", command: "sed -e s/a/b/" },
-  // A substring match or a directory component does not meet the basename
-  // starts-with requirement, even when the encoded-looking flag follows it.
   { name: "a data basename containing but not starting with a shell name", command: "printf %s notpwsh -enc 'not-base64!'" },
   { name: "a shell name only in a data path's directory component", command: "printf %s pwsh-tools/marker -enc 'not-base64!'" },
   { name: "a matching name confined to an earlier command", command: "printf pwsh; printf %s -enc 'not-base64!'" },
   { name: "a matching name appearing after the encoded-looking flag", command: "printf %s -enc 'not-base64!' pwsh" },
 ] as const;
 
-function requireLiteralBehavior(command: string, dialect: ShellRuleDialect, sandboxedOrdinaryAskAllowed = false): void {
-  const inspection = inspectEncodedPowerShell(command, dialect, cwd);
-  const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
-  expect.soft(inspection).toEqual({ scripts: [], hidden: false });
-  expect.soft(card.decodedCommands ?? []).toEqual([]);
-  const sandboxed = check(command, dialect, true);
-  // Inline interpreter code may retain its ordinary opaque-code ask. That
-  // existing policy must not be confused with an encoded-code forced modal.
-  if (sandboxedOrdinaryAskAllowed) {
-    expect.soft([
-      { decision: "allow", layer: 3 },
-      { decision: "ask", layer: 6 },
-    ]).toContainEqual({ decision: sandboxed.decision, layer: sandboxed.layer });
-  } else expect.soft(sandboxed).toMatchObject({ decision: "allow", layer: 3 });
-  expect.soft(sandboxed.forceModal).not.toBe(true);
-  // Without an exact allow, the plain-shell policy still asks normally.
-  const unsandboxed = check(command, dialect, false);
-  expect.soft(unsandboxed).toMatchObject({ decision: "ask", layer: 6 });
-  expect.soft(unsandboxed.forceModal).not.toBe(true);
-}
+
+const UNPROVEN_LITERAL_CASE_NAMES = new Set([
+  "a literal distribution directory listing",
+  "a literal command-string invocation",
+  "an inline option of a script runtime",
+  "an inline option of another script runtime",
+  "a matching name confined to an earlier command",
+]);
 
 describe.each(["bash", "powershell"] as const)("literal argument handling (%s)", (dialect) => {
-  it.each(LITERAL_COMMANDS)("does not force a modal for $name", (fixture) => {
-    requireLiteralBehavior(fixture.command, dialect, "sandboxedOrdinaryAskAllowed" in fixture && fixture.sandboxedOrdinaryAskAllowed);
+  it.each(LITERAL_COMMANDS)("proves only literal data for $name", ({ name, command }) => {
+    requireLaneBehavior({ name, command, dialect, allowBody: UNPROVEN_LITERAL_CASE_NAMES.has(name) ? "printf *" : command, exactAllowed: !UNPROVEN_LITERAL_CASE_NAMES.has(name), offerAllowed: name === "a synthetic JWT argument" ? false : !UNPROVEN_LITERAL_CASE_NAMES.has(name) });
+    expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID).decodedCommands ?? []).toEqual([]);
   });
 });
 
@@ -464,24 +408,32 @@ const NON_LITERAL_CASES = [
 ] as const;
 
 describe("non-literal argument rule proposals", () => {
-  it.each(NON_LITERAL_CASES)("does not propose an exact rule for $name", ({ command }) => {
-    const card = buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }, SESSION_ID);
-    expect.soft(card.exactRule).toBeNull();
-    expect.soft(card.sessionAllowed).toBe(false);
-    expect.soft(card.persistentAllowed).toBe(false);
-    // These ordinary opaque arguments do not mint an exact rule. Preserve
-    // either ordinary sandboxed outcome; without a sandbox they must ask.
-    const sandboxed = check(command, "powershell", true);
-    expect.soft([
-      { decision: "allow", layer: 3 },
-      { decision: "ask", layer: 6 },
-    ]).toContainEqual({ decision: sandboxed.decision, layer: sandboxed.layer });
-    expect.soft(sandboxed.forceModal).not.toBe(true);
-    const unsandboxed = check(command, "powershell", false);
-    expect.soft(unsandboxed).toMatchObject({ decision: "ask", layer: 6 });
-    expect.soft(unsandboxed.forceModal).not.toBe(true);
+  it.each(NON_LITERAL_CASES)("does not propose an exact rule for $name", ({ name, command }) => {
+    requireLaneBehavior({ name, command, dialect: "powershell", allowBody: "cmd *" });
   });
 });
+
+describe.each(["bash", "powershell"] as const)("quoted literal rule persistence (%s)", (dialect) => {
+  it("saves the canonical literal argv and matches equivalent quoting", async () => {
+    const command = "git commit -m 'record fixture changes'";
+    const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
+    const kind = dialect === "bash" ? "Bash" : "PowerShell";
+    expect(card.exactRule).toBe(`${kind}(git commit -m 'record fixture changes')`);
+    await manager.addRulePersist({ pattern: card.exactRule!, action: "allow" }, { kind: "user" });
+    expect(check(command, dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check('git commit -m "record fixture changes"', dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check("git commit -m 'different message'", dialect, false).decision).toBe("ask");
+  });
+
+  it.each([
+    { name: "variable expansion", command: 'git commit -m "$MESSAGE"' },
+    { name: "command expansion", command: 'git commit -m "$(echo ready)"' },
+    { name: "escape expansion", command: dialect === "bash" ? 'git commit -m "line\\n"' : 'git commit -m "line`n"' },
+  ])("keeps $name unproven inside quotes", ({ name, command }) => {
+    requireLaneBehavior({ name, command, dialect, allowBody: "git commit *" });
+  });
+});
+
 
 const RULE_SCOPE_CASES = [
   { dialect: "bash", denyScope: "global" },
@@ -507,11 +459,7 @@ describe("shell rule deny precedence", () => {
         encoded: true,
       },
     ];
-    // A hidden-code modal must not replace a matching denial. Exercise each
-    // scope combination with ordinary and encoded input, including headless.
-    // Encoded project-deny checks include a legacy tool-allow snapshot;
-    // encoded global-deny checks compare denial with the hidden-code floor.
-    // Neither requires a save API to accept a fresh encoded allow rule.
+    // Denial precedes both confinement and remembered exact allows.
     for (const { command, exact, deny, encoded } of subjects) {
       manager.setRules([{
         pattern: denyScope === "global" ? deny : encoded ? dialect : exact,

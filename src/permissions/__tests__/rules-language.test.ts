@@ -263,8 +263,6 @@ describe("AST shell matcher", () => {
     ["npx prettier --write src", "Bash(npx prettier *)"],
     ["npm exec prettier --write src", "Bash(npm exec prettier *)"],
     ["pnpm dlx prettier --write src", "Bash(pnpm dlx prettier *)"],
-    ["bun exec echo hello", "Bash(bun exec echo *)"],
-    ["deno run main.ts", "Bash(deno run main.ts *)"],
     ["corepack pnpm dlx prettier src", "Bash(corepack pnpm dlx prettier *)"],
     ["npx --future value -- prettier src", "Bash(npx --future value -- prettier *)"],
   ])("a full raw runner prefix can cover %j", (command, pattern) => {
@@ -273,13 +271,13 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules(command, rules({ allow: ["Bash(prettier *)", "Bash(echo *)"] })).decision).toBeNull();
   });
 
-  it("runner options and opaque inner code do not hide the raw command", () => {
+  it("runner options retain nested interpreter refusal", () => {
     const command = "npx --config project.json -- node script.mjs --output build";
     expect(analyzeShellForRules(command)).toMatchObject({
-      ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [],
-      commands: [{ argv: ["npx", "--config", "project.json", "--", "node", "script.mjs", "--output", "build"], allowBlockers: [] }],
+      ok: true, hidden: ["code passed to node"], ordinaryAsk: "opaque runner prefix", allowBlockers: [],
+      commands: [{ argv: ["npx", "--config", "project.json", "--", "node", "script.mjs", "--output", "build"], allowBlockers: ["code passed to node"] }],
     });
-    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBeNull();
   });
 
   it("runner prefixes stay visible to explicit deny and ask rules", () => {
@@ -348,7 +346,7 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("git status; ls || git status -s", set).decision).toBe("allow");
     expect(evaluateShellRules("git status && curl https://x.test", set).decision).toBeNull();
     expect(evaluateShellRules("(git status) & curl x", set).decision).toBeNull();
-    expect(evaluateShellRules("for f in a b; do ls $f; done", set).decision).toBe("allow");
+    expect(evaluateShellRules("for f in a b; do ls $f; done", set).decision).toBeNull();
     expect(evaluateShellRules("for f in a b; do rm $f; done", set).decision).toBeNull();
   });
 
@@ -359,8 +357,8 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("GIT_DIR=/tmp/x git status", set).decision).toBeNull();
     expect(evaluateShellRules("PATH=/tmp/evil; git status", set).decision).toBeNull();
     expect(evaluateShellRules("echo hi > ~/.bashrc", set).decision).toBeNull();
-    expect(evaluateShellRules("echo hi > /dev/null", set).decision).toBe("allow");
-    expect(evaluateShellRules("echo hi 2>&1", set).decision).toBe("allow");
+    expect(evaluateShellRules("echo hi > /dev/null", set).decision).toBeNull();
+    expect(evaluateShellRules("echo hi 2>&1", set).decision).toBeNull();
     expect(evaluateShellRules("git() { rm -rf ~; }; git status", set).decision).toBeNull();
     expect(evaluateShellRules("$CMD status", set).decision).toBeNull();
   });
@@ -461,7 +459,7 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "ask", pattern: null });
     expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBeNull();
     expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
-    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("allow");
+    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("ask");
   });
 });
 
@@ -492,9 +490,9 @@ describe("security review: arithmetic evaluation of a variable is hidden code", 
     "[[ 1 -eq 1 ]]",
     "[[ a == b ]]",
     "echo ${a[1]}",
-  ])("constant arithmetic stays visible: %j", (command) => {
+  ])("visible expressions remain outside literal rule coverage: %j", (command) => {
     expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [] });
-    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: ["Bash(echo *)", "Bash(test *)"] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: ["Bash(echo *)", "Bash(test *)"] })).decision).toBeNull();
   });
 });
 

@@ -6,9 +6,9 @@ import {
   type ShellWord,
 } from "../../shared/shell-analysis.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
-import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
+import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
-import type { RuleSpecifier } from "./rule-specifier.js";
+import { literalRuleWord, type RuleSpecifier } from "./rule-specifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk } from "./shell-exfiltration.js";
 import {
   arithmeticEvaluationReason,
@@ -18,6 +18,7 @@ import {
   type ShellCommandInput,
   codeCarryingVariable,
   hiddenCodeReason,
+  literalInvocationReason,
   opaqueRunnerReason,
   isShellWrapperProgram,
   stripGlobalOptions,
@@ -55,6 +56,7 @@ function baseProgram(token: string): string {
 }
 
 export function analyzeShellForRules(input: ShellCommandInput, cwd?: string): ShellRuleShape {
+  if ((typeof input === "string" ? input : input.command).length > MAX_LITERAL_COMMAND_LENGTH) return { ok: false, reason: "literal command length limit exceeded" };
   const parsed = asParsedShellCommand(input);
   return shellFact(parsed, `rule-shape\0${cwd ?? ""}`, () => shapeOf(parsed, cwd));
 }
@@ -73,6 +75,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   let downstream = 0;
 
   const scanWord = (word: ShellWord, blockers: string[] | null): void => {
+    if (literalRuleWord(word.source.raw, "bash") === undefined) (blockers ?? globalBlockers).push("non-literal argument");
     for (const part of word.parts) {
       switch (part.kind) {
         case "substitution":
@@ -97,6 +100,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
     switch (statement.kind) {
       case "command": {
         const blockers: string[] = [];
+        if (statement.redirects.length > 0) blockers.push("redirection is outside literal argv identity");
         for (const word of statement.words) scanWord(word, blockers);
         for (const assignment of statement.assignments) {
           scanWord(assignment.value, blockers);
@@ -131,6 +135,8 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         }
         if (statement.assignments.length > 0) blockers.push("command-scoped environment assignment");
         const argv = statement.words.map((word) => staticShellWord(word));
+        const invocation = literalInvocationReason(argv);
+        if (invocation !== null) blockers.push(invocation);
         ordinaryAsk ??= wrapperCommand(argv).ordinaryAsk ?? opaqueRunnerReason(argv) ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
@@ -172,6 +178,7 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         visit(statement.body);
         return;
       case "redirected":
+        if (statement.redirects.length > 0) globalBlockers.push("redirection is outside literal argv identity");
         for (const redirect of statement.redirects) {
           if (redirect.target) scanWord(redirect.target, null);
           if (redirect.effect === "write" && !redirect.descriptor) {
@@ -217,6 +224,18 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   visit(analysis.program);
   ordinaryAsk ??= shellScanOrdinaryAsk(parsed, cwd) ?? undefined;
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
+}
+
+export function proveLiteralShell(input: ShellCommandInput, cwd?: string): { proven: true; commands: readonly ShellRuleCommand[] } | { proven: false; reason: string } {
+  const parsed = asParsedShellCommand(input);
+  const shape = analyzeShellForRules(parsed, cwd);
+  if (!shape.ok) return { proven: false, reason: shape.reason };
+  const reason = shape.hidden[0] ?? shape.allowBlockers[0] ?? shape.commands.flatMap((cmd) => cmd.allowBlockers)[0];
+  if (reason !== undefined) return { proven: false, reason };
+  if (shape.commands.length === 0 || shape.commands.some((cmd) => cmd.argv.includes(undefined))) return { proven: false, reason: "non-literal command" };
+  const incomplete = shellScanOrdinaryAsk(parsed, cwd);
+  if (incomplete !== null) return { proven: false, reason: incomplete };
+  return { proven: true, commands: shape.commands };
 }
 
 // Exact/prefix match on static argv (allow semantics: no wrapper stripping, no basename folding).

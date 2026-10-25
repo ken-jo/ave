@@ -1,0 +1,160 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import * as analysis from "../../shared/shell-analysis.js";
+import { ProjectRuleScopes } from "../rules/rule-scopes.js";
+import { evaluatePowerShellSubject, evaluateShellSubject } from "../rules/rule-scopes.js";
+import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
+import { proveLiteralShell } from "../rules/shell-rule-matcher.js";
+import { proveLiteralPowerShell, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
+import { codeLauncherName, isPowerShellLauncher, MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
+import { canonicalRuleSpecifier, normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
+
+const roots: string[] = [];
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+});
+
+function projectDirectory(): string {
+  const root = mkdtempSync(join(tmpdir(), "literal-proof-"));
+  roots.push(root);
+  return root;
+}
+
+describe("literal exact-rule proof", () => {
+  it.each(["bash", "powershell"] as const)("saves and matches quoted literal argv for %s", async (dialect) => {
+    const cwd = projectDirectory();
+    const command = "git commit -m 'record fixture changes'";
+    const approval = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true });
+    const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
+    expect(approval.exactRule).toBe(pattern);
+    const scopes = new ProjectRuleScopes(join(cwd, "rules"));
+    await scopes.addRule(cwd, { pattern, action: "allow" });
+    const state = await scopes.reload(cwd);
+    expect(state.ok).toBe(true);
+    if (!state.ok) throw state.error;
+    const result = dialect === "bash"
+      ? evaluateShellSubject({ command, cwd, exactAllowOnly: true }, state.rules)
+      : evaluatePowerShellSubject({ command, exactAllowOnly: true, floorSignal: null }, state.rules);
+    expect(result.decision).toBe("allow");
+    const different = command.replace("fixture", "different");
+    const mismatch = dialect === "bash"
+      ? evaluateShellSubject({ command: different, cwd, exactAllowOnly: true }, state.rules)
+      : evaluatePowerShellSubject({ command: different, exactAllowOnly: true, floorSignal: null }, state.rules);
+    expect(mismatch.decision).not.toBe("allow");
+  });
+
+  it.each([
+    ["bash", 'printf "%s" "$HOME"'], ["bash", 'printf "%s" "$(id)"'],
+    ["bash", "printf a\\ b"], ["bash", 'printf "a\\ b"'], ["bash", "printf *"],
+    ["bash", "for x in $HOME/*; do printf ready; done"],
+    ["powershell", 'Write-Output "$HOME"'], ["powershell", 'Write-Output "$(whoami)"'],
+    ["powershell", "Write-Output a` b"], ["powershell", 'Write-Output "a`nb"'],
+    ["powershell", "'git' status"],
+  ] as const)("keeps expansions unproven: %s %s", (dialect, command) => {
+    const proof = dialect === "bash" ? proveLiteralShell(command) : proveLiteralPowerShell(command);
+    expect(proof.proven).toBe(false);
+    expect(buildShellRuleApproval(dialect, command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it.each(["printf '%s' '$HOME * $(id)'", 'git commit -m "two  spaces"', "printf '%s' ''"])("proves quoted data: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(true);
+  });
+
+  it("canonicalizes quote spelling without changing quoted whitespace", () => {
+    expect(canonicalRuleSpecifier('Bash(git commit -m "two  spaces")')).toBe("Bash(git commit -m 'two  spaces')");
+    expect(normalizeRuleSpecifierInput(' Bash( git   commit -m "two  spaces" ) ')).toBe("Bash(git commit -m 'two  spaces')");
+    expect(parseRuleSpecifier("Bash(printf '*')")).toMatchObject({ tokens: ["printf", "*"], wildcard: false });
+    const command = `git commit -m 'say '"'"'hello'"'"' and "ready" $HOME'`;
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(`Bash(${command})`);
+  });
+
+  it.each(["bash", "powershell"] as const)("preserves quoted tabs and newlines in %s rules", (dialect) => {
+    for (const whitespace of ["\t", "\n"]) {
+      const command = `git commit -m 'first${whitespace}second'`;
+      const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
+      expect(canonicalRuleSpecifier(pattern)).toBe(pattern);
+      expect(buildShellRuleApproval(dialect, command, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(pattern);
+    }
+  });
+
+  it.each(["-Force", "–Force", "—Force"])("preserves cmdlet parameter provenance for %s", (parameter) => {
+    const pattern = canonicalRuleSpecifier(`PowerShell(Get-ChildItem '${parameter}')`);
+    expect(pattern).toBe(`PowerShell(get-childitem '${parameter}')`);
+    const rule = { pattern, action: "allow" as const };
+    expect(evaluatePowerShellSubject({ command: `Get-ChildItem '${parameter}'`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).toBe("allow");
+    expect(evaluatePowerShellSubject({ command: `Get-ChildItem ${parameter}`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).not.toBe("allow");
+    expect(buildShellRuleApproval("powershell", `Get-ChildItem '${parameter}'`, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(pattern);
+  });
+
+  it("preserves deny alias normalization with quoted parameters", () => {
+    const pattern = canonicalRuleSpecifier("PowerShell(Write-Output '-Path')");
+    expect(evaluatePowerShellSubject({ command: "write '-Path'", exactAllowOnly: true, floorSignal: null }, [{ pattern, action: "deny" }]).decision).toBe("deny");
+  });
+
+  it.each(["(git status)", "for x in a b; do git status; done"])("does not offer a single argv rule for compound syntax: %s", (command) => {
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it("preserves literal data that resembles another dialect", () => {
+    expect(proveLiteralPowerShell("Write-Output '%PATH% $HOME *'").proven).toBe(true);
+    expect(proveLiteralPowerShell("printf %s –enc 'not-base64!'").proven).toBe(true);
+  });
+
+  it.each(["npm exec --call='printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "bun exec printf ready", "deno run build.ts"])("rejects nested code carriers: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(false);
+    expect(proveLiteralPowerShell(command).proven).toBe(false);
+  });
+
+  it("requires proof of a direct command boundary for a guest shell wrapper", () => {
+    for (const command of ["wsl ls", "env wsl ls"]) expect(proveLiteralShell(command).proven).toBe(false);
+    expect(proveLiteralShell("wsl --exec ls").proven).toBe(true);
+    expect(proveLiteralShell("wsl --list").proven).toBe(true);
+  });
+
+  it.each(["npx -p node node -e code", "npx --package node node -e code", `${"env ".repeat(17)}printf ready`, "git status < input", "git status >/dev/null"])("fails closed at an unproven invocation boundary: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(false);
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Start-Process pwsh -ArgumentList '-enc literal'", "Start-Job -FilePath ./script.ps1"])("refuses command-catalogue carriers: %s", (command) => {
+    expect(proveLiteralPowerShell(command).proven).toBe(false);
+    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it.each(["pwsh", "powershell", "pwsh-preview", "cmd", "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "node", "deno", "bun", "ruby", "perl"])("recognizes each exact launcher and executable suffix: %s", (name) => {
+    for (const launcher of [name, `${name}.exe`]) {
+      expect(codeLauncherName(launcher, "linux")).toBe(name);
+      expect(codeLauncherName(`C:\\tools\\${launcher.toUpperCase()}`, "win32")).toBe(name);
+      expect(proveLiteralShell(`${launcher} -c 'printf ready'`).proven).toBe(false);
+      expect(proveLiteralPowerShell(`${launcher} -c 'Write-Output ready'`).proven).toBe(false);
+    }
+  });
+
+  it.each(["pwsh-tool", "powershellish", "bash5", "ksh93", "python3.12", "node22"])("does not infer launcher identities: %s", (name) => {
+    expect(codeLauncherName(name, "linux")).toBeNull();
+    expect(proveLiteralShell(`${name} -c literal`).proven).toBe(true);
+  });
+
+  it("folds launcher case only on the case-insensitive platform", () => {
+    expect(isPowerShellLauncher("PWSH-PREVIEW.EXE", "win32")).toBe(true);
+    expect(isPowerShellLauncher("PWSH-PREVIEW.EXE", "linux")).toBe(false);
+    expect(isPowerShellLauncher("pwsh-preview-tool", "win32")).toBe(false);
+    expect(codeLauncherName("RSCRIPT.EXE", "win32")).toBe("Rscript");
+    expect(codeLauncherName("r.EXE", "win32")).toBe("R");
+  });
+
+  it("rejects excessive input before either dialect parser", () => {
+    const command = `printf ${"x".repeat(MAX_LITERAL_COMMAND_LENGTH)}`;
+    const parse = vi.spyOn(analysis, "analyzeShell");
+    const lex = _recordPowerShellLexesForTest();
+    try {
+      expect(proveLiteralShell(command).proven).toBe(false);
+      expect(proveLiteralPowerShell(command).proven).toBe(false);
+      expect(parse).not.toHaveBeenCalled();
+      expect(lex.lexed).toEqual([]);
+    } finally { lex.stop(); }
+  });
+});

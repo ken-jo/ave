@@ -16,9 +16,9 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { canonicalPowerShellRuleTokens } from "./rule-specifier.js";
-import { INTERPRETER_SET, RUNNER_SET, SHELL_SET, WRAPPER_SET, programName, runnerName } from "./shell-prefix-values.js";
-import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, runnerCodeContext, runnerCommandIndexes, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { canonicalPowerShellRuleTokens, literalPowerShellParameterIndexes, literalRuleWord } from "./rule-specifier.js";
+import { INTERPRETER_SET, RUNNER_SET, SHELL_SET, WRAPPER_SET, programName, runnerName, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
+import { hiddenCodeReason, literalInvocationReason, isNetworkProgram, opaqueRunnerReason, runnerCodeContext, runnerCommandIndexes, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import {
   MULTI_PURPOSE_NETWORK,
   sensitivePathInArgumentText,
@@ -1968,29 +1968,29 @@ export function _recordPowerShellLexesForTest(): { readonly lexed: readonly stri
 
 // Rule shape
 
-// The argv of each simple command a `PowerShell(...)` rule is matched against. A literal token (plain text with no expansion, group, quote-delimited space, splat or wildcard) takes its canonical spelling (`canonicalPowerShellRuleTokens`), the form a stored rule is in; any other token is `null`, which no rule token equals, so a deny or ask prefix still matches the literal words before it. A command whose name is not literal (an expression, a call operator) has no argv. `opaque` names the first construct that is not a fully literal command (an assignment, a non-literal command or token): an allow rule never covers input with one, and a deny or ask rule that matched nothing then asks, because it could not inspect everything.
+// The argv of each simple command a `PowerShell(...)` rule is matched against. A literal token (plain or literally quoted, with no expansion, escape, group or splat) takes its canonical spelling (`canonicalPowerShellRuleTokens`), the form a stored rule is in; any other token is `null`, which no rule token equals, so a deny or ask prefix still matches the literal words before it. A command whose name is not literal (an expression, a call operator) has no argv. `opaque` names the first construct that is not a fully literal command (an assignment, a non-literal command or token): an allow rule never covers input with one, and a deny or ask rule that matched nothing then asks, because it could not inspect everything.
 export type PowerShellRuleShape =
-  | { ok: true; commands: readonly (readonly (string | null)[])[]; opaque: string | null }
+  | { ok: true; commands: readonly (readonly (string | null)[])[]; literalParameters?: readonly (readonly number[])[]; opaque: string | null }
   | { ok: false; reason: string; visible: readonly (readonly (string | null)[])[] };
 
-const POWERSHELL_RULE_LITERAL = /^[^\s;&|<>(){}$@`'"\u2018-\u201e,#*?[\]~]+$/;
-
-// A word whose value is fixed by its own text. A here-string (`@"…"@`, `@'…'@`), the stop-parsing token (`--%`, which hands the rest of the line
-// to the program verbatim, cmd's `%VAR%` expansion included) and a cmd-style `%VAR%` are not: what the program receives is decided elsewhere.
+// A word whose value is fixed by its own text. Here-strings and stop-parsing tails remain outside the supported literal grammar.
 function isLiteralWord(token: PsToken): token is PsWord {
   if (token.kind !== "word" || token.nested.length > 0 || token.reason !== undefined) return false;
-  if (/^@["']/.test(token.raw) || /^--%/.test(normalizeDashes(token.raw)) || /%[^%\s]+%/.test(token.text)) return false;
-  return POWERSHELL_RULE_LITERAL.test(token.text);
+  if (/^@["']/.test(token.raw) || /^--%/.test(normalizeDashes(token.raw))) return false;
+  return literalRuleWord(token.raw, "powershell") !== undefined;
 }
 
 function ruleArgv(cmd: PsCommand): (string | null)[] | null {
-  const argv = cmd.tokens.map((token) => isLiteralWord(token) ? token.text : null);
+  if (cmd.tokens[0]?.kind !== "word" || cmd.tokens[0].quoted) return null;
+  const argv = cmd.tokens.map((token) => isLiteralWord(token) ? literalRuleWord(token.raw, "powershell")! : null);
   if (argv.length === 0 || argv[0] === null || argv[0] === ".") return null;
-  return canonicalPowerShellRuleTokens(argv);
+  const quoted = cmd.tokens.flatMap((token, index) => token.kind === "word" && token.quoted ? [index] : []);
+  return canonicalPowerShellRuleTokens(argv, literalPowerShellParameterIndexes(argv, quoted));
 }
 
 export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleShape {
   const command = typeof input === "string" ? input : input.command;
+  if (command.length > MAX_LITERAL_COMMAND_LENGTH) return { ok: false, reason: "literal command length limit exceeded", visible: [] };
   const lexed = standaloneLex(command);
   if (lexed === "budget") return { ok: false, reason: "analysis budget exceeded", visible: [] };
   if (lexed.pipelines === null) {
@@ -1998,6 +1998,7 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
     return { ok: false, reason: lexed.reason ?? "unreadable", visible };
   }
   const commands: (string | null)[][] = [];
+  const literalParameters: number[][] = [];
   let opaque: string | null = null;
   for (const pipeline of lexed.pipelines) {
     if (pipeline.assign.length > 0 || pipeline.key !== undefined) opaque ??= "assignment";
@@ -2008,49 +2009,23 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
         continue;
       }
       if (argv.includes(null)) opaque ??= "non-literal argument";
+      opaque ??= hiddenCodeReason(argv.map((token) => token ?? undefined));
+      opaque ??= literalInvocationReason(argv.map((token) => token ?? undefined));
+      const policy = typeof argv[0] === "string" ? POWERSHELL_COMMAND_POLICIES[canonicalPowerShellName(argv[0])] : undefined;
+      if (policy?.effects.some((effect) => effect === "launcher" || effect === "dispatch")) opaque ??= "code passed to a command carrier";
       commands.push(argv);
+      literalParameters.push(literalPowerShellParameterIndexes(argv, stage.tokens.flatMap((token, index) => token.kind === "word" && token.quoted ? [index] : [])));
     }
   }
-  return { ok: true, commands, opaque };
+  return { ok: true, commands, opaque, ...(literalParameters.some((indexes) => indexes.length > 0) ? { literalParameters } : {}) };
 }
 
-// Every word of a PowerShell input at every depth the lexer reads (`$(…)`, `(…)`, `{…}`, `@(…)`), for the encoded-payload scan: `texts` holds each
-// word's value as the lexer unescaped it (quotes and backtick escapes removed, here-string bodies and the `--%` tail included), and `argvs` each
-// simple command's words with a non-literal one (`isLiteralWord`) as null. Null when the input cannot be read.
-/** One command of a pipeline, as the encoded-payload scan reads it: each word's text (null for a parenthesized group) and whether it is a literal,
- *  and whether the command reads the previous stage's output on stdin. */
-export interface WordStage {
-  words: { text: string | null; literal: boolean }[];
-  piped: boolean;
-}
-
-// Every word text at every depth, and every pipeline stage (at every depth) with its words, for the encoded-payload scan. `"budget"` when the lexer
-// ran out of budget (fail closed: unreadable code), `null` when the input is simply not PowerShell this lexer models (read what else can be read).
-export function powerShellWords(command: string): { texts: string[]; stages: WordStage[] } | "budget" | null {
-  const lexed = standaloneLex(command);
-  if (lexed === "budget") return "budget";
-  if (lexed.pipelines === null) return null;
-  const texts: string[] = [];
-  const stages: WordStage[] = [];
-  const walk = (pipelines: readonly PsPipeline[]) => {
-    for (const pipeline of pipelines) {
-      for (const [index, stage] of pipeline.stages.entries()) {
-        stages.push({
-          words: stage.tokens.map((token) => token.kind === "group" ? { text: null, literal: false } : { text: token.text, literal: isLiteralWord(token) }),
-          piped: index > 0,
-        });
-        for (const token of stage.tokens) {
-          if (token.kind === "group") walk(token.body);
-          else {
-            texts.push(token.text);
-            for (const nested of token.nested) walk(nested);
-          }
-        }
-      }
-    }
-  };
-  walk(lexed.pipelines);
-  return { texts, stages };
+export function proveLiteralPowerShell(input: ShellCommandInput): { proven: true; commands: readonly (readonly string[])[]; literalParameters?: readonly (readonly number[])[] } | { proven: false; reason: string } {
+  const shape = powerShellRuleShape(input);
+  if (!shape.ok) return { proven: false, reason: shape.reason };
+  if (shape.opaque !== null) return { proven: false, reason: shape.opaque };
+  if (shape.commands.length === 0) return { proven: false, reason: "no command" };
+  return { proven: true, commands: shape.commands as readonly (readonly string[])[], ...(shape.literalParameters ? { literalParameters: shape.literalParameters } : {}) };
 }
 
 // The sensitive-path floor shares the bounded analysis used for exfiltration.
@@ -2167,7 +2142,17 @@ function closedWorldSignal(pipelines: readonly PsPipeline[], ctx: Context, sensi
 
 // The command is size-checked before parsing or value analysis.
 export function inspectPowerShellCommand(input: ShellCommandInput, cwd?: string): FloorSignals {
+  const command = typeof input === "string" ? input : input.command;
+  if (command.length > MAX_LITERAL_COMMAND_LENGTH) return inspectPowerShellVisibleText(command, cwd);
   return runInspection(input, cwd, new PowerShellAnalysisBudget());
+}
+
+// Retain visible tripwires without parsing inputs outside the literal-proof limit.
+export function inspectPowerShellVisibleText(command: string, cwd?: string): FloorSignals {
+  const path = sensitivePathInArgumentText(normalizePaths(command), cwd);
+  const exfiltration = UNREADABLE_FALLBACK.test(normalizeDashes(command)) || UNREADABLE_TRANSPORT_SPLAT.test(command)
+    ? "PowerShell file upload (unparsed)" : null;
+  return { sensitive: path === null ? null : `sensitive path argument (${path})`, exfiltration, ordinaryAsk: "literal command length limit exceeded" };
 }
 
 function runInspection(input: ShellCommandInput, cwd: string | undefined, budget: PowerShellAnalysisBudget): FloorSignals {

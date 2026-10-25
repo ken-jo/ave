@@ -1,16 +1,16 @@
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import type { ShellRuleApproval, ShellRuleDialect } from "../../shared/permissions-events.js";
-import { analyzeShellForRules, evaluateShellRules } from "./shell-rule-matcher.js";
+import { analyzeShellForRules, evaluateShellRules, proveLiteralShell } from "./shell-rule-matcher.js";
 import { canonicalRuleSpecifier, formatRuleSpecifier, parseRuleSpecifier } from "./rule-specifier.js";
-import { inspectPowerShellCommand, powerShellRuleShape } from "./powershell-exfiltration.js";
+import { inspectPowerShellCommand, powerShellRuleShape, proveLiteralPowerShell } from "./powershell-exfiltration.js";
 import { evaluatePowerShellSubject } from "./rule-scopes.js";
-import { parseShellCommand, suggestShellPrefix } from "./shell-prefix-policy.js";
+import { parseShellCommand } from "./shell-prefix-policy.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "./shell-exfiltration.js";
 import { validatePermissionRule } from "./rule-files.js";
-import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
+import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { projectRuleRoot } from "./project-rule-files.js";
-import { inspectEncodedPowerShell } from "./powershell-encoded-command.js";
+import { decodePowerShellEncodedCommands } from "./powershell-encoded-command.js";
 
 // Derive the one exact rule a shell card may save from the host's original shell input: the complete argv of a single simple command, never a prefix or wildcard (owner 2026-10-25). `Bash(...)` for bash and `PowerShell(...)` for PowerShell, each in the canonical form its matcher compares.
 export function buildShellRuleApproval(
@@ -20,10 +20,8 @@ export function buildShellRuleApproval(
   saves: { allow: boolean; deny: boolean },
   sessionId?: string,
 ): ShellRuleApproval {
-  // An `-EncodedCommand` hides the code that runs, so no allow rule may cover it; the card shows the decoded script instead.
-  const encoded = inspectEncodedPowerShell(command, dialect);
-  const decodedCommands = encoded.scripts;
-  const candidate = saves.allow && decodedCommands.length === 0 && !encoded.hidden
+  const decodedCommands = decodePowerShellEncodedCommands(command, dialect);
+  const candidate = saves.allow && command.length <= MAX_LITERAL_COMMAND_LENGTH
     ? dialect === "bash" ? exactBashRule(command, projectCwd) : exactPowerShellRule(command, projectCwd)
     : null;
   // The rule must cover this whole invocation and disclose no secret.
@@ -48,23 +46,28 @@ export function buildShellRuleApproval(
 function exactBashRule(command: string, projectCwd: string): string | null {
   const parsed = parseShellCommand(command);
   const shape = analyzeShellForRules(parsed, projectCwd);
+  const proof = proveLiteralShell(parsed, projectCwd);
+  if (!parsed.analysis.ok || parsed.analysis.program.kind !== "sequence" || parsed.analysis.program.statements.length !== 1
+    || parsed.analysis.program.statements[0]?.kind !== "command") return null;
   const floor = isDestructiveShellText(command)
     || (shape.ok && shape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv) !== null))
     || shellExfiltrationSignal(parsed, projectCwd) !== null || shellSensitivePathSignal(parsed, projectCwd) !== null;
-  if (floor || !shape.ok || shape.commands.length !== 1 || !shape.commands[0]) return null;
-  const tokens = suggestShellPrefix(shape.commands[0].argv, false);
-  return tokens ? formatRuleSpecifier({ kind: "bash", tokens, wildcard: false }) : null;
+  if (floor || !proof.proven || proof.commands.length !== 1 || !proof.commands[0]) return null;
+  const tokens = literalTokens(proof.commands[0].argv);
+  try {
+    return tokens ? canonicalRuleSpecifier(formatRuleSpecifier({ kind: "bash", tokens, wildcard: false })) : null;
+  } catch { return null; }
 }
 
 function exactPowerShellRule(command: string, projectCwd: string): string | null {
   const signals = inspectPowerShellCommand(command, projectCwd);
-  if (signals.exfiltration !== null || signals.sensitive !== null || signals.ordinaryAsk !== undefined || isDestructiveShellText(command)) return null;
-  const shape = powerShellRuleShape(command);
-  if (!shape.ok || shape.opaque !== null || shape.commands.length !== 1) return null;
-  const tokens = literalTokens(shape.commands[0]!);
+  if (signals.exfiltration !== null || signals.sensitive !== null || isDestructiveShellText(command)) return null;
+  const proof = proveLiteralPowerShell(command);
+  if (!proof.proven || proof.commands.length !== 1) return null;
+  const tokens = literalTokens(proof.commands[0]!);
   if (tokens === null) return null;
-  const pattern = formatRuleSpecifier({ kind: "powershell", tokens, wildcard: false });
   try {
+    const pattern = formatRuleSpecifier({ kind: "powershell", tokens, wildcard: false, ...(proof.literalParameters?.[0] ? { literalParameters: proof.literalParameters[0] } : {}) });
     // The literal argv must also be a storable rule (no syntax the grammar refuses).
     return canonicalRuleSpecifier(pattern) === pattern ? pattern : null;
   } catch {
@@ -79,17 +82,22 @@ function literalTokens(argv: readonly (string | null | undefined)[]): string[] |
 
 // The literal argv of a single simple command as a rule, whatever its floors: the suggestion "Always deny" stores.
 function literalCommandRule(dialect: ShellRuleDialect, command: string): string | null {
+  if (command.length > MAX_LITERAL_COMMAND_LENGTH) return null;
   let tokens: string[] | null = null;
+  let literalParameters: readonly number[] | undefined;
   if (dialect === "bash") {
     const shape = analyzeShellForRules(parseShellCommand(command));
     if (shape.ok && shape.hidden.length === 0 && shape.commands.length === 1) tokens = literalTokens(shape.commands[0]!.argv);
   } else {
     const shape = powerShellRuleShape(command);
-    if (shape.ok && shape.opaque === null && shape.commands.length === 1) tokens = literalTokens(shape.commands[0]!);
+    if (shape.ok && shape.opaque === null && shape.commands.length === 1) {
+      tokens = literalTokens(shape.commands[0]!);
+      literalParameters = shape.literalParameters?.[0];
+    }
   }
   if (tokens === null || tokens.length === 0) return null;
-  const pattern = formatRuleSpecifier({ kind: dialect, tokens: [...tokens], wildcard: false });
   try {
+    const pattern = formatRuleSpecifier({ kind: dialect, tokens: [...tokens], wildcard: false, ...(literalParameters ? { literalParameters } : {}) });
     return canonicalRuleSpecifier(pattern) === pattern ? pattern : null;
   } catch {
     return null;
@@ -121,7 +129,7 @@ export function shellRuleCoversCommand(dialect: ShellRuleDialect, pattern: strin
   const result = evaluatePowerShellSubject({
     command,
     exactAllowOnly: false,
-    floorSignal: signals.exfiltration ?? signals.sensitive ?? signals.ordinaryAsk ?? null,
+    floorSignal: signals.exfiltration ?? signals.sensitive ?? null,
   }, [rule]);
   return result.decision === action;
 }

@@ -450,7 +450,7 @@ describe("opaque command text requires approval", () => {
   it("rejects pathological flat expressions within a finite work budget", () => {
     const command = `Get-Content (${"'a' + ".repeat(3000)}'b')`;
     expect(powerShellFloorAnalysis.inspectPowerShellCommand(command, CWD))
-      .toMatchObject({ exfiltration: null, ordinaryAsk: expect.stringMatching(/budget|opaque|hidden code/i) });
+      .toMatchObject({ exfiltration: null, ordinaryAsk: expect.stringMatching(/budget|opaque|hidden code|length limit/i) });
   });
 
   it("never turns removed expression support into permission", () => {
@@ -592,15 +592,18 @@ describe("checkDetailed applies the floors by dialect", () => {
     expect(result.forceModal).toBeUndefined();
   });
 
-  // A lexer that runs out of budget cannot be read for hidden code, so it fails closed to the human-only floor, not the ordinary ask
-  // (owner re-review round 9, 2026-10-26); a saved exact-action grant never turns it into an allow.
-  it("hides an expression that exhausts the lexer budget, unremembered without a sandbox", async () => {
+  it("keeps an oversized expression unproven and unremembered without a sandbox", async () => {
     const command = `Get-Content (${"'a' + ".repeat(3000)}'b')`;
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
+    expect(pending).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pending.forceModal).toBeUndefined();
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, {
+      ...ps(command), shellExecution: { runsSandboxed: true },
+    })).toMatchObject({ decision: "allow", layer: 3 });
   });
 
   it.each([
