@@ -48,6 +48,12 @@ describe("win32SystemBinary", () => {
     expect(win32SystemBinary("icacls", {})).toBe("icacls");
   });
 });
+/** A refused result with the DACL it was refused for: owner, entries and inheritance flags. */
+function refusal(result: ReturnType<typeof ensureAveHomePrivate>): string {
+  if (result.enforcement !== "none" || result.failedPath === undefined) return JSON.stringify(result);
+  return JSON.stringify({ result, dacl: readWindowsDirectoryDacls([result.failedPath]) });
+}
+
 describe("ensureAveHomePrivate", () => {
   const home = useTempPaths("ave-home-privacy-", ".ave");
   function check(change: (entry: WindowsDirectoryDacl, index: number) => WindowsDirectoryDacl = (entry) => entry) {
@@ -176,7 +182,7 @@ describe("ensureAveHomePrivate", () => {
     const dir = home();
     // The message carries the whole result, so a refusal shows its category and reason.
     const protectedHome = ensureAveHomePrivate(dir);
-    expect(protectedHome, JSON.stringify(protectedHome)).toMatchObject({ enforcement: "win32-dacl" });
+    expect(protectedHome, refusal(protectedHome)).toMatchObject({ enforcement: "win32-dacl" });
     const path = target === "home" ? dir : target === "secrets" ? join(dir, "secrets") : join(dir, "secrets", target);
     if (target === "file") writeFileSync(path, "private");
     if (target === "directory") mkdirSync(path);
@@ -191,7 +197,7 @@ describe("ensureAveHomePrivate", () => {
     const dir = join(home(), name);
     const before = vi.mocked(execFileSync).mock.calls.length;
     const result = ensureAveHomePrivate(dir);
-    expect(result, JSON.stringify(result)).toMatchObject({ enforcement: "win32-dacl" });
+    expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl" });
     expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
     const descriptors = readWindowsDirectoryDacls([dir, join(dir, "secrets")]);
     console.info(`Verified relocated private directory DACL JSON: ${JSON.stringify(descriptors)}`);
