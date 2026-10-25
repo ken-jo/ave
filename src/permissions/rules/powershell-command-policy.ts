@@ -360,8 +360,8 @@ const commandAliases = new Map(Object.keys(POWERSHELL_COMMAND_POLICIES).flatMap(
   powerShellCommandSpellings(name).map((alias) => [alias, name] as const)));
 
 export function canonicalPowerShellName(text: string): string {
-  // Qualification selects another command identity; it never inherits a built-in policy.
-  const name = text.toLowerCase();
+  // Effect classification reads the selected command leaf; exact rule identity retains the original qualification separately.
+  const name = text.slice(Math.max(text.lastIndexOf("\\"), text.lastIndexOf("/")) + 1).toLowerCase();
   return commandAliases.get(name) ?? name;
 }
 

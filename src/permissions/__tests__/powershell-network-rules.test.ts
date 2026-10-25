@@ -69,7 +69,7 @@ describe("PowerShell(...) rule grammar", () => {
 describe("PowerShell rule shape", () => {
   it("reads literal simple commands in canonical form and names anything else opaque", () => {
     expect(powerShellRuleShape("Get-ChildItem -Recurse src")).toEqual({ ok: true, commands: [["get-childitem", "-recurse", "src"]], opaque: null });
-    expect(powerShellRuleShape("gci src | Select-Object -First 1")).toEqual({ ok: true, commands: [["gci", "src"], ["select-object", "-first", "1"]], opaque: "code passed to a command carrier" });
+    expect(powerShellRuleShape("gci src | Select-Object -First 1")).toEqual({ ok: true, commands: [["gci", "src"], ["select-object", "-first", "1"]], opaque: null });
     expect(powerShellRuleShape("$x = gci src")).toMatchObject({ ok: true, opaque: "assignment" });
     // A non-literal argument stays visible as null, so a deny prefix still sees the literal words before it.
     expect(powerShellRuleShape("Remove-Item $env:TEMP")).toEqual({ ok: true, commands: [["remove-item", null]], opaque: "non-literal argument" });
@@ -243,8 +243,32 @@ describe("PowerShell encoded code and literal rule proof", () => {
     }
   });
 
+  it.each(["pwsh", "pwsh-preview", "powershell", "powershell_ise", "PWSH.EXE", "PowerShell_ISE.exe"])("refuses exact encoded execution for the literal launcher %s", (launcher) => {
+    const command = `${launcher} -enc ${PAYLOAD}`;
+    for (const dialect of ["bash", "powershell"] as const) {
+      expect(buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+      manager.setRules([{ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`, action: "allow" }]);
+      expect(check(command, dialect, false)).toMatchObject({ decision: "ask", layer: 6 });
+      expect(check(command, dialect, true)).toMatchObject({ decision: "allow", layer: 3 });
+    }
+  });
+
+  it.each(["python3 -c 'print(1)'", "sh -c 'printf ready'", "pwsh -Command 'Get-Date'", "deno run main.ts"])("remembers literal visible code and accepted file indirection: %s", (command) => {
+    for (const dialect of ["bash", "powershell"] as const) {
+      const approval = buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true });
+      expect(approval.exactRule).toEqual(expect.any(String));
+      manager.setRules([{ pattern: approval.exactRule!, action: "allow" }, { pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(rm *)`, action: "deny" }]);
+      expect(check(command, dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
+      expect(manager.checkDetailed(dialect, "builtin", "shell", null, {
+        headless: true,
+        ruleSubject: { kind: "shell", dialect, command, cwd: dir },
+        shellExecution: { runsSandboxed: false },
+      })).toMatchObject({ decision: "allow", layer: 3 });
+    }
+  });
+
   it.each([
-    "pwsh -enc AAAA", 'pwsh -enc "!!!!"', "pwsh –e ????", "pwsh -EncodedCommand",
+    "pwsh -enc AAAA", 'pwsh -enc "!!!!"', "pwsh –e ????",
     "pwsh -enc ('L' + 'R')", "$env:X='P'; pwsh -enc $env:X", "pwsh -enc $(Get-Content p.txt)",
     "pwsh -enc @a", "& $p -enc !!!", "wsl pwsh -enc $X", "env pwsh -enc $X", "pwsh-preview -enc $X",
     "pwsh -WorkingDirectory -c -enc AAAA", 'pwsh -enc "AAAA', "pwsh --% -e $args",
@@ -253,6 +277,14 @@ describe("PowerShell encoded code and literal rule proof", () => {
     expect(powershell(command, true)).toMatchObject({ decision: "allow", layer: 3 });
     expect(powershell(command, false)).toMatchObject({ decision: "ask", layer: 6 });
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it("allows literal launcher options without an encoded operand", () => {
+    const command = "pwsh -EncodedCommand";
+    const approval = buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true });
+    expect(approval.exactRule).toEqual(expect.any(String));
+    manager.setRules([{ pattern: approval.exactRule!, action: "allow" }]);
+    expect(powershell(command, false)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
   it("shows the literal operand without using its decoded text for permission", () => {

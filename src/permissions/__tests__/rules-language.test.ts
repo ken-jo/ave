@@ -15,6 +15,7 @@ import { isDestructiveShellArgv } from "../rules/shell-prefix-values.js";
 import {
   analyzeShellForRules,
   evaluateShellRules,
+  proveLiteralShell,
   type ShellRuleInput,
   type ShellRuleSet,
 } from "../rules/shell-rule-matcher.js";
@@ -271,13 +272,14 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules(command, rules({ allow: ["Bash(prettier *)", "Bash(echo *)"] })).decision).toBeNull();
   });
 
-  it("runner options retain nested interpreter refusal", () => {
+  it("runner options retain nested interpreter visibility while allowing literal identity", () => {
     const command = "npx --config project.json -- node script.mjs --output build";
     expect(analyzeShellForRules(command)).toMatchObject({
-      ok: true, hidden: ["code passed to node"], ordinaryAsk: "opaque runner prefix", allowBlockers: [],
-      commands: [{ argv: ["npx", "--config", "project.json", "--", "node", "script.mjs", "--output", "build"], allowBlockers: ["code passed to node"] }],
+      ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [],
+      commands: [{ argv: ["npx", "--config", "project.json", "--", "node", "script.mjs", "--output", "build"], allowBlockers: [] }],
     });
-    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBeNull();
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBe("allow");
+    expect(proveLiteralShell(command)).toMatchObject({ proven: true });
   });
 
   it("runner prefixes stay visible to explicit deny and ask rules", () => {
@@ -302,15 +304,18 @@ describe("AST shell matcher", () => {
     ["GIT_SSH_COMMAND='ssh -v' git status", "git"],
     ["env PATH=/tmp/tools git status", "env"],
     ["export PAGER=cat", "export"],
-  ])("keeps static hidden code as rule visibility without ordinary approval: %s", (command, program) => {
+  ])("allows literal visible code and keeps assignment syntax unproven: %s", (command, program) => {
     const shape = analyzeShellForRules(command);
     expect(shape).toMatchObject({ ok: true });
     if (!shape.ok) throw new Error("Expected a parsed shell command");
-    expect(shape.hidden.length).toBeGreaterThan(0);
+    const assignment = command.startsWith("GIT_SSH_COMMAND=") || command.startsWith("export ");
+    expect(shape.hidden).toEqual([]);
     expect(shape.ordinaryAsk).toBeUndefined();
-    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBeNull();
+    const literal = !assignment;
+    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBe(literal ? "allow" : null);
+    expect(proveLiteralShell(command)).toMatchObject({ proven: literal });
     for (const restriction of [{ deny: ["Bash(rm *)"] }, { ask: ["Bash(rm *)"] }]) {
-      expect(evaluateShellRules(command, rules(restriction))).toMatchObject({ decision: "ask", pattern: null });
+      expect(evaluateShellRules(command, rules(restriction)).decision).toBeNull();
     }
   });
 
@@ -327,8 +332,8 @@ describe("AST shell matcher", () => {
     "echo 'unterminated",
   ])("retains ordinary approval for unresolved bindings or analysis: %s", (command) => {
     const shape = analyzeShellForRules(command);
-    if (shape.ok) expect(shape.ordinaryAsk).toEqual(expect.any(String));
-    else expect(shape.reason).toEqual(expect.any(String));
+    if (!shape.ok) expect(shape.reason).toEqual(expect.any(String));
+    expect(proveLiteralShell(command)).toMatchObject({ proven: false });
   });
 
   it.each([
@@ -410,15 +415,14 @@ describe("AST shell matcher", () => {
   it("asks when a deny/ask rule cannot inspect the command", () => {
     const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(echo *)"] });
     for (const command of [
-      "bash -c 'rm x'",
-      "sh -lc 'rm x'",
-      "python3 -c 'import os'",
-      "eval 'rm x'",
       "$CMD x",
       "echo 'unterminated",
       "case x in x) rm y;; esac",
     ]) {
       expect(evaluateShellRules(command, set), command).toMatchObject({ decision: "ask", pattern: null });
+    }
+    for (const command of ["bash -c 'rm x'", "sh -lc 'rm x'", "python3 -c 'import os'", "eval 'rm x'"]) {
+      expect(evaluateShellRules(command, set).decision, command).toBeNull();
     }
     // Without any deny/ask rule, the same input is simply not allowed.
     expect(evaluateShellRules("bash -c 'rm x'", rules({ allow: ["Bash(echo *)"] })).decision).toBeNull();
@@ -427,7 +431,7 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("rm x; bash -c 'ls'", set)).toMatchObject({ decision: "deny", pattern: "Bash(rm *)" });
   });
 
-  it("security review: wrappers cannot hide code from deny rules", () => {
+  it("keeps literal wrapper arguments under explicit visible restrictions", () => {
     const set = rules({ deny: ["Bash(rm *)"] });
     for (const command of [
       "env sh -c 'rm x'",
@@ -440,7 +444,7 @@ describe("AST shell matcher", () => {
       "su -c 'rm x'",
       "busybox sh -c 'rm x'",
     ]) {
-      expect(evaluateShellRules(command, set), command).toMatchObject({ decision: "ask", pattern: null });
+      expect(evaluateShellRules(command, set).decision, command).toBeNull();
     }
     expect(evaluateShellRules("busybox rm -rf x", set).decision).toBe("deny");
     expect(evaluateShellRules("env A=1 busybox rm x", set).decision).toBe("deny");
@@ -454,12 +458,12 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("git -C . status", set).decision).toBeNull();
   });
 
-  it("an interpreter script stays outside allow-rule coverage", () => {
+  it("permits literal interpreter files without reading their contents", () => {
     const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(node scripts/build.mjs)"] });
-    expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "ask", pattern: null });
-    expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBeNull();
+    expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "allow" });
+    expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBe("allow");
     expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
-    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("ask");
+    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("allow");
   });
 });
 

@@ -9,7 +9,7 @@ import { evaluatePowerShellSubject, evaluateShellSubject } from "../rules/rule-s
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
 import { proveLiteralShell } from "../rules/shell-rule-matcher.js";
 import { inspectPowerShellCommand, proveLiteralPowerShell, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
-import { codeLauncherName, isPowerShellLauncher, MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
+import { isPowerShellLauncher, MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 import { canonicalRuleSpecifier, normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
 
 const roots: string[] = [];
@@ -104,47 +104,40 @@ describe("literal exact-rule proof", () => {
     expect(proveLiteralPowerShell("printf %s –enc 'not-base64!'").proven).toBe(true);
   });
 
-  it.each(["npm exec --call='printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "bun exec printf ready", "deno run build.ts", "yarn node script.js", "yarnpkg node script.js"])("rejects nested code carriers: %s", (command) => {
-    expect(proveLiteralShell(command).proven).toBe(false);
-    expect(proveLiteralPowerShell(command).proven).toBe(false);
+  it.each(["python3.12 -c 'print(1)'", "ksh93 -c 'printf ready'", "sh -c 'printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "bun exec printf ready", "deno run build.ts", "yarn node script.js", "yarnpkg node script.js", "wsl ls", "env wsl ls", "npx -p node node -e code", "npx --package node node -e code"])("proves visible literal code and delegation: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(true);
+    expect(proveLiteralPowerShell(command).proven).toBe(true);
+    const pattern = canonicalRuleSpecifier(`Bash(${command})`);
+    expect(evaluateShellSubject({ command, exactAllowOnly: true }, [{ pattern, action: "allow" }, { pattern: "Bash(unrelated *)", action: "deny" }]).decision).toBe("allow");
   });
 
-  it("requires proof of a direct command boundary for a guest shell wrapper", () => {
-    for (const command of ["wsl ls", "env wsl ls"]) expect(proveLiteralShell(command).proven).toBe(false);
-    expect(proveLiteralShell("wsl --exec ls").proven).toBe(true);
-    expect(proveLiteralShell("wsl --list").proven).toBe(true);
+  it.each(["find . -maxdepth 0 -exec sh -c 'printf ready' ';'", "xargs -I X env X -c 'printf ready'", "xargs rg --files", "make build", "sh build.sh", "python3 https://example.invalid/code.py"])("accepts literal file, stdin and network indirection: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(true);
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
   });
 
-  it.each(["npx -p node node -e code", "npx --package node node -e code", `${"env ".repeat(17)}printf ready`, "git status < input", "git status >/dev/null"])("fails closed at an unproven invocation boundary: %s", (command) => {
+  it.each(["git status < input", "git status >/dev/null"])("keeps redirects outside exact argv identity: %s", (command) => {
     expect(proveLiteralShell(command).proven).toBe(false);
     expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Start-Process pwsh -ArgumentList '-enc literal'", "Start-Job -FilePath ./script.ps1"])("refuses command-catalogue carriers: %s", (command) => {
-    expect(proveLiteralPowerShell(command).proven).toBe(false);
-    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+  it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'", "Start-Process pwsh -ArgumentList '-enc literal'", "Start-Job -FilePath ./script.ps1"])("accepts visible literal invocation code: %s", (command) => {
+    expect(proveLiteralPowerShell(command).proven).toBe(true);
+    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
   });
 
-  it.each(["pwsh", "powershell", "pwsh-preview", "cmd", "sh", "bash", "zsh", "dash", "ksh", "fish", "python", "python3", "node", "deno", "bun", "ruby", "perl"])("recognizes each exact launcher and executable suffix: %s", (name) => {
-    for (const launcher of [name, `${name}.exe`]) {
-      expect(codeLauncherName(launcher, "linux")).toBe(name);
-      expect(codeLauncherName(`C:\\tools\\${launcher.toUpperCase()}`, "win32")).toBe(name);
-      expect(proveLiteralShell(`${launcher} -c 'printf ready'`).proven).toBe(false);
-      expect(proveLiteralPowerShell(`${launcher} -c 'Write-Output ready'`).proven).toBe(false);
+  it.each(["pwsh", "powershell", "pwsh-preview", "powershell_ise"])("excludes encoded execution for every exact launcher: %s", (name) => {
+    for (const launcher of [name, `${name}.exe`, `C:\\tools\\${name.toUpperCase()}.EXE`, `Module\\${name}`]) {
+      expect(isPowerShellLauncher(launcher)).toBe(true);
+      expect(proveLiteralPowerShell(`${launcher} -enc literal`).proven).toBe(false);
     }
+    expect(proveLiteralShell(`${name} -c 'printf ready'`).proven).toBe(true);
+    expect(proveLiteralPowerShell(`${name} -c 'Write-Output ready'`).proven).toBe(true);
   });
 
-  it.each(["pwsh-tool", "powershellish", "bash5", "ksh93", "python3.12", "node22"])("does not infer launcher identities: %s", (name) => {
-    expect(codeLauncherName(name, "linux")).toBeNull();
+  it.each(["pwsh-tool", "powershellish", "bash5", "ksh93", "python3.12", "node22"])("does not infer encoded launcher identities: %s", (name) => {
+    expect(isPowerShellLauncher(name)).toBe(false);
     expect(proveLiteralShell(`${name} -c literal`).proven).toBe(true);
-  });
-
-  it("folds launcher case only on the case-insensitive platform", () => {
-    expect(isPowerShellLauncher("PWSH-PREVIEW.EXE", "win32")).toBe(true);
-    expect(isPowerShellLauncher("PWSH-PREVIEW.EXE", "linux")).toBe(false);
-    expect(isPowerShellLauncher("pwsh-preview-tool", "win32")).toBe(false);
-    expect(codeLauncherName("RSCRIPT.EXE", "win32")).toBe("Rscript");
-    expect(codeLauncherName("r.EXE", "win32")).toBe("R");
   });
 
   it("rejects excessive input before either dialect parser", () => {

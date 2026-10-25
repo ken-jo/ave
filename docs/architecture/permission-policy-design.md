@@ -318,10 +318,14 @@ The structural parser, sink vocabulary, Windows credential rows and general file
 
 PowerShell script blocks and `pwsh`/`powershell` inline command text use the PowerShell catalogue. Other interpreter code receives generic credential/sink inspection without inheriting PowerShell command meanings. Known catalogue effects remain floors through shared wrappers, process-launcher payloads, background execution and static or opaque transport splats. Sink-only wrapper inspection preserves the forwarded native command identity and grants no rule coverage.
 
-`Bash(...)` rules remain dialect-scoped. PowerShell has no per-command rule
-language or project command-rule scope today. Existing tool allow rules and
-saved grants can satisfy its ordinary asks; no new command-rule grammar is
-implied.
+`Bash(...)` rules match Bash and `PowerShell(...)` rules match PowerShell,
+at user, project or session scope. Unsandboxed execution requires a matching
+exact command rule with literal, unambiguous canonical identity; legacy shell
+grants remain inert. Visible literal code and file/stdin/network indirection
+are eligible subject to retained visible floors. Parser or lexer/analysis-budget
+failure, nonliteral words and PowerShell encoded-execution operands cannot
+match an exact allow. A command over the shared unsandboxed input limit asks
+or denies headless before further command processing.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS

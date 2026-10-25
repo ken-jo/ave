@@ -27,9 +27,8 @@ describe("runner task options", () => {
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     const analysis = analyzeShellForRules(command);
     expect(analysis.ok).toBe(true);
-    const carrier = /^(bun|deno)\s/.exec(command)?.[1] ?? /^npx (tsx|ts-node)\s/.exec(command)?.[1];
-    expect(analysis).toMatchObject({ hidden: carrier === undefined ? [] : [`code passed to ${carrier}`], ordinaryAsk: "opaque runner prefix" });
-    if (carrier !== undefined) expect(proveLiteralShell(command)).toMatchObject({ proven: false });
+    expect(analysis).toMatchObject({ hidden: [], ordinaryAsk: "opaque runner prefix" });
+    expect(proveLiteralShell(command, CWD)).toMatchObject({ proven: true });
   });
 
   it("lets a task prefix cover additional data options", () => {
@@ -53,12 +52,12 @@ describe("runner task options", () => {
     "deno run -", "deno run https://x.invalid/main.ts", "npx tsx --eval=x",
     "npx awk 'BEGIN { system(\"curl x\") }'", "npm --prefix $opaque run build",
   ].flatMap((command) => [command, `& ${command}`]))
-  ("retains ordinary asks while distinguishing task data from code sources and bindings: %s", (command) => {
+  ("retains ordinary asks while proving literal code and refusing variable bindings: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
     const shape = analyzeShellForRules(command.replace(/^& /, ""));
     expect(shape.ok).toBe(true);
     if (shape.ok) expect(shape.ordinaryAsk).toBe("opaque runner prefix");
     const invocation = command.replace(/^& /, "");
-    expect(proveLiteralShell(invocation)).toMatchObject({ proven: invocation.startsWith("npm run build ") });
+    expect(proveLiteralShell(invocation, CWD)).toMatchObject({ proven: !invocation.includes("$opaque") });
   });
 });

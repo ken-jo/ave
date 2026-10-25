@@ -109,25 +109,25 @@ function shellRule(prefix: string) {
   return { pattern, spec };
 }
 
-const RULE_CASES: { argv: string[]; prefix: string; incomplete: string; carrier?: string }[] = [
+const RULE_CASES: { argv: string[]; prefix: string; incomplete: string }[] = [
   { argv: ["npx", "helper", "--future"], prefix: "npx helper", incomplete: "npx" },
-  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx", carrier: "node" },
+  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx" },
   { argv: ["bunx", "helper", "--future"], prefix: "bunx helper", incomplete: "bunx" },
   { argv: ["pnpx", "helper", "--future"], prefix: "pnpx helper", incomplete: "pnpx" },
   { argv: ["uvx", "helper", "--future"], prefix: "uvx helper", incomplete: "uvx" },
   { argv: ["pipx", "run", "helper", "--future"], prefix: "pipx run helper", incomplete: "pipx run" },
   { argv: ["yarn", "dlx", "helper", "--future"], prefix: "yarn dlx helper", incomplete: "yarn dlx" },
-  { argv: ["yarn", "node", "script.js"], prefix: "yarn node script.js", incomplete: "yarn node", carrier: "node" },
+  { argv: ["yarn", "node", "script.js"], prefix: "yarn node script.js", incomplete: "yarn node" },
   { argv: ["yarnpkg", "exec", "helper", "--future"], prefix: "yarnpkg exec helper", incomplete: "yarnpkg exec" },
   { argv: ["pnpm", "dlx", "helper", "--future"], prefix: "pnpm dlx helper", incomplete: "pnpm dlx" },
   { argv: ["pnpm", "exec", "helper", "--future"], prefix: "pnpm exec helper", incomplete: "pnpm exec" },
   { argv: ["npm", "exec", "--", "helper", "--future"], prefix: "npm exec -- helper", incomplete: "npm exec" },
   { argv: ["npm", "x", "helper", "--future"], prefix: "npm x helper", incomplete: "npm x" },
-  { argv: ["bun", "x", "helper", "--future"], prefix: "bun x helper", incomplete: "bun x", carrier: "bun" },
-  { argv: ["bun", "exec", "helper", "--future"], prefix: "bun exec helper", incomplete: "bun exec", carrier: "bun" },
+  { argv: ["bun", "x", "helper", "--future"], prefix: "bun x helper", incomplete: "bun x" },
+  { argv: ["bun", "exec", "helper", "--future"], prefix: "bun exec helper", incomplete: "bun exec" },
   { argv: ["corepack", "pnpm", "dlx", "helper", "--future"], prefix: "corepack pnpm dlx helper", incomplete: "corepack pnpm dlx" },
-  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run", carrier: "deno" },
-  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval", carrier: "deno" },
+  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run" },
+  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval" },
 ];
 
 const ORDINARY_CONTROLS = [
@@ -203,29 +203,25 @@ describe("shared runner decisions", () => {
     }
   });
 
-  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix, carrier }) => {
+  it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix }) => {
     const command = argv.join(" ");
     const shape = analyzeShellForRules(command);
-    const hidden = carrier === undefined ? [] : [`code passed to ${carrier}`];
-    expect(shape).toMatchObject({ ok: true, hidden, allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
+    expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
     if (shape.ok) {
       expect(shape.commands).toHaveLength(1);
-      expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: hidden });
+      expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
     }
-    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe(carrier === undefined ? "allow" : null);
+    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
-    expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBe(carrier === undefined ? null : "ask");
+    expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
     // Unsandboxed execution requires both literal proof and an exact rule.
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
     expectBucket(checkCommand(manager, "bash", command), "ordinary");
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
-    if (carrier === undefined) expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
-    else {
-      expectBucket(checkCommand(manager, "bash", command), "ordinary");
-      expect(buildShellRuleApproval("bash", command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
-    }
+    expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(buildShellRuleApproval("bash", command, CWD, { allow: true, deny: true }).exactRule).toBe(`Bash(${command})`);
     expectBucket(checkCommand(manager, "powershell", command), "ordinary");
   });
 

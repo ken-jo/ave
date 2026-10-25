@@ -218,8 +218,8 @@ describe("decision path", () => {
     pm.setMode("allow");
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", forceModal: true });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git log --all x"))).toMatchObject({ decision: "deny" });
-    // A deny rule that cannot see inside `bash -c` makes the call ask, even in allow mode.
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", forceModal: true });
+    // A visible literal script needs its own exact rule; unrelated restrictions do not make the outer words opaque.
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", layer: 6 });
   });
 
   it("project rules live in Ave home, keyed by the canonical project root, and never in the repo", async () => {

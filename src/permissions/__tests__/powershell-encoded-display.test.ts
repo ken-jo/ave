@@ -52,11 +52,11 @@ describe("literal encoded operand display", () => {
     expect(decodePowerShellEncodedCommands(`pwsh ${flag} ${ENCODED}`, "powershell")).toEqual([SCRIPT]);
   });
 
-  it.each(["pwsh", "powershell", "pwsh-preview", "pwsh.exe", "powershell.exe", "pwsh-preview.exe"])("uses the exact launcher identity %s", (launcher) => {
+  it.each(["pwsh", "powershell", "pwsh-preview", "powershell_ise", "pwsh.exe", "powershell.exe", "pwsh-preview.exe", "powershell_ise.exe"])("uses the exact launcher identity %s", (launcher) => {
     expect(decodePowerShellEncodedCommands(`${launcher} -enc ${ENCODED}`, "bash")).toEqual([SCRIPT]);
   });
 
-  it.each(["pwsh-custom", "powershell_ise", "pwsh5", "pwsh.cmd", "notpwsh"])("does not infer a launcher from %s", (launcher) => {
+  it.each(["pwsh-custom", "pwsh5", "pwsh.cmd", "notpwsh"])("does not infer a launcher from %s", (launcher) => {
     expect(decodePowerShellEncodedCommands(`${launcher} -enc ${ENCODED}`, "bash")).toEqual([]);
   });
 
