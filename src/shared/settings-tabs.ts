@@ -42,6 +42,7 @@ export const SETTINGS_SECTIONS: Record<SettingsTab, readonly string[]> = {
   appearance: ["appearance-language", "appearance-theme", "appearance-font"],
   chat: [
     "chat-optimization",
+    "chat-documents",
     "chat-stream-smoothing",
     "chat-processing-display",
     "chat-experimental",

@@ -46,6 +46,13 @@ const imagePreparation = vi.hoisted(() => ({
   prepareImageBytes: vi.fn(),
 }));
 
+const documentParser = vi.hoisted(() => ({ parse: vi.fn(), release: vi.fn() }));
+vi.mock("../preview-document-process.js", () => ({
+  acquireParseSlot: async (_owner: string, controller: AbortController) => ({
+    signal: controller.signal, parse: documentParser.parse, release: documentParser.release,
+  }),
+}));
+
 vi.mock("../../workload/runtime.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../workload/runtime.js")>();
   return {
@@ -84,7 +91,7 @@ vi.mock("../image-preparation.js", async (importOriginal) => ({
 import type { Tool, ToolExecutionContext } from "../base.js";
 import { createDynamicTool } from "../base.js";
 import { ToolExecutor } from "../executor.js";
-import { ReadFileTool, ViewImageTool, WriteFileTool } from "../file-tools.js";
+import { OpenDocumentTool, ReadDocumentTool, ReadFileTool, ViewImageTool, WriteFileTool } from "../file-tools.js";
 import { ToolRegistry } from "../registry.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 
@@ -144,6 +151,11 @@ beforeEach(() => {
   broker.acquire.mockImplementation(async () => broker.current);
   broker.execute.mockReset();
   imagePreparation.prepareImageBytes.mockReset();
+  documentParser.parse.mockReset().mockResolvedValue({ format: "csv", sheetNames: ["Sheet1"], totalSheets: 1,
+    sheetsTruncated: false, sheet: { index: 0, name: "Sheet1", rows: [["guest value"]], firstRow: 0, firstColumn: 0,
+      sourceRange: { firstRow: 0, firstColumn: 0, totalsExact: true }, totalRows: 1, totalColumns: 1,
+      rowsTruncated: false, columnsTruncated: false, cellsTruncated: false } });
+  documentParser.release.mockReset();
   approvalStore.lookupUserDecision.mockClear();
 });
 
@@ -155,6 +167,38 @@ afterEach(async () => {
 });
 
 describe("executor canonical file workload-broker route", () => {
+  it("reads guest document bytes through the bound binary operation instead of the host file", async () => {
+    const path = join(root, "document.csv");
+    writeFileSync(path, "host sentinel");
+    const bytes = Buffer.from("guest value");
+    broker.execute.mockResolvedValueOnce({ output: "binary receipt", isError: false,
+      path, bytes: bytes.length, data: bytes.toString("base64") });
+    const result = await invoke(allowingExecutor(new ReadDocumentTool(), root), "read_document", { path });
+    expect(result?.is_error, result?.content).toBeUndefined();
+    expect(JSON.parse(result!.content).cells).toEqual([["guest value"]]);
+    expect(broker.execute).toHaveBeenCalledWith(broker.current, "file.read_binary",
+      expect.objectContaining({ path, maxBytes: 20 * 1024 * 1024 }),
+      expect.objectContaining({ operation: "file.read_binary", toolName: "read_document" }), expect.any(AbortSignal));
+    expect(documentParser.parse.mock.calls[0]?.[0]).toEqual(bytes);
+    expect(readFileSync(path, "utf8")).toBe("host sentinel");
+    expect(documentParser.release).toHaveBeenCalledOnce();
+  });
+
+  it("refuses opening a guest document as a similarly spelled host path", async () => {
+    const result = await invoke(allowingExecutor(new OpenDocumentTool(), root), "open_document", { path: "/git/document.csv" });
+    expect(result?.is_error).toBe(true);
+    expect(result?.content).toContain("unsupported-route");
+    expect(broker.execute).not.toHaveBeenCalled();
+  });
+
+  it("does not parse or read a host document after the selected broker refuses", async () => {
+    broker.execute.mockResolvedValueOnce({ output: "bound binary read refused", isError: true });
+    const result = await invoke(allowingExecutor(new ReadDocumentTool(), root), "read_document", { path: "/git/document.csv" });
+    expect(result?.is_error).toBe(true);
+    expect(documentParser.parse).not.toHaveBeenCalled();
+    expect(documentParser.release).toHaveBeenCalledOnce();
+  });
+
   it("lets the complete broker handshake, effect, and terminal receipt settle before the executor ceiling", async () => {
     vi.useFakeTimers();
     const tool = new ReadFileTool();

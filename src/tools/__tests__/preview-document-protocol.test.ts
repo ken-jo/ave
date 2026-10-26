@@ -53,3 +53,37 @@ describe("bounded document model", () => {
     expect(() => readDocumentResponse(document)).toThrow("preview contract");
   });
 });
+
+describe("window response boundaries", () => {
+  function windowModel(): PreviewTableDocument {
+    return {
+      format: "xlsx", sheetNames: ["S"], totalSheets: 1, sheetsTruncated: false,
+      sheet: {
+        index: 0, name: "S", firstRow: 10002, firstColumn: 257,
+        sourceRange: { firstRow: 10000, firstColumn: 2, totalsExact: true },
+        totalRows: 4, totalColumns: 257, rows: [["late", ""], ["", "end"]],
+        rowsTruncated: true, columnsTruncated: true, cellsTruncated: false,
+      },
+    };
+  }
+
+  it("accepts a bounded source rectangle with its separate used-range origin", () => {
+    const document = windowModel();
+    expect(readDocumentResponse(document)).toBe(document);
+  });
+
+  it.each([
+    (document: PreviewTableDocument) => { document.sheet.sourceRange!.firstRow = -1; },
+    (document: PreviewTableDocument) => { Reflect.deleteProperty(document.sheet.sourceRange!, "totalsExact"); },
+    (document: PreviewTableDocument) => { document.sheet.sourceRange!.totalsExact = false; },
+    (document: PreviewTableDocument) => { document.sheet.sourceRange!.firstColumn = 258; },
+    (document: PreviewTableDocument) => { document.sheet.totalRows = 3; },
+    (document: PreviewTableDocument) => { document.sheet.firstColumn = Number.MAX_SAFE_INTEGER; },
+    (document: PreviewTableDocument) => { Object.assign(document.sheet.sourceRange!, { extra: true }); },
+    (document: PreviewTableDocument) => { document.sheet.rows[1]!.push("extra"); },
+  ])("refuses malformed window geometry and origin", (mutate) => {
+    const document = windowModel();
+    mutate(document);
+    expect(() => readDocumentResponse(document)).toThrow("preview contract");
+  });
+});

@@ -46,6 +46,15 @@ export const MAX_WALK_UP = 64;
 const NO_RUNTIME_SECRET_KEY_PATHS: readonly string[] = Object.freeze([]);
 let runtimeSecretKeyPaths: { configured: string; paths: readonly string[] } | undefined;
 
+const runtimeSettingsPaths = new Set<string>();
+
+/** Register a host-selected settings file before tools can write it, including relocated profiles. */
+export function protectRuntimeSettingsPath(path: string): void {
+  if (!isAbsolute(path) || path.includes("\0")) throw new Error("Settings path must be absolute");
+  runtimeSettingsPaths.add(caseFoldForMatch(canonicalizePathForMatch(path)));
+  runtimeSettingsPaths.add(caseFoldForMatch(pathResolve(path)));
+}
+
 // The native host's configured external key is secret regardless of its name or workspace grants. Both the host guard and the OS deny floor consume these same literal paths. Host startup resolves them before exposing tools; retain that target if a directory symlink changes later. The host owns this process environment setting and keeps it unchanged for the encryption lifetime.
 export function getRuntimeSensitiveKeyPaths(): readonly string[] {
   const configured = process.env.AVE_SECRET_KEY_FILE;
@@ -527,6 +536,12 @@ export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPa
   return (absPath) => {
     if (!absPath) return null;
     const candidates = policyMatchPaths(absPath);
+    if (effect === "write" && candidates.some((candidate) => {
+      const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");
+      return [...runtimeSettingsPaths].some((settingsPath) => settingsPath === target || settingsPath.startsWith(`${target}/`));
+    })) {
+      return "runtime-settings-file";
+    }
     roots ??= {
       session: effect === "read" ? getConfiguredSessionReadRoot() : undefined,
       keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),

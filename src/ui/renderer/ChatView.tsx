@@ -31,7 +31,8 @@ import type { McpPromptEntry } from "./components/slash-picker-data.js";
 import type { AgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt.js";
 import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
-import { collectChatPreviewModel } from "./preview/preview-targets.js";
+import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/preview-targets.js";
+import { useAgentDocumentPanel } from "./preview/use-agent-document-panel.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
 import { emitMainLayoutChange, takeRestoredSideTabs, terminalCwd } from "./preview/main-layout-restore.js";
@@ -203,10 +204,12 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     if (!emptyConversation) setProjectSelectorOpen(false);
   }, [emptyConversation]);
   // Sub-agent rows come only from live spawn events with addressable child session ids.
-  const previewModel = useMemo(
-    () => collectChatPreviewModel({ entries: visibleEntries, attachments }),
-    [attachments, visibleEntries],
-  );
+  const [openedDocuments, setOpenedDocuments] = useState<{ sessionId: string; targets: ChatPreviewTarget[] } | null>(null);
+  const previewModel = useMemo(() => {
+    const model = collectChatPreviewModel({ entries: visibleEntries, attachments });
+    if (openedDocuments?.sessionId === currentSessionId) model.targets.push(...openedDocuments.targets);
+    return model;
+  }, [attachments, visibleEntries, openedDocuments, currentSessionId]);
   const previewTargetIdKey = useMemo(
     () => previewModel.targets.map((target) => target.id).join("\u0001"),
     [previewModel.targets],
@@ -292,6 +295,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const [dockedPanelExpanded, setDockedPanelExpanded] = useState(false);
   const [sidePanelResizing, setSidePanelResizing] = useState(false);
   const reduceMotion = usePrefersReducedMotion();
+  useAgentDocumentPanel({
+    api: window.ave?.preview, sessionId: currentSessionId ?? undefined, workspaceTabs,
+    panelVisible: dockedPanelShouldOpen && dockedPanelPresent && dockedPanelExpanded, panelHidden: columns.panelHiddenForWidth,
+    element: () => chatViewRootRef.current, targets: previewModel.targets,
+    addTarget: (sessionId, target) => setOpenedDocuments((previous) => ({ sessionId, targets: [
+      ...(previous?.sessionId === sessionId ? previous.targets.filter((existing) => existing.id !== target.id) : []), target,
+    ] })),
+    openPanel: () => onSidePanelOpenChange(true),
+  });
 
   // Resizing must disable transitions without retriggering mount expansion.
   useEffect(() => {
