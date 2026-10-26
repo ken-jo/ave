@@ -75,7 +75,8 @@ All colours are tokens on `:root` in `app/globals.css`.
 | `--muted` | Captions, footer |
 | `--line` | Hairlines |
 | `--line-strong` | Hairlines |
-| `--dawn-1/2/3` | Only the hello and download cards' gradient |
+| `--dawn-1/2/3` | Only the hello and download cards' gradient (an ember glow in dark) |
+| `--tile-a/b/c 1/2` | The tile and stage backs |
 | `--title-dim` | The dimmed second line of the hero title (gradient-clipped text) |
 | `--accent` | Bullets and selection |
 | `--accent-ink` `oklch(45% .11 50)` | "More" links and eyebrows, readable on every ground |
@@ -91,13 +92,39 @@ Radii:
 - 14 px: framed captures.
 - 999 px: pills.
 
-The built workspace has its own `--a-*` tokens, copied from the app's light
-theme as the captures show it.
+The built workspace has its own `--a-*` tokens. They are copied from the
+app's light theme and from the Tokyo Night package, as the captures show
+them.
 
-**Colour scheme.** The site is light only (`color-scheme: light`, one
-`theme-color`). Pages show the light captures. The dark captures stay in
-`public/media` for a later dark theme. Pastel gradients appear only behind
-captures and fragments.
+**Colour scheme.** Two themes follow `prefers-color-scheme`. The light
+tokens sit on `:root`; the dark ones redefine them under the media query
+(`color-scheme: light dark`, a `theme-color` per scheme).
+
+The dark theme is a **warm night**, the same paper-and-ink logic after dusk
+rather than an inversion:
+- the ground is warm near-black (`oklch(15.5% .008 60)`);
+- the ink is warm off-white;
+- the dawn gradient becomes an ember glow at the top of the cards;
+- tiles keep their hue at low lightness;
+- the closing card is a lifted warm night with the same glow.
+
+Captures switch to their dark (Tokyo Night) versions. The built workspace's
+`--a-*` tokens take the Tokyo Night colours the dark captures show. The
+previewed sample site stays light in both themes, as it does in the dark
+captures.
+
+Pastel gradients appear only behind captures and fragments.
+
+**Contrast.** Every text pair meets WCAG AA (4.5:1) in both themes. Pairs
+checked:
+- ink, ink-2, muted and accent-ink on the ground, band, cards, dawn and the
+  six tile backs;
+- night text on the closing card;
+- the workspace's text, muted, blue and status pairs.
+
+The one exception is the hero title's dimmed second line on the light dawn,
+at 4.2:1. It is display text of at least 44 px, so AA's 3:1 for large text
+applies.
 
 ## Layout
 
@@ -188,13 +215,14 @@ captures and fragments.
     - WebP (quality 80) at full size;
     - a half-width 256-colour PNG fallback.
 
-    The path is `public/media/<key>-<light|dark>.<avif|webp|png>`. The site
-    currently shows only the light versions. The earlier hero loop (H.264 MP4
-    and VP9 WebM, 1440×900) stays in `public/media` but is not shown.
+    The path is `public/media/<key>-<light|dark>.<avif|webp|png>`. The
+    browser picks the theme with the colour-scheme media query. The earlier
+    hero loop (H.264 MP4 and VP9 WebM, 1440×900) stays in `public/media` but
+    is not shown.
 18. **No layout shift.**
     - Every `<img>` and `<video>` has width and height.
     - A feature page's first picture is eager, with high fetch priority and a
-      preload link.
+      preload link per colour scheme.
     - Everything else loads lazily.
     - The home hero has no picture to wait for: its workspace is markup.
 

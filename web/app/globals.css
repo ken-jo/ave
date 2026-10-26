@@ -3,11 +3,12 @@
 @import "tailwindcss";
 
 @layer base {
-  /* Greeting (G) system: a warm light ground, near-black ink, a dawn gradient
-     only on the hero and closing cards, colour otherwise from the product. The
-     site is light only; see web/DESIGN.md, "Colour". */
+  /* Greeting (G) system: a warm paper ground and near-black ink by day, a
+     warm night after dusk (prefers-color-scheme), a dawn gradient only on the
+     hello and download cards, colour otherwise from the product. Tokens and
+     their reasons: web/DESIGN.md, "Tokens". */
   :root {
-    color-scheme: light;
+    color-scheme: light dark;
     --bg: oklch(97.6% 0.004 85);
     --band: oklch(95.4% 0.006 85);
     --raised: oklch(100% 0 0);
@@ -39,6 +40,88 @@
     --header: 56px;
     --ease: cubic-bezier(0.16, 1, 0.3, 1);
     --ease-ui: cubic-bezier(0.32, 0.72, 0, 1);
+    --glow-ink: oklch(85% 0.1 60);
+    --night-ink-2: oklch(82% 0.006 80);
+    --night-ink-hover: oklch(90% 0.02 80);
+    /* Pastel backs behind captures and fragments only. */
+    --tile-a1: oklch(93% 0.05 40); --tile-a2: oklch(96.5% 0.02 70);
+    --tile-b1: oklch(93% 0.045 160); --tile-b2: oklch(97% 0.015 120);
+    --tile-c1: oklch(93.5% 0.04 230); --tile-c2: oklch(97% 0.012 200);
+    /* The built workspace: the app's light theme, as the light captures show it. */
+    --a-bg: oklch(100% 0 0);
+    --a-side: oklch(98.4% 0.002 250);
+    --a-hover: oklch(94% 0.004 250);
+    --a-line: oklch(91.5% 0.004 250);
+    --a-ink: oklch(22% 0.01 260);
+    --a-muted: oklch(50% 0.012 260);
+    --a-chip: oklch(96% 0.004 250);
+    --a-strong: oklch(20% 0.01 260);
+    --a-on-strong: oklch(100% 0 0);
+    --a-blue: oklch(55% 0.19 258);
+    --a-on-blue: oklch(100% 0 0);
+    --a-blue-soft: oklch(95% 0.03 258);
+    --a-ok: oklch(52% 0.14 150);
+    --a-ok-soft: oklch(95.5% 0.04 150);
+    --a-term: oklch(98.6% 0.002 250);
+    --a-page: oklch(33% 0.045 160);
+    --a-page-ink: oklch(98% 0.01 150);
+    --a-shadow: 0 0 0 1px oklch(22% 0.01 260 / 0.08), 0 2px 4px oklch(22% 0.01 260 / 0.04), 0 40px 100px -30px oklch(30% 0.04 50 / 0.35);
+    --a-shadow-sm: 0 0 0 1px oklch(22% 0.01 260 / 0.08), 0 24px 50px -24px oklch(22% 0.02 260 / 0.35);
+  }
+  /* Warm night: the same paper-and-ink logic after dusk, not an inversion.
+     Ground is a warm near-black, ink a warm off-white, the dawn becomes an
+     ember glow at the top of the cards, and the built workspace takes the
+     Tokyo Night theme the dark captures show. */
+  @media (prefers-color-scheme: dark) {
+    :root {
+      color-scheme: dark;
+      --bg: oklch(15.5% 0.008 60);
+      --band: oklch(18.5% 0.009 60);
+      --raised: oklch(21% 0.01 60);
+      --ink: oklch(95% 0.008 85);
+      --ink-2: oklch(84% 0.01 80);
+      --muted: oklch(70% 0.012 75);
+      --line: oklch(95% 0.008 85 / 0.1);
+      --line-strong: oklch(95% 0.008 85 / 0.18);
+      --accent: oklch(78% 0.13 60);
+      --accent-ink: oklch(80% 0.11 62);
+      --focus: oklch(74% 0.14 258);
+      --code-bg: oklch(23% 0.01 60);
+      --dawn-1: oklch(34% 0.07 42);
+      --dawn-2: oklch(24% 0.04 52);
+      --dawn-3: oklch(17.5% 0.01 60);
+      --title-dim: oklch(72% 0.03 65);
+      --glow: oklch(70% 0.14 50);
+      --night: oklch(21% 0.014 55);
+      --night-ink: oklch(96% 0.008 85);
+      --glow-ink: oklch(84% 0.11 62);
+      --night-ink-2: oklch(82% 0.01 80);
+      --night-ink-hover: oklch(88% 0.02 80);
+      --shadow: 0 0 0 1px oklch(95% 0.008 85 / 0.08), 0 30px 70px -30px oklch(0% 0 0 / 0.7);
+      --tile-a1: oklch(28% 0.05 40); --tile-a2: oklch(21% 0.02 55);
+      --tile-b1: oklch(27% 0.045 160); --tile-b2: oklch(20.5% 0.015 130);
+      --tile-c1: oklch(27.5% 0.045 240); --tile-c2: oklch(20.5% 0.015 220);
+      /* Tokyo Night, as the dark captures show the app. */
+      --a-bg: #1a1b26;
+      --a-side: #16161e;
+      --a-hover: #292e42;
+      --a-line: #292e42;
+      --a-ink: #c0caf5;
+      --a-muted: #8b93bf;
+      --a-chip: #1f2335;
+      --a-strong: #7aa2f7;
+      --a-on-strong: #16161e;
+      --a-blue: #7aa2f7;
+      --a-on-blue: #16161e;
+      --a-blue-soft: #283457;
+      --a-ok: #9ece6a;
+      --a-ok-soft: #26331f;
+      --a-term: #16161e;
+      --a-page: oklch(33% 0.045 160);
+      --a-page-ink: oklch(98% 0.01 150);
+      --a-shadow: 0 0 0 1px oklch(95% 0.008 85 / 0.1), 0 40px 100px -30px oklch(0% 0 0 / 0.75);
+      --a-shadow-sm: 0 0 0 1px oklch(95% 0.008 85 / 0.1), 0 24px 50px -24px oklch(0% 0 0 / 0.7);
+    }
   }
 
   html {
@@ -352,28 +435,26 @@
 
   /* The built workspace rises from the card's bottom edge and is cropped by it. */
   .hw-stage { position: relative; z-index: 1; width: min(1120px, calc(100% - 48px)); margin: clamp(28px, 4vh, 44px) auto 0; }
-  .hw-app { position: relative; display: grid; grid-template-columns: 208px minmax(0, 1fr); height: 540px; background: #fff; border-radius: 14px 14px 0 0; overflow: hidden;
-    box-shadow: 0 0 0 1px oklch(22% 0.01 260 / 0.08), 0 2px 4px oklch(22% 0.01 260 / 0.04), 0 40px 100px -30px oklch(30% 0.04 50 / 0.35);
-    color: oklch(22% 0.01 260); font-size: 12.5px; line-height: 1.5; text-align: left; word-break: normal;
-    --a-side: oklch(98.4% 0.002 250); --a-line: oklch(91.5% 0.004 250); --a-muted: oklch(52% 0.012 260); --a-chip: oklch(96% 0.004 250);
-    --a-blue: oklch(58% 0.19 258); --a-blue-soft: oklch(95% 0.03 258); --a-ok: oklch(52% 0.14 150); --a-ok-soft: oklch(95.5% 0.04 150); --a-page: oklch(33% 0.045 160); }
+  .hw-app { position: relative; display: grid; grid-template-columns: 208px minmax(0, 1fr); height: 540px; background: var(--a-bg); border-radius: 14px 14px 0 0; overflow: hidden;
+    box-shadow: var(--a-shadow);
+    color: var(--a-ink); font-size: 12.5px; line-height: 1.5; text-align: left; word-break: normal; }
   .hw-app code, .hw-app pre { font-family: var(--font-code); }
   .hw-side { background: var(--a-side); border-right: 1px solid var(--a-line); padding: 10px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-  .hw-newchat { display: grid; place-items: center; height: 30px; border-radius: 8px; background: oklch(20% 0.01 260); color: #fff; font-weight: 500; }
+  .hw-newchat { display: grid; place-items: center; height: 30px; border-radius: 8px; background: var(--a-strong); color: var(--a-on-strong); font-weight: 500; }
   .hw-row { display: flex; align-items: center; gap: 8px; padding: 5px 8px; border-radius: 7px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .hw-row[data-sel] { background: oklch(94% 0.004 250); }
+  .hw-row[data-sel] { background: var(--a-hover); }
   .hw-proj { font-weight: 600; }
   .hw-settings { margin-top: auto; }
   .hw-k { margin-left: auto; color: var(--a-muted); font-size: 11px; }
   .hw-seg { display: grid; grid-template-columns: 1fr 1fr; background: var(--a-chip); border-radius: 8px; padding: 2px; text-align: center; color: var(--a-muted); }
   .hw-seg span { padding: 3px 0; border-radius: 6px; }
-  .hw-seg [data-on] { background: #fff; color: oklch(22% 0.01 260); box-shadow: 0 1px 2px oklch(22% 0.01 260 / 0.1); }
+  .hw-seg [data-on] { background: var(--a-bg); color: var(--a-ink); box-shadow: 0 1px 2px oklch(0% 0 0 / 0.12); }
   .hw-main { display: grid; grid-template-rows: 38px minmax(0, 1fr); min-width: 0; }
   .hw-top { display: flex; align-items: center; gap: 6px; padding: 0 12px; border-bottom: 1px solid var(--a-line); color: var(--a-muted); }
-  .hw-top b { color: oklch(22% 0.01 260); font-weight: 500; }
+  .hw-top b { color: var(--a-ink); font-weight: 500; }
   .hw-toggle { margin-left: auto; display: flex; border: 1px solid var(--a-line); border-radius: 7px; padding: 2px; }
   .hw-toggle span { padding: 1px 8px; border-radius: 5px; transition: background-color 0.3s var(--ease-ui), color 0.3s var(--ease-ui); }
-  .hw-toggle [data-on] { background: oklch(20% 0.01 260); color: #fff; }
+  .hw-toggle [data-on] { background: var(--a-strong); color: var(--a-on-strong); }
   .hw-body { display: grid; grid-template-columns: minmax(0, 1fr); min-height: 0; transition: grid-template-columns 0.9s var(--ease); }
   .hw-app.is-work .hw-body { grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.2fr); }
   .hw-chat { display: grid; grid-template-rows: auto auto auto; align-content: start; min-width: 0; min-height: 0; }
@@ -386,7 +467,7 @@
   .hw-complete, .hw-thinking { color: var(--a-muted); font-size: 11.5px; font-weight: 500; }
   .hw-group { display: grid; gap: 5px; }
   .hw-tool { display: flex; align-items: center; gap: 6px; color: var(--a-muted); font-size: 11.5px; }
-  .hw-tool b { font-size: 10px; font-weight: 600; color: #fff; background: var(--a-blue); border-radius: 999px; padding: 0 6px; }
+  .hw-tool b { font-size: 10px; font-weight: 600; color: var(--a-on-blue); background: var(--a-blue); border-radius: 999px; padding: 0 6px; }
   .hw-composer { margin: 0 14px 6px; border: 1.5px solid var(--a-blue); border-radius: 12px; padding: 9px 12px 8px; box-shadow: 0 0 0 4px var(--a-blue-soft); }
   .hw-typed { min-height: 19px; white-space: nowrap; overflow: hidden; }
   .hw-typed:empty::before { content: "typing, ⌘+V, /"; color: var(--a-muted); }
@@ -403,8 +484,8 @@
   @keyframes hw-in { from { opacity: 0; transform: translate3d(24px, 0, 0); } }
   .hw-tabs { display: flex; gap: 2px; padding: 6px 8px 0; border-bottom: 1px solid var(--a-line); }
   .hw-tabs span { padding: 5px 10px; border-radius: 7px 7px 0 0; color: var(--a-muted); transition: color 0.3s var(--ease-ui), background-color 0.3s var(--ease-ui); }
-  .hw-tabs [data-on] { background: #fff; color: oklch(22% 0.01 260); box-shadow: 0 0 0 1px var(--a-line); }
-  .hw-views { position: relative; min-height: 0; margin: 8px; background: #fff; border: 1px solid var(--a-line); border-radius: 9px; overflow: hidden; }
+  .hw-tabs [data-on] { background: var(--a-bg); color: var(--a-ink); box-shadow: 0 0 0 1px var(--a-line); }
+  .hw-views { position: relative; min-height: 0; margin: 8px; background: var(--a-bg); border: 1px solid var(--a-line); border-radius: 9px; overflow: hidden; }
   .hw-view { position: absolute; inset: 0; display: none; }
   .hw-view[data-on] { display: block; }
   .hw-app[data-live] .hw-view[data-on] { animation: hw-fade 0.5s var(--ease-ui) both; }
@@ -418,17 +499,19 @@
   .hw-add { display: block; margin-inline: -10px; padding-inline: 10px; background: var(--a-ok-soft); box-shadow: inset 2px 0 var(--a-ok); }
   .hw-app[data-live] .hw-add { clip-path: inset(0 100% 0 0); transition: clip-path 1.1s steps(28); }
   .hw-app[data-live] .hw-add[data-on] { clip-path: inset(0 0 0 0); }
-  .hw-url { margin: 0; padding: 6px 9px; border-bottom: 1px solid var(--a-line); font-family: var(--font-code); font-size: 10px; color: var(--a-muted); }
-  .hw-page { background: var(--a-page); color: oklch(98% 0.01 150); padding: 10px 12px; }
+  .hw-url { margin: 0; background: var(--a-bg); padding: 6px 9px; border-bottom: 1px solid var(--a-line); font-family: var(--font-code); font-size: 10px; color: var(--a-muted); }
+  .hw-page { background: var(--a-page); color: var(--a-page-ink); padding: 10px 12px; }
   .hw-page b { display: block; font-size: 14px; }
   .hw-page span { font-size: 10px; opacity: 0.85; }
-  .hw-trails { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; }
+  /* The previewed page is the sample site itself, light in either theme, as the dark captures show it. */
+  .hw-trails { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding: 8px; background: #fff; color-scheme: light; --a-line: oklch(91.5% 0.004 250); --a-muted: oklch(50% 0.012 260); --a-blue-soft: oklch(95% 0.03 258); }
+  .hw-view[data-view="preview"] { background: #fff; }
   .hw-trails p { position: relative; margin: 0; border: 1px solid var(--a-line); border-radius: 6px; padding: 6px 8px; font-size: 10.5px; overflow: hidden; }
   .hw-trails b { display: block; text-decoration: underline; text-underline-offset: 2px; color: var(--a-page); }
   .hw-trails span { color: var(--a-muted); font-size: 9.5px; }
   .hw-app[data-live] .hw-trails p::after { content: ""; position: absolute; inset: 0; background: var(--a-blue-soft); mix-blend-mode: multiply; transform: scaleX(0); transform-origin: left; transition: transform 0.6s var(--ease); }
   .hw-app[data-live] .hw-trails p[data-read]::after { transform: scaleX(1); }
-  .hw-term { margin: 0; height: 100%; padding: 10px; font-size: 10.5px; line-height: 1.7; white-space: pre-wrap; background: oklch(98.6% 0.002 250); border: 0; border-radius: 0; overflow: hidden; }
+  .hw-term { margin: 0; height: 100%; padding: 10px; font-size: 10.5px; line-height: 1.7; white-space: pre-wrap; background: var(--a-term); border: 0; border-radius: 0; overflow: hidden; }
 
   /* The AWE statement. */
   .statement-sec { padding-block: clamp(110px, 14vw, 200px); }
@@ -442,30 +525,30 @@
   .center-head > * { margin: 0; }
   .center-head .lead { max-width: 40em; }
   .center-foot { text-align: center; margin: clamp(24px, 3vw, 36px) 0 0; }
-  .work-stage { border-radius: var(--r-lg); padding: clamp(20px, 4vw, 56px) clamp(16px, 4vw, 56px) 0; overflow: hidden; background: linear-gradient(160deg, oklch(93.5% 0.04 230), oklch(97% 0.012 200)); }
+  .work-stage { border-radius: var(--r-lg); padding: clamp(20px, 4vw, 56px) clamp(16px, 4vw, 56px) 0; overflow: hidden; background: linear-gradient(160deg, var(--tile-c1), var(--tile-c2)); }
   .work-stage .shot { border-radius: 14px 14px 0 0; }
   .tiles { list-style: none; margin: 0; padding: 0; display: grid; gap: 16px; grid-template-columns: minmax(0, 1fr); }
   @media (min-width: 760px) { .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
   @media (min-width: 1040px) { .tiles { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
   .tile { border-radius: 22px; padding: 22px 20px 0; overflow: hidden; display: flex; flex-direction: column; gap: 22px; }
-  .tile:nth-child(3n + 1) { background: linear-gradient(160deg, oklch(93% 0.05 40), oklch(96.5% 0.02 70)); }
-  .tile:nth-child(3n + 2) { background: linear-gradient(160deg, oklch(93% 0.045 160), oklch(97% 0.015 120)); }
-  .tile:nth-child(3n + 3) { background: linear-gradient(160deg, oklch(93.5% 0.04 230), oklch(97% 0.012 200)); }
+  .tile:nth-child(3n + 1) { background: linear-gradient(160deg, var(--tile-a1), var(--tile-a2)); }
+  .tile:nth-child(3n + 2) { background: linear-gradient(160deg, var(--tile-b1), var(--tile-b2)); }
+  .tile:nth-child(3n + 3) { background: linear-gradient(160deg, var(--tile-c1), var(--tile-c2)); }
   .tile-text { display: grid; gap: 0.4rem; align-content: start; flex: 1; }
   .tile-text > * { margin: 0; }
   .tile-text p { color: var(--ink-2); font-size: 0.9375rem; line-height: 1.5; }
   .tile-text .more { margin-top: 0.35rem; font-size: 0.9375rem; }
-  .tile-window { position: relative; height: 250px; border-radius: 12px 12px 0 0; overflow: hidden; background: #fff; box-shadow: 0 0 0 1px oklch(22% 0.01 260 / 0.08), 0 24px 50px -24px oklch(22% 0.02 260 / 0.35); transform: translate3d(0, var(--lift, 0px), 0); transition: transform 0.9s var(--ease); }
+  .tile-window { position: relative; height: 250px; border-radius: 12px 12px 0 0; overflow: hidden; background: var(--a-bg); box-shadow: var(--a-shadow-sm); transform: translate3d(0, var(--lift, 0px), 0); transition: transform 0.9s var(--ease); }
   .tile:hover .tile-window { --lift: -6px; }
   .tile-window picture { display: contents; }
   .crop-img { position: absolute; max-width: none; height: auto; }
-  .files-frag { display: grid; grid-template-columns: 34% 66%; color: oklch(22% 0.01 260); }
-  .files-frag ul { list-style: none; margin: 0; padding: 10px 8px; border-right: 1px solid oklch(91.5% 0.004 250); background: oklch(98.4% 0.002 250); font-family: var(--font-code); font-size: 10.5px; }
+  .files-frag { display: grid; grid-template-columns: 34% 66%; color: var(--a-ink); }
+  .files-frag ul { list-style: none; margin: 0; padding: 10px 8px; border-right: 1px solid var(--a-line); background: var(--a-side); font-family: var(--font-code); font-size: 10.5px; }
   .files-frag li { padding: 3px 6px; border-radius: 5px; }
   .files-frag li:nth-child(2), .files-frag li:nth-child(3) { padding-left: 16px; }
-  .files-frag [data-sel] { background: oklch(95% 0.03 258); }
+  .files-frag [data-sel] { background: var(--a-blue-soft); }
   .files-frag pre { margin: 0; padding: 10px; font-size: 10.5px; line-height: 1.75; white-space: pre; overflow: hidden; background: none; border: 0; border-radius: 0; }
-  .files-frag .hw-add { background: oklch(95.5% 0.04 150); box-shadow: inset 2px 0 oklch(52% 0.14 150); }
+  
 
   /* The closing card: dark, a warm glow rising from below. */
   .closing { padding: var(--sec) 16px 0; }
@@ -474,10 +557,10 @@
   .closing-card > * { position: relative; }
   .closing-card h2 { margin: 0 auto; max-width: 14ch; font-weight: 430; font-size: clamp(2.2rem, 1rem + 3.6vw, 4rem); line-height: 1.04; letter-spacing: -0.05em; }
   :lang(ko) .closing-card h2 { max-width: 16ch; line-height: 1.18; letter-spacing: -0.04em; }
-  .closing-card h2 span { color: oklch(85% 0.1 60); }
-  .closing-card p { margin: 18px auto 30px; max-width: 34em; color: oklch(82% 0.006 80); }
+  .closing-card h2 span { color: var(--glow-ink); }
+  .closing-card p { margin: 18px auto 30px; max-width: 34em; color: var(--night-ink-2); }
   .btn-light { background: var(--night-ink); color: var(--night); }
-  .btn-light:hover { background: oklch(90% 0.02 80); }
+  .btn-light:hover { background: var(--night-ink-hover); }
 
   @media (max-width: 1023px) {
     .hw-app { grid-template-columns: minmax(0, 1fr); height: 500px; }

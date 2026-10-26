@@ -11,9 +11,12 @@ import "../app/globals.css";
 const FONT_CSS = ["/fonts/pretendard/pretendardvariable-dynamic-subset.css", "/fonts/jetbrains-mono/jetbrains-mono.css"];
 
 export const viewport: Viewport = {
-  // The site is light only (web/DESIGN.md, "Colour").
-  themeColor: "#f8f7f4",
-  colorScheme: "light",
+  // Light and warm night follow the system (web/DESIGN.md, "Tokens").
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f8f7f4" },
+    { media: "(prefers-color-scheme: dark)", color: "#120f0c" },
+  ],
+  colorScheme: "light dark",
 };
 
 export function siteMetadata(locale: Locale): Metadata {
