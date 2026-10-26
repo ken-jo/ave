@@ -30,6 +30,24 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsReadDenyKey, type WindowsReadDenyEvidence } from "../../shared/windows-read-deny-evidence.js";
 import * as readDenyEvidenceModule from "../../shared/windows-read-deny-evidence.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
+import { configureHostResources } from "../../main/host-resources.js";
+
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
+
+it.each(["linux", "darwin"] as const)("never rechecks native Windows evidence on a captured %s host after platform simulation", async platform => {
+  const original = process.platform;
+  vi.resetModules();
+  setProcessPlatform(platform);
+  try {
+    const sandbox = await import("../asrt-sandbox.js");
+    const evidence = await import("../../shared/windows-read-deny-evidence.js");
+    const recheck = vi.spyOn(evidence, "recheckWindowsReadDenyEvidence");
+    setProcessPlatform("win32");
+    sandbox.buildSandboxConfig({ denyRead: [join(tmpdir(), "captured-host", ".ssh")] }, new Map());
+    expect(recheck).not.toHaveBeenCalled();
+    recheck.mockRestore();
+  } finally { setProcessPlatform(original); vi.resetModules(); }
+});
 
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
@@ -1547,7 +1565,10 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
-  it("Windows: profile read denies retain exposed targets and evidence failures", () => {
+  it.each(["linux", "darwin", "win32"] as const)("Windows: profile read denies retain exposed targets and evidence failures on a captured %s host", async host => {
+    vi.resetModules();
+    setProcessPlatform(host);
+    const sandbox = await import("../asrt-sandbox.js");
     const previousHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-deny-evidence-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
@@ -1565,10 +1586,24 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         [missing.toLowerCase(), { status: "missing" } as const],
         [failed.toLowerCase(), { status: "error", reason: "Access denied" } as const],
       ]);
-      const config = buildSandboxConfig({ denyRead: [exposed, privateFile, missing, failed] }, evidence);
+      const facts = await import("../../shared/windows-path-facts.js");
+      const reader = await import("../../shared/windows-read-deny-evidence.js");
+      // A captured POSIX host consumes checked evidence without calling the native helper.
+      // Supply native-shaped pins locally so the identity-less snapshot is actually rejected first.
+      const pin = vi.spyOn(facts, "pinWindowsPaths").mockImplementation(paths => paths.map(path => ({
+        exists: true, canonical: path, volumeSerial: "0x0000000000000001", fileId: "0x00000000000000000000000000000001",
+        volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001",
+        attributes: 0, reparseTag: 0, directory: false, reparseTarget: null, ancestors: [],
+      })));
+      let checked: ReturnType<typeof reader.recheckWindowsReadDenyEvidence>;
+      try { checked = reader.recheckWindowsReadDenyEvidence([exposed, privateFile, missing, failed], evidence); }
+      finally { pin.mockRestore(); }
+      expect(checked.get(windowsReadDenyKey(privateFile))).toEqual({ status: "error", reason: "DACL snapshot target identity is unproven" });
+      const config = sandbox.buildSandboxConfig({ denyRead: [exposed, privateFile, missing, failed] }, checked);
       const denies = bare(config.filesystem.denyRead);
       expect(denies).toContain(exposed);
-      expect(denies).not.toContain(privateFile);
+      // A private snapshot without an object identity is still unproven.
+      expect(denies).toContain(privateFile);
       expect(denies).not.toContain(missing);
       expect(denies).toContain(failed);
     } finally {
@@ -1576,6 +1611,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = previousHome;
       rmSync(profile, { recursive: true, force: true });
+      vi.resetModules();
     }
   });
 

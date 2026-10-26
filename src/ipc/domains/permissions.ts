@@ -1,5 +1,5 @@
 /** Permissions domain IPC handlers. Covers: ave:permission:*, ave:approval:*, ave:policy:* */
-import { ipcMain, session } from "electron";
+import { ipcMain, session, type IpcMainInvokeEvent } from "electron";
 import { randomUUID } from "node:crypto";
 import { isRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
 import { validatePermissionRule } from "../../permissions/rules/rule-files.js";
@@ -253,6 +253,11 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   const { conversationLoop, approvalGate, auditLogger } = deps;
   const deferredResolveInFlight = new Set<string>();
   const reviewSuggestionTracker = createPermissionReviewSuggestionTracker();
+  const isNativeApprovalFrame = (event: IpcMainInvokeEvent): boolean => {
+    if (!event.sender || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
+    const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
+    return windows.some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
+  };
 
   // read-only, sender guard optional
   ipcMain.handle(PERMISSIONS.getMode, () => handleGetMode(deps));
@@ -695,34 +700,23 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   // ave:approval:request direction is main→renderer (webContents.send); no ipcMain.handle needed
   ipcMain.handle(PERMISSIONS.approvalRespond, (e, decision: ApprovalDecision) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
-    let honoredDecision: ApprovalDecision | null = null;
-    if (approvalGate) {
-      const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
-      const nativeRenderer = e.senderFrame === e.sender?.mainFrame &&
-        windows.some((window) => window?.webContents === e.sender);
-      honoredDecision = nativeRenderer
-        ? approvalGate.resolveFromDesktopRenderer(decision.requestId, decision, e.sender)
-        : approvalGate.resolve(decision.requestId, decision);
-    }
-    if (honoredDecision) {
-      reviewSuggestionTracker.record(deps, honoredDecision, snapshot);
-    }
+    const honoredDecision = approvalGate?.resolveFromDesktopRenderer(decision.requestId, decision, e.sender);
+    if (honoredDecision) reviewSuggestionTracker.record(deps, honoredDecision, snapshot);
     return { ok: true };
   });
 
-  // The requests the gate is still waiting on, as the renderer received them. Read once by a renderer that
-  // (re)loaded after a request went out; the masked, signed payload is the same one `ave:approval:request` carried.
+  // Reloads and conversation moves recover only the live owner's signed cards.
   ipcMain.handle(PERMISSIONS.approvalPending, (e) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalPending, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalPending, e); return UNAUTHORIZED_FRAME; }
     return approvalGate ? approvalGate.listPendingRendererRequests(e.sender) : [];
   });
 
   /** Approval-sentence results are proposals only; require the user to confirm an existing pending choice and never resolve the gate here.
    * Read identity and paths from the host pending entry, not renderer claims. */
   ipcMain.handle(PERMISSIONS.approvalSentenceSelect, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) {
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) {
       auditUnauthorized(auditLogger, PERMISSIONS.approvalSentenceSelect, e);
       return UNAUTHORIZED_FRAME;
     }
@@ -751,6 +745,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
         message: "no pending directory approval matches this request id",
       };
     }
+    if (!approvalGate!.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
     const options = buildApprovalScopeOptions({
       candidatePath: state.candidatePath,
       suggestedParent: state.suggestedParent,
@@ -1204,7 +1199,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // ── User-Approval Store handlers ──────────────────────────
 
   ipcMain.handle(PERMISSIONS.userApprovalRecord, async (e, payload: unknown) => {
-    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRecord, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRecord, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     // parity with peer mutating handlers (addRule, removeRule, setMode, dirDispatch, reviewerDispatch, deferredResolve, policySet).
     // Gates on user-keyboard freshness so a synthetic record submission from a compromised renderer cannot record without an active gesture.
@@ -1238,6 +1233,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
     if (!snapshot) {
       return { ok: false, error: "no-such-request", message: "user-approval record: no in-flight ApprovalRequest for requestId" };
     }
+    if (!approvalGate!.canAccessRendererRequest(requestId, e.sender, "desk")) return UNAUTHORIZED_FRAME;
     if (body.rule !== undefined) {
       // A card's rule save (owner 2026-10-25, unified approval card): the renderer names the choice's action and scope and, only when the person edited it, the rule text. The host checks an edited rule against the card's own rule grammar and requires it to decide this very request; without one it stores the rule it derived itself.
       if (!approvalGate?.mayRecordFrom(requestId, e.sender)) {

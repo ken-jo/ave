@@ -19,16 +19,24 @@ import type {
   ToolExecutorCallbacks,
 } from "../executor.js";
 import { emitPermissionReview, summarizeInputForDeferred } from "./display-mask.js";
+import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import { errorMessage } from "../../shared/error-message.js";
+
+export function reviewerInvocationId(meta: Pick<ToolCallMeta, "groupId" | "toolUseId">): string {
+  if (typeof meta.groupId !== "string" || meta.groupId.trim().length === 0 ||
+      typeof meta.toolUseId !== "string" || meta.toolUseId.trim().length === 0) {
+    throw new JudgeContractError("Automated review requires a tool invocation identity");
+  }
+  return JSON.stringify([meta.groupId, meta.toolUseId]);
+}
 
 function resolveDispatchedJudge(
   reviewer: ReviewerDispatchResult,
   lane: ReviewerLane,
-): PermissionCheckResult | null {
+  userAvailable = true,
+): PermissionCheckResult {
   const outcome = reviewer.judge;
-  if (!outcome) return null;
-  // Shadow preserves the pre-existing automatic lane; ordinary asks still reach the person while their configured chain only records its opinion.
-  if (reviewer.judgeBaselineAllowed === true) return null;
+  if (!outcome) throw new JudgeContractError("Automated review returned no judge outcome");
   if (!outcome.judged) {
     return {
       decision: lane === "headless" ? "deny" : "ask",
@@ -36,6 +44,13 @@ function resolveDispatchedJudge(
       layer: 5,
       forceModal: true,
     };
+  }
+  if (outcome.pause) {
+    const available = lane !== "headless" && userAvailable;
+    const key = outcome.pause === "consecutive"
+      ? available ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedNoUserConsecutive"
+      : available ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal";
+    return { decision: available ? "ask" : "deny", reason: t(key), layer: 5, forceModal: true };
   }
   return {
     decision: outcome.applied ? outcome.decision : lane === "headless" ? "deny" : "ask",
@@ -85,10 +100,11 @@ export async function dispatchReviewerForHeadless(
       allowed: false,
       message:
         t("be_executor.permHoldStrictHeadless", { toolName, source }) +
+        " (no approval surface)" +
         (deferredId ? ` (deferredId=${deferredId})` : ""),
       permissionResult: {
         decision: "deny",
-        reason: "strict headless requires explicit approval",
+        reason: "strict headless requires explicit approval: no approval surface",
         layer: 5,
         reviewer: { route: "headless", verdict },
         ...(deferredId ? { deferred: { queueId: deferredId, reviewerVerdict: verdict } } : {}),
@@ -99,10 +115,10 @@ export async function dispatchReviewerForHeadless(
   if (!permissionManager?.hasReviewer()) {
     return {
       allowed: false,
-      message: t("be_executor.permBlockHeadlessNoReviewer", { toolName, source }),
+      message: t("be_executor.permBlockHeadlessNoReviewer", { toolName, source }) + " (no approval surface)",
       permissionResult: {
         decision: "deny",
-        reason: "headless reviewer not wired",
+        reason: "headless reviewer not wired: no approval surface",
         layer: 5,
       },
     };
@@ -118,6 +134,7 @@ export async function dispatchReviewerForHeadless(
   const reviewer = await permissionManager.dispatchReviewer(
     toolName,
     {
+      invocationId: reviewerInvocationId(meta),
       ...(sessionId ? { sessionId } : {}),
       source,
       category,
@@ -159,18 +176,11 @@ export async function dispatchReviewerForHeadless(
   // it. The review-status telemetry is derived from the resolved decision so the auto-approve disclosure and the audit decision share one source.
   const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
   const judged = resolveDispatchedJudge(reviewer, "headless");
-  const resolved = judged ?? (autoDecisionOutcome
-    ? reviewer.builtinDecision === undefined
-      ? permissionManager.resolveReviewerDecision(reviewer.verdict, "headless")
-      : permissionManager.resolveReviewerDecision(reviewer.verdict, "headless", reviewer.builtinDecision)
-    : {
-        decision: "deny" as const,
-        reason: `headless reviewer ${reviewer.outcome} — execution blocked`,
-        layer: 5,
-      });
+  const resolved = judged;
   const decision: PermissionCheckResult = {
     ...resolved,
-    reviewer: { route: "headless", verdict: reviewer.verdict, outcome: reviewer.outcome },
+    reviewer: { route: "headless", verdict: reviewer.judge?.judged && reviewer.judge.pause
+      ? { ...reviewer.verdict, reason: resolved.reason } : reviewer.verdict, outcome: reviewer.outcome },
   };
   emitPermissionReview(callbacks, {
     status: !autoDecisionOutcome
@@ -242,6 +252,7 @@ export async function dispatchReviewerForInteractiveAuto(
     reviewer = await mgr.dispatchReviewer(
       toolName,
       {
+        invocationId: reviewerInvocationId(meta),
         ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,
@@ -313,20 +324,12 @@ export async function dispatchReviewerForInteractiveAuto(
   // V3 SOT; PermissionManager owns the verdict→decision mapping. Verdicts through the configured inclusive
   // threshold allow; higher verdicts ask the user. HIGH still requires explicit approval with justification.
   const autoDecisionOutcome = isReviewerAutoDecisionOutcome(reviewer.outcome);
-  const judged = resolveDispatchedJudge(reviewer, "foreground-auto");
-  const resolved = judged ?? (autoDecisionOutcome
-    ? reviewer.builtinDecision === undefined
-      ? mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto")
-      : mgr.resolveReviewerDecision(reviewer.verdict, "foreground-auto", reviewer.builtinDecision)
-    : {
-        decision: "ask" as const,
-        reason: `foreground reviewer ${reviewer.outcome} — explicit approval required`,
-        layer: 5,
-        forceModal: true,
-      });
+  const judged = resolveDispatchedJudge(reviewer, "foreground-auto", context.approvalSurface !== "unavailable");
+  const resolved = judged;
   const decision: PermissionCheckResult = {
     ...resolved,
-    reviewer: { route: "foreground-auto", verdict: reviewer.verdict, outcome: reviewer.outcome, approvalBasis: reviewer.approvalBasis },
+    reviewer: { route: "foreground-auto", verdict: reviewer.judge?.judged && reviewer.judge.pause
+      ? { ...reviewer.verdict, reason: resolved.reason } : reviewer.verdict, outcome: reviewer.outcome, approvalBasis: reviewer.approvalBasis },
   };
   const failedWithoutApprovalSurface =
     !autoDecisionOutcome && context.approvalSurface === "unavailable";

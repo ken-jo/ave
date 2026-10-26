@@ -1,6 +1,9 @@
 // Exercises the full window event path: a fast SSO close after navigation must resolve successfully.
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
+import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import type { Cookie } from "electron";
+
+useChromiumRuntime();
 
 // Drain promise queues with repeated timer turns; the runner lacks a microtask-flush helper.
 async function flushAsync(rounds = 4): Promise<void> {
@@ -104,6 +107,7 @@ let currentFakeWindow: FakeBrowserWindow;
 
 // Shared partition session returned by session.fromPartition in grace-collect.
 const fakePartitionSession = {
+  setUserAgent: vi.fn(),
   cookies: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
@@ -129,7 +133,7 @@ vi.mock("electron", () => {
       fromPartition: vi.fn().mockReturnValue(fakePartitionSession),
     },
     shell: { openExternal: vi.fn() },
-    app: {},
+    app: { getVersion: () => "0.14.1" },
     ipcMain: {},
   };
 });
@@ -165,6 +169,7 @@ vi.mock("../../lib/logger.js", () => ({
 
 const { openAuthWindow, wirePluginAuthPartitionPersistence, RETAINED_SESSION_COOKIE_TTL_SECONDS } =
   await import("../auth-window-service.js");
+const { buildPersistentBrowserUserAgent } = await import("../browser-user-agent.js");
 
 wirePluginAuthPartitionPersistence({
   write: vi.fn().mockResolvedValue(undefined),
@@ -224,6 +229,7 @@ describe("openAuthWindow — fast-SSO race: closed fires while checkAndCollect i
     );
 
     await flushAsync(1);
+    expect(fakePartitionSession.setUserAgent).toHaveBeenCalledWith(buildPersistentBrowserUserAgent());
 
     const fakeWv = new FakeWebContents(COMPLETION_URL);
     fakeWv.session.cookies.get.mockReturnValue(hangingCookiePromise); // hangs

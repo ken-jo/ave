@@ -2,7 +2,7 @@
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   countCertificates,
   extractCorporateCa,
@@ -166,6 +166,19 @@ describe("extractCorporateCa on Linux", () => {
 
 describe("extractCorporateCa", () => {
   const lookup = { commonName: CORP_CN, debugLog: false };
+
+  it("refuses a Windows trust-store launch without a system root even with a planted PATH", async () => {
+    const planted = await mkdtemp(join(tmpdir(), "ave-ca-shell-"));
+    await writeFile(join(planted, "powershell.exe"), "planted");
+    vi.stubEnv("PATH", planted);
+    for (const name of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(name, undefined);
+    try {
+      await expect(extractCorporateCa(lookup, "win32")).rejects.toThrow(/system root/i);
+    } finally {
+      vi.unstubAllEnvs();
+      await rm(planted, { recursive: true, force: true });
+    }
+  });
 
   it("filters what a platform reader returns rather than trusting it", async () => {
     // The guarantee that lets the three readers stay this thin: a reader that returns more than it was asked for — a store filter that matched loosely, a

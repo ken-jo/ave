@@ -2,6 +2,7 @@
 // throws. Do not cache mappings because they can change during a session.
 import { execFile } from "node:child_process";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -44,7 +45,7 @@ export interface MappedDriveRootDeps {
 const defaultDeps: MappedDriveRootDeps = {
   platform: () => process.platform,
   runLookup: async (script) => {
-    const { stdout } = await execFileAsync("powershell.exe", [
+    const { stdout } = await execFileAsync(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"), [
       "-NoProfile",
       "-NonInteractive",
       "-Command",

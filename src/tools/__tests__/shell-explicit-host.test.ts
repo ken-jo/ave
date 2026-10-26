@@ -83,7 +83,7 @@ describe("explicit host shell authorization", () => {
     expect(gate.resolve(request.id, decision)).toBeNull();
     expect(gate.resolve(request.id, decision, "platform-bridge")).toBeNull();
     expect(gate.pendingCount).toBe(1);
-    expect(gate.resolveFromDesktopRenderer(request.id, decision)?.choice).toBe("allow-once");
+    expect(gate.resolveFromDesktopRenderer(request.id, decision, webContents as never)?.choice).toBe("allow-once");
     const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: await pending });
     expect(permit).toBeDefined();
     const ctx = { cwd, extraAllowedDirectories: [], metadata: { toolUseId: "host-once" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit };
@@ -98,7 +98,7 @@ describe("explicit host shell authorization", () => {
     const { cwd, plan, binding, gate, request, webContents } = prepare();
     const pending = gate.requestAndWait(request);
     const displayed = webContents.send.mock.calls[0][1] as ApprovalRequest;
-    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: displayed.nonce, hmac: displayed.hmac });
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: displayed.nonce, hmac: displayed.hmac }, webContents as never);
     const permit = mintHostShellExecutionPermit({ plan, binding, approvalDecision: await pending });
     const changed = { ...HOST_INPUT, [field]: field === "executionMode" ? "default" : field === "command" ? "printf changed" : field === "cwd" ? "." : "Changed justification" };
     const result = await new BashTool().execute(changed, { cwd, extraAllowedDirectories: [], metadata: { toolUseId: "host-once" }, hostShellExecutionPlan: plan, hostShellExecutionPermit: permit });

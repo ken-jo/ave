@@ -6,6 +6,7 @@ import type { JudgeEngineDeps } from "../../permissions/judge/judge-engine.js";
 import type { JudgeModelRef, JudgeSettings } from "../../permissions/judge/judge-settings.js";
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import { LlmRiskClassifier } from "../../permissions/reviewer/risk-classifier.js";
+import { traceRiskClassifier } from "../../permissions/judge/builtin-llm-judge.js";
 import { isLLMVendor } from "../../shared/llm-vendor-defaults.js";
 import { LlmReviewerProviderAdapter, type WireReviewerResult } from "./reviewer-wiring.js";
 
@@ -28,8 +29,8 @@ export function wireJudgeAgent(deps: WireJudgeDeps): JudgeEngineDeps {
   const identity = reviewer.effectiveSettings;
   const settings = deps.settings;
   const chain = createJudgeChain(settings, {
-    reviewerClassifier: reviewer.runtimeMode === "llm" && reviewer.classifier instanceof LlmRiskClassifier
-      ? reviewer.classifier
+    reviewerClassifier: reviewer.runtimeMode !== "llm-model-unavailable"
+      ? traceRiskClassifier(reviewer.classifier)
       : null,
     reviewerModel: identity && isLLMVendor(identity.provider)
       ? { vendor: identity.provider, model: identity.model }

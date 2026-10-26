@@ -1,10 +1,10 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 // Stop must cancel pending approval and release the execution lease before the approval timeout.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { WebContents } from "electron";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import {
-  invokeRegisteredHandler,
   makeMockWebContents,
 } from "../../../__tests__/test-helpers.js";
 import { createConversationSurfaceRuntime } from "../../../engine/conversation-surface-runtime.js";
@@ -78,6 +78,7 @@ describe("ave:chat:abort with a turn parked on an approval", () => {
     expect(lease).not.toBeNull();
 
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow();
     registerChatHandlers({
       conversationLoop,
       conversationSurfaceRuntime: runtime,

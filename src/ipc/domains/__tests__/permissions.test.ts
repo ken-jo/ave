@@ -17,6 +17,7 @@ import {
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const USER_INTENT = { inputOrigin: "user-keyboard", userActivation: true };
+let nativeApprovalEvent: ReturnType<typeof hostFrameEvent> | null = null;
 /** The ask callback registration handed to the permission manager. */
 let askDeferredEntry: ((entry: unknown) => void) | null = null;
 const recordApprovalMock = vi.hoisted(() => vi.fn(async () => undefined));
@@ -71,7 +72,11 @@ function invoke(channel: string, ...args: unknown[]): unknown {
       args = [{ ...payload, intent: { inputOrigin: "user-keyboard", userActivation: true } }, ...args.slice(1)];
     }
   }
-  return fn(hostFrameEvent(), ...args);
+  const event = channel === PERMISSIONS.approvalRespond || channel === PERMISSIONS.approvalPending ||
+    channel === PERMISSIONS.userApprovalRecord || channel === PERMISSIONS.approvalSentenceSelect
+    ? nativeApprovalEvent : hostFrameEvent();
+  if (!event) throw new Error("Native approval fixture is not registered");
+  return fn(event, ...args);
 }
 
 function makeDeferredEntry(overrides: Record<string, unknown> = {}) {
@@ -118,6 +123,7 @@ function makeDeps(options: {
     {
       isDestroyed: vi.fn(() => false),
       webContents: {
+        mainFrame: { url: "file:///application/index.html" },
         isDestroyed: vi.fn(() => false),
         send: vi.fn(),
       },
@@ -125,6 +131,7 @@ function makeDeps(options: {
     {
       isDestroyed: vi.fn(() => false),
       webContents: {
+        mainFrame: { url: "file:///application/index.html" },
         isDestroyed: vi.fn(() => false),
         send: vi.fn(),
       },
@@ -181,6 +188,8 @@ function makeDeps(options: {
       resolve: vi.fn((_requestId: string, decision: unknown) => decision),
       resolveFromDesktopRenderer: vi.fn((_requestId: string, decision: unknown) => decision),
       mayRecordFrom: vi.fn(() => options.mayRecord ?? true),
+      listPendingRendererRequests: vi.fn(() => []),
+      canAccessRendererRequest: vi.fn(() => true),
       // #799 + CRITICAL-2 ralph iter 4: server-side ApprovalRequest binding. userApprovalRecord handler reads identity, raw args, and
       // verdict from this host snapshot. Tests opt into HIGH explicitly; renderer claims cannot downgrade it into a persistent allow.
       getRequestSnapshot: vi.fn((_requestId: string) => ({
@@ -237,6 +246,7 @@ async function setup(options: Parameters<typeof makeDeps>[0] = {}) {
     makeDeps(options);
   const { registerPermissionsHandlers } = await import("../permissions.js");
   registerPermissionsHandlers(deps as never);
+  nativeApprovalEvent = { sender: appWindows[0].webContents, senderFrame: appWindows[0].webContents.mainFrame } as unknown as ReturnType<typeof hostFrameEvent>;
   return { deps, permissionManager, appWindows, workspaceRootLifecycle, askUserQuestionGate };
 }
 
@@ -355,7 +365,7 @@ describe("permissions IPC handlers", () => {
     }
   });
 
-  it("marks only a registered app window main-frame response as native", async () => {
+  it("accepts only a registered app window main-frame response as native", async () => {
     const { deps, appWindows } = await setup();
     const fn = handlers.get(PERMISSIONS.approvalRespond)!;
     const sender = appWindows[0].webContents;
@@ -366,10 +376,24 @@ describe("permissions IPC handlers", () => {
     expect(deps.approvalGate.resolveFromDesktopRenderer).toHaveBeenCalledWith("host-approval", decision, sender);
     expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
     deps.approvalGate.resolveFromDesktopRenderer.mockClear();
-    await fn({ sender, senderFrame: { url: frame.url } }, decision);
-    await fn({ sender: { mainFrame: frame }, senderFrame: frame }, decision);
+    expect(await fn({ sender, senderFrame: { url: frame.url } }, decision)).toEqual(UNAUTHORIZED_FRAME);
+    expect(await fn({ sender: { ...sender, mainFrame: frame }, senderFrame: frame }, decision)).toEqual(UNAUTHORIZED_FRAME);
     expect(deps.approvalGate.resolveFromDesktopRenderer).not.toHaveBeenCalled();
-    expect(deps.approvalGate.resolve).toHaveBeenCalledTimes(2);
+    expect(deps.approvalGate.resolve).not.toHaveBeenCalled();
+    expect(deps.auditLogger.log.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
+  });
+
+  it("passes a registered main-frame recipient to pending-card filtering", async () => {
+    const { deps, appWindows } = await setup();
+    expect(await invoke(PERMISSIONS.approvalPending)).toEqual([]);
+    expect(deps.approvalGate.listPendingRendererRequests).toHaveBeenCalledWith(appWindows[0].webContents);
+    deps.approvalGate.listPendingRendererRequests.mockClear();
+    const handler = handlers.get(PERMISSIONS.approvalPending)!;
+    const sender = appWindows[0].webContents;
+    expect(await handler({ sender, senderFrame: { url: sender.mainFrame.url } })).toEqual(UNAUTHORIZED_FRAME);
+    expect(await handler({ sender: { ...sender }, senderFrame: sender.mainFrame })).toEqual(UNAUTHORIZED_FRAME);
+    expect(deps.approvalGate.listPendingRendererRequests).not.toHaveBeenCalled();
+    expect(deps.auditLogger.log.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
   });
 
   it("suggests LLM permission review immediately after allow-always in default mode", async () => {
@@ -398,7 +422,7 @@ describe("permissions IPC handlers", () => {
       interactiveAutoApprove: "off",
       hasReviewer: false,
     });
-    deps.approvalGate.resolve.mockReturnValueOnce({
+    deps.approvalGate.resolveFromDesktopRenderer.mockReturnValueOnce({
       requestId: "approval-forced-deny",
       choice: "deny-once",
       rememberPattern: "approval integrity check failed",

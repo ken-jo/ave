@@ -69,7 +69,7 @@ async function authorizedContext(cwd: string, command = "touch marker", rulePatt
     });
     const request = webContents.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
     if (!request?.nonce || !request.hmac) throw new Error("ApprovalGate did not publish a sealed request");
-    gate.resolveFromDesktopRenderer("cwd-spawn-approval", { requestId: "cwd-spawn-approval", choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    gate.resolveFromDesktopRenderer("cwd-spawn-approval", { requestId: "cwd-spawn-approval", choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, webContents as never);
     approvalDecision = await pending;
   }
   const permit = mintHostShellExecutionPermit({

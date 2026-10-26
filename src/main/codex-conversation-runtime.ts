@@ -1,5 +1,6 @@
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { verifyCodexExecutableArtifact, type CodexExecutableArtifact } from "./codex-executable-artifact.js";
 import { spawnCodexNative } from "./codex-native-spawn.js";
 import { lstatSync, promises as fs } from "node:fs";
@@ -382,18 +383,6 @@ function normalizeRuntimePathForPlatform(path: string, platform: NodeJS.Platform
   return platform === "win32" ? win32.normalize(path) : path;
 }
 
-function trustedWindowsSystemRoot(): string {
-  const candidate = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  if (
-    typeof candidate === "string"
-    && win32.isAbsolute(candidate)
-    && !/[\u0000-\u001f\u007f]/.test(candidate)
-  ) {
-    return win32.normalize(candidate);
-  }
-  return "C:\\Windows";
-}
-
 // Construct the complete child environment from a fixed allowlist. No parent PATH, proxy, credential, loader, Node, or Codex/OpenAI configuration leaks
 // into the subscription runtime.
 export function sanitizedCodexConversationEnvironment(
@@ -416,7 +405,7 @@ export function sanitizedCodexConversationEnvironment(
   addSafeLocaleEnvironment(env, environment);
 
   if (platform === "win32") {
-    const systemRoot = trustedWindowsSystemRoot();
+    const systemRoot = windowsSystemRoot();
     const homeRoot = win32.parse(home).root;
     const homeDrive = homeRoot.endsWith("\\") ? homeRoot.slice(0, -1) : homeRoot;
     const homePath = home.startsWith(homeDrive) ? home.slice(homeDrive.length) : "\\";
@@ -425,9 +414,9 @@ export function sanitizedCodexConversationEnvironment(
       SYSTEMROOT: systemRoot,
       WINDIR: systemRoot,
       SYSTEMDRIVE: win32.parse(systemRoot).root.slice(0, -1),
-      COMSPEC: win32.join(systemRoot, "System32", "cmd.exe"),
+      COMSPEC: win32SystemBinary("cmd"),
       PATHEXT: ".COM;.EXE;.BAT;.CMD",
-      PATH: `${win32.join(systemRoot, "System32")};${systemRoot}`,
+      PATH: `${win32SystemBinary("")};${systemRoot}`,
       USERPROFILE: home,
       HOMEDRIVE: homeDrive,
       HOMEPATH: homePath,

@@ -1,4 +1,5 @@
 import { isAbsolute, win32 } from "node:path";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 
 export interface ManualShellLaunch { readonly command: string; readonly args: string[] }
 
@@ -9,8 +10,7 @@ export function resolveManualShell(
 ): ManualShellLaunch {
   if (platform === "win32") {
     const selected = env.COMSPEC;
-    const root = env.SystemRoot ?? "C:\\Windows";
-    const command = selected ?? win32.join(root, "System32", "cmd.exe");
+    const command = selected ?? win32SystemBinary("cmd", env);
     if (!win32.isAbsolute(command) || win32.extname(command).toLowerCase() !== ".exe") {
       throw new Error("terminal interpreter must be an absolute native executable");
     }

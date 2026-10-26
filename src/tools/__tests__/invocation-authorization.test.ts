@@ -36,16 +36,17 @@ describe("host shell invocation authorization", () => {
     registry.register(tool);
     const cards: ApprovalRequest[] = [];
     let gate: ApprovalGate;
-    gate = new ApprovalGate({
+    const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
         if (channel !== IPC_APPROVAL_REQUEST) return;
         cards.push(request);
         gate.resolveFromDesktopRenderer(request.id, {
           requestId: request.id, choice: "deny-once", nonce: request.nonce, hmac: request.hmac,
-        });
+        }, nativeWebContents as never);
       },
-    } as never);
+    };
+    gate = new ApprovalGate(nativeWebContents as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate);
     const call = {
       id: "host-authorization", name: "bash",

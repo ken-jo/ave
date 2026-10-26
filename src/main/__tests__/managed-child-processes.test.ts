@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
@@ -56,6 +56,24 @@ afterEach(() => {
 const itPosix = process.platform === "win32" ? it.skip : it;
 
 describe("managed child process tracking", () => {
+  it.each([false, true])("never searches PATH for tree termination without a system root, asynchronous=%s", async asynchronous => {
+    Object.defineProperty(process, "platform", { value: "win32" });
+    for (const key of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(key, undefined);
+    vi.mocked(spawn).mockClear();
+    vi.mocked(spawnSync).mockClear();
+    const child = makeChild();
+    child.pid = 4321;
+    trackManagedChildProcess(child, { label: "fixture" });
+    try {
+      if (asynchronous) await forceKillManagedChildProcess(child, "fixture");
+      else expect(forceKillManagedChildProcesses("fixture")).toBe(0);
+      expect(spawn).not.toHaveBeenCalled();
+      expect(spawnSync).not.toHaveBeenCalled();
+      if (asynchronous) expect(child.kill).toHaveBeenCalledWith("SIGKILL");
+      else expect(child.kill).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("tracks and untracks a child process on exit", () => {
     const child = makeChild();
 

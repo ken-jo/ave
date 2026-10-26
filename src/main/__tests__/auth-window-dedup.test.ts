@@ -1,6 +1,9 @@
 // Concurrent visible logins share one window per partition/title; silent warmups remain independent.
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import type { Cookie } from "electron";
+
+useChromiumRuntime();
 
 class FakeEmitter {
   private _listeners = new Map<string, Array<(...a: unknown[]) => void>>();
@@ -62,9 +65,9 @@ vi.mock("electron", () => {
     screen: {
       getPrimaryDisplay: vi.fn(() => ({ workArea: { x: 0, y: 0, width: 1920, height: 1080 } })),
     },
-    session: { fromPartition: vi.fn().mockReturnValue({ cookies: { get: vi.fn().mockResolvedValue([]) } }) },
+    session: { fromPartition: vi.fn().mockReturnValue({ setUserAgent: vi.fn(), cookies: { get: vi.fn().mockResolvedValue([]) } }) },
     shell: { openExternal: vi.fn() },
-    app: {},
+    app: { getVersion: () => "0.14.1" },
     ipcMain: {},
   };
 });
@@ -84,6 +87,7 @@ vi.mock("../../lib/logger.js", () => ({
 }));
 
 const { openAuthWindow, wirePluginAuthPartitionPersistence } = await import("../auth-window-service.js");
+const { buildPersistentBrowserUserAgent } = await import("../browser-user-agent.js");
 
 wirePluginAuthPartitionPersistence({
   write: vi.fn().mockResolvedValue(undefined),
@@ -122,6 +126,11 @@ describe("openAuthWindow — visible-window dedup", () => {
     const first = openAuthWindow(p, opts);
     const firstOutcome = first.then((v) => ({ ok: true as const, v }), (e) => ({ ok: false as const, e }));
     await flush(1);
+    const { session } = await import("electron");
+    const partitionSession = vi.mocked(session.fromPartition).mock.results[0]?.value as { setUserAgent: ReturnType<typeof vi.fn> };
+    expect(session.fromPartition).toHaveBeenCalledWith(PARTITION);
+    expect(partitionSession.setUserAgent).toHaveBeenCalledWith(buildPersistentBrowserUserAgent());
+    expect(partitionSession.setUserAgent.mock.calls[0]?.[0]).toMatch(/Safari\/537\.36 Ave\/0\.14\.1$/);
     // The parent window itself was constructed; the FIRST auth window is the most recent construction after that.
     const authWindowsAfterFirst = constructed.filter((w) => w !== (p as unknown as FakeBrowserWindow));
     expect(authWindowsAfterFirst).toHaveLength(1);

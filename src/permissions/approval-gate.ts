@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { recordManualApproval } from "./judge/manual-approval.js";
 import type { WebContents } from "electron";
 import { t } from "../i18n/index.js";
 import type { PolicyFile } from "./policy-store.js";
@@ -865,7 +866,7 @@ function verifyApprovalIntegrity(
 
 // ApprovalGate
 
-// Finds the renderer that should draw an approval card for `sessionId` — the main window showing that conversation, else the primary (or most recently focused) live main window — or `null` when no desktop surface is open. Resolved at request time, not bound at boot: several main windows may be open, and the one open at boot may be closed while another stays.
+// Resolves explicit host registrations for each session, terminal or unattributed host role. Re-evaluated for delivery, listing and answers; a missing registration has no approval surface.
 export type ApprovalSurfaceResolver = (
   sessionId: string | undefined,
   // Set for a workspace terminal tab's ask: the window that owns the tab, or null.
@@ -874,7 +875,7 @@ export type ApprovalSurfaceResolver = (
 
 export class ApprovalGate {
   private readonly pending = new Map<string, PendingEntry>();
-  // Renderers that read a parked request back through listPendingRendererRequests, by request id. A card can be on screen in several windows (sent to one, re-fetched by another that loaded later); its settlement is announced to all of them.
+  // Renderers that displayed a pending card, including a former owner after a conversation move. Settlement removes stale cards from each of them.
   private readonly refetchedBy = new Map<string, Set<WebContents>>();
   // Null only for a gate built without any desktop surface (headless/tests).
   private readonly resolveSurface: ApprovalSurfaceResolver | null;
@@ -1011,12 +1012,11 @@ export class ApprovalGate {
     }
   }
 
-  // The live renderer that should draw this request's card right now, or null: the window showing its conversation, or for a terminal tab's ask the window that owns the tab.
-  private liveSurfaceFor(req: { readonly sessionId?: string; readonly egressHost?: EgressHostApproval }): WebContents | null {
-    const terminalTabId = req.egressHost?.terminalTabId;
+  // The currently registered renderer, or null. Run kinds and visible chat holders do not imply ownership.
+  private liveSurfaceFor(sessionId: string | undefined, terminalTabId?: string): WebContents | null {
     const surface = (terminalTabId === undefined
-      ? this.resolveSurface?.(req.sessionId)
-      : this.resolveSurface?.(req.sessionId, terminalTabId)) ?? null;
+      ? this.resolveSurface?.(sessionId)
+      : this.resolveSurface?.(sessionId, terminalTabId)) ?? null;
     return surface && !surface.isDestroyed() ? surface : null;
   }
 
@@ -1594,11 +1594,13 @@ export class ApprovalGate {
     const executionPlanAudit = boundExecutionPlan ?? suppliedExecutionPlan;
     if (executionPlanAudit?.executionRequest === "host" &&
       (oneShotPermitBinding === undefined || remoteControllerOrigin !== undefined || remoteControllerAuthority !== undefined ||
-        this.liveSurfaceFor(req) === null)) {
+        this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null)) {
       return markHostApprovalRejectedDecision({
         requestId: req.id,
         choice: "deny-once",
-        rememberPattern: "explicit host execution requires a local desktop approval",
+        rememberPattern: this.liveSurfaceFor(req.sessionId, req.egressHost?.terminalTabId) === null
+          ? "explicit host execution requires a local desktop approval: no approval surface"
+          : "explicit host execution requires a local desktop approval",
       });
     }
 
@@ -1724,21 +1726,22 @@ export class ApprovalGate {
       };
     }
 
-    // webContents destruction check — deny once if no main window is open.
-    if (this.liveSurfaceFor(fullReq) === null) {
+    // Missing or destroyed registered owners have the same fail-closed semantics as headless runs.
+    if (this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId) === null) {
       const headless = this.headlessDenied !== undefined;
       this.auditLogger?.log({
         timestamp: new Date().toISOString(),
         sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
         type: "approval",
         output: headless
-          ? `[approval:decided] ${fullReq.id} ${auditFieldsFor({ ...fullReq, answeredBy: "headless-exec" }, executionPlanAudit)} choice=deny-once rememberPattern=none`
-          : `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} — desktop surface unavailable → deny-once`,
+          ? `[approval:decided] ${fullReq.id} ${auditFieldsFor({ ...fullReq, answeredBy: "headless-exec" }, executionPlanAudit)} choice=deny-once rememberPattern=no approval surface`
+          : `[approval:send-failed] ${fullReq.id} ${auditFieldsFor(fullReq, executionPlanAudit)} — no approval surface → deny-once`,
       });
       try { this.headlessDenied?.(fullReq.id, fullReq.toolName); } catch { /* Notification cannot change a deny. */ }
       return markHostApprovalRejectedDecision({
         requestId: fullReq.id,
         choice: "deny-once",
+        rememberPattern: "no approval surface",
       });
     }
 
@@ -1922,8 +1925,24 @@ export class ApprovalGate {
         this.notifyPendingSettled(fullReq.id, decision);
         const refetchers = this.refetchedBy.get(fullReq.id) ?? [];
         this.refetchedBy.delete(fullReq.id);
-        this.announceSettledToRenderer(fullReq.id, [sentTo, ...refetchers, this.liveSurfaceFor(fullReq)]);
+        // Finalization is independent of optional delivery to a new owner.
+        // Ownership contract errors still propagate on reads and answers.
         resolve(decision);
+        const recipients = [sentTo, ...refetchers];
+        this.announceSettledToRenderer(fullReq.id, recipients);
+        try {
+          const currentOwner = this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId);
+          if (currentOwner && !recipients.includes(currentOwner)) {
+            this.announceSettledToRenderer(fullReq.id, [currentOwner]);
+          }
+        } catch (error) {
+          this.auditLogger?.log({
+            timestamp: new Date().toISOString(),
+            sessionId: fullReq.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+            type: "approval",
+            output: `[approval:notification-owner-failed] ${fullReq.id} error=${errorMessage(error)}`,
+          });
+        }
       };
       const timer = setTimeout(() => {
         this.pending.delete(fullReq.id);
@@ -2083,10 +2102,14 @@ export class ApprovalGate {
       const parked = this.pending.get(fullReq.id);
       if (parked !== undefined) parked.rendererRequest = maskedSignedReq;
       // on send failure (webContents destruction race), clear pending and deny once.
+      let surfaceUnavailable = false;
       try {
-        // Resolved now, not at boot: the window showing this session, else the primary (or most recently focused) live main window.
-        const surface = this.liveSurfaceFor(fullReq);
-        if (!surface) throw new Error("Approval surface unavailable");
+        // Resolve the live owner again before sending; a conversation may have moved.
+        const surface = this.liveSurfaceFor(fullReq.sessionId, fullReq.egressHost?.terminalTabId);
+        if (!surface) {
+          surfaceUnavailable = true;
+          throw new Error("no approval surface");
+        }
         sentTo = surface;
         surface.send(IPC_APPROVAL_REQUEST, maskedSignedReq);
       } catch (sendErr) {
@@ -2103,6 +2126,7 @@ export class ApprovalGate {
           markHostApprovalRejectedDecision({
             requestId: fullReq.id,
             choice: "deny-once",
+            ...(surfaceUnavailable ? { rememberPattern: "no approval surface" } : {}),
           }),
         );
       }
@@ -2118,26 +2142,48 @@ export class ApprovalGate {
     return this.resolveDecision(requestId, decision, answeredBy, false);
   }
 
-  // Only the renderer IPC handler may call this after validating its sender. `responder` is that sender: a workspace terminal tab's egress ask is answered only by the window that owns the tab.
+  // The IPC handler validates the exact app main frame; the gate validates its live ownership before any answer can acquire native consent provenance.
   resolveFromDesktopRenderer(
     requestId: string,
     decision: ApprovalDecision,
-    responder?: WebContents,
+    responder: WebContents,
   ): ApprovalDecision | null {
     return this.resolveDecision(requestId, decision, "desk", true, responder);
   }
 
-  // Whether `contents` is the live window that owns this terminal tab (its asks' only surface).
-  // Whether `contents` may record a rule for this pending request: any desktop renderer, except that a terminal tab's egress ask is recorded only from the window that owns the tab (as it is answered).
+  // Additional terminal-tab ownership restriction for remembered rule writes.
   mayRecordFrom(requestId: string, contents: WebContents | undefined): boolean {
     const entry = this.pending.get(requestId);
     if (!entry) return false;
-    return entry.egressTerminalTabId === undefined || this.isTerminalOwner(entry.egressTerminalTabId, contents);
+    return entry.egressTerminalTabId === undefined || this.isRendererOwner(entry, contents);
   }
 
-  private isTerminalOwner(terminalTabId: string, contents: WebContents | undefined): boolean {
+  // Resolve on every read or answer: a pending card follows its conversation
+  // or terminal when it moves, rather than retaining the original renderer.
+  private isRendererOwner(entry: PendingEntry, contents: WebContents | undefined): boolean {
     if (contents === undefined || contents.isDestroyed()) return false;
-    return this.resolveSurface?.(undefined, terminalTabId) === contents;
+    return this.liveSurfaceFor(entry.sessionId, entry.egressTerminalTabId) === contents;
+  }
+
+  // Request-bound renderer operations (answers, remembered choices and scope
+  // proposals) share the same live owner check. Never infer ownership from a
+  // nonce or a renderer-supplied conversation id.
+  canAccessRendererRequest(
+    requestId: string,
+    contents: WebContents | undefined,
+    answeredBy: ApprovalAnswerer,
+  ): boolean {
+    const entry = this.pending.get(requestId);
+    if (!entry) return false;
+    if (this.isRendererOwner(entry, contents)) return true;
+    const reason = entry.egressTerminalTabId === undefined ? "surface-owner-required" : "terminal-owner-required";
+    this.auditLogger?.log({
+      timestamp: new Date().toISOString(),
+      sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
+      type: "approval",
+      output: `[approval:${reason}] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
+    });
+    return false;
   }
 
   private resolveDecision(
@@ -2149,14 +2195,9 @@ export class ApprovalGate {
   ): ApprovalDecision | null {
     const entry = this.pending.get(requestId);
     if (!entry) return null;
-    if (entry.egressTerminalTabId !== undefined && !this.isTerminalOwner(entry.egressTerminalTabId, responder)) {
-      // A terminal tab's ask is drawn in, and answered from, the window that owns the tab. Another window's answer is ignored and the ask stays pending for the owner (it can still time out or be closed).
-      this.auditLogger?.log({
-        timestamp: new Date().toISOString(),
-        sessionId: entry.sessionId ?? UNATTRIBUTED_APPROVAL_SESSION_ID,
-        type: "approval",
-        output: `[approval:terminal-owner-required] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} -> response-rejected`,
-      });
+    if ((nativeRenderer || entry.egressTerminalTabId !== undefined) && !this.canAccessRendererRequest(requestId, responder, answeredBy)) {
+      // Reject before integrity checks: a foreign response cannot settle or
+      // damage the owner's pending request, even with valid signed contents.
       return null;
     }
     if (entry.hostShellExecutionPermitBinding?.executionMode === "host" && !nativeRenderer) {
@@ -2272,6 +2313,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
+    if (nativeRenderer && entry.sessionId !== undefined) recordManualApproval(resolvedDecision, entry.sessionId);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }
@@ -2345,20 +2387,17 @@ export class ApprovalGate {
     };
   }
 
-  // Every request still waiting on the renderer, in the order it was asked, exactly as `ave:approval:request` delivered it (a terminal tab's egress ask only to the window that owns the tab). A renderer that loaded after a request went out subscribed too late to have seen it; this is how it recovers the card instead of leaving the turn to sit out its timeout.
-  listPendingRendererRequests(recipient?: WebContents): ApprovalRequest[] {
+  // Pending cards for this renderer's currently hosted sessions and terminals. Reloaded or moved conversations recover their signed cards without disclosing other windows' requests.
+  listPendingRendererRequests(recipient: WebContents): ApprovalRequest[] {
     const out: ApprovalRequest[] = [];
     for (const [id, entry] of this.pending) {
       if (entry.rendererRequest === undefined) continue;
-      // A terminal tab's ask goes only to the window that owns the tab.
-      if (entry.egressTerminalTabId !== undefined && !this.isTerminalOwner(entry.egressTerminalTabId, recipient)) continue;
+      if (!this.isRendererOwner(entry, recipient)) continue;
       out.push(entry.rendererRequest);
       // The reader now draws this card too; tell it when the request settles.
-      if (recipient) {
-        const readers = this.refetchedBy.get(id) ?? new Set<WebContents>();
-        readers.add(recipient);
-        this.refetchedBy.set(id, readers);
-      }
+      const readers = this.refetchedBy.get(id) ?? new Set<WebContents>();
+      readers.add(recipient);
+      this.refetchedBy.set(id, readers);
     }
     return out;
   }

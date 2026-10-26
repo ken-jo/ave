@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../shared/windows-owner-claim.js";
 import { constants, promises as fs, type Stats } from "node:fs";
@@ -553,13 +554,9 @@ function parseWindowsSecurity(value: unknown, skippedPackage?: DesktopPackagePri
 
 function windowsAclLaunch(): WindowsAclHostLaunch {
   // The current account's process environment is trusted; arbitrary actions by that account are outside the filesystem admission boundary.
-  const root = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? process.env.windir;
-  if (typeof root !== "string" || !/^[a-z]:[\\/]/i.test(root) || /[\u0000-\u001f\u007f]/.test(root)) {
-    throw new CodexExecutableLocationError("System directory is unavailable");
-  }
-  const systemRoot = win32.normalize(root);
-  const system32 = win32.join(systemRoot, "System32");
-  const command = win32.join(system32, "WindowsPowerShell", "v1.0", "powershell.exe");
+  const systemRoot = windowsSystemRoot();
+  const system32 = win32SystemBinary("");
+  const command = win32SystemBinary("WindowsPowerShell/v1.0/powershell");
   // The host process stays as fixed as the per-probe process was. Inputs that travelled in its environment travel in each request line instead.
   return {
     command,

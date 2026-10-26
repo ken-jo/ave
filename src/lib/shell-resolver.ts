@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { delimiter, dirname, isAbsolute, join, win32 } from "node:path";
 import { buildSafeChildEnv } from "../tools/safe-env.js";
+import { win32SystemBinary } from "../shared/windows-system-path.js";
 
 export class ShellMismatchError extends Error {
   readonly code = "SHELL_MISMATCH" as const;
@@ -124,7 +125,7 @@ function windowsShellCandidates(): ResolvedShellCommand[] {
 
 function resolveWindowsShellCandidate(cmd: string, dialect: ShellDialect): string {
   if (/^[A-Za-z]:[\\/]/.test(cmd)) return cmd;
-  const matches = execFileSync("where", [cmd], { windowsHide: true, stdio: "pipe", encoding: "utf-8", env: buildSafeChildEnv() });
+  const matches = execFileSync(win32SystemBinary("where.exe"), [cmd], { windowsHide: true, stdio: "pipe", encoding: "utf-8", env: buildSafeChildEnv() });
   if (dialect === "posix") return cmd;
   // Pin the first PATH result before probing so later execution cannot resolve another binary.
   const executable = matches.split(/\r?\n/)[0]?.trim();

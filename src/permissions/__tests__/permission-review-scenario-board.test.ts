@@ -1,3 +1,4 @@
+import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 // Keep the permission scenario board tied to executable policy (docs/design/permission-review-scenario-board-v2.html).
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
@@ -40,7 +41,7 @@ function makeManager(
   if (mode === "auto") {
     pm.setInteractiveAutoApprove("low");
   }
-  pm.setReviewer({
+  setReviewerForTest(pm, {
     classifier,
     cache: resources.makeVerdictCache(join(dir, "reviewer-cache.jsonl")),
     deferredQueue: queue,
@@ -314,6 +315,7 @@ describe("permission-review-scenario-board-v2.html contract", () => {
 
   it("S8 auto-review with missing reviewer asks foreground and does not silently allow", async () => {
     const pm = new PermissionManager(tmpFile("permissions.json"));
+    wireJudgeForTest(pm);
     pm.setMode("auto");
     // Round-1 critic MAJOR-2 — interactive opt-in is required for the foreground-auto reviewer lane to fire. With it set + reviewer missing, the scenario tests fail-closed behaviour.
     pm.setInteractiveAutoApprove("low");
@@ -328,7 +330,9 @@ describe("permission-review-scenario-board-v2.html contract", () => {
     expect(result[0].is_error).toBe(true);
     expect(execute).not.toHaveBeenCalled();
     expect(gate.requestAndWait).toHaveBeenCalledWith(expect.objectContaining({
-      reason: expect.stringContaining("reviewer unavailable"),
+      reason: expect.stringContaining("reviewer not wired"),
+      reviewerOutcome: "unavailable",
+      reviewerVerdict: expect.objectContaining({ level: "high" }),
     }));
   });
 

@@ -1,11 +1,12 @@
 // Side chat owns independent loops and streams; never mutate the main conversation.
 import { ipcMain } from "electron";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
-import type { WebContents } from "electron";
+import type { IpcMainInvokeEvent, WebContents } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { sendToWebContents } from "../safe-send.js";
 import { mainWindowForContents, setSideChatOwnerContents } from "../../main/app-state.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { parseActiveSurface } from "./browser.js";
 import { terminalTabOwnerWindow } from "../../main/terminal/pty-manager.js";
@@ -127,6 +128,15 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
   const railLoop = sideChatConversationLoop;
   const panes = paneChatLoops;
   const store = deps.sideChatMemoryManager;
+  const approvalOwnerWindow = (event: IpcMainInvokeEvent) => {
+    const owner = mainWindowForContents(event.sender);
+    return owner && !owner.isDestroyed() && !event.sender.isDestroyed()
+      && owner.webContents === event.sender && event.senderFrame === event.sender.mainFrame
+      ? owner : null;
+  };
+  const registerApprovalOwner = (loop: ConversationLoop, contents: WebContents): void => {
+    updateApprovalSurface({ kind: "attach", sessionId: loop.getSessionId(), surface: contents });
+  };
 
   // Keep turn bookkeeping per loop so pane and rail turns cannot block or cancel one another.
   interface LoopTurns {
@@ -181,7 +191,10 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       watchedWindows.delete(sender.id);
       sender.removeListener("did-navigate", releaseAll);
       sender.removeListener("destroyed", releaseAll);
-      for (const { tabId } of panes.inWindow(windowId)) panes.release(windowId, tabId);
+      for (const { tabId, loop } of panes.inWindow(windowId)) {
+        updateApprovalSurface({ kind: "release", sessionId: loop.getSessionId() });
+        panes.release(windowId, tabId);
+      }
       browserTabRegistry.releaseWindow(windowId);
     };
     sender.on("did-navigate", releaseAll);
@@ -192,6 +205,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const loop = panes.get(windowId, tabId);
     const sessionId = loop && turnsOf(loop).restored ? loop.getSessionId() : storedPaneSession(windowId, tabId);
     if (loop) {
+      updateApprovalSurface({ kind: "release", sessionId: loop.getSessionId() });
       panes.release(windowId, tabId);
       await abortTurnOf(loop);
     }
@@ -208,6 +222,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.sidechat.send, async (e, payload: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
+    const senderWindow = approvalOwnerWindow(e);
+    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.send, e); return UNAUTHORIZED_FRAME; }
     const p = (payload ?? {}) as { input?: unknown; attachments?: unknown; originSessionId?: unknown; sendRequestId?: unknown; surface?: unknown; sessionId?: unknown };
     if (typeof p.input !== "string") {
       return { ok: false as const, error: "invalid-input" };
@@ -217,7 +233,6 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     }
     const surface = p.surface === undefined ? null : parseActiveSurface(p.surface);
     if (surface === undefined) return { ok: false as const, error: "invalid-surface" };
-    const senderWindow = mainWindowForContents(e.sender);
     if (surface !== null && !senderWindow) return { ok: false as const, error: "invalid-surface" };
     if (p.sendRequestId !== undefined && (
       typeof p.sendRequestId !== "string"
@@ -275,6 +290,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       }
       watchPaneWindow(e.sender, senderWindow!.id);
     }
+    registerApprovalOwner(loop, senderWindow.webContents);
+    if (pane === null) { setSideChatOwnerContents(e.sender); railShellOwnerId = e.sender.id; }
     const streamTarget = pane !== null ? senderWindow!.webContents : getMainWindow()?.webContents;
     const sink: ConversationStreamEventSink = createLegacyChatStreamEventSink(
       buildSink(streamTarget),
@@ -336,7 +353,6 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     turns.sendRequestId = typeof p.sendRequestId === "string" ? p.sendRequestId : null;
     turns.senderId = e.sender.id;
     turns.sessionId = turnSideChatSessionId;
-    if (pane === null) { setSideChatOwnerContents(e.sender); railShellOwnerId = e.sender.id; }
     // Cancel on owning-document replacement or death; a reloaded view loses the request id needed to abort.
     const owner = e.sender;
     const cancelOrphanedTurn = (): void => {
@@ -397,7 +413,8 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.endPaneChat, e); return UNAUTHORIZED_FRAME; }
     const tabId = paneTabId(payload);
     const reason = payload && typeof payload === "object" ? (payload as Record<string, unknown>).reason : undefined;
-    const senderWindow = mainWindowForContents(e.sender);
+    const senderWindow = approvalOwnerWindow(e);
+    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.endPaneChat, e); return UNAUTHORIZED_FRAME; }
     if (tabId === undefined || !senderWindow) return { ok: false as const, error: "invalid-surface" };
     if (heldByAnotherWindow(senderWindow.id, tabId)) return { ok: false as const, error: "invalid-surface" };
     if (reason !== "new" && reason !== "closed") return { ok: false as const, error: "invalid-input" };
@@ -419,6 +436,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       try {
         await abortTurnOf(loop);
         await loop.runSessionTransition("sidechat-pane-new", (lease) => loop.newConversation("main", undefined, lease));
+        registerApprovalOwner(loop, senderWindow.webContents);
       } finally {
         turns.reserved = false;
       }
@@ -431,16 +449,21 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
 
   ipcMain.handle(CHANNELS.sidechat.new, async (e) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.new, e); return UNAUTHORIZED_FRAME; }
+    const senderWindow = approvalOwnerWindow(e);
+    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.new, e); return UNAUTHORIZED_FRAME; }
     if (railLoop.isSessionTransitioning()) return { ok: false as const, error: "streaming-active" };
     return railLoop.runSessionTransition("sidechat-new", async (lease) => {
       await abortTurnOf(railLoop);
       await railLoop.newConversation("main", undefined, lease);
+      registerApprovalOwner(railLoop, senderWindow.webContents);
       return { ok: true as const, sessionId: railLoop.getSessionId() };
     });
   });
 
   ipcMain.handle(CHANNELS.sidechat.load, async (e, sessionId: unknown) => {
     if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.load, e); return { ok: false as const, error: "unauthorized-frame", messages: [] }; }
+    const senderWindow = approvalOwnerWindow(e);
+    if (!senderWindow) { auditUnauthorized(auditLogger, CHANNELS.sidechat.load, e); return { ...UNAUTHORIZED_FRAME, messages: [] }; }
     if (!isValidSessionId(sessionId)) {
       return { ok: false as const, error: "invalid-session-id", messages: [] };
     }
@@ -452,6 +475,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       if (!loaded) {
         return { ok: false as const, error: "session-not-found", messages: [] };
       }
+      registerApprovalOwner(railLoop, senderWindow.webContents);
       const messages = railLoop.getHistory().getMessages() as GenericMessage[];
       return {
         ok: true as const,

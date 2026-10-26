@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, promises as fs, readFile
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import sharp from "sharp";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeRecordedSpawn } from "../../__tests__/test-helpers.js";
 import { buildImagePreparationEntry } from "../../__tests__/support/image-preparation-runtime.js";
 import {
@@ -18,6 +18,8 @@ import {
   type CodexConversationRuntimeOptions,
 } from "../codex-conversation-runtime.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 import { SUBSCRIPTION_TOOL_BRIDGE_CONTRACT } from "../../shared/subscription-runtime.js";
 import { ViewImageTool } from "../../tools/file-tools.js";
 import { createSubscriptionLlmProvider, serializeSubscriptionConversationPayload } from "../subscription-llm-provider.js";

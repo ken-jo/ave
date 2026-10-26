@@ -68,7 +68,7 @@ describe("egress-host approval requests", () => {
     });
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", egressScope: "project", nonce: card.nonce, hmac: card.hmac,
-    });
+    }, wc as never);
     await expect(answer).resolves.toEqual({ allow: true, scope: "project" });
   });
 
@@ -88,7 +88,7 @@ describe("egress-host approval requests", () => {
     const { wc, gate } = makeGate();
     const answer = createApprovalGateEgressRequester(gate)(egressRequest());
     const card = await cardSent(wc);
-    gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac });
+    gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "deny-once", nonce: card.nonce, hmac: card.hmac }, wc as never);
     await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.denied });
   });
 
@@ -107,7 +107,7 @@ describe("egress-host approval requests", () => {
     expect(rows.some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", egressScope: "once", nonce: card.nonce, hmac: card.hmac,
-    });
+    }, wc as never);
     await expect(answer).resolves.toEqual({ allow: true, scope: "once" });
   });
 
@@ -124,7 +124,7 @@ describe("egress-host approval requests", () => {
     expect(rows.some((row) => row.startsWith(`[approval:native-desktop-required] ${card.id}`))).toBe(true);
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-once", egressScope: "session", nonce: card.nonce, hmac: card.hmac,
-    });
+    }, wc as never);
     await expect(answer).resolves.toEqual({ allow: true, scope: "session" });
   });
 
@@ -140,7 +140,7 @@ describe("egress-host approval requests", () => {
         nonce: card.nonce,
         hmac: card.hmac,
       };
-      gate.resolveFromDesktopRenderer(card.id, decision);
+      gate.resolveFromDesktopRenderer(card.id, decision, wc as never);
       await expect(answer).resolves.toEqual({ allow: false, reason: EGRESS_APPROVAL_DENY_REASONS.rejected });
       const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
       expect(rows.some((row) => row.startsWith(`[approval:egress-scope-rejected] ${card.id}`))).toBe(true);
@@ -153,7 +153,7 @@ describe("egress-host approval requests", () => {
     const card = await cardSent(wc);
     gate.resolveFromDesktopRenderer(card.id, {
       requestId: card.id, choice: "allow-session", egressScope: "session", nonce: card.nonce, hmac: card.hmac,
-    });
+    }, wc as never);
     await expect(answer).resolves.toMatchObject({ allow: false });
   });
 
@@ -248,6 +248,7 @@ describe("a workspace terminal tab's egress ask", () => {
 
   it("is listed for, and answered from, only the window that owns the tab", async () => {
     const owner = makeWebContents();
+    const unrelatedSurface = makeWebContents();
     const { gate, sessionSurface, auditLogger } = makeRoutedGate(owner);
     const answer = createApprovalGateEgressRequester(gate)(terminalRequest());
     let settled = false;
@@ -255,16 +256,19 @@ describe("a workspace terminal tab's egress ask", () => {
     const card = await cardSent(owner);
     // A reloaded window refetching pending asks: only the owner gets the terminal's.
     expect(gate.listPendingRendererRequests(sessionSurface as never).map((r) => r.id)).toEqual([]);
-    expect(gate.listPendingRendererRequests().map((r) => r.id)).toEqual([]);
+    expect(gate.listPendingRendererRequests(unrelatedSurface as never).map((r) => r.id)).toEqual([]);
     expect(gate.listPendingRendererRequests(owner as never).map((r) => r.id)).toEqual([card.id]);
     // Another window's answer (even with the card's nonce and hmac) is ignored and audited.
     const decision = { requestId: card.id, choice: "allow-once" as const, egressScope: "always" as const, nonce: card.nonce, hmac: card.hmac };
     expect(gate.resolveFromDesktopRenderer(card.id, decision, sessionSurface as never)).toBeNull();
-    expect(gate.resolveFromDesktopRenderer(card.id, decision)).toBeNull();
+    expect(gate.resolveFromDesktopRenderer(card.id, decision, unrelatedSurface as never)).toBeNull();
+    expect(gate.resolve(card.id, decision, "platform-bridge")).toBeNull();
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
     const rows = auditLogger.log.mock.calls.map(([row]) => String((row as { output?: string }).output ?? ""));
-    expect(rows.filter((row) => row.startsWith(`[approval:terminal-owner-required] ${card.id}`))).toHaveLength(2);
+    const rejections = rows.filter((row) => row.startsWith(`[approval:terminal-owner-required] ${card.id}`));
+    expect(rejections).toHaveLength(3);
+    expect(rejections.filter((row) => row.includes("answeredBy=platform-bridge"))).toHaveLength(1);
     // The owner can still answer it.
     gate.resolveFromDesktopRenderer(card.id, { ...decision, egressScope: "once" }, owner as never);
     await expect(answer).resolves.toEqual({ allow: true, scope: "once" });

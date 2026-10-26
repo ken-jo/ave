@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Classify raw finalized input identically in reviewer and foreground lanes; DLP masks provider/display/audit/cache sinks, since masking classifier input can destroy policy signals.
 import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync } from "node:fs";
@@ -63,7 +65,7 @@ describe("both lanes classify the same object", () => {
     dirs.push(dir);
     const pm = new PermissionManager(join(dir, "permissions.json"));
     const seen: Array<Record<string, unknown>> = [];
-    pm.setReviewer({
+    setReviewerForTest(pm, {
       classifier: {
         classify: (ctx) => {
           seen.push(ctx.finalInput);
@@ -86,6 +88,8 @@ describe("both lanes classify the same object", () => {
     it(`${c.label}: dispatchReviewer grades the raw arguments and returns the raw verdict`, async () => {
       const { pm, seen, dir } = makeManager();
       const result = await pm.dispatchReviewer("net_probe", {
+        invocationId: randomUUID(),
+        sessionId: "classifier-lane-parity-session",
         source: "plugin",
         category: "network",
         pathFields: [],
@@ -138,7 +142,7 @@ describe("DLP is preserved at the sinks", () => {
     try {
       const pm = new PermissionManager(join(dir, "permissions.json"));
       const queue = new DeferredQueue(join(dir, "queue.jsonl"));
-      pm.setReviewer({
+      setReviewerForTest(pm, {
         // A classifier that echoes its input into `reason` — the host must not trust classifier prose to be redacted.
         classifier: {
           classify: (ctx) => ({
@@ -150,6 +154,8 @@ describe("DLP is preserved at the sinks", () => {
         deferredQueue: queue,
       });
       const result = await pm.dispatchReviewer("net_probe", {
+        invocationId: randomUUID(),
+        sessionId: "classifier-lane-parity-session",
         source: "plugin",
         category: "network",
         pathFields: [],

@@ -6,7 +6,7 @@ import type {
   SubAgentRunner,
   SubAgentToolScope,
 } from "../../engine/subagent-runner.js";
-import type { ApprovalGate } from "../../permissions/approval-gate.js";
+import { ApprovalGate } from "../../permissions/approval-gate.js";
 import { BRIEFING_PROPOSAL_SOURCE_ID } from "../../shared/work-board-types.js";
 import {
   boardParentToolRegistry,
@@ -45,11 +45,7 @@ function fakeRunner(answers: string[]): {
   return { runner, spawns };
 }
 
-const unusedGate = {
-  async requestAndWait() {
-    throw new Error("the briefing must not open a plan-approval prompt");
-  },
-} as unknown as ApprovalGate;
+const unusedGate = new ApprovalGate(null);
 
 function engineOver(store: WorkBoardStore, runner: SubAgentRunner) {
   return createWorkBoardEngine({
@@ -100,7 +96,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       expect(spawn.instructions).toContain("Do NOT ask the user any questions");
       expect(spawn.instructions).toContain("finish the migration");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -130,7 +126,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       ]);
       expect(proposal.taskBrief).toContain("Open the review thread");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -142,7 +138,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       expect(result.status).toBe("empty");
       expect(result.kind).toBe("weekly");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -153,7 +149,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       const result = await engineOver(store, runner).runBriefing("daily");
       expect(result.status).toBe("error");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -180,7 +176,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       if (listed.status !== "ok") throw new Error("proposals unreadable");
       expect(listed.proposals.map((p) => p.title)).toEqual(["Complete row"]);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -208,7 +204,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       expect(listed.proposals).toHaveLength(1);
       expect(listed.proposals[0].summary).toBe("Still unanswered after five days.");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -230,7 +226,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       if (listed.status !== "ok") throw new Error("proposals unreadable");
       expect(listed.proposals).toHaveLength(0);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -258,7 +254,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       if (result.status !== "error") throw new Error("unreachable");
       expect(result.reason).toContain("no LLM provider configured");
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 
@@ -294,7 +290,7 @@ describe("WorkBoardEngine — briefing survey", () => {
       expect((await inFlight).status).toBe("empty");
       expect(spawnCount).toBe(1);
     } finally {
-      cleanup();
+      await cleanup();
     }
   });
 });

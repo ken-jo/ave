@@ -3,6 +3,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
+import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import {
   acpSubscriptionPromptCapabilitiesFromInitialize,
   acpSubscriptionStatus,
@@ -264,14 +265,12 @@ export function sanitizedAcpSubscriptionEnvironment(
   const isolatedHome = normalizedRuntimeDirectory(runtimeHome, platform);
   const isolatedTemp = normalizedRuntimeDirectory(runtimeTempDir, platform);
   if (platform === "win32") {
-    const systemRoot = safeWindowsSystemRoot(parentEnv);
-    if (systemRoot) {
-      env.SYSTEMROOT = systemRoot;
-      env.WINDIR = systemRoot;
-      env.COMSPEC = win32.join(systemRoot, "System32", "cmd.exe");
-      env.PATH = `${win32.join(systemRoot, "System32")};${systemRoot}`;
-      env.PATHEXT = ".EXE";
-    }
+    const systemRoot = windowsSystemRoot(parentEnv);
+    env.SYSTEMROOT = systemRoot;
+    env.WINDIR = systemRoot;
+    env.COMSPEC = win32SystemBinary("cmd", parentEnv);
+    env.PATH = `${win32SystemBinary("", parentEnv)};${systemRoot}`;
+    env.PATHEXT = ".EXE";
     env.USERPROFILE = isolatedHome;
     env.APPDATA = win32.join(isolatedHome, "appdata");
     env.LOCALAPPDATA = win32.join(isolatedHome, "localappdata");
@@ -302,21 +301,6 @@ function unsafeWindowsPath(path: string): boolean {
 
 function normalizedRuntimeDirectory(candidate: string, platform: NodeJS.Platform): string {
   return platform === "win32" ? win32.normalize(candidate) : resolve(candidate);
-}
-
-function safeWindowsSystemRoot(parentEnv: NodeJS.ProcessEnv): string | null {
-  for (const candidate of [
-    parentEnv.SystemRoot,
-    parentEnv.SYSTEMROOT,
-    parentEnv.WINDIR,
-    parentEnv.windir,
-  ]) {
-    if (!candidate || candidate.length > 512 || CONTROL_CHARACTERS.test(candidate)) continue;
-    if (!win32.isAbsolute(candidate) || unsafeWindowsPath(candidate)) continue;
-    const normalized = win32.normalize(candidate);
-    if (/^[A-Za-z]:$/.test(normalized.slice(0, 2))) return normalized;
-  }
-  return null;
 }
 
 // Canonicalize a picker-approved executable before persisting or spawning it. The caller must repeat this immediately before every execution because the

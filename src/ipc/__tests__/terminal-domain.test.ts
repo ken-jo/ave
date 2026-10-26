@@ -2,6 +2,7 @@ import { terminalSessionFixture } from "../../__tests__/support/terminal-session
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import type { TerminalEmit } from "../../main/terminal/pty-manager.js";
+import { approvalSurfaceRegistry, updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 
 const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 const fromWebContents = vi.fn();
@@ -35,14 +36,16 @@ const { registerTerminalHandlers } = await import("../domains/terminal.js");
 const { CHANNELS } = await import("../../contract/app-contract.js");
 
 function appWindow(id: number) {
-  return { id, isDestroyed: () => false };
+  const mainFrame = { url: "file:///Applications/Ave.app/dist/index.html" };
+  return { id, isDestroyed: () => false,
+    webContents: { windowId: id, isDestroyed: () => false, mainFrame },
+  };
 }
 const windowOne = appWindow(1);
 const windowTwo = appWindow(2);
 
-function from(win: { id: number }): IpcMainInvokeEvent {
-  const sender = { windowId: win.id };
-  return { senderFrame: { url: "file:///Applications/Ave.app/dist/index.html" }, sender } as unknown as IpcMainInvokeEvent;
+function from(win: ReturnType<typeof appWindow>): IpcMainInvokeEvent {
+  return { senderFrame: win.webContents.mainFrame, sender: win.webContents } as unknown as IpcMainInvokeEvent;
 }
 
 beforeEach(() => {
@@ -60,6 +63,24 @@ beforeEach(() => {
 });
 
 describe("terminal IPC between two windows", () => {
+  it("registers the exact native terminal owner before spawn and refuses ownership theft", async () => {
+    const tabId = "terminal:0000000a-1";
+    const spawn = handlers.get(CHANNELS.terminal.spawn)!;
+    expect(await spawn(from(windowOne), { tabId, lane: "manual" })).toMatchObject({ ok: true });
+    expect(approvalSurfaceRegistry.resolve(undefined, tabId)).toBe(windowOne.webContents);
+    owners.set(tabId, 1);
+    expect(await spawn(from(windowTwo), { tabId, lane: "manual" })).toMatchObject({ ok: false, reason: "not-owner" });
+    expect(approvalSurfaceRegistry.resolve(undefined, tabId)).toBe(windowOne.webContents);
+    updateApprovalSurface({ kind: "release-terminal", tabId });
+  });
+
+  it("never registers a terminal approval owner from a trusted-URL subframe", async () => {
+    const tabId = "terminal:0000000a-2";
+    const event = { ...from(windowOne), senderFrame: { url: "file:///Applications/Ave.app/dist/index.html" } };
+    expect(await handlers.get(CHANNELS.terminal.spawn)!(event as IpcMainInvokeEvent, { tabId, lane: "manual" }))
+      .toMatchObject({ ok: false, reason: "unauthorized-frame" });
+    expect(approvalSurfaceRegistry.resolve(undefined, tabId)).toBeNull();
+  });
   it("sends a terminal's output and exit to its owning window only", () => {
     emitter("data", { ...terminalSessionFixture("terminal:0000000a-1", "manual"), chunk: "hi" }, 2);
     emitter("exit", { ...terminalSessionFixture("terminal:0000000a-1", "manual"), exitCode: 0 }, 2);

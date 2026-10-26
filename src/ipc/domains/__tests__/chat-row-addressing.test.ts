@@ -1,9 +1,9 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 // Resolve actions by durable messageId; transcript entry positions and history row positions can differ.
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import { ConversationHistory } from "../../../engine/conversation-history.js";
 import { MemoryManager } from "../../../memory/memory-manager.js";
 import { serializeHistoryMessage } from "../../../shared/chat-history.js";
@@ -82,6 +82,7 @@ async function setup(seed: GenericMessage[]) {
   vi.clearAllMocks();
   const { registerChatHandlers } = await import("../chat.js");
   const deps = makeDeps(seed);
+  await installNativeChatWindow(deps.getMainWindow());
   registerChatHandlers(deps as any);
   return deps;
 }
@@ -336,6 +337,7 @@ describe("renderer entry → host row, end to end", () => {
     handlers.clear();
     vi.clearAllMocks();
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow(deps.getMainWindow());
     registerChatHandlers(deps as never);
 
     const serialized = history
@@ -412,6 +414,7 @@ describe("a session written before rows carried an identity", () => {
     deps.conversationLoop.getSessionId = vi.fn(() => LEGACY_SESSION) as never;
     vi.clearAllMocks();
     const { registerChatHandlers } = await import("../chat.js");
+    await installNativeChatWindow(deps.getMainWindow());
     registerChatHandlers(deps as never);
 
     const entries = historyToEntries(

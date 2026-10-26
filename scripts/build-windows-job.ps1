@@ -46,3 +46,11 @@ $compilerArgs += @($source, "/Fo:$out/$object", "/Fe:$out/$name", "/link", "/INC
 & cl.exe @compilerArgs
 if ($LASTEXITCODE -ne 0) { throw "Windows $Helper helper build failed ($LASTEXITCODE)" }
 Remove-Item -LiteralPath (Join-Path $out $object) -ErrorAction SilentlyContinue
+if ($Helper -eq "path-kind") {
+    $testSource = Join-Path $root "native/windows-path-kind/pin-test.cpp"
+    $testExe = Join-Path $env:TEMP "ave-path-pin-test.exe"
+    $testObject = Join-Path $env:TEMP "ave-path-pin-test.obj"
+    & cl.exe /nologo /std:c++17 /O2 /MT /W4 /WX /EHsc $testSource "/Fo:$testObject" "/Fe:$testExe" /link /INCREMENTAL:NO /Brepro
+    if ($LASTEXITCODE -ne 0) { throw "Windows path pin test build failed ($LASTEXITCODE)" }
+    Remove-Item -LiteralPath $testObject -ErrorAction SilentlyContinue
+}

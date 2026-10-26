@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Reviewer and enforcement resolve the same argument against an explicit invocation cwd, including ~ expansion. Never use the ambient cwd as the test input or shared bugs can appear to agree.
 import { describe, it, expect, beforeEach } from "vitest";
 import { mkdirSync } from "node:fs";
@@ -164,7 +165,7 @@ describe("producer wiring — the dispatch lanes thread the invocation cwd", () 
     const dir = makeRoot();
     pm = new PermissionManager(join(dir, "permissions.json"));
     captured = [];
-    pm.setReviewer({
+    setReviewerForTest(pm, {
       classifier: {
         classify: (input) => {
           captured.push({ executionCwd: input.executionCwd, finalInput: input.finalInput });
@@ -205,6 +206,10 @@ describe("producer wiring — the dispatch lanes thread the invocation cwd", () 
       undefined,
       { groupId: "g1", toolUseId: "tu1", displayOrder: 0 },
       undefined,
+      undefined,
+      undefined,
+      undefined,
+      "reviewer-path-resolution-session",
     );
     expect(result.allowed).toBe(true);
     expect(captured).toHaveLength(1);

@@ -1,6 +1,7 @@
 // Egress scopes must be among those offered by the gate; terminal asks stay in the owning window/tab. Grants belong to the egress store, never user-decision memory.
 import type { PermissionManager } from "./permission-manager.js";
-import { isReviewerAutoDecisionOutcome } from "./permission-manager.js";
+import { JudgeContractError } from "./judge/judge-contract.js";
+import { t } from "../i18n/index.js";
 import { buildPermissionEvaluationContext } from "./evaluation-context.js";
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
@@ -32,6 +33,7 @@ export function createApprovalGateEgressRequester(
   permissionManager?: PermissionManager,
 ): EgressApprovalRequester {
   return async (request): Promise<EgressApprovalAnswer> => {
+    const requestId = randomUUID();
     const { host, port } = request.destination;
     const terminal = request.origin === "terminal";
     // A terminal's ask names its tab: the gate draws it in the window that owns that tab, and the renderer in the tab's banner.
@@ -39,10 +41,12 @@ export function createApprovalGateEgressRequester(
     // Only a foreground shell call reaches here: a background one was denied before asking (I5, owner 2026-10-16), so the reviewer runs in the foreground lane only.
     const mode = permissionManager?.getMode();
     let reviewerVerdict;
+    let pauseReason: string | undefined;
     if (request.origin === "shell" && permissionManager && mode !== "strict" &&
       (mode === "auto" || permissionManager.hasJudge("network"))) {
       const cwd = request.workspaceRoot ?? process.cwd();
       const review = await permissionManager.dispatchReviewer("sandbox_network", {
+        invocationId: requestId,
         source: "builtin", category: "network", pathFields: [],
         finalInput: { url: `https://${host.includes(":") ? `[${host}]` : host}:${port}/` },
         executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
@@ -56,27 +60,28 @@ export function createApprovalGateEgressRequester(
       }, undefined, { defer: "none", ...(request.abortSignal ? { abortSignal: request.abortSignal } : {}) });
       reviewerVerdict = review.verdict;
       const judge = review.judge;
-      const reviewed = judge && !review.judgeBaselineAllowed
-        ? judge.judged && judge.applied ? judge.decision : "ask"
-        : isReviewerAutoDecisionOutcome(review.outcome)
-          ? permissionManager.resolveReviewerDecision(review.verdict, "foreground-auto", review.builtinDecision).decision
-          : "ask";
+      if (!judge) throw new JudgeContractError("Automated network review returned no judge outcome");
+      const reviewed = judge.judged && judge.applied ? judge.decision : "ask";
+      if (judge.judged && judge.pause) {
+        pauseReason = t(judge.pause === "consecutive" ? "permissionJudge.pausedConsecutive" : "permissionJudge.pausedTotal");
+        reviewerVerdict = { ...review.verdict, reason: pauseReason };
+      }
       if (reviewed === "allow" && request.scopes.includes("once")) return { allow: true, scope: "once" };
       if (reviewed === "deny" && judge?.judged && judge.applied && judge.decision === "deny") {
         return { allow: false, reason: "network connection denied by the approval reviewer" };
       }
     }
     const decision = await gate.requestAndWait({
-      id: randomUUID(),
+      id: requestId,
       category: "tool",
       kind: "egress-host",
       toolName,
       toolCategory: "network",
       ...(reviewerVerdict === undefined ? {} : { reviewerVerdict }),
       args: terminal ? { host, port, tabId: request.tabId } : { host, port },
-      reason: terminal
+      reason: pauseReason ?? (terminal
         ? `A command in workspace terminal ${request.tabId} wants to connect to ${host}:${port}.`
-        : `The sandboxed ${request.toolName} command wants to connect to ${host}:${port}.`,
+        : `The sandboxed ${request.toolName} command wants to connect to ${host}:${port}.`),
       createdAt: Date.now(),
       allowedChoices: ["allow-once", "deny-once"],
       // A grant is recorded by the egress grant store, never as a user-approval-store record, and the card must be answered by a person.
@@ -97,6 +102,7 @@ export function createApprovalGateEgressRequester(
       ...(request.abortSignal === undefined ? {} : { abortSignal: request.abortSignal }),
     });
     if (decision.choice === "allow-once" && decision.egressScope !== undefined && request.scopes.includes(decision.egressScope)) {
+      if (request.origin === "shell" && request.sessionId !== undefined) permissionManager?.resumeAutomatedApproval(request.sessionId, decision);
       return { allow: true, scope: decision.egressScope };
     }
     return {

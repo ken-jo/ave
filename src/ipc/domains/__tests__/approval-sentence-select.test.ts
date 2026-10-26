@@ -30,8 +30,13 @@ function providerReturning(text: string) {
 const selected = (optionId: string) =>
   JSON.stringify({ optionId, confidence: "high", reason: "matches the sentence" });
 
-function makeWebContents() {
-  return { send: vi.fn(), isDestroyed: () => false, id: 1 };
+function makeWebContents(id: number) {
+  return {
+    send: vi.fn(),
+    isDestroyed: () => false,
+    id,
+    mainFrame: { url: "file:///app/index.html" },
+  };
 }
 
 async function harness(
@@ -42,7 +47,10 @@ async function harness(
   } = {},
 ) {
   handlers.clear();
-  const wc = makeWebContents();
+  const wc = makeWebContents(1);
+  const otherWc = makeWebContents(2);
+  const window = { isDestroyed: () => false, webContents: wc };
+  const otherWindow = { isDestroyed: () => false, webContents: otherWc };
   const gate = new ApprovalGate(wc as never, undefined, 60_000);
   const provider = providerReturning(opts.providerText ?? selected("o3"));
   const selector = new LlmApprovalSentenceSelector(provider as never, "test-model");
@@ -73,17 +81,16 @@ async function harness(
     approvalGate: gate,
     auditLogger: { log: vi.fn() },
     toolRegistry: { setDenyRules: vi.fn() },
-    getMainWindow: () => null,
-    getAppWindows: () => [],
+    getMainWindow: () => window,
+    getAppWindows: () => [window, otherWindow],
     getApprovalSentenceSelector: opts.selectorPresent === false ? () => undefined : () => selector,
   } as never);
 
-  // Host-renderer validation fails closed without a frame URL; supply a host frame.
-  const HOST_FRAME = { senderFrame: { url: "file:///app/index.html" } };
-  const invoke = (payload: unknown, event: unknown = HOST_FRAME) =>
+  const ownerEvent = { sender: wc, senderFrame: wc.mainFrame };
+  const invoke = (payload: unknown, event: unknown = ownerEvent) =>
     handlers.get(CHANNEL)!(event, payload) as Promise<Record<string, unknown>>;
 
-  return { gate, provider, invoke, wc };
+  return { gate, provider, invoke, wc, otherWc };
 }
 
 function sentPrompt(provider: { complete: ReturnType<typeof vi.fn> }): string {
@@ -193,10 +200,44 @@ describe("approval-sentence-select — the model never sees the request's own wo
 
 describe("approval-sentence-select — gates", () => {
   it("rejects a foreign frame without asking the model anything", async () => {
-    const { invoke, provider, gate } = await harness();
+    const { invoke, provider, gate, wc } = await harness();
     const result = await invoke(
       { requestId: "req-allow-1", input: "/allow 허용", intent: USER_INTENT },
-      { senderFrame: { url: "https://attacker.example.com/pwn" } },
+      { sender: wc, senderFrame: { url: "https://attacker.example.com/pwn" } },
+    );
+    expect(result).toEqual(UNAUTHORIZED_FRAME);
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(gate.pendingCount).toBe(1);
+  });
+
+  it("rejects a registered window that does not own the pending request", async () => {
+    const { invoke, provider, gate, otherWc } = await harness();
+    const result = await invoke(
+      { requestId: "req-allow-1", input: "/allow 허용", intent: USER_INTENT },
+      { sender: otherWc, senderFrame: otherWc.mainFrame },
+    );
+    expect(result).toEqual(UNAUTHORIZED_FRAME);
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(gate.pendingCount).toBe(1);
+  });
+
+  it("rejects a host-url subframe from the owner window", async () => {
+    const { invoke, provider, gate, wc } = await harness();
+    const result = await invoke(
+      { requestId: "req-allow-1", input: "/allow 허용", intent: USER_INTENT },
+      { sender: wc, senderFrame: { url: wc.mainFrame.url } },
+    );
+    expect(result).toEqual(UNAUTHORIZED_FRAME);
+    expect(provider.complete).not.toHaveBeenCalled();
+    expect(gate.pendingCount).toBe(1);
+  });
+
+  it("rejects an unregistered window's main frame", async () => {
+    const { invoke, provider, gate } = await harness();
+    const unregisteredWc = makeWebContents(3);
+    const result = await invoke(
+      { requestId: "req-allow-1", input: "/allow 허용", intent: USER_INTENT },
+      { sender: unregisteredWc, senderFrame: unregisteredWc.mainFrame },
     );
     expect(result).toEqual(UNAUTHORIZED_FRAME);
     expect(provider.complete).not.toHaveBeenCalled();

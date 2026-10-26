@@ -1,3 +1,4 @@
+import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -187,6 +188,7 @@ describe("ToolExecutor authorization-required control", () => {
     permissionManager.dispatchReviewer = vi.fn(async () => ({
       verdict: { level: "low" as const, reason: "fixture says low risk" },
       outcome: "fresh" as const,
+      judge: reviewerJudgeOutcomeForTest("allow", "fixture says low risk"),
     })) as never;
     const requestAndWait = vi.fn();
     const executor = new ToolExecutor(
@@ -227,7 +229,7 @@ describe("ToolExecutor authorization-required control", () => {
     const permissionManager = new PermissionManager(
       join(permissionDirectory, "permissions.json"),
     );
-    permissionManager.setReviewer({
+    setReviewerForTest(permissionManager, {
       classifier: {} as never,
       cache: {} as never,
       deferredQueue: new DeferredQueue(join(permissionDirectory, "deferred.jsonl")),
@@ -244,6 +246,7 @@ describe("ToolExecutor authorization-required control", () => {
     permissionManager.dispatchReviewer = vi.fn(async () => ({
       verdict: { level: "high" as const, reason: "fixture says high risk" },
       outcome: "fresh" as const,
+      judge: reviewerJudgeOutcomeForTest("deny", "fixture says high risk"),
     })) as never;
     const executor = new ToolExecutor(registry, undefined, permissionManager);
 
@@ -292,6 +295,7 @@ describe("ToolExecutor authorization-required control", () => {
     permissionManager.dispatchReviewer = vi.fn(async () => ({
       verdict: { level: "high" as const, reason: "fixture says high risk" },
       outcome: "fresh" as const,
+      judge: reviewerJudgeOutcomeForTest("ask", "fixture says high risk"),
     })) as never;
     const executor = new ToolExecutor(registry, undefined, permissionManager);
 
@@ -346,6 +350,10 @@ describe("ToolExecutor authorization-required control", () => {
       permissionManager.dispatchReviewer = vi.fn(async () => ({
         verdict: { level: "high" as const, reason: `fallback after ${outcome}` },
         outcome,
+        judge: reviewerJudgeOutcomeForTest(
+          "ask", `foreground reviewer ${outcome} — explicit approval required`,
+          outcome === "sandbox-state-changed" ? "unavailable" : outcome === "malformed" ? "unparseable" : outcome,
+        ),
       })) as never;
       const executor = new ToolExecutor(registry, undefined, permissionManager);
       const permissionReviewEvents: Array<{ status: string; reason?: string }> = [];
@@ -394,7 +402,7 @@ describe("ToolExecutor authorization-required control", () => {
         join(permissionDirectory, "permissions.json"),
       );
       if (failure === "timeout") {
-        permissionManager.setReviewer({
+        setReviewerForTest(permissionManager, {
           classifier: {} as never,
           cache: {} as never,
           deferredQueue: new DeferredQueue(join(permissionDirectory, "deferred.jsonl")),
@@ -402,6 +410,7 @@ describe("ToolExecutor authorization-required control", () => {
         permissionManager.dispatchReviewer = vi.fn(async () => ({
           verdict: { level: "high" as const, reason: "fallback after timeout" },
           outcome: "timeout" as const,
+          judge: reviewerJudgeOutcomeForTest("deny", "fallback after timeout", "timeout"),
         })) as never;
       }
       permissionManager.checkDetailed = () => ({
@@ -497,7 +506,7 @@ describe("ToolExecutor authorization-required control", () => {
     const permissionManager = new PermissionManager(
       join(permissionDirectory, "permissions.json"),
     );
-    permissionManager.setReviewer({
+    setReviewerForTest(permissionManager, {
       classifier: {} as never,
       cache: {} as never,
       deferredQueue,
@@ -557,7 +566,7 @@ describe("ToolExecutor authorization-required control", () => {
     const permissionManager = new PermissionManager(
       join(permissionDirectory, "permissions.json"),
     );
-    permissionManager.setReviewer({
+    setReviewerForTest(permissionManager, {
       classifier: {} as never,
       cache: {} as never,
       deferredQueue,

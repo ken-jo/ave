@@ -15,9 +15,9 @@ export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   | "clearAuthPartitionService" | "shellOpenExternal"> {
   getAppWindows(): BrowserWindow[];
   getFocusedWindow(): BrowserWindow | null;
-  /** Resolve the session’s open window first; the prompt resolver may fall back to the active window. */
+  /** The live renderer hosting this exact session, or null when it is unhosted. */
   findSessionSurface(sessionId: string | undefined): WebContents | null;
-  /** Terminal approval prompts belong only to the window owning the tab; never fall back. */
+  /** The live terminal tab owner's renderer, or null; never fall back to another window. */
   findTerminalSurface(tabId: string): WebContents | null;
   getAuthPartition(partition: string): Session;
   installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;

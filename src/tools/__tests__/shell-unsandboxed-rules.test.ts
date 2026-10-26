@@ -90,9 +90,10 @@ async function run(input: {
       choice: input.answer,
       nonce: request.nonce,
       hmac: request.hmac,
-    });
+    }, nativeWebContents as never);
   });
-  gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
+  const nativeWebContents = { isDestroyed: () => false, send };
+  gate = new ApprovalGate(nativeWebContents as never);
   const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
   const toolInput = {
     command: input.command,

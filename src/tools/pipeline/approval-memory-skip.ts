@@ -2,6 +2,7 @@
  * Reclassify and refuse escalation or missing stored verdict provenance; only a non-revoked matching grant skips the dock. */
 import type { ToolSource, ToolCategory } from "../types.js";
 import type { PermissionCheckResult, PermissionManager } from "../../permissions/permission-manager.js";
+import { JudgeContractError } from "../../permissions/judge/judge-contract.js";
 import type { ToolInvocationContext } from "../../permissions/reviewer/risk-classifier.js";
 import { RuleBasedRiskClassifier, maxVerdict } from "../../permissions/reviewer/risk-classifier.js";
 import { resolveReviewerSandboxCapability } from "../../permissions/sandbox-capability.js";
@@ -80,6 +81,7 @@ export async function tryUserApprovalMemorySkip(
   context: ToolPermissionContext,
   approvalCacheKey: string | undefined,
   sandboxAttestation: { ownerPluginSandboxRoot?: string },
+  invocationId: string,
   mcpServerId?: string,
   workerId?: string,
   pluginId?: string,
@@ -93,6 +95,9 @@ export async function tryUserApprovalMemorySkip(
    * `PermissionManager.dispatchReviewer`, bound by `ToolExecutor`. Without it such a hit cannot be reviewed and re-prompts. */
   dispatchFreshReview?: PermissionManager["dispatchReviewer"],
 ): Promise<PermissionCheckResult | null> {
+  if (typeof invocationId !== "string" || invocationId.trim().length === 0) {
+    throw new JudgeContractError("Approval memory review requires an invocation id");
+  }
   // Identity = exactly what the record IPC stored: the tool's opted-in target-wide memory key, otherwise the canonical finalInput.
   // Built outside the storage catch: a policy key without its memory mode is an internal contract violation, not a storage failure.
   const canonicalArgs = canonicalStringify(finalInput);
@@ -147,6 +152,7 @@ export async function tryUserApprovalMemorySkip(
     const reviewed = await dispatchFreshReview(
       toolName,
       {
+        invocationId,
         ...(sessionId === undefined ? {} : { sessionId }),
         source,
         category,
@@ -173,10 +179,11 @@ export async function tryUserApprovalMemorySkip(
         allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
         additionalDirectories: context.additionalDirectories ?? [],
       },
-      // This assesses whether the saved user grant covers these arguments. The configured judge runs only after applicable grants are resolved.
-      { defer: "none", judgeBypass: true },
-    ).catch(() => null);
+      // Assess the saved grant through the builtin chain before optional stages.
+      { defer: "none", purpose: "approval-scope" },
+    );
     const assessed = reviewed !== null &&
+      reviewed.judge?.judged === true && reviewed.judge.pause === undefined && reviewed.judge.fallback === undefined &&
       (reviewed.outcome === "fresh" || reviewed.outcome === "cache" || reviewed.outcome === "host-determined") &&
       reviewed.verdict.requiresExplicitApproval !== true;
     // No reviewer configured: the deterministic rules (egress screen included) are the whole assessment, now and at approval time. Reuse only a row that was itself approved on rules alone; the gate records

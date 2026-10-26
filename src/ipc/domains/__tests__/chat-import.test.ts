@@ -1,5 +1,5 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import { MAX_SESSION_FILE_BYTES } from "../../../memory/memory-manager.js";
 import {
   MAX_LOCAL_USER_CONTENT_PARTS,
@@ -86,6 +86,7 @@ async function setup() {
   vi.clearAllMocks();
   const { registerChatHandlers } = await import("../chat.js");
   const deps = makeDeps();
+  await installNativeChatWindow(deps.getMainWindow());
   registerChatHandlers(deps as any);
   return deps;
 }
