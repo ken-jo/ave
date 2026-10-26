@@ -1,30 +1,39 @@
-// Verify token-limit banner thresholds and stacking without overflowing chat layout.
+// Verify token-limit notice thresholds and stacking without overflowing chat layout.
 
 import { test, expect, type Page } from "@playwright/test";
 import type { LLMVendor } from "../../../src/shared/llm-vendor-defaults.js";
+import { getUsableContext } from "../../../src/shared/context-budget.js";
 import {
   buildLlmSettings,
   builtMainExists,
   launchSeededElectron,
   teardownSeededElectron,
   type SeededElectronContext,
-} from "./seeded-electron";
-import { makeTestT } from "./i18n";
+} from "./seeded-electron.js";
+import { makeTestT } from "./i18n.js";
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
 
-// Bind assertions to the locale seeded by this harness.
 const t = makeTestT("ko");
-
-// Match escaped static label prefixes before dynamic catalog placeholders.
 const TPM_LABEL = t("chatView.tpmUsagePercent").split("{pct}")[0].trim();
-const CONTEXT_LABEL = t("chatView.contextUsagePercent").split("{pct}")[0].trim();
-const escapeRegExp = (s: string): string => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const TPM_LABEL_RE = escapeRegExp(TPM_LABEL);
+const TPM_LABEL_RE = TPM_LABEL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const CONTEXT_WINDOW = 400_000;
+const CONTEXT_BUDGET = getUsableContext(CONTEXT_WINDOW);
+const MAIN = '[data-composer-surface="main"]';
 
 function nextPaint(page: Page): Promise<void> {
   return page.evaluate(() => new Promise<void>((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
   }));
+}
+
+async function expectTpmWarning(page: Page, percent: number) {
+  const notice = page.locator(MAIN).getByRole("status").filter({ hasText: TPM_LABEL });
+  await expect(notice).toBeVisible();
+  await expect(notice).toHaveClass(/\btext-warning\b/);
+  await expect(notice).not.toHaveClass(/\btext-destructive\b/);
+  await expect(notice).toHaveAttribute("aria-live", "polite");
+  await expect(notice.locator("span.font-medium")).toHaveText(new RegExp(`^${TPM_LABEL_RE}\\s+${percent}%`));
+  return notice;
 }
 
 function makeHistoryRows(tokensIn: number): Array<Record<string, unknown>> {
@@ -54,143 +63,117 @@ async function launchWithTokens(opts: {
   model: string;
 }): Promise<SeededElectronContext> {
   const { tokensIn, vendor, model } = opts;
+  const settings = buildLlmSettings(vendor, model);
+  const llm = settings.llm as { vendors: Record<string, { contextWindow?: number }> };
+  // An explicit route window keeps threshold cases independent of catalog prompt-cap updates.
+  llm.vendors[vendor].contextWindow = CONTEXT_WINDOW;
+  settings.chat = { autoCompact: true };
   return launchSeededElectron({
     sessionId: "aa000000-bb11-4cc2-8dd3-eeeeeeeeeeee",
     sessionTitle: "TPM e2e probe",
-    settings: buildLlmSettings(vendor, model),
+    settings,
     historyRows: makeHistoryRows(tokensIn),
     userDataPrefix: "ave-tpm-e2e-user-data-",
     homePrefix: "ave-tpm-e2e-home-",
   });
 }
 
-test.describe("TPM warning / destructive banner", () => {
-  test.skip(!builtMainExists(), "dist/src/main/main.js not built; run bun run build first");
+test.describe("Composer usage warnings", () => {
+  test.beforeAll(() => {
+    expect(builtMainExists(), "Build the app before running its usage-notice E2E").toBe(true);
+  });
 
-  test("nano model + 160 K usedTokens shows TPM warning banner", async () => {
+  test("nano model + 160 K usedTokens shows an 80% TPM warning", async () => {
     const ctx = await launchWithTokens({ tokensIn: 160_000, vendor: "openai", model: "gpt-5.4-nano" });
-    const { page } = ctx;
     try {
-      const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      await expect(composer).toBeVisible({ timeout: 20_000 });
-
-      const tpmText = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
-      await expect(tpmText).toBeVisible({ timeout: 10_000 });
-
-      const textContent = await tpmText.first().textContent();
-      expect(textContent).toMatch(new RegExp(`${TPM_LABEL_RE} 80%`));
-
-      const warningDiv = page.locator("div.text-warning").filter({ hasText: TPM_LABEL });
-      await expect(warningDiv).toBeVisible({ timeout: 5_000 });
-
-      const destructiveDiv = page.locator("div.text-destructive").filter({ hasText: TPM_LABEL });
-      await expect(destructiveDiv).toHaveCount(0);
+      await expect(ctx.page.locator(testIdSelector(TEST_IDS.composer)).first()).toBeVisible();
+      const notice = await expectTpmWarning(ctx.page, 80);
+      await expect(notice).toContainText(t("chatView.tpmNearingWarning"));
+      await expect(ctx.page.getByTestId("composer-context-notice")).toHaveCount(0);
     } finally {
       await teardownSeededElectron(ctx);
     }
   });
 
-  test("nano model + 200 K usedTokens shows TPM destructive banner", async () => {
+  test("nano model + 200 K usedTokens retains warning severity at the TPM limit", async () => {
     const ctx = await launchWithTokens({ tokensIn: 200_000, vendor: "openai", model: "gpt-5.4-nano" });
-    const { page } = ctx;
     try {
-      const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      await expect(composer).toBeVisible({ timeout: 20_000 });
-
-      const tpmText = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
-      await expect(tpmText).toBeVisible({ timeout: 10_000 });
-
-      const textContent = await tpmText.first().textContent();
-      expect(textContent).toMatch(
-        new RegExp(`${TPM_LABEL_RE}\\s+1\\d\\d%|${TPM_LABEL_RE}\\s+9[5-9]%`),
-      );
-
-      const bannerDiv = page.locator("div.text-destructive").filter({ hasText: TPM_LABEL });
-      await expect(bannerDiv).toBeVisible({ timeout: 5_000 });
-      await expect(page.locator("div.text-warning").filter({ hasText: TPM_LABEL })).toHaveCount(0);
+      await expect(ctx.page.locator(testIdSelector(TEST_IDS.composer)).first()).toBeVisible();
+      const notice = await expectTpmWarning(ctx.page, 100);
+      await expect(notice).toContainText(t("chatView.tpmOverflowWarning"));
     } finally {
       await teardownSeededElectron(ctx);
     }
   });
 
-  test("non-nano model (gpt-4o-mini) shows no TPM banner — backward compat", async () => {
+  test("a model without a per-minute host limit shows no TPM notice", async () => {
     const ctx = await launchWithTokens({ tokensIn: 160_000, vendor: "openai", model: "gpt-4o-mini" });
-    const { page } = ctx;
     try {
-      const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      await expect(composer).toBeVisible({ timeout: 20_000 });
-
-      // Wait for the usage-bearing turn before asserting banners are absent.
-      await expect(page.getByText("테스트 응답")).toBeVisible({ timeout: 10_000 });
-
-      const tpmBanners = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
-      await expect(tpmBanners).toHaveCount(0);
+      await expect(ctx.page.getByText("테스트 응답")).toBeVisible();
+      await expect(ctx.page.locator(MAIN).getByRole("status").filter({ hasText: TPM_LABEL })).toHaveCount(0);
     } finally {
       await teardownSeededElectron(ctx);
     }
   });
 
-  test("TPM warning banner renders in both compiled themes", async () => {
+  test("TPM warning renders in both compiled themes", async ({}, testInfo) => {
     const ctx = await launchWithTokens({ tokensIn: 160_000, vendor: "openai", model: "gpt-5.4-nano" });
-    const { page } = ctx;
     try {
-      const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      await expect(composer).toBeVisible({ timeout: 20_000 });
-
-      const tpmText = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
-      await expect(tpmText).toBeVisible({ timeout: 10_000 });
-
-      await page.evaluate(() => {
-        document.documentElement.setAttribute("data-theme-bundle", "gallery");
-      });
-      await nextPaint(page);
-      await page.screenshot({ path: "test-results/tpm-banner-gallery.png", fullPage: false });
-
-      await page.evaluate(() => {
-        document.documentElement.setAttribute("data-theme-bundle", "moonstone");
-      });
-      await nextPaint(page);
-      await page.screenshot({ path: "test-results/tpm-banner-moonstone.png", fullPage: false });
-
-      await expect(tpmText).toBeVisible();
+      for (const theme of ["gallery", "moonstone"]) {
+        await ctx.page.evaluate((theme) => {
+          document.documentElement.setAttribute("data-theme-bundle", theme);
+        }, theme);
+        await nextPaint(ctx.page);
+        await expectTpmWarning(ctx.page, 80);
+        await ctx.page.screenshot({ path: testInfo.outputPath(`tpm-banner-${theme}.png`) });
+      }
     } finally {
       await teardownSeededElectron(ctx);
     }
   });
 
-  // Use a fixture that crosses context and per-minute thresholds simultaneously.
-  test("context-overflow + TPM destructive banners stack without layout overflow", async () => {
-    // This usage produces an 80% context warning and a 144% per-minute destructive state.
-    const ctx = await launchWithTokens({ tokensIn: 288_000, vendor: "openai", model: "gpt-5.4-nano" });
-    const { page } = ctx;
-    try {
-      const composer = page.locator(testIdSelector(TEST_IDS.composer)).first();
-      await expect(composer).toBeVisible({ timeout: 20_000 });
-
-      const tpmBanner = page.locator("span.font-semibold").filter({ hasText: TPM_LABEL });
-      await expect(tpmBanner).toBeVisible({ timeout: 10_000 });
-
-      const contextBanner = page.locator("span.font-semibold").filter({ hasText: CONTEXT_LABEL });
-      await expect(contextBanner).toBeVisible({ timeout: 5_000 });
-
-      // Stacked banners must not introduce horizontal overflow.
-      const overflowCheck = await page.evaluate(() => {
-        const root = document.getElementById("root");
-        if (!root) return { overflows: false, scrollWidth: 0, clientWidth: 0 };
-        return {
-          overflows: root.scrollWidth > root.clientWidth + 4, // 4px tolerance for borders
-          scrollWidth: root.scrollWidth,
-          clientWidth: root.clientWidth,
-        };
-      });
-      expect(
-        overflowCheck.overflows,
-        `Horizontal overflow detected: scrollWidth=${overflowCheck.scrollWidth} > clientWidth=${overflowCheck.clientWidth}`,
-      ).toBe(false);
-
-      await page.screenshot({ path: "test-results/tpm-banner-stacked.png", fullPage: false });
-    } finally {
-      await teardownSeededElectron(ctx);
-    }
-  });
+  for (const contextPercent of [89, 90, 100, 109]) {
+    test(`context ${contextPercent}% and TPM notices follow warning thresholds without overflow`, async ({}, testInfo) => {
+      const tokensIn = CONTEXT_BUDGET * contextPercent / 100;
+      const ctx = await launchWithTokens({ tokensIn, vendor: "openai", model: "gpt-5.4-nano" });
+      const { page } = ctx;
+      try {
+        const tpm = await expectTpmWarning(page, Math.round(tokensIn / 200_000 * 100));
+        const context = page.locator(MAIN).getByTestId("composer-context-notice");
+        if (contextPercent < 90) {
+          await expect(context).toHaveCount(0);
+        } else {
+          await expect(context).toBeVisible();
+          await expect(context).toHaveAttribute("data-severity", "warning");
+          await expect(context).toHaveAttribute("role", "status");
+          await expect(context).toHaveAttribute("aria-live", "polite");
+          await expect(context.locator("span.font-medium")).toHaveText(t("chatView.contextUsagePercent", { pct: contextPercent }));
+          await expect(context.locator("svg")).toHaveClass(/\btext-warning\b/);
+          await expect(context.locator(".text-destructive")).toHaveCount(0);
+          await expect(context).toContainText(t(contextPercent >= 100 ? "chatView.contextOverflowWarning" : "chatView.contextNearingWarning"));
+        }
+        const geometry = await tpm.evaluate((notice) => {
+          const dock = notice.closest('[data-composer-surface="main"]')!;
+          const frame = dock.querySelector('[data-testid="composer-frame"]')!.getBoundingClientRect();
+          const context = dock.querySelector('[data-testid="composer-context-notice"]');
+          const notices = [notice, ...(context ? [context] : [])].map((el) => {
+            const rect = el.getBoundingClientRect();
+            return { left: rect.left, right: rect.right };
+          });
+          const root = document.getElementById("root")!;
+          return { frame: { left: frame.left, right: frame.right, width: frame.width }, notices, scrollWidth: root.scrollWidth, clientWidth: root.clientWidth };
+        });
+        expect(geometry.frame.width).toBeGreaterThan(0);
+        for (const notice of geometry.notices) {
+          expect(Math.abs(notice.left - geometry.frame.left)).toBeLessThanOrEqual(1);
+          expect(Math.abs(notice.right - geometry.frame.right)).toBeLessThanOrEqual(1);
+        }
+        expect(geometry.clientWidth).toBeGreaterThan(0);
+        expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth + 4);
+        await page.screenshot({ path: testInfo.outputPath(`usage-${contextPercent}.png`) });
+      } finally {
+        await teardownSeededElectron(ctx);
+      }
+    });
+  }
 });

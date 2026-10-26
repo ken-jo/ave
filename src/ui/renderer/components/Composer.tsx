@@ -1,3 +1,4 @@
+import { chatSurface } from "./chat-surface.js";
 import {
   forwardRef,
   useCallback,
@@ -930,7 +931,7 @@ export function ComposerFrame({ children }: { children: React.ReactNode }): Reac
   return (
     <div
       data-testid="composer-frame"
-      className="ave-surface-raised relative z-10 overflow-hidden rounded-xl border border-input-bar-border bg-input-bar text-input-bar-foreground transition-colors duration-[var(--motion-fast)] ease-[var(--motion-ease-standard)] focus-within:border-input-bar-focus focus-within:ring-1 focus-within:ring-input-bar-focus motion-reduce:transition-none"
+      className={`${chatSurface()} relative z-10 overflow-hidden text-input-bar-foreground focus-within:border-input-bar-focus focus-within:ring-1 focus-within:ring-input-bar-focus`}
     >
       {children}
     </div>

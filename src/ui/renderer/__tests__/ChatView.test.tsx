@@ -258,13 +258,13 @@ describe("ChatView", () => {
     });
   });
 
-  it("keeps the composer queue dock edge-to-edge above the composer", async () => {
+  it("aligns the queue dock with the composer gutter", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     await waitFor(() => {
       const dock = container.querySelector('[data-testid="composer-queue-dock"]');
       expect(dock).not.toBeNull();
       expect(dock).toHaveClass("w-full");
-      expect(dock?.className).not.toContain("px-");
+      expect(dock?.className).toContain("px-3");
     });
   });
 
@@ -2012,9 +2012,7 @@ describe("ChatView", () => {
       const card = container.querySelector('[data-testid="ask-user-question-card"]');
       expect(overlay).not.toBeNull();
       expect(overlay?.className).not.toContain("pb-3");
-      expect(card).toHaveClass("rounded-none");
-      expect(card).toHaveClass("rounded-t-lg");
-      expect(card).toHaveClass("border-b-0");
+      expect(card).toHaveClass("rounded-xl", "border-input-bar-border", "bg-input-bar");
     });
   });
 
