@@ -62,6 +62,13 @@ for (const surface of ["main", "side"] as const) {
       await expect(warning).toContainText("109%");
       await expect(root.getByTestId("checkpoint-divider")).toHaveCount(1);
       await expect(root.getByTestId("summary-toast")).toHaveCount(1);
+      const unit = root.getByTestId("checkpoint-divider");
+      await expect(unit.getByTestId("summary-toast")).toHaveCount(1);
+      await expect(unit).not.toContainText(/📦|📖|↩/u);
+      if (surface === "main") {
+        await expect(unit.getByTestId("ck-btn-view")).toHaveClass(/bg-secondary/);
+        await expect(unit.getByTestId("ck-btn-fork")).toHaveClass(/bg-secondary/);
+      }
       await expect(root.getByTestId("system-entry")).toHaveCount(0);
       const geometry = await root.evaluate((root) => {
         const frame = root.querySelector('[data-testid="composer-frame"]')!.getBoundingClientRect();

@@ -34,14 +34,17 @@ destructive icon and omit the automatic-compaction promise. Unknown policy also
 omits that promise. Side chats estimate their own transcript and draft against
 the selected model route's context window and prompt-input cap.
 
-Compaction is transcript history: one checkpoint divider followed by one
-collapsible summary card, inside the transcript column. A successful manual
-compaction uses the checkpoint event rather than adding another result bar.
+Compaction is one transcript unit: an unadorned divider label, quiet secondary
+navigation buttons and a collapsible summary body inside one shared frame.
+The summary has no separate card border or accent bar. Available navigation
+stays visible below the divider label, retaining its behavior and accessible
+labels. A successful manual compaction uses the `compact_notice` checkpoint
+event rather than adding another result bar. The summary starts collapsed.
 The disclosure keeps native keyboard operation, sentence-case text, quiet
 surface edges and a focus ring only on keyboard focus. History cards and usage
 notices use `chatSurface` with its quiet, flat variant: the composer's
 `rounded-xl` radius, `bg-input-bar`, `border-border-subtle`, no shadow, and
-`text-xs` typography. They use the shared motion tokens and reduced-motion rule.
+`text-xs` base typography. They use the shared motion tokens and reduced-motion rule.
 
 Per-turn change review ("Review latest turn changes") belongs to the stack of
 panels above the composer, alongside the queue, expanded task panel and question
