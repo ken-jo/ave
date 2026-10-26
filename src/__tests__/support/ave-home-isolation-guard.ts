@@ -71,7 +71,10 @@ export function canonicalPath(path: string): string {
       return join(realpathSync.native(current), ...missing);
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "ENOENT" && code !== "ENOTDIR") throw error;
+      if (code !== "ENOENT" && code !== "ENOTDIR") {
+        if (/^\\\\(?:\?\\UNC\\|[^?.\\])/i.test(current)) return resolve(path);
+        throw error;
+      }
     }
     let link: string | undefined;
     try {
