@@ -1,5 +1,6 @@
 /** Unknown calls fail closed when the Windows-only verdict depends on them; unknown values are features.
- * A win32-derived value reached through a transitive import or a non-relative import is not detected. */
+ * A win32-derived value reached through a transitive import or a non-relative import is not detected,
+ * nor a user-defined method that shares a name with a built-in value method. */
 type Token = { text: string; start: number; end: number; scope: number };
 type Scope = { parent: number; bindings: Map<string, Token[]> };
 type Possibilities = { windows: number[]; other: number[] };
@@ -20,6 +21,8 @@ const FEATURE_CALLS = new Set([
   "canBind", // src/plugins/isolation/__tests__/child-loopback-link.test.ts:72-77
   "sandboxCasesRequired", // src/plugins/isolation/__tests__/sandbox-cases.ts:6-8
 ]);
+// Built-in value methods; any other member call is an unknown call.
+const VALUE_METHODS = new Set(["trim", "test", "includes", "startsWith", "endsWith", "filter", "some", "every", "getuid"]);
 export function conditionalGates(source: string): Gate[] {
   const platformFunctions = [...source.matchAll(/import\s*\{([^}]+)\}\s*from\s*["'](?:node:)?os["']/g)]
     .flatMap((match) => match[1]!.split(",").flatMap((entry) => {
@@ -143,6 +146,7 @@ export function conditionalGates(source: string): Gate[] {
       if (/^["']win32["']$/.test(name) || platform(input.slice(i, i + 3))) return UNKNOWN;
       const open = input[i + 1]?.text === "?." ? i + 2 : i + 1;
       if (name === "(" && [")", "]"].includes(input[i - 1]?.text ?? "")) return UNKNOWN;
+      if (input[open]?.text === "(" && [".", "?."].includes(input[i - 1]?.text ?? "") && !VALUE_METHODS.has(name) && !FEATURE_CALLS.has(name)) return UNKNOWN;
       if (input[open]?.text === "(" && /^[\w$]+$/.test(name) && ![".", "?."].includes(input[i - 1]?.text ?? "") && name !== "Boolean") {
         const model = Object.hasOwn(HELPER_MODELS, name) ? HELPER_MODELS[name] : undefined;
         if (model) {

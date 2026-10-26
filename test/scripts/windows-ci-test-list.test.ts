@@ -129,6 +129,17 @@ describe("conditional Windows gates", () => {
     ]);
   });
 
+  it("rejects unknown member calls while allowing value methods", () => {
+    expect(conditionalGates(`
+      function supported() { return process.platform === "win32"; }
+      const capability = { check: supported };
+      it.runIf(capability.check());
+      it.runIf(capability?.check());
+      it.runIf(process.env.KEY?.trim());
+      it.runIf(fs.existsSync(path));
+    `).map((gate) => gate.classification)).toEqual(["unclassifiable", "unclassifiable", "not-win32-only", "not-win32-only"]);
+  });
+
   it("rejects an unknown capability hidden behind a named alias", () => {
     expect(listProblems(new Map([["test/example.test.ts", [
       "const available = someHelper();",
