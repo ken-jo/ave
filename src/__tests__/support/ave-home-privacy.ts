@@ -1,4 +1,10 @@
-import { afterEach, beforeEach } from "vitest";
+import { afterEach, beforeEach, expect } from "vitest";
+
+export async function initializeAveHomeFixture(home: string): Promise<void> {
+  const { ensureAveHomePrivate } = await import("../../shared/ave-home.js");
+  const privacy = ensureAveHomePrivate(home);
+  expect(privacy, JSON.stringify(privacy)).not.toMatchObject({ enforcement: "none" });
+}
 
 export function useVerifiedAveHomePrivacy(): void {
   beforeEach(async () => {

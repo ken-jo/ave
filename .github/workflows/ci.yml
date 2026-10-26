@@ -669,6 +669,7 @@ jobs:
           src/lib/__tests__/atomic-file.test.ts
           src/shared/__tests__/ave-home.test.ts
           src/shared/__tests__/ave-home-boundaries.windows.test.ts
+          src/shared/__tests__/ave-home-configuration-read.windows.test.ts
           src/shared/__tests__/ave-home-configuration.test.ts
           src/main/storage/__tests__/feature-namespace.test.ts
           src/lib/__tests__/with-file-lock.test.ts

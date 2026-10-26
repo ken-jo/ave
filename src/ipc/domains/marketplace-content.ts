@@ -20,7 +20,7 @@ import { applyBootLocale } from "../../boot/services.js";
 import { revocationRegistry } from "../../plugins/revocation/revocation-registry.js";
 import { installedFontStack, type InstalledContentResult, type InstalledContentView } from "../../shared/installed-content.js";
 import { isMarketplaceEligibleLLMVendor } from "../../shared/llm-vendor-defaults.js";
-import { aveHome } from "../../shared/ave-home.js";
+import { aveHome, AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import { setInstalledThemeIds } from "../../shared/plugin-theme-cache.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { errorMessage } from "../../shared/error-message.js";
@@ -86,6 +86,7 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       saved = settings.getSecret(secretKey);
       present = saved !== null;
     } catch (error) {
+      if (error instanceof AveHomeConfigurationUntrustedError) throw error;
       // A key that cannot be decrypted is unusable anyway: remove it, with nothing to put back.
       log.warn({ err: errorMessage(error) }, `the saved ${vendorId} key cannot be read; removing it`);
     }

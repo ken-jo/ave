@@ -220,6 +220,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
         });
         if (!acquired) persistFailure = "Configuration owner is unavailable or busy";
       } catch (persistErr) {
+        if (persistErr instanceof AveHomeConfigurationUntrustedError) throw persistErr;
         persistFailure = (persistErr as Error).message;
       }
       if (persistFailure !== undefined) {
@@ -638,7 +639,7 @@ function storedJudgeModelRef(raw: unknown): StoredJudgeModelRef | null {
   return slash > 0 && isLLMVendor(vendor) ? { vendor, model: raw.slice(slash + 1) } : null;
 }
 
-// The models the stored judge settings name, as written and read without the model catalog: the reviewer model (`permissions.judge.model`) and each chain stage's own `model`, in chain order. A change to such a model's route or catalogue must re-wire even when the model is not (or no longer) offered. An entry is `null` when unset, absent or not a known provider; unreadable settings name nothing.
+// The models the stored judge settings name, as written and read without the model catalog: the reviewer model (`permissions.judge.model`) and each chain stage's own `model`, in chain order. A change to such a model's route or catalogue must re-wire even when the model is not (or no longer) offered. An entry is `null` when unset, absent or not a known provider; read failures must surface to the caller.
 export function readJudgeStoredModels(pathOverride?: string): {
   reviewer: StoredJudgeModelRef | null;
   stages: Array<StoredJudgeModelRef | null>;
@@ -652,9 +653,9 @@ export function readJudgeStoredModels(pathOverride?: string): {
       stages: chain.map((stage) =>
         stage && typeof stage === "object" ? storedJudgeModelRef((stage as Record<string, unknown>).model) : null),
     };
-  } catch {
-    // Unreadable settings re-wire through their own fault path; here they name no provider.
-    return { reviewer: null, stages: [] };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { reviewer: null, stages: [] };
+    throw error;
   }
 }
 

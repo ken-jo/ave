@@ -3,7 +3,7 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 useConfigurationOwner();
 
 // Unmarked legacy disabled mode migrates to strict once; marked user choices and other modes remain unchanged. Persist the marker so upgrades cannot silently replace fail-closed semantics with pass-through.
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect, vi } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -11,6 +11,8 @@ import {
   migrateLegacyDisabledMode,
 } from "../permission-settings-store.js";
 import { PermissionTestResources } from "./test-resources.js";
+import * as configurationAccess from "../../shared/ave-home-configuration-access.js";
+import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 
 const resources = new PermissionTestResources();
 
@@ -108,6 +110,18 @@ describe("migrateLegacyDisabledMode — issue #664 idempotency", () => {
 });
 
 describe("readPermissionSettings — issue #664 migration end-to-end", () => {
+  it("surfaces a boundary failure during migration instead of returning normal settings", () => {
+    const dir = resources.makeTmpDir("ave-migration-boundary-");
+    const path = writeRaw(dir, { permissions: { reviewer: { mode: "disabled" } } });
+    const before = readFileSync(path, "utf8");
+    const failure = new AveHomeConfigurationUntrustedError(path, "Unverified boundary");
+    const write = vi.spyOn(configurationAccess, "tryWithAveHomeConfigurationWrite").mockImplementationOnce(() => { throw failure; });
+    try {
+      expect(() => readPermissionSettings(path)).toThrow(failure);
+      expect(readFileSync(path, "utf8")).toBe(before);
+    } finally { write.mockRestore(); }
+  });
+
   it("persists the migrated file on first read", () => {
     const dir = resources.makeTmpDir("ave-664-mig-");
     const filePath = writeRaw(dir, {

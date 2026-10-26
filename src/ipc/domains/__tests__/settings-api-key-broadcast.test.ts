@@ -1,12 +1,30 @@
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 /** MAJOR-3 regression: all 4 secret-mutation handlers broadcast SETTINGS.updated to all app windows so the reviewer tab auto-unlocks without a full reload: -
  * ave:settings:set-api-key - ave:settings:delete-api-key - ave:settings:set-web-api-key - ave:settings:delete-web-api-key - ave:settings:marketplace:set-api-key - ave:settings:marketplace:delete-api-key */
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdirSync, rmSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
+import { useTempPaths } from "../../../__tests__/test-helpers.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
+import { initializeAveHomeFixture } from "../../../__tests__/support/ave-home-privacy.js";
+
+const homePath = useTempPaths("settings-broadcast-", ".ave");
+
+async function createSettingsHome(): Promise<string> {
+  const home = homePath();
+  setFixtureOwner(dirname(home));
+  vi.stubEnv("AVE_HOME", home);
+  await initializeAveHomeFixture(home);
+  return home;
+}
+
+afterEach(async () => {
+  const { _resetAveHomePrivacyForTest } = await import("../../../shared/ave-home.js");
+  _resetAveHomePrivacyForTest();
+  vi.unstubAllEnvs();
+});
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 const listLlmModelsFromSettingsMock = vi.hoisted(() => vi.fn());
@@ -320,6 +338,22 @@ describe("marketplace provider preset runtime refresh", () => {
 // ─── MAJOR-2 R2: settings:update triggers rewireReviewerAgent when baseUrl changes ──
 
 describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry baseUrl change", () => {
+  it("rejects a settings update when stored judge models cannot cross the read boundary", async () => {
+    const home = await createSettingsHome();
+    mkdirSync(join(home, "settings.json"));
+    try {
+      const deps = makeDeps([]);
+      const { registerSettingsHandlers } = await import("../settings.js");
+      registerSettingsHandlers(deps as never);
+      await expect(invoke("ave:settings:update", { appearance: { theme: "dark" } }))
+        .rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
+      expect(deps.settingsService.patch).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllEnvs();
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it("lets the settings chooser see saved credential presence without reading its value while retirement is unresolved", async () => {
     const deps = makeDeps([]);
     deps.settingsService.get.mockImplementation((key?: string) => key === "llm"
@@ -404,8 +438,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     ["rewires", "claude/claude-sonnet-4-6", 1],
     ["does not rewire", null, 0],
   ] as const)("%s when a selected reviewer model's own provider route changes (reviewer model %s)", async (_label, reviewerModel, rewires) => {
-    const home = mkdtempSync(join(tmpdir(), "reviewer-route-rewire-"));
-    vi.stubEnv("AVE_HOME", home);
+    const home = await createSettingsHome();
     writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: { model: reviewerModel } } }));
     try {
       const rewire = vi.fn();
@@ -444,8 +477,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     ["removes the stage model", ["team-stage", "other-model"], ["other-model"], 1],
     ["changes an unrelated entry", ["other-model"], ["other-model", "another-model"], 0],
   ] as const)("re-wires on a catalogue sync that %s for a chain stage's own model (listing %j -> %j, rewires %i)", async (_label, before, after, rewires) => {
-    const home = mkdtempSync(join(tmpdir(), "stage-catalogue-rewire-"));
-    vi.stubEnv("AVE_HOME", home);
+    const home = await createSettingsHome();
     writePermissionSettingsFixture(home, JSON.stringify({
       permissions: { judge: { model: null, chain: [{ id: "stage", provider: "builtin-llm", model: "openai/team-stage" }] } },
     }));
@@ -490,8 +522,7 @@ describe("MAJOR-2: settings:update triggers rewireReviewerAgent on azure-foundry
     ["rewires", ["team-reviewer"], 1],
     ["does not rewire", ["other-model"], 0],
   ] as const)("%s when the chat provider's synced catalogue changes a same-provider reviewer model's availability (listing %j)", async (_label, listed, rewires) => {
-    const home = mkdtempSync(join(tmpdir(), "reviewer-catalogue-rewire-"));
-    vi.stubEnv("AVE_HOME", home);
+    const home = await createSettingsHome();
     writePermissionSettingsFixture(home, JSON.stringify({ permissions: { judge: { model: "openai/team-reviewer" } } }));
     try {
       const rewire = vi.fn();

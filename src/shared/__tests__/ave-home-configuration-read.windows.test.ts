@@ -1,5 +1,5 @@
 import * as childProcess from "node:child_process";
-import { lstatSync, mkdirSync, renameSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, renameSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
@@ -8,10 +8,10 @@ import { useConfigurationOwner } from "../../__tests__/support/configuration-own
 import { readAveHomeConfigurationFile, withAveHomeConfigurationWrite } from "../ave-home-configuration-access.js";
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
-import { ensureAveHomePrivate, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
+import { AveHomeConfigurationUntrustedError, ensureAveHomePrivate, isAveHomeConfigurationRefused, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
 import { windowsPowerShellEnv } from "../windows-powershell-env.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
-import { writePermissionSettings } from "../../permissions/permission-settings-store.js";
+import { readJudgeStoredModels, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
@@ -62,6 +62,60 @@ function nativeChangeTime(home: string): bigint {
 }
 
 describe.runIf(process.platform === "win32")("configuration handle reads", () => {
+  it("refuses a recognized non-refused unprotected home for document and stored judge reads", () => {
+    const home = paths();
+    mkdirSync(home);
+    vi.stubEnv("AVE_HOME", home);
+    const path = join(home, "settings.json");
+    const raw = '{"permissions":{"judge":{"model":"openai/reviewer"}}}';
+    writeFileSync(path, raw);
+    expect(isAveHomeConfigurationRefused(home)).toBe(false);
+    expect(() => readAveHomeConfigurationFile(path)).toThrowError(AveHomeConfigurationUntrustedError);
+    expect(() => readJudgeStoredModels(path)).toThrowError(AveHomeConfigurationUntrustedError);
+    expect(existsSync(join(home, "config"))).toBe(false);
+  });
+
+  it("surfaces an untrusted admitted boundary when reading stored judge models", () => {
+    const { home, path } = fixture();
+    readAveHomeConfigurationFile(path);
+    weaken(join(home, "config"));
+    expect(() => readJudgeStoredModels(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+  });
+
+  it("refuses an inherited deletion deny applied during cold verification", () => {
+    const home = paths();
+    mkdirSync(home);
+    setFixtureOwner(dirname(home));
+    const path = join(home, "settings.json");
+    writeFileSync(path, "{}");
+    const before = lstatSync(home, { bigint: true });
+    const execute = vi.mocked(childProcess.execFileSync).getMockImplementation()!;
+    const principal = "*S-1-1-0";
+    let denyApplied = false;
+    vi.mocked(childProcess.execFileSync).mockImplementationOnce((...args) => {
+      const result = Reflect.apply(execute, undefined, args);
+      Reflect.apply(execute, undefined, [win32SystemBinary("icacls"),
+        [dirname(home), "/deny", `${principal}:(OI)(CI)(DC)`, "/q"], { windowsHide: true, stdio: "pipe" }]);
+      denyApplied = true;
+      return result;
+    });
+    try {
+      let failure: unknown;
+      try { readAveHomeConfigurationFile(path); } catch (error) { failure = error; }
+      expect(failure).toMatchObject({
+        name: "AveHomeConfigurationUntrustedError", reason: "Configuration boundary changed during verification",
+      });
+      const after = lstatSync(home, { bigint: true });
+      expect(after.dev).toBe(before.dev);
+      expect(after.ino).toBe(before.ino);
+      expect(after.ctimeNs).toBeGreaterThan(before.ctimeNs);
+      const acl = childProcess.execFileSync(win32SystemBinary("icacls"), [home], { windowsHide: true, encoding: "utf8" });
+      expect(acl).toContain("(I)(OI)(CI)(DENY)(DC)");
+    } finally {
+      if (denyApplied) childProcess.execFileSync(win32SystemBinary("icacls"), [dirname(home), "/remove:d", principal, "/q"], { windowsHide: true, stdio: "pipe" });
+    }
+  });
+
   it("does not spawn a child process during steady state reads", () => {
     const { path } = fixture();
     expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
