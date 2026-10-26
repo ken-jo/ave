@@ -32,7 +32,6 @@ import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-ta
 import { resolveIpcErrorKey } from "../format-ipc-error.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
 import { useCopyFlash } from "../hooks/use-copy-flash.js";
-import { incompleteToolStatusLabelKey } from "../utils/tool-status-label.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { PreviewContent, resolveFilePreviewRoute } from "../preview/preview-renderers.js";
 import { TableDocumentPreview } from "../preview/table-document-preview.js";
@@ -44,13 +43,6 @@ import { WebSurfaceSlot } from "./WebSurfaceLayer.js";
 import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
 import { committedWebSurfaceLocation, subscribeWebSurfaceLocations } from "../preview/web-surfaces.js";
 
-export interface FileTreeNode {
-  id: string;
-  label: string;
-  path: string;
-  file?: WorkspaceFileItem;
-  children: FileTreeNode[];
-}
 export const FILE_TARGET_KINDS = new Set<ChatPreviewTarget["kind"]>(["file", "diff", "image"]);
 export const BROWSER_TARGET_KINDS = new Set<ChatPreviewTarget["kind"]>(["html", "url"]);
 /** Pointer travel (px) that promotes a tab press into a horizontal pan. */
@@ -112,60 +104,6 @@ function pathSegments(path: string): string[] {
   return path.replace(/\\/g, "/").split("/").filter(Boolean);
 }
 
-function sortTree(nodes: FileTreeNode[]): FileTreeNode[] {
-  return nodes.sort((a, b) => {
-    const aFolder = a.children.length > 0 && !a.file;
-    const bFolder = b.children.length > 0 && !b.file;
-    if (aFolder !== bFolder) return aFolder ? -1 : 1;
-    return a.label.localeCompare(b.label);
-  }).map((node) => {
-    node.children = sortTree(node.children);
-    return node;
-  });
-}
-
-export function buildFileTree(files: WorkspaceFileItem[]): FileTreeNode[] {
-  const root: FileTreeNode = { id: "root", label: "", path: "", children: [] };
-  for (const file of files) {
-    const segments = pathSegments(file.path);
-    if (segments.length === 0) continue;
-    let parent = root;
-    let currentPath = "";
-    for (const [index, segment] of segments.entries()) {
-      currentPath = currentPath ? `${currentPath}/${segment}` : segment;
-      let child = parent.children.find((candidate) => candidate.label === segment);
-      if (!child) {
-        child = { id: `${parent.id}/${segment}`, label: segment, path: currentPath, children: [] };
-        parent.children.push(child);
-      }
-      if (index === segments.length - 1) child.file = file;
-      parent = child;
-    }
-  }
-  return sortTree(root.children);
-}
-
-export function filterFileTree(nodes: FileTreeNode[], query: string): FileTreeNode[] {
-  if (!query) return nodes;
-  const filtered: FileTreeNode[] = [];
-  for (const node of nodes) {
-    const children = filterFileTree(node.children, query);
-    const file = node.file;
-    const selfMatches = matchesQuery(
-      query,
-      node.label,
-      node.path,
-      file?.label,
-      file?.detail,
-      file?.sourceLabel,
-    );
-    if (selfMatches || children.length > 0) {
-      filtered.push({ ...node, children });
-    }
-  }
-  return filtered;
-}
-
 function TextBlock({ text }: { text: string }) {
   return (
     <pre className="max-h-(--preview-block-max-height) overflow-auto whitespace-pre-wrap rounded-md border bg-muted/(--opacity-muted) p-3 font-mono text-[11px] leading-relaxed text-foreground [overflow-wrap:anywhere]">
@@ -197,7 +135,7 @@ function DetailHeader({ target }: { target: ChatPreviewTarget }) {
  * layout it had before (its `h-full` viewers depend on it).
  */
 export function previewFillsPanel(target: ChatPreviewTarget): boolean {
-  return target.kind === "file" && !target.inlineText && resolveFilePreviewRoute(target.path).kind === "table";
+  return target.kind === "file" && target.startLine === undefined && !target.inlineText && resolveFilePreviewRoute(target.path).kind === "table";
 }
 
 /**
@@ -273,25 +211,33 @@ function fileErrorKey(code: PreviewReadError): string {
  */
 function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind: "file" }> }) {
   const { t } = useTranslation();
+  const { startLine, endLine } = target;
+  const hasSelectedRange = startLine !== undefined && endLine !== undefined;
+  const relativeLabel = target.workspaceRoot ? toRelativePath(target.workspaceRoot, target.path) : target.path;
+  const pathLabel = target.workspaceRoot && /^(?:\/|[a-zA-Z]:[/\\])/.test(relativeLabel) ? fileBasename(relativeLabel) : relativeLabel;
+  const inlineText = hasSelectedRange ? undefined : target.inlineText;
   const [state, setState] = useState<
     | { phase: "idle" }
     | { phase: "loading" }
-    | { phase: "ok"; content: string; path: string; truncated: boolean }
+    | { phase: "ok"; content: string; path: string; truncated: boolean; lineCount?: number; image?: { dataUrl: string; mimeType: string } }
     | { phase: "error"; code: PreviewReadError }
   >({ phase: "idle" });
   // Document viewers own their bounded IPC read; inline targets stay text.
-  const route = target.inlineText ? "text" : resolveFilePreviewRoute(target.path).kind;
+  const route = hasSelectedRange || inlineText ? "text" : resolveFilePreviewRoute(target.path).kind;
 
   useEffect(() => {
     // Inline text (e.g. an indexer search-hit snippet) needs no IPC read.
-    if (target.inlineText || route !== "text") {
+    if (inlineText || route !== "text") {
       setState({ phase: "idle" });
       return;
     }
     let cancelled = false;
     setState({ phase: "loading" });
-    void window.ave.preview
-      .readFile(target.path)
+    const read = hasSelectedRange
+      ? window.ave.preview.readFile(target.path, { offset: startLine - 1, limit: endLine - startLine + 1, ...(target.workspaceRoot ? { workspaceRoot: target.workspaceRoot } : {}) })
+      : target.workspaceRoot ? window.ave.preview.readFile(target.path, { workspaceRoot: target.workspaceRoot })
+        : window.ave.preview.readFile(target.path);
+    void read
       .then((result) => {
         if (cancelled) return;
         if (result.ok) {
@@ -300,6 +246,8 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
             content: result.content ?? "",
             path: result.path ?? target.path,
             truncated: Boolean(result.truncated),
+            lineCount: result.lineCount,
+            image: hasSelectedRange ? undefined : result.image,
           });
         } else {
           setState({ phase: "error", code: result.error ?? "read-failed" });
@@ -312,9 +260,9 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
     return () => {
       cancelled = true;
     };
-  }, [target.path, target.inlineText, route]);
+  }, [target.path, target.workspaceRoot, inlineText, route, startLine, endLine, hasSelectedRange]);
 
-  const copyValue = target.inlineText
+  const copyValue = inlineText
     ?? (state.phase === "ok" ? state.content : target.path);
 
   return (
@@ -322,11 +270,11 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
       className={route === "table" ? "flex min-h-0 flex-1 flex-col gap-3" : "space-y-3"}
       data-testid="chat-side-panel-file-preview"
     >
-      <div className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
-        {target.path}
+      <div title={target.sourceTurnId} className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
+        {hasSelectedRange ? `${pathLabel}:${startLine}-${endLine}` : pathLabel}
       </div>
-      {target.inlineText ? (
-        <PreviewContent descriptor={{ text: target.inlineText, path: target.path }} />
+      {inlineText ? (
+        <PreviewContent descriptor={{ text: inlineText, path: target.path }} />
       ) : route === "table" ? (
         <TableDocumentPreview key={target.path} path={target.path} />
       ) : route === "page" ? (
@@ -342,7 +290,18 @@ function FilePreviewBody({ target }: { target: Extract<ChatPreviewTarget, { kind
               {t("chatPreviewRail.filePreviewTruncated")}
             </Badge>
           ) : null}
-          <PreviewContent descriptor={{ text: state.content, path: state.path }} />
+          {state.image ? (
+            <img src={state.image.dataUrl} alt={target.title} referrerPolicy="no-referrer" className="max-h-(--preview-block-max-height) max-w-full rounded-md object-contain" data-testid="file-preview-image" />
+          ) : hasSelectedRange ? (
+            <pre className="max-h-(--preview-block-max-height) overflow-auto rounded-md border bg-background p-3 font-mono text-xs" data-testid="file-preview-selected-range">
+              {state.content.split(/\r\n|\r|\n/).slice(0, Math.min(state.lineCount ?? Infinity, endLine - startLine + 1)).map((line, index) => (
+                <span key={index} data-testid={`file-preview-line-${startLine + index}`} data-selected="true" className="flex bg-accent/(--opacity-subtle)">
+                  <span aria-hidden="true" className="mr-3 min-w-8 shrink-0 select-none text-right text-muted-foreground">{startLine + index}</span>
+                  <span className="whitespace-pre">{line || "\u200b"}</span>
+                </span>
+              ))}
+            </pre>
+          ) : <PreviewContent descriptor={{ text: state.content, path: state.path }} />}
         </div>
       ) : state.phase === "error" ? (
         <div className="text-[11px] text-destructive" data-testid="chat-side-panel-file-error">
@@ -445,7 +404,7 @@ export function PreviewBody({
   }
 
   if (target.kind === "file") {
-    return <FilePreviewBody target={target} />;
+    return <FilePreviewBody key={`${target.id}:${target.workspaceRoot}:${target.startLine}:${target.endLine}`} target={target} />;
   }
 
   if (target.kind === "url") {
@@ -676,67 +635,6 @@ export function UrlDocumentViewer({
         },
       })}
     </div>
-  );
-}
-
-export function FileTreeRows({
-  nodes,
-  depth = 0,
-  selectedFileId,
-  onSelectFile,
-}: {
-  nodes: FileTreeNode[];
-  depth?: number;
-  selectedFileId?: string;
-  onSelectFile: (file: WorkspaceFileItem) => void;
-}) {
-  const { t } = useTranslation();
-  return (
-    <>
-      {nodes.map((node) => {
-        const file = node.file;
-        const incompleteStatusKey = incompleteToolStatusLabelKey(file?.status);
-        const isFile = Boolean(file);
-        const active = isFile && file?.id === selectedFileId;
-        return (
-          <div key={node.id}>
-            <button
-              type="button"
-              data-testid={isFile ? "chat-side-panel-file-tree-file" : "chat-side-panel-file-tree-folder"}
-              // A session file earns its place through a call: hovering names
-              // the path AND the tool that touched it, so the row answers "why
-              // is this here" without opening it.
-              title={file ? `${file.detail} · ${file.sourceLabel}` : node.path}
-              className={`flex h-7 w-full min-w-0 items-center gap-2 rounded-md pr-2 text-left text-xs hover:bg-muted/(--opacity-muted) ${
-                active ? "bg-accent text-accent-foreground" : ""
-              }`}
-              style={{ paddingLeft: 8 + depth * 12 }}
-              onClick={() => {
-                if (file) onSelectFile(file);
-              }}
-            >
-              {isFile ? (
-                <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              ) : (
-                <Folder className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-              )}
-              <span className="min-w-0 flex-1 truncate">{node.label}</span>
-              {file ? (
-                <span
-                  data-testid="chat-side-panel-file-tree-operation"
-                  className={`shrink-0 text-[10px] uppercase tracking-wide ${statusTone(file.status)}`}
-                >
-                  {t(incompleteStatusKey ?? `chatPreviewRail.fileOperation.${file.operation}`)}
-                </span>
-              ) : null}
-            </button>
-            {node.children.length > 0 ? (
-              <FileTreeRows nodes={node.children} depth={depth + 1} selectedFileId={selectedFileId} onSelectFile={onSelectFile} />
-            ) : null}
-          </div>
-        );
-      })}
-    </>
   );
 }
 

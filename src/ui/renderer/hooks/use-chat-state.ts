@@ -356,6 +356,10 @@ export function useChatState(
         finalAssistantRoundClosedRef.current = phase === "final";
         streamRef.current = "";
         thoughtRef.current = "";
+      } else if (ev.type === "compact_failed") {
+        setIsCompacting(false);
+        setCompactTriggerSource(null);
+        setEntries((p) => [...p, { kind: "system", text: t("useChatState.autoCompactFailed") }]);
       } else if (ev.type === "error") {
         // LLM compact may have started but thrown — clear the indicator so the StatusBar item doesn't stick when compact_notice
         // never arrives.

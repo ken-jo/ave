@@ -80,6 +80,49 @@ describe("MessageQueueStore", () => {
     expect(store.size()).toBe(1);
   });
 
+  it("moves a pending item without changing its identity, selection or expiration", () => {
+    const first = store.add("first");
+    const second = store.add("second");
+    store.toggleSelect(second.id);
+    const selected = store.getItems()[1];
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.move(second.id, -1);
+
+    expect(store.getItems()).toEqual([selected, first]);
+    expect(store.getItems()[0]).toBe(selected);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.takeSelected()).toEqual([selected]);
+  });
+
+  it("does not move beyond the queue or move handed-off items", () => {
+    const first = store.add("first");
+    const second = store.add("second");
+    store.markHandedOff([first.id], "first");
+    const before = store.getItems();
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.move(first.id, -1);
+    store.move(second.id, 1);
+    store.move(first.id, 1);
+    store.move(second.id, -1);
+    store.move("missing", 1);
+
+    expect(store.getItems()).toBe(before);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("drains pending messages in the reordered order", () => {
+    store.add("first");
+    const second = store.add("second");
+    store.add("third");
+    store.move(second.id, -1);
+    expect(store.getPending().map((item) => item.text)).toEqual(["second", "first", "third"]);
+    expect(store.takeAll().map((item) => item.text)).toEqual(["second", "first", "third"]);
+  });
+
   it("toggleSelect 는 selection 토글", () => {
     const a = store.add("a");
     expect(store.getItems()[0].selected).toBe(false);
@@ -336,5 +379,87 @@ describe("formatQueueInject", () => {
     ]);
     expect(result).toContain("- first");
     expect(result).toContain("- multi\nline");
+  });
+});
+
+describe("MessageQueueStore guide reservation", () => {
+  it("locks the reserved batch without claiming acceptance or changing selection and expiration", () => {
+    const store = new MessageQueueStore();
+    const first = store.add("first");
+    const second = store.add("second");
+    store.toggleSelect(first.id);
+    const reservation = store.reservePending()!;
+    expect(reservation.items.map((item) => item.id)).toEqual([first.id, second.id]);
+    expect(store.getPending()).toEqual([]);
+    expect(store.getItems()[0]).toMatchObject({ selected: true, expiresAt: first.expiresAt });
+    expect(store.getItems().every((item) => item.handedOffAs === undefined)).toBe(true);
+
+    store.move(second.id, -1);
+    expect(store.update(first.id, "edited")).toBe(false);
+    store.remove(first.id);
+    store.toggleSelect(first.id);
+    expect(store.takeOne(first.id)).toBeNull();
+    expect(store.takeSelected()).toEqual([]);
+    expect(store.takeAll()).toEqual([]);
+    expect(store.getItems().map((item) => item.text)).toEqual(["first", "second"]);
+    expect(store.getItems()[0].selected).toBe(true);
+
+    store.settleReservation(reservation.id);
+    expect(store.getPending().map((item) => item.text)).toEqual(["first", "second"]);
+    expect(store.takeSelected().map((item) => item.text)).toEqual(["first"]);
+  });
+
+  it("settles only its own batch and keeps accepted rows until delivery or release", () => {
+    const store = new MessageQueueStore();
+    store.add("first");
+    const first = store.reservePending()!;
+    store.add("second");
+    const second = store.reservePending()!;
+    store.settleReservation(first.id, "first");
+    store.settleReservation("wrong-owner");
+    expect(store.getItems()[0].handedOffAs).toBe("first");
+    expect(store.getItems()[1].handoffReservationId).toBe(second.id);
+    expect(store.takeAll()).toEqual([]);
+    store.settleReservation(second.id);
+    expect(store.getPending().map((item) => item.text)).toEqual(["second"]);
+    store.clearDelivered("first");
+    expect(store.getItems().map((item) => item.text)).toEqual(["second"]);
+  });
+
+  it("cannot claim a replacement queue and does not revive expired reservations", () => {
+    vi.useFakeTimers();
+    try {
+      const store = new MessageQueueStore();
+      store.add("old");
+      const old = store.reservePending()!;
+      store.clear();
+      store.add("new");
+      const current = store.reservePending()!;
+      store.settleReservation(old.id, "old");
+      expect(store.getItems()[0].handoffReservationId).toBe(current.id);
+      vi.advanceTimersByTime(MessageQueueStore.DEFAULT_TTL_MS + 1);
+      store.settleReservation(current.id, "new");
+      expect(store.getItems()).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("MessageQueueStore selection during handoff", () => {
+  it("clears only available selection while preserving reserved selection for a denied request", () => {
+    const store = new MessageQueueStore();
+    const reserved = store.add("reserved");
+    store.toggleSelect(reserved.id);
+    const reservation = store.reservePending()!;
+    const pending = store.add("pending");
+    store.toggleSelect(pending.id);
+    expect(store.selectedCount()).toBe(1);
+    store.clearSelection();
+    expect(store.getItems().map((item) => item.selected)).toEqual([true, false]);
+    expect(store.hasSelected()).toBe(false);
+    store.settleReservation(reservation.id);
+    expect(store.selectedCount()).toBe(1);
+    expect(store.takeSelected().map((item) => item.text)).toEqual(["reserved"]);
   });
 });

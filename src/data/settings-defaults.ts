@@ -7,6 +7,7 @@ import {
   SIDE_PANEL_DEFAULT_WIDTH,
   SIDE_PANEL_SPLIT_DEFAULT_PERCENT,
   SIDEBAR_DEFAULT_WIDTH,
+  FILE_TREE_DEFAULT_WIDTH,
 } from "../shared/side-panel.js";
 import {
   DEFAULT_LLM_VENDOR,
@@ -25,6 +26,8 @@ import type { AppSettings } from "./settings-store.js";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   llm: {
+    compactionModel: "",
+    compactionModelRoute: "",
     activeChatRuntime: { kind: "api" },
     provider: DEFAULT_LLM_VENDOR,
     vendors: freshVendorBlocks(),
@@ -127,7 +130,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     shutdownCleanupTimeoutMs: TOOL_TIMEOUT_POLICY.shutdownCleanupMs,
     sidePanelWidth: SIDE_PANEL_DEFAULT_WIDTH,
     sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
-    sidePanelSplitFilePercent: SIDE_PANEL_SPLIT_DEFAULT_PERCENT,
+    sidePanelFileTreeWidth: FILE_TREE_DEFAULT_WIDTH,
     sidePanelSplitPreviewPercent: SIDE_PANEL_SPLIT_DEFAULT_PERCENT,
     sidePanelSplitSubagentPercent: SIDE_PANEL_SPLIT_DEFAULT_PERCENT,
     sidebarActiveTab: DEFAULT_SIDEBAR_TAB,

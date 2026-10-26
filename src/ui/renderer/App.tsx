@@ -32,7 +32,7 @@ import type { ConversationRowActions, ProjectRowActions } from "./components/Sid
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
 import type { SideChatRuntime } from "./components/SideChatView.js";
-import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
+import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces, type MainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
 import { surfaceMountLocation, useSurfaceMountRevision } from "./preview/surface-mounts.js";
@@ -69,7 +69,6 @@ import { buildQuickActions } from "./components/command-actions.js";
 import { useAppUpdate } from "./hooks/use-app-update.js";
 import { useAppMode } from "./hooks/use-app-mode.js";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
-import { useSidebarTab } from "./hooks/use-sidebar-tab.js";
 import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
 import { useProjectPreferences } from "./hooks/use-project-preferences.js";
@@ -199,7 +198,6 @@ export function App() {
     setWidth: setSidebarWidth,
     commitWidth: commitSidebarWidth,
   } = usePanelWidth(api, SIDEBAR_WIDTH_PREF);
-  const { activeTab: sidebarActiveTab, setActiveTab: setSidebarActiveTab } = useSidebarTab(api);
 
   // Tile geometry follows docs/design/tiled-chat-groups.md.
   const chatGroups = useChatGroups(appMode);
@@ -482,29 +480,46 @@ export function App() {
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
 
+  const activeSurfaceOf = useCallback((surface: MainSurface): ActiveSurface => ({
+    kind: surface.kind,
+    tabId: surface.tabId,
+    label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[surface.kind]])} ${surface.ordinal}`,
+    cwd: surface.cwd ?? null,
+  }), [t]);
+  const mainBrowserHostRef = useRef({ chatGroups, mainSurfaces });
+  mainBrowserHostRef.current = { chatGroups, mainSurfaces };
+  const openWorkspaceSurface = useCallback((tabId: string) => {
+    const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
+    const surface = surfaces.get(tabId);
+    if (surface) {
+      const paneId = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
+      if (paneId) {
+        groups.focus(paneId);
+      } else groups.setPaneContent(groups.focusedId, { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: tabId });
+      showActiveSurface(activeSurfaceOf(surface));
+      return true;
+    }
+    const groupId = activateSideTab(tabId);
+    if (groupId) {
+      groups.setPaneContent(groupId, PANE_HOME);
+      groups.focus(groupId);
+      const selected = getSideTabsSink(groupId)?.snapshot().find((entry) => entry.tabId === tabId);
+      if (!selected) throw new Error("Selected surface is missing");
+      showActiveSurface(activeSurfaceOf(selected));
+      return true;
+    }
+    return false;
+  }, [activeSurfaceOf]);
+
   /** Show the most recent live terminal asking for attention; discard stale entries until one can be shown. */
   const jumpToUnreadTerminal = useCallback(() => {
     for (let latest = latestUnreadTerminal(); latest; latest = latestUnreadTerminal()) {
       const { tabId } = latest;
-      const paneId = Object.entries(chatGroups.contentById).find(([, location]) => location?.surface === tabId)?.[0];
-      if (paneId) {
-        chatGroups.focus(paneId);
-        markTerminalRead(tabId);
-        return;
-      }
-      if (mainSurfaces.get(tabId)) {
-        chatGroups.setPaneContent(chatGroups.focusedId, { view: "terminal", surface: tabId });
-        markTerminalRead(tabId);
-        return;
-      }
-      const groupId = activateSideTab(tabId);
+      const opened = openWorkspaceSurface(tabId);
       markTerminalRead(tabId);
-      if (groupId) {
-        chatGroups.focus(groupId);
-        return;
-      }
+      if (opened) return;
     }
-  }, [chatGroups, mainSurfaces]);
+  }, [openWorkspaceSurface]);
 
   // The reported side-chat target is also the default for agent tools that name no tab.
   useReportActiveSurface(api);
@@ -519,20 +534,10 @@ export function App() {
   }), [api, refreshSessions]);
 
   // Main-area browser selection reveals an existing page; new agent tabs belong beside the requesting chat.
-  const mainBrowserHostRef = useRef({ chatGroups, mainSurfaces });
-  mainBrowserHostRef.current = { chatGroups, mainSurfaces };
   useEffect(() => registerBrowserTabHost(api, {
     sessionId: () => null,
     hasTab: (tabId) => mainBrowserHostRef.current.mainSurfaces.get(tabId)?.kind === "browser",
-    selectTab: (tabId) => {
-      const { chatGroups: groups } = mainBrowserHostRef.current;
-      const paneId = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
-      if (paneId) {
-        groups.focus(paneId);
-        const surface = focusedActiveSurfaceRef.current;
-        if (surface?.tabId === tabId) showActiveSurface(surface);
-      } else groups.setPaneContent(groups.focusedId, { view: "web", surface: tabId });
-    },
+    selectTab: openWorkspaceSurface,
     closeTab: (tabId) => {
       const { chatGroups: groups, mainSurfaces: surfaces } = mainBrowserHostRef.current;
       for (const [paneId, content] of Object.entries(groups.contentById)) {
@@ -541,18 +546,13 @@ export function App() {
       surfaces.close(tabId);
       forgetActiveSurface(tabId);
     },
-  }), [api]);
+  }), [api, openWorkspaceSurface]);
 
   // Pane focus selects the side-chat target; later shell directory reports only update that target.
   const focusedSurfaceId = chatGroups.contentById[chatGroups.focusedId]?.surface;
   const focusedMainSurface = focusedSurfaceId ? mainSurfaces.surfaces.find((each) => each.tabId === focusedSurfaceId) : undefined;
   const focusedActiveSurface: ActiveSurface | null = focusedMainSurface
-    ? {
-      kind: focusedMainSurface.kind,
-      tabId: focusedMainSurface.tabId,
-      label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[focusedMainSurface.kind]])} ${focusedMainSurface.ordinal}`,
-      cwd: focusedMainSurface.cwd ?? null,
-    }
+    ? activeSurfaceOf(focusedMainSurface)
     : null;
   const focusedActiveSurfaceRef = useRef(focusedActiveSurface);
   focusedActiveSurfaceRef.current = focusedActiveSurface;
@@ -1830,8 +1830,13 @@ export function App() {
                 viewNav={viewNav}
                 conversationActions={conversationActions}
                 projectActions={projectActions}
-                activeSidebarTab={sidebarActiveTab}
-                onActiveSidebarTabChange={setSidebarActiveTab}
+                mainSurfaces={mainSurfaces.surfaces}
+                browserTabs={api.browserTabs}
+                chatGroupIds={leafIds(chatGroups.tree)}
+                onOpenSurface={openWorkspaceSurface}
+                isSurfaceVisible={(tabId) => focusedSurface
+                  ? focusedSurface === tabId
+                  : activeView === "home" && getSideTabsSink(chatGroups.focusedId)?.visibleTabId?.() === tabId}
                 isSessionStarred={isSessionStarred}
                 onToggleSessionStar={handleToggleSessionStar}
                 isProjectPinned={isProjectPinned}

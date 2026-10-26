@@ -1,5 +1,6 @@
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 import type { AppRelaunchResult } from "../shared/app-relaunch.js";
+import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
@@ -284,6 +285,10 @@ export function buildInternalApiSurface() {
   // A second, independently-streaming chat session. send/new/load/abort are invokes; onStream/onFallback subscribe to the DEDICATED CHANNELS.sidechat.{stream,fallback} events
   // (NOT chat.stream) and return an unsubscribe fn (the onChatStream pattern). All channels are INTERNAL; an external origin can never reach them (fail-closed isPublicChannel).
   sideChat: {
+    listShellTasks: async (expectedSessionId: string) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.listShellTasks, expectedSessionId) as Promise<ShellTask[]>,
+    controlShellTask: async (expectedSessionId: string, action: ShellTaskAction, shellId?: string) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.controlShellTask, expectedSessionId, action, shellId) as Promise<ShellTaskActionResult>,
     send: async (
       input: string,
       attachments?: unknown[],

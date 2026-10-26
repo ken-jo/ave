@@ -12,6 +12,7 @@ import { blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js
 import type { ChatStreamEvent } from "../../../lib/chat-stream-state.js";
 import type { ComposerHandle, ComposerSurface } from "../components/Composer.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { augmentFileReferenceMarkers } from "../utils/compose.js";
 
 /**
  * Mid-turn guidance: the brake-point hand-off (`tool_end` → engine round
@@ -104,9 +105,23 @@ export function useMessageQueue({
 
   const queueAutoInflightRef = useRef(false);
   /** A guide hand-off is awaiting its result — do not send the same items again. */
-  const guideFlushInflightRef = useRef(false);
+  const guideFlushInflightRef = useRef<{ id: string; text: string; disposition?: "dropped" | "delivered" } | null>(null);
   /** The engine refused this turn's hand-off — stop retrying until the turn ends. */
   const guideFlushBlockedRef = useRef(false);
+  const turnEpochRef = useRef(0);
+  const completedTurnEpochRef = useRef<number | null>(null);
+  const previousStreamingRef = useRef(streaming);
+
+  const startQueueTurn = useCallback(() => {
+    turnEpochRef.current += 1;
+    completedTurnEpochRef.current = null;
+    guideFlushBlockedRef.current = false;
+  }, []);
+
+  useEffect(() => {
+    if (streaming && !previousStreamingRef.current) startQueueTurn();
+    previousStreamingRef.current = streaming;
+  }, [streaming, startQueueTurn]);
 
   // dev/e2e runtime test hook — Playwright launches production-built renderer assets, so this must use preload runtime env
   // instead of build-time NODE_ENV.
@@ -139,60 +154,93 @@ export function useMessageQueue({
     // them. Switching sessions mid-turn means that `done` never arrives for
     // this hook, so a refusal from the old session would keep suppressing
     // brake-point hand-offs in the new one. Reset them with the queue.
-    guideFlushInflightRef.current = false;
-    guideFlushBlockedRef.current = false;
-  }, [currentSessionId, messageQueueStore]);
+    guideFlushInflightRef.current = null;
+    startQueueTurn();
+  }, [currentSessionId, messageQueueStore, startQueueTurn]);
 
-  //
-
-  //
+  const drainPendingQueue = useCallback(({ deferSend = true }: { deferSend?: boolean } = {}) => {
+    if (queueAutoInflightRef.current) return;
+    const taken = messageQueueStore.takeAll();
+    if (taken.length === 0) return;
+    queueAutoInflightRef.current = true;
+    const formatted = formatQueueInject(taken);
+    const send = async () => {
+      try {
+        startQueueTurn();
+        await onAsk(formatted, undefined, { injectHint: "queue", inputOrigin: "queue-auto" });
+      } finally {
+        queueAutoInflightRef.current = false;
+      }
+    };
+    // Let every subscriber judge done before the next turn starts; rows and the reentrancy guard are claimed synchronously.
+    if (deferSend) queueMicrotask(() => { void send(); });
+    else void send();
+  }, [messageQueueStore, onAsk, startQueueTurn]);
 
   /** Keep rows until guide acceptance; serialize flushes and stop retrying refusals until turn end, when queued text can
    * drain as a fresh turn. */
   const flushQueueViaGuide = useCallback(() => {
     if (!guide) return;
     if (guideFlushInflightRef.current || guideFlushBlockedRef.current) return;
-    const pending = messageQueueStore.getPending();
-    if (pending.length === 0) return;
-    const handed = pending.map((item) => ({ id: item.id, text: item.text }));
-    const count = pending.length;
-    const formatted = formatQueueInject(pending);
-    guideFlushInflightRef.current = true;
+    const reservation = messageQueueStore.reservePending();
+    if (!reservation) return;
+    const count = reservation.items.length;
+    const formatted = formatQueueInject(reservation.items);
+    const turnEpoch = turnEpochRef.current;
+    const handoff = { id: reservation.id, text: formatted, disposition: undefined as "dropped" | "delivered" | undefined };
+    guideFlushInflightRef.current = handoff;
     void (async () => {
-      try {
-        const result = await guide.inject(formatted);
-        if (result?.ok === true) {
-          // Match accepted rows by id and text so edits made in flight remain pending; remove only when guidance_injected confirms
-          // delivery.
-          const current = new Map(
-            messageQueueStore.getItems().map((item) => [item.id, item.text]),
-          );
-          messageQueueStore.markHandedOff(
-            handed.filter(({ id, text }) => current.get(id) === text).map(({ id }) => id),
-            formatted,
-          );
-          return;
-        }
-        const reason = result?.error ?? "unknown";
+      let accepted = false;
+      const reportFailure = (reason: string) => {
+        if (turnEpochRef.current !== turnEpoch) return;
         const reasonLabel =
           reason === "queue-full" ? t("chatView.queueFlushFailReasonFull") :
           reason === "too-long" ? t("chatView.queueFlushFailReasonTooLong") :
           reason === "no-active-turn" ? t("chatView.queueFlushFailReasonNoTurn") :
           `(${reason})`;
-        guideFlushBlockedRef.current = true;
+        guideFlushBlockedRef.current = completedTurnEpochRef.current !== turnEpoch;
         guide.onError(t("chatView.queueFlushFailMessage", { count, reasonLabel }));
         console.warn(`[message-queue] guide flush refused (${reason}), items kept:`, formatted.slice(0, 80));
+      };
+      try {
+        const result = await guide.inject(formatted);
+        if (guideFlushInflightRef.current !== handoff) return;
+        if (handoff.disposition === "delivered" || result?.ok === true) {
+          if (handoff.disposition === "dropped") return;
+          accepted = true;
+          messageQueueStore.settleReservation(reservation.id, formatted);
+          return;
+        }
+        reportFailure(result?.error ?? "unknown");
+      } catch {
+        if (handoff.disposition === "delivered") accepted = true;
+        else if (guideFlushInflightRef.current === handoff) reportFailure("unknown");
       } finally {
-        guideFlushInflightRef.current = false;
+        messageQueueStore.settleReservation(reservation.id);
+        if (guideFlushInflightRef.current === handoff) {
+          guideFlushInflightRef.current = null;
+          if (!accepted && completedTurnEpochRef.current === turnEpoch) {
+            // A done frame may have arrived while these rows were reserved. Retry its drain only if no newer turn owns the surface.
+            queueMicrotask(() => {
+              if (turnEpochRef.current === turnEpoch && completedTurnEpochRef.current === turnEpoch) {
+                drainPendingQueue({ deferSend: false });
+              }
+            });
+          }
+        }
       }
     })();
-  }, [messageQueueStore, guide, t]);
+  }, [messageQueueStore, guide, t, drainPendingQueue]);
 
   useEffect(() => {
     const unsub = subscribeStream((ev) => {
       // A frame from a superseded turn drives nothing here: not the brake-point hand-off, not the delivery bookkeeping, and
       // above all not the end-of-turn drain.
       if (isCurrentTurnEvent && !isCurrentTurnEvent(ev)) return;
+      if (ev.type === "user_message") {
+        startQueueTurn();
+        return;
+      }
       if (ev.type === "tool_end") {
         // mid-turn brake-point — 엔진 round boundary 에 합류 (onGuide).
         flushQueueViaGuide();
@@ -202,12 +250,21 @@ export function useMessageQueue({
         // Delivered. The text is a user bubble in the transcript now, so the row has somewhere to have gone — this is the only
         // place it is cleared after a hand-off.
         const text = typeof ev.text === "string" ? ev.text : "";
-        if (text.length > 0) messageQueueStore.clearDelivered(text);
+        if (text.length > 0) {
+          const handoff = guideFlushInflightRef.current;
+          if (handoff && text.includes(handoff.text)) {
+            handoff.disposition = "delivered";
+            messageQueueStore.settleReservation(handoff.id, handoff.text);
+          }
+          messageQueueStore.clearDelivered(text);
+        }
         return;
       }
       if (ev.type === "guidance_dropped") {
         // The engine took it but could not deliver it. The rows are the user's again so the end-of-turn drain below picks them up
         // — the `done` that follows this event does exactly that.
+        const handoff = guideFlushInflightRef.current;
+        if (handoff && (!ev.text || ev.text.includes(handoff.text))) handoff.disposition = "dropped";
         messageQueueStore.releaseHandedOff();
         return;
       }
@@ -218,6 +275,7 @@ export function useMessageQueue({
         return;
       }
       if (ev.type === "done") {
+        completedTurnEpochRef.current = turnEpochRef.current;
         // A refusal only blocks the rest of THAT turn; the next one starts clean and may use its brake points again.
         guideFlushBlockedRef.current = false;
         // turn 종료 시 큐 잔존 항목 → 새 user message 로 자동 inject.
@@ -225,42 +283,25 @@ export function useMessageQueue({
         // 검사 우회 (IPC stream context = user gesture 밖).
         // re-entrancy guard (critic Round 2 M4): inflight inject 중 재 done
         // event 무시 — rapid done sequence 시 cascade race 방지.
-        if (queueAutoInflightRef.current) return;
-        // Handed-off rows are already with the engine — re-sending them here would duplicate the message. A hand-off the engine
-        // could not deliver has been released by `guidance_dropped` above, so it is pending again and included.
-        const taken = [...messageQueueStore.getPending()];
-        if (taken.length === 0) return;
-        for (const item of taken) messageQueueStore.remove(item.id);
-        queueAutoInflightRef.current = true;
-        const formatted = formatQueueInject(taken);
-        // Defer the send to a microtask so every subscriber judges done before the next turn re-arms guards; take rows and set
-        // reentrancy protection synchronously.
-        queueMicrotask(() => {
-          void (async () => {
-            try {
-              await onAsk(formatted, undefined, { injectHint: "queue", inputOrigin: "queue-auto" });
-            } finally {
-              queueAutoInflightRef.current = false;
-            }
-          })();
-        });
+        drainPendingQueue();
       }
     });
     return unsub;
-  }, [subscribeStream, flushQueueViaGuide, messageQueueStore, onAsk, isCurrentTurnEvent]);
+  }, [subscribeStream, flushQueueViaGuide, messageQueueStore, drainPendingQueue, startQueueTurn, isCurrentTurnEvent]);
 
   // Do not drain on transient streaming=false; use real brake points or explicit user injection. An empty queue leaves
   // Escape as abort only.
   const flushQueueAsUserMessage = useCallback(() => {
-    if (messageQueueStore.size() === 0) {
+    const taken = messageQueueStore.takeAll();
+    if (taken.length === 0) {
       void onAbort();
       return;
     }
-    const taken = messageQueueStore.takeAll();
     const formatted = formatQueueInject(taken);
     // ESC / esc 취소 = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint.
+    startQueueTurn();
     void onAsk(formatted, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
-  }, [messageQueueStore, onAbort, onAsk]);
+  }, [messageQueueStore, onAbort, onAsk, startQueueTurn]);
 
   // composer Enter morph — busy = queue.add, idle = onAsk 직행. ⌘⏎ = 즉시 주입 (LLM abort + 큐 selected + 현재 입력).
   const handleComposerSend = useCallback(
@@ -275,7 +316,7 @@ export function useMessageQueue({
         // Busy: 큐에 추가. cap 초과 throw catch 해서 textarea 보존.
         if (text.trim().length > 0) {
           try {
-            messageQueueStore.add(text);
+            messageQueueStore.add(augmentFileReferenceMarkers(text, attachments));
           } catch (err) {
             console.warn("[message-queue] add rejected:", errorMessage(err));
             return;
@@ -287,12 +328,13 @@ export function useMessageQueue({
         if (attachments.length > 0) setAttachments([]);
       } else {
         // Idle: 직행 전송
+        startQueueTurn();
         void onAsk(text, intent);
       }
     },
     [
-      question, attachments.length, streaming, messageQueueStore, onAsk,
-      setQuestion, setAttachments, interceptSubmit,
+      question, attachments, streaming, messageQueueStore, onAsk,
+      setQuestion, setAttachments, interceptSubmit, startQueueTurn,
     ],
   );
 
@@ -310,14 +352,17 @@ export function useMessageQueue({
     const combined = parts.join("\n");
     setQuestion("");
     // ⌘⏎ = 사용자 명시 인터럽트 → "⚡ 중단후 새메세지" hint. handleAsk 가 streaming 시 자체 abort 처리.
+    startQueueTurn();
     void onAsk(combined, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
-  }, [question, messageQueueStore, onAsk, setQuestion, interceptSubmit]);
+  }, [question, messageQueueStore, onAsk, setQuestion, interceptSubmit, startQueueTurn]);
 
   const handleMessageQueueSendNow = useCallback((item: MessageQueueItem) => {
-    messageQueueStore.remove(item.id);
-    const text = formatQueueInject([item]);
+    const taken = messageQueueStore.takeOne(item.id);
+    if (!taken) return;
+    const text = formatQueueInject([taken]);
+    startQueueTurn();
     void onAsk(text, { inputOrigin: "user-keyboard", token: "" }, { injectHint: "interrupt" });
-  }, [messageQueueStore, onAsk]);
+  }, [messageQueueStore, onAsk, startQueueTurn]);
 
   // ESC 우선순위
   //   1. 모달 (Radix Dialog [data-state="open"]) → 모달이 가로챔 (defensive)
@@ -374,7 +419,7 @@ export function useMessageQueue({
       if (text.length === 0) return;
       e.preventDefault();
       void (async () => {
-        const result = await guide.inject(text);
+        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments));
         if (result?.ok === true) {
           setQuestion("");
         } else if (result?.ok === false) {
@@ -389,7 +434,7 @@ export function useMessageQueue({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [question, guide, setQuestion, t]);
+  }, [question, attachments, guide, setQuestion, t]);
 
   return {
     messageQueueStore,

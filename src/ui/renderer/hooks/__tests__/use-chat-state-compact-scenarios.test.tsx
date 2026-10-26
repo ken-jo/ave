@@ -532,3 +532,21 @@ describe("useChatState — compact lifecycle scenarios", () => {
     expect(result.current.isCompacting).toBe(false);
   });
 });
+
+
+describe("nonterminal compaction failure transcript", () => {
+  it("clears compaction progress and retains subsequent text on the same stream", () => {
+    const { api, streamHandler } = makeCapturedApi();
+    const notify = vi.fn();
+    const { result } = renderHook(() => useChatState(api, notify));
+    dispatchEvent(streamHandler, { type: "text_delta", streamId: 1, text: "Before " });
+    dispatchEvent(streamHandler, { type: "compact_started", streamId: 1 });
+    dispatchEvent(streamHandler, { type: "compact_failed", streamId: 1 });
+    expect(result.current.isCompacting).toBe(false);
+    expect(result.current.entries.some((entry) => entry.kind === "system" && /압축|compaction/.test(entry.text))).toBe(true);
+    dispatchEvent(streamHandler, { type: "text_delta", streamId: 1, text: "after" });
+    dispatchEvent(streamHandler, { type: "done", streamId: 1 });
+    expect(result.current.entries).toContainEqual(expect.objectContaining({ kind: "assistant", text: "Before after", streaming: false }));
+    expect(notify).not.toHaveBeenCalled();
+  });
+});

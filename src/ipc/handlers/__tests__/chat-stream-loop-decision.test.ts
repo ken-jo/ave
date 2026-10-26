@@ -61,3 +61,24 @@ describe("runStreamedTurn loop.decision emission", () => {
     })).toBeUndefined();
   });
 });
+
+
+describe("nonterminal compaction failure delivery", () => {
+  it("publishes a closed maintenance notice and still completes the chat turn", async () => {
+    const { loop, runTurn } = makeLoop();
+    runTurn.mockImplementation(async (...args: unknown[]) => {
+      const callbacks = args[1] as TurnCallbacks;
+      callbacks.onError?.("private provider failure", undefined, undefined, "compaction");
+      callbacks.onTextDelta?.("normal answer");
+      return { text: "done", toolCalls: [], route: "default", stopReason: "end_turn" };
+    });
+    const sink = vi.fn();
+    await runStreamedTurn(loop, "go", sink, STREAM_TURN_OPTIONS);
+    const events = sink.mock.calls.map((call) => call[0] as PlatformConversationEvent);
+    expect(events).toContainEqual({ kind: "compaction.failed" });
+    expect(events.some((event) => event.kind === "turn.error")).toBe(false);
+    expect(events).toContainEqual({ kind: "assistant.text.delta", text: "normal answer" });
+    expect(events.some((event) => event.kind === "turn.completed")).toBe(true);
+    expect(projectSharedConversationEvent({ kind: "compaction.failed" })).toBeUndefined();
+  });
+});

@@ -13,6 +13,7 @@ import { selectProviderRuntimeFetch } from "../llm/marketplace-provider-fetch.js
 import type { ConversationLoopDeps } from "./types.js";
 import {
   MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
+  subscriptionAcceptsModelOverride,
   type ActiveChatRuntime,
   type SubscriptionChatRuntimeSelection,
 } from "../../shared/subscription-runtime.js";
@@ -30,6 +31,7 @@ export const PROVIDER_PING_SYSTEM_PROMPT =
 export interface GenerateTextOptions {
   // Validate and clamp internal output limits before transport.
   outputTokenLimit?: number;
+  modelOverride?: string;
 }
 
 // Native transports may need estimated local output bounds; adding an ellipsis would exceed the cap.
@@ -64,10 +66,7 @@ export function cleanModelOverride(value: string | undefined): string | undefine
   return model;
 }
 
-// Only runtimes with host-verified model selection honor overrides.
-export function subscriptionAcceptsModelOverride(selection: SubscriptionChatRuntimeSelection): boolean {
-  return selection.provider === "codex";
-}
+export { subscriptionAcceptsModelOverride } from "../../shared/subscription-runtime.js";
 
 function selectionWithModelOverride(
   selection: SubscriptionChatRuntimeSelection,
@@ -91,14 +90,17 @@ export function providerMatchesActiveChatRuntime(
   return provider.subscriptionRuntime?.provider === activeChatRuntime.provider;
 }
 
-export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
+export function buildProvider(
+  deps: ConversationLoopDeps,
+  { fallbackEnabled = true }: { fallbackEnabled?: boolean } = {},
+): LLMProvider | null {
     const llmSettings = deps.settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
     if (activeChatRuntime?.kind === "subscription") {
       try {
         const selection = selectionWithModelOverride(activeChatRuntime, deps.modelOverride);
-        // Validate profile candidates against the live subscription catalog; retain only the parent selection as fallback.
-        const fallbackSelection = selection.model === activeChatRuntime.model
+        // Validate model candidates against the live catalog; the caller controls parent-model fallback.
+        const fallbackSelection = !fallbackEnabled || selection.model === activeChatRuntime.model
           ? undefined
           : activeChatRuntime;
         const candidate = fallbackSelection
@@ -188,7 +190,7 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
         ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
         ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
       });
-      const chain = llmSettings.fallbackChain
+      const chain = (fallbackEnabled ? llmSettings.fallbackChain : [])
         .filter((e) =>
           e.provider &&
           e.model &&
@@ -234,7 +236,7 @@ export async function generateText(
     const llm = settingsService.get("llm");
     const model = provider?.subscriptionRuntime
       ? provider.subscriptionRuntime.model ?? "default"
-      : activeLlmRouteModel(llm);
+      : activeLlmRouteModel(llm, cleanModelOverride(options?.modelOverride));
     if (!provider || !model || !providerMatchesActiveChatRuntime(provider, llm.activeChatRuntime)) {
       throw new Error("LLM provider not configured");
     }

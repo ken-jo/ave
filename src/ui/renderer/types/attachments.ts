@@ -1,4 +1,5 @@
 /** Textarea markers are authoritative; attachment numbers remain stable after lower-numbered attachments are removed. */
+import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 
 /** Renderer compatibility name for the shared composer input capacity. The main-process picker and subscription transport
  * consume the same limit. */
@@ -48,6 +49,8 @@ export interface FileAttachment {
   /** True for an `@file` mention: a path reference the model reads through read_file. Not in main's attach allowlist, so the
    * chip offers no open-in-OS action for it. */
   reference?: true;
+  /** A selected location in the latest settled turn; main verifies it before supplying file context. */
+  location?: Omit<FileMentionReference, "path">;
 }
 
 export interface PasteAttachment {

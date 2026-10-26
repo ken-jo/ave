@@ -3,10 +3,24 @@
 import { t } from "../../i18n/runtime.js";
 
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  "invalid-shell-action": "formatIpcError.invalidRequest",
+  "session-changed": "shellTasks.sessionChanged",
+  "shell-not-found": "shellTasks.unavailable",
+  "background-unavailable": "shellTasks.unavailable",
   "code-checkpoint-unavailable": "codeRewind.unavailable",
   "code-restore-failed": "codeRewind.failed",
   "code-restore-conflict": "codeRewind.conflict",
   "invalid-rewind-mode": "codeRewind.invalidMode",
+  "turn-review-unavailable": "fileEditDiff.reviewUnavailable",
+  "turn-review-stale": "fileEditDiff.reviewStale",
+  "turn-review-failed": "fileEditDiff.reviewFailed",
+  "file-reference-invalid": "fileEditDiff.referenceInvalid",
+  "file-reference-stale": "fileEditDiff.reviewStale",
+  "file-reference-origin-restricted": "fileEditDiff.referenceReadDenied",
+  "file-reference-read-denied": "fileEditDiff.referenceReadDenied",
+  "file-reference-read-unverified": "fileEditDiff.referenceReadDenied",
+  "file-reference-too-large": "fileEditDiff.referenceTooLarge",
+  "file-reference-while-running": "fileEditDiff.referenceWhileRunning",
   // ── Trust / intent gate ──
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",

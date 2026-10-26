@@ -73,11 +73,14 @@ import { SettingsHelpPopover, SettingsPageHeader, SettingsSection } from "../com
 import { PricingOverridesSection } from "./PricingOverridesSection.js";
 import { ModelCatalogRefreshSection } from "./ModelCatalogRefreshSection.js";
 import { useTranslation, type I18nContextValue } from "../../../i18n/react.js";
+import { compactionModelRouteKey } from "../../../shared/compaction-model.js";
 import {
   SUBSCRIPTION_RUNTIME_API_COUNTERPART,
   SUBSCRIPTION_RUNTIME_ROW_PARTNER,
+  MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH,
   openAiLoginTypeFor,
   isSubscriptionRuntimeId,
+  subscriptionAcceptsModelOverride,
   subscriptionRuntimeDescriptor,
   type SubscriptionRuntimeId,
 } from "../../../shared/subscription-runtime.js";
@@ -1511,6 +1514,32 @@ export function LlmTab(props: LlmTabProps) {
   const subscription = useSubscriptionProviders(api);
   // Mirrored from settings rather than held locally: another window may pin a model too, and the chooser must show one truth.
   const [pinnedModels, setPinnedModels] = useState<readonly string[]>([]);
+  const [compactionModel, setCompactionModel] = useState("");
+  const [savedCompactionModel, setSavedCompactionModel] = useState("");
+  const [compactionSaving, setCompactionSaving] = useState(false);
+  const [compactionSaveFailed, setCompactionSaveFailed] = useState(false);
+  const compactionModelDirtyRef = useRef(false);
+  const compactionRouteRef = useRef("");
+  const compactionModelEditable = subscription.activeRuntime.kind === "api"
+    || subscriptionAcceptsModelOverride(subscription.activeRuntime);
+  const handleCompactionModelSave = async () => {
+    setCompactionSaving(true);
+    setCompactionSaveFailed(false);
+    try {
+      const latest = await api.getSettings();
+      const route = compactionModelRouteKey(latest.llm, latest.marketplace?.installedProviderPresets);
+      if (route !== compactionRouteRef.current) throw new Error("Compaction provider route changed");
+      const result = await api.updateSettings({ llm: { compactionModel: compactionModel.trim(), compactionModelRoute: route } });
+      if (isIpcErrorResult(result)) throw new Error(result.error);
+      compactionModelDirtyRef.current = false;
+      setSavedCompactionModel(result.llm.compactionModel ?? "");
+      setCompactionModel(result.llm.compactionModel ?? "");
+    } catch {
+      setCompactionSaveFailed(true);
+    } finally {
+      setCompactionSaving(false);
+    }
+  };
 
   const handleTogglePin = useCallback((modelId: string) => {
     const next = pinnedModels.includes(modelId)
@@ -1555,6 +1584,14 @@ export function LlmTab(props: LlmTabProps) {
       });
       setSettingsRevision((current) => current + 1);
       setPinnedModels(settings.llm?.pinnedModels ?? []);
+      if (isLLMVendor(settings.llm?.provider)) {
+        const compactRoute = compactionModelRouteKey(settings.llm, settings.marketplace?.installedProviderPresets);
+        if (compactionRouteRef.current !== compactRoute) compactionModelDirtyRef.current = false;
+        compactionRouteRef.current = compactRoute;
+        const compactModel = settings.llm?.compactionModelRoute === compactRoute ? settings.llm?.compactionModel ?? "" : "";
+        setSavedCompactionModel(compactModel);
+        if (!compactionModelDirtyRef.current) setCompactionModel(compactModel);
+      }
       const cache = settings.llm?.modelListCache ?? {};
       setSavedModelListCache((current) => sameSettingsValue(current, cache) ? current : cache);
       modelListCacheRef.current = cache;
@@ -3051,6 +3088,39 @@ export function LlmTab(props: LlmTabProps) {
         title={t("llmTab.pageTitle")}
         description={t("llmTab.pageDescription")}
       />
+
+      <SettingsSection title={t("compactionSettings.title")} id="llm-compaction">
+        <div className="space-y-2">
+          <Label htmlFor="compaction-model">{t("compactionSettings.model")}</Label>
+          <Input
+            id="compaction-model"
+            data-testid="compaction-model"
+            value={compactionModelEditable ? compactionModel : ""}
+            onChange={(event) => {
+              compactionModelDirtyRef.current = event.target.value.trim() !== savedCompactionModel;
+              setCompactionModel(event.target.value);
+            }}
+            placeholder={t("compactionSettings.currentModel")}
+            aria-describedby="compaction-model-description"
+            maxLength={MAX_SUBSCRIPTION_RUNTIME_MODEL_ID_LENGTH}
+            disabled={!settingsLoaded || !compactionModelEditable || compactionSaving}
+          />
+          <p id="compaction-model-description" className="text-xs text-muted-foreground">
+            {t(compactionModelEditable ? "compactionSettings.description" : "compactionSettings.unavailable")}
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            data-testid="compaction-model-save"
+            disabled={!settingsLoaded || !compactionModelEditable || compactionSaving || compactionModel.trim() === savedCompactionModel}
+            onClick={() => { void handleCompactionModelSave(); }}
+          >
+            {t(compactionSaving ? "llmTab.saving" : "llmTab.save")}
+          </Button>
+          {compactionSaveFailed && <p role="alert" className="text-xs text-destructive">{t("compactionSettings.saveFailed")}</p>}
+        </div>
+      </SettingsSection>
 
       {/* Provider configuration — API keys and endpoint settings are edited
           directly here. */}

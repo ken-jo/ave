@@ -158,3 +158,15 @@ describe("platform conversation legacy adapter", () => {
     expect(timeline.subscriberCount()).toBe(0);
   });
 });
+
+
+describe("compaction failure owner delivery", () => {
+  it("projects a nonterminal notice using the owning turn identity", () => {
+    const timeline = createPlatformConversationTimeline();
+    const adapter = createPlatformConversationLegacyStreamAdapter(timeline);
+    const sink = vi.fn();
+    adapter.subscribe(sink);
+    timeline.publish({ conversationId: "main-session", turnId: createPlatformTurnId(42), event: { kind: "compaction.failed" } });
+    expect(sink).toHaveBeenCalledExactlyOnceWith(CHANNELS.chat.stream, { streamId: 42, type: "compact_failed" });
+  });
+});

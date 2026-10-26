@@ -1,4 +1,8 @@
-/** Settings, renderer hooks, and sidebar validation share this value set. */
+/**
+ * Legacy sidebar preference retained for persisted-settings compatibility.
+ * The sidebar now shows both sections; only settings validation consumes this
+ * value set.
+ */
 export type SidebarTab = "chats" | "projects";
 
 const SIDEBAR_TABS: readonly SidebarTab[] = ["chats", "projects"];

@@ -87,6 +87,9 @@ export const CHANNELS = {
     send: "ave:chat:send",
     guide: "ave:chat:guide",
     abort: "ave:chat:abort",
+    // Host-renderer-only lifecycle controls, scoped to the preload-bound conversation.
+    listShellTasks: "ave:chat:list-shell-tasks",
+    controlShellTask: "ave:chat:control-shell-task",
     new: "ave:chat:new",
     sessions: "ave:chat:sessions",
     compact: "ave:chat:compact",
@@ -101,6 +104,7 @@ export const CHANNELS = {
     // from that message onward in the SAME session so the user can retype the
     // input. INTERNAL (mutating; destructive by intent).
     rewindTo: "ave:chat:rewind-to",
+    getTurnReview: "ave:chat:get-turn-review",
     fork: "ave:chat:fork",
     continueLastUser: "ave:chat:continue-last-user",
     retryEffort: "ave:chat:retry-effort",
@@ -830,6 +834,8 @@ export const CHANNELS = {
     new: "ave:sidechat:new", // invoke → { ok, sessionId }
     load: "ave:sidechat:load", // invoke (sessionId) → { ok, messages }
     abort: "ave:sidechat:abort", // invoke { sendRequestId } → { ok }
+    listShellTasks: "ave:sidechat:list-shell-tasks",
+    controlShellTask: "ave:sidechat:control-shell-task",
     paneHistory: "ave:sidechat:pane-history", // invoke { tabId } → { ok, sessionId|null, messages } (no session switch)
     endPaneChat: "ave:sidechat:end-pane-chat", // invoke { tabId, reason } → { ok, sessionId|null }
     getSubAgentTranscript: "ave:sidechat:get-sub-agent-transcript", // invoke → owner-scoped child transcript
