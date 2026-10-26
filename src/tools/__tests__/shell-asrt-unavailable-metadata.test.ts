@@ -61,8 +61,8 @@ describe("ASRT unavailable metadata", () => {
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
     const failures = metadataObjects(source.slice(start, end)).filter((metadata) => /\bsandboxAttempted\s*:/.test(metadata));
-    // Sandbox HOME, launch preparation, spawn throw and child error.
-    expect(failures).toHaveLength(4);
+    // Image admission, sandbox HOME, launch preparation, spawn throw and child error.
+    expect(failures).toHaveLength(5);
     for (const metadata of failures) expect(isUnavailableMetadata(metadata)).toBe(true);
   });
 
