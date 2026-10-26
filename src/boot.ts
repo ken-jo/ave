@@ -87,6 +87,7 @@ import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
 import { migrateAveHomeConfiguration } from "./shared/ave-home-configuration.js";
+import { isAveHomeConfigurationOwner, setAveHomeConfigurationOwner } from "./shared/ave-home-configuration-access.js";
 import { ensureAveScratchDir } from "./shared/ave-scratch.js";
 import {
   listAveHomeDocUpgradeMarkers,
@@ -223,6 +224,7 @@ export async function bootstrap(
 
   await setupNetworkFetch(ctx);
 
+  setAveHomeConfigurationOwner(headless ? undefined : host.desktop);
   // Create protected storage boundaries before any feature writes.
   const homePrivacy = ensureAveHomePrivate();
   setAveHomePrivacyAtBoot(homePrivacy);
@@ -237,7 +239,7 @@ export async function bootstrap(
 
   // An unverified root has no protected config boundary to migrate into; legacy root files stay in place.
   if (homePrivacy.enforcement === "none") log.warn("boot: legacy root configuration is not migrated while home protection is unverified");
-  const configurationDiagnostics = !headless && host.desktop?.hasSingleInstanceLock()
+  const configurationDiagnostics = isAveHomeConfigurationOwner()
     ? migrateAveHomeConfiguration(homePrivacy.home, homePrivacy) : [];
   if (homePrivacy.enforcement === "none") setAveHomeConfigurationRefusedAtBoot(homePrivacy.home);
   for (const diagnostic of configurationDiagnostics) log.warn(`boot: ${diagnostic}`);

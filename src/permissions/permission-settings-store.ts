@@ -1,13 +1,12 @@
 // Absent additionalDirectories means host defaults only, never silent allow; callers compose through buildAllowedScope (docs/architecture/permission-policy-design.md).
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { resolve as pathResolve } from "node:path";
-import { withFileLock } from "../lib/with-file-lock.js";
 import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome, aveHomeConfigurationDirectory } from "../shared/ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
 import { parseConfigurationObject } from "../shared/configuration-document.js";
-import { configurationHomeForPath, resolveConfigurationFile, tryWithAveHomeConfigurationLock, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-lock.js";
+import { readAveHomeConfigurationFile, resolveConfigurationFile, tryWithAveHomeConfigurationWrite, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 import {
   PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
   PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
@@ -32,7 +31,7 @@ import {
 const log = createLogger("permission-settings");
 
 async function withPermissionSettingsWrite<T>(path: string, callback: (filePath: string) => Promise<T>): Promise<T> {
-  return withAveHomeConfigurationWrite(path, (filePath) => withFileLock(filePath, () => callback(filePath)));
+  return withAveHomeConfigurationWrite(path, callback);
 }
 
 // Disabled bypasses review as LOW while matrix/hard gates still apply; rule is deterministic, llm composes with rule floors, and strict returns HIGH/defer for every review.
@@ -190,11 +189,13 @@ export function permissionSettingsPath(home = aveHome()): string {
 // Unreadable existing settings return deny-shaped defaults with a visible fault, log an error and rewrite nothing. Migrate unmarked legacy disabled to strict and persist once; failed persistence still returns strict so upgrades cannot silently weaken policy.
 export function readPermissionSettings(pathOverride?: string): PermissionSettingsFile {
   const filePath = resolveConfigurationFile(pathOverride ?? permissionSettingsPath());
-  if (!existsSync(filePath)) return structuredClone(DEFAULT_FILE);
   let parsed: Record<string, unknown>;
   try {
-    parsed = readSettingsDocument(filePath);
+    const bytes = readAveHomeConfigurationFile(pathOverride ?? permissionSettingsPath());
+    if (bytes === undefined) return structuredClone(DEFAULT_FILE);
+    parsed = parseConfigurationObject(bytes.toString("utf8"), true);
   } catch (err) {
+    if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     const detail = (err as Error).message;
     log.error(
       "permission settings at %s are unreadable: %s — file preserved untouched, no directories granted",
@@ -213,12 +214,11 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
       // Persist only when immediately available; the normalized runtime result stays strict.
       let persistFailure: string | undefined;
       try {
-        const result = tryWithAveHomeConfigurationLock(configurationHomeForPath(filePath), () => {
-          const target = resolveConfigurationFile(filePath);
+        const acquired = tryWithAveHomeConfigurationWrite(filePath, (target) => {
           const latest = readSettingsDocument(target);
           if (migrateLegacyDisabledMode(latest)) writeUtf8FileAtomicSync(target, JSON.stringify(latest, null, 2), 0o600);
         });
-        if (!result.acquired) persistFailure = "Configuration lock is busy";
+        if (!acquired) persistFailure = "Configuration owner is unavailable or busy";
       } catch (persistErr) {
         persistFailure = (persistErr as Error).message;
       }
@@ -234,19 +234,25 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
   }
 }
 
-// Read the settings document off disk, throwing when it cannot be interpreted. An empty file is not damage: `withFileLock` creates the target as a zero-byte placeholder so `proper-lockfile` can stat it, so every first write this store ever performs starts from one. A non-object root (`null`, an array, a bare number) IS damage — every reader below indexes the result as a record — so it is rejected here rather than in each of them.
+// Preserve empty legacy documents; reject non-object roots before callers merge fields.
 function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
   filePath = resolveConfigurationFile(filePath);
-  const raw = readFileSync(filePath, "utf-8");
-  return parseConfigurationObject(raw, allowEmpty);
+  const bytes = readAveHomeConfigurationFile(filePath);
+  if (bytes === undefined) {
+    const error: NodeJS.ErrnoException = new Error("Configuration file does not exist");
+    error.code = "ENOENT";
+    throw error;
+  }
+  return parseConfigurationObject(bytes.toString("utf8"), allowEmpty);
 }
 
 // Read the settings object a write path is about to merge into. Refusing an unparseable file is the whole point: the previous `catch {}` here merged into an empty object, so the next successful write replaced the user's entire settings document — every unrelated top-level key included — with whatever that one mutation happened to hold.
 function readSettingsObjectForUpdate(filePath: string): Record<string, unknown> {
-  if (!existsSync(filePath)) return {};
   try {
     return readSettingsDocument(filePath);
   } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return {};
+    if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     throw new PermissionSettingsUnreadableError(filePath, (err as Error).message, { cause: err });
   }
 }
@@ -616,6 +622,7 @@ export function readJudgeSettings(
     }
     return normalizeJudgeSettings((permissions as Record<string, unknown> | undefined)?.judge, catalog);
   } catch (error) {
+    if (error instanceof AveHomeConfigurationUntrustedError) throw error;
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return normalizeJudgeSettings(undefined, catalog);
     log.warn("Judge settings could not be read: %s", (error as Error).message);
     return { ...normalizeJudgeSettings(undefined, catalog), issues: ["Judge settings file could not be read"], unreadable: true };

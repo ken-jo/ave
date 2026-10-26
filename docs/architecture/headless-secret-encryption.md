@@ -38,7 +38,9 @@ a 16-byte authentication tag, and ciphertext. The header is authenticated as
 additional data. Decryption releases text only after authentication succeeds.
 Invalid versions, altered bytes, truncated envelopes and incorrect keys fail.
 
-Secret documents retain their existing atomic writes and cross-process locks.
+Secret documents retain atomic writes. Only the primary interactive instance
+may mutate configuration; its mutations are serialized in process. Other hosts
+remain read-only and receive `AveHomeConfigurationNotOwnerError` on writes.
 External-key entries use the `external-key` encoding. The host refuses existing
 desktop ciphertext, development plaintext and legacy documents under this
 provider. It does not migrate or overwrite them. All existing external-key

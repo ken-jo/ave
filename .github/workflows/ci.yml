@@ -653,6 +653,7 @@ jobs:
           src/shared/__tests__/windows-admin-policy.test.ts
           src/shared/__tests__/windows-read-deny-evidence.test.ts
           src/shared/__tests__/ave-home-configuration-owners.test.ts
+          src/shared/__tests__/ave-home-configuration-authority.test.ts
           src/tools/__tests__/file-read-core.test.ts
           src/tools/__tests__/preview-document-process.test.ts
           src/tools/__tests__/shell-path-policy.test.ts

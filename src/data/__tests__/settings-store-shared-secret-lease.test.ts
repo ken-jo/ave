@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { spawn } from "node:child_process";
 import { mkdtempSync, readFileSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

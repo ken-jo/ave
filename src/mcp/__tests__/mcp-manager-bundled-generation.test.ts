@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { tmpdir } from "node:os";

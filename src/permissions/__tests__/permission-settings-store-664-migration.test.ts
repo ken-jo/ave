@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 // Unmarked legacy disabled mode migrates to strict once; marked user choices and other modes remain unchanged. Persist the marker so upgrades cannot silently replace fail-closed semantics with pass-through.
 import { afterEach, describe, it, expect } from "vitest";
 import { readFileSync, writeFileSync } from "node:fs";

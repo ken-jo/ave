@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

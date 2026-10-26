@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 

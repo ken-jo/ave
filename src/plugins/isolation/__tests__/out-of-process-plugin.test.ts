@@ -1,4 +1,6 @@
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
+import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
 /** Exercise the real child runtime and factory; recorded spawn calls alone do not prove confinement. */
 import { describe, expect, it, vi } from "vitest";
 
@@ -1659,7 +1661,8 @@ describe("a stored '~/…' directory value: refused with guidance, and both ways
     const approved = join(root, "approved");
     const pluginRoot = join(home, "plugins", "tilde-cache");
     const pluginDataDir = join(pluginRoot, "data");
-    mkdirSync(home, { recursive: true });
+    setFixtureOwner(root);
+    expect(ensureAveHomePrivate(home).enforcement).not.toBe("none");
     mkdirSync(approved, { recursive: true });
     mkdirSync(pluginDataDir, { recursive: true });
     writePermissionSettingsFixture(home, JSON.stringify({ permissions: { additionalDirectories: [approved] } }));

@@ -1,5 +1,10 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 /** Equal-size in-place mutation preserves inode metadata; wrap real reads to mutate bytes inside the stable-read window. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 let onReadSync: (() => void) | null = null;
 
@@ -26,7 +31,7 @@ const {
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 const { cleanupTmpDir } = await import("../../__tests__/support/tmp-dir-teardown.js");
-const { SecretDocumentStore, SecretDocumentValidationError } = await import(
+const { SecretDocumentStore } = await import(
   "../secret-document-store.js"
 );
 type SecretEncryption = import("../secret-document-store.js").SecretEncryption;
@@ -59,18 +64,21 @@ function overwriteInPlace(path: string, content: string): void {
 }
 
 describe("stable secret read against equal-size in-place mutation", () => {
+  const nativePlatform = process.platform;
   let root: string;
   let path: string;
   const honest = documentBytes(Buffer.from("sealed:honest-value").toString("base64"));
   const hostile = documentBytes(Buffer.from("sealed:hostile-swap").toString("base64"));
 
   beforeEach(() => {
+    setProcessPlatform("linux");
     root = mkdtempSync(join(tmpdir(), "ave-secret-inplace-"));
     path = join(root, "ave-secrets.json");
     onReadSync = null;
   });
 
   afterEach(async () => {
+    setProcessPlatform(nativePlatform);
     onReadSync = null;
     vi.restoreAllMocks();
     await cleanupTmpDir(root);
@@ -97,7 +105,7 @@ describe("stable secret read against equal-size in-place mutation", () => {
       overwriteInPlace(path, mutations % 2 === 1 ? hostile : honest);
     };
 
-    expect(() => store.get("api")).toThrow(SecretDocumentValidationError);
+    expect(() => store.get("api")).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     expect(mutations).toBeGreaterThan(0);
   });
 
@@ -111,7 +119,7 @@ describe("stable secret read against equal-size in-place mutation", () => {
       overwriteInPlace(path, hostile);
     };
 
-    expect(store.get("api")).toBe("hostile-swap");
+    expect(() => store.get("api")).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     expect(readFileSync(path, "utf-8")).toBe(hostile);
   });
 });

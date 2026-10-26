@@ -13,7 +13,8 @@ afterEach(() => { vi.mocked(dialog.showErrorBox).mockClear(); setLocale(locale);
 describe("configuration boot refusal", () => {
   it("limits configuration migration to the interactive single instance owner", () => {
     const source = readFileSync(join(import.meta.dirname, "..", "..", "boot.ts"), "utf8");
-    expect(source).toContain("!headless && host.desktop?.hasSingleInstanceLock()");
+    expect(source).toContain("setAveHomeConfigurationOwner(headless ? undefined : host.desktop)");
+    expect(source).toContain("const configurationDiagnostics = isAveHomeConfigurationOwner()");
     expect(source).toContain("? migrateAveHomeConfiguration(homePrivacy.home, homePrivacy) : []");
     const desktop = readFileSync(join(import.meta.dirname, "..", "..", "boot", "desktop-host-runtime.ts"), "utf8");
     expect(desktop).toContain("hasSingleInstanceLock: () => app.hasSingleInstanceLock()");

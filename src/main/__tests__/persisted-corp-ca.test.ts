@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { writeSettingsFile } from "./support/settings-file.js";
 import { unavailableSecretEncryption } from "../../__tests__/support/host-runtime.js";
 // Boot reads must recover UI-saved settings before asynchronous bootstrap.

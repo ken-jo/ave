@@ -1,4 +1,5 @@
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability.js";
 /** Exercise real confined spawns: secret denial, outside-write refusal, usable own data, private temp storage, mandatory wrapping, and unavailable desktop APIs.
  * Read isolation needs a covering deny; allowed writes include the principal temp directory, and offline probes do not prove egress enforcement.
@@ -33,7 +34,7 @@ import {
   writeGrantsReachingHostStorage,
   resolvePluginWorkerRunRoot,
 } from "../../plugin-storage-layout.js";
-import { aveHome } from "../../../shared/ave-home.js";
+import { aveHome, ensureAveHomePrivate } from "../../../shared/ave-home.js";
 // Global setup builds this entry once with the shipped bundle boundary. Every confinement case still spawns that real bundle through the real wrap.
 import { repositoryRoot } from "./child-entry-bundle.js";
 import { pluginChildEntryPath } from "../../../__tests__/support/plugin-child-entry.js";
@@ -177,6 +178,8 @@ let previousSandboxTmpdir: string | undefined;
 function makeFixture(): Fixture {
   const root = mkdtempSync(join(tmpdir(), "confined-plugin-"));
   const aveHome = join(root, ".ave");
+  setFixtureOwner(root);
+  expect(ensureAveHomePrivate(aveHome).enforcement).not.toBe("none");
   const ungrantedTempDir = mkdtempSync(join(process.platform === "win32" ? tmpdir() : "/tmp", "ave-ungranted-"));
   const ungrantedTempFile = join(ungrantedTempDir, "host-owned.txt");
   chmodSync(ungrantedTempDir, 0o777);

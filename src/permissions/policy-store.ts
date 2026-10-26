@@ -1,15 +1,15 @@
 
 
-import { mkdir, open, readFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
+import { writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome, aveHomeConfigurationDirectory } from "../shared/ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory, AveHomeConfigurationUntrustedError } from "../shared/ave-home.js";
 import { parsePolicyDocument } from "../shared/configuration-document.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
-import { resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-lock.js";
+import { readAveHomeConfigurationFile, resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-access.js";
 const log = createLogger("policy-store");
 
 export const userPolicyPath = (home = aveHome()): string => resolve(aveHomeConfigurationDirectory(home), "policy.json");
@@ -101,8 +101,11 @@ async function readPolicyFile(filePath: string, administrative = false): Promise
   };
   let raw: string;
   try {
-    raw = administrative ? (await readAdminPolicyFile(filePath)).toString("utf8") : await readFile(filePath, "utf-8");
+    const bytes = administrative ? await readAdminPolicyFile(filePath) : readAveHomeConfigurationFile(filePath);
+    if (bytes === undefined) return { status: "absent" };
+    raw = bytes.toString("utf8");
   } catch (err: unknown) {
+    if (err instanceof AveHomeConfigurationUntrustedError) throw err;
     const code = (err as NodeJS.ErrnoException | null | undefined)?.code;
     if (await isAdminPolicyFileAbsent(filePath, err)) return { status: "absent" };
     return invalid(err instanceof WindowsPolicyReadError ? err.message : `read failed (${typeof code === "string" ? code : "unknown error"})`, false);
@@ -208,14 +211,7 @@ export async function savePolicy(
       updatedAt: new Date().toISOString(),
     };
 
-    await mkdir(dirname(userPath), { recursive: true });
-    // 0o600 — owner read/write only
-    const fd = await open(userPath, "w", 0o600);
-    try {
-      await fd.writeFile(`${JSON.stringify(updated, null, 2)}\n`, "utf-8");
-    } finally {
-      await fd.close();
-    }
+    writeUtf8FileAtomicSync(userPath, `${JSON.stringify(updated, null, 2)}\n`, 0o600);
 
     return updated;
   });

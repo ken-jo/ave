@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
@@ -43,6 +47,31 @@ function exposeConfiguration(dir: string): void {
 }
 
 describe("protected home configuration", () => {
+  it("commits explicit default documents for a new home", () => {
+    const dir = fixture();
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe("{}\n");
+    expect(JSON.parse(readFileSync(join(dir, "config", "policy.json"), "utf8"))).toEqual({ version: 1, requireExplicitApproval: true, managed: false });
+    expect(JSON.parse(readFileSync(join(dir, "config", "ave-secrets.json"), "utf8"))).toEqual({ version: 1, entries: {} });
+  });
+
+  it("reuses an exact default document left by an interrupted new home migration", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "config", "settings.json"), "{}\n");
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
+  });
+
+  it("preserves configuration without a root source instead of replacing it with defaults", () => {
+    const dir = fixture();
+    const path = join(dir, "config", "settings.json");
+    const bytes = '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}';
+    writeFileSync(path, bytes);
+    expect(migrateAveHomeConfiguration(dir).join("\n")).toContain("requires recovery");
+    expect(readFileSync(path, "utf8")).toBe(bytes);
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+  });
+
   it("refuses a non-boot configuration under a root with foreign child deletion rights", () => {
     const dir = fixture();
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "ave-home-boundary-v1");
@@ -68,6 +97,7 @@ describe("protected home configuration", () => {
   it("rechecks configuration protection before writing user policy", async () => {
     const dir = fixture();
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "ave-home-boundary-v1");
+    writeFileSync(join(dir, "config", "policy.json"), '{"version":1,"requireExplicitApproval":true}');
     vi.stubEnv("AVE_HOME", dir);
     const admin = join(dirname(dir), "absent-admin.json");
     expect((await loadPolicy(undefined, admin)).requireExplicitApproval).toBe(true);
@@ -143,7 +173,7 @@ describe("protected home configuration", () => {
     migrateAveHomeConfiguration(dir);
     expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
     unlinkSync(join(dir, "config", ".ave-config-migrated"));
-    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
+    expect(() => userPolicyPath(dir)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
   });
 
   it("does not commit a settings document rejected by its reader", () => {
@@ -296,8 +326,8 @@ describe("protected home configuration", () => {
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
     unlinkSync(join(dir, "config", ".ave-config-migrated"));
     vi.stubEnv("AVE_HOME", dir);
-    expect(permissionSettingsPath()).toBe(join(dir, "settings.json"));
-    expect(userPolicyPath()).toBe(join(dir, "policy.json"));
+    expect(() => permissionSettingsPath()).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+    expect(() => userPolicyPath()).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     const other = home();
     expect(permissionSettingsPath(other)).toBe(join(other, "settings.json"));
     expect(userPolicyPath(other)).toBe(join(other, "policy.json"));

@@ -1,7 +1,13 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { mkdir, open } from "node:fs/promises";
-import { dirname, parse, resolve } from "node:path";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, parse, resolve } from "node:path";
+import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { makeTestPolicy } from "./test-helpers.js";
@@ -10,7 +16,24 @@ import { makeTestPolicy } from "./test-helpers.js";
 
 type MockFileStore = Record<string, string>;
 
-const files: MockFileStore = {};
+let USER_PATH: string;
+const fixtureDirectories = useTempDirs("user-policy-");
+const files: MockFileStore = new Proxy({} as MockFileStore, {
+  get(target, key) {
+    if (key === USER_PATH) return existsSync(USER_PATH) ? readFileSync(USER_PATH, "utf8") : undefined;
+    return target[key as string];
+  },
+  set(target, key, value: string) {
+    if (key === USER_PATH) { mkdirSync(dirname(USER_PATH), { recursive: true }); writeFileSync(USER_PATH, value); }
+    target[key as string] = value;
+    return true;
+  },
+  deleteProperty(target, key) {
+    if (key === USER_PATH && existsSync(USER_PATH)) unlinkSync(USER_PATH);
+    delete target[key as string];
+    return true;
+  },
+});
 const readErrors: Record<string, NodeJS.ErrnoException> = {};
 const symbolicLinks = new Set<string>();
 const directories = new Set<string>();
@@ -20,7 +43,8 @@ vi.mock("../../lib/logger.js", () => ({
   createLogger: () => ({ error: policyErrors }),
 }));
 
-vi.mock("node:fs/promises", () => ({
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:fs/promises")>()),
   mkdir: vi.fn(async () => undefined),
   lstat: vi.fn(async (path: string) => {
     if (files[path] !== undefined || symbolicLinks.has(path) || directories.has(path)) {
@@ -56,7 +80,6 @@ vi.mock("node:fs/promises", () => ({
   })),
 }));
 
-const USER_PATH  = resolve("/tmp/ave-test/policy.json");
 const ADMIN_PATH = resolve("/tmp/ave-admin/policy.json");
 
 function writeFile(path: string, obj: object): void {
@@ -70,6 +93,7 @@ describe("policy-store", () => {
     // In-memory fixtures cover parsing and precedence; native trust has its own suite.
     setProcessPlatform("linux");
     for (const path of Object.keys(files)) delete files[path];
+    USER_PATH = join(fixtureDirectories(), "policy.json");
     for (const path of Object.keys(readErrors)) delete readErrors[path];
     symbolicLinks.clear();
     directories.clear();

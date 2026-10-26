@@ -1,3 +1,7 @@
+import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+useConfigurationOwner();
+
 import { spawn, type ChildProcess } from "node:child_process";
 import {
   chmodSync,
@@ -12,7 +16,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { FileLockReleaseError } from "../../lib/with-file-lock.js";
@@ -84,16 +88,6 @@ describe("SecretDocumentStore atomicity and policy", () => {
   let root: string;
   let path: string;
 
-  // Warm the fixture child once so per-test contention budgets exclude cold compilation and binary scanning.
-  beforeAll(async () => {
-    const warm = mkdtempSync(join(tmpdir(), "ave-secret-document-warm-"));
-    try {
-      const result = await waitForExit(spawnNode([childFixture, "set", join(warm, "ave-secrets.json"), "warm", "up"]));
-      expect(result.code, result.stderr).toBe(0);
-    } finally {
-      await cleanupTmpDir(warm);
-    }
-  }, 120_000);
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), "ave-secret-document-"));
@@ -229,31 +223,32 @@ describe("SecretDocumentStore atomicity and policy", () => {
     expect(readFileSync(path, "utf-8")).toBe(original);
   });
 
-  it("serializes cross-process set/set", async () => {
+  it("refuses independent non owner secret writers", async () => {
     const first = spawnNode([childFixture, "set", path, "alpha", "one"]);
     const second = spawnNode([childFixture, "set", path, "beta", "two"]);
     const results = await Promise.all([waitForExit(first), waitForExit(second)]);
     expect(results, results.map((result) => result.stderr).join("\n")).toEqual([
-      expect.objectContaining({ code: 0 }),
-      expect.objectContaining({ code: 0 }),
+      expect.objectContaining({ code: 1 }),
+      expect.objectContaining({ code: 1 }),
     ]);
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
-    expect(store.get("alpha")).toBe("one");
-    expect(store.get("beta")).toBe("two");
+    expect(results.every((result) => result.stderr.includes("AveHomeConfigurationNotOwnerError"))).toBe(true);
+    expect(store.get("alpha")).toBeNull();
+    expect(store.get("beta")).toBeNull();
   }, 20_000);
 
-  it("serializes cross-process set/delete", async () => {
+  it("refuses non owner secret set and delete", async () => {
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
     await store.set("remove", "old");
     const first = spawnNode([childFixture, "set", path, "keep", "new"]);
     const second = spawnNode([childFixture, "delete", path, "remove"]);
     const results = await Promise.all([waitForExit(first), waitForExit(second)]);
-    expect(results.every((result) => result.code === 0), results.map((result) => result.stderr).join("\n")).toBe(true);
-    expect(store.get("keep")).toBe("new");
-    expect(store.get("remove")).toBeNull();
+    expect(results.every((result) => result.code === 1 && result.stderr.includes("AveHomeConfigurationNotOwnerError")), results.map((result) => result.stderr).join("\n")).toBe(true);
+    expect(store.get("keep")).toBeNull();
+    expect(store.get("remove")).toBe("old");
   }, 20_000);
 
-  it("serializes cross-process bulk deletion with an unrelated set", async () => {
+  it("refuses non owner bulk deletion and set", async () => {
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
     await store.set("remove-alpha", "old-alpha");
     await store.set("remove-beta", "old-beta");
@@ -261,11 +256,11 @@ describe("SecretDocumentStore atomicity and policy", () => {
     const first = spawnNode([childFixture, "delete-many", path, "remove-alpha", "remove-beta"]);
     const second = spawnNode([childFixture, "set", path, "concurrent", "new"]);
     const results = await Promise.all([waitForExit(first), waitForExit(second)]);
-    expect(results.every((result) => result.code === 0), results.map((result) => result.stderr).join("\n")).toBe(true);
-    expect(store.get("remove-alpha")).toBeNull();
-    expect(store.get("remove-beta")).toBeNull();
+    expect(results.every((result) => result.code === 1 && result.stderr.includes("AveHomeConfigurationNotOwnerError")), results.map((result) => result.stderr).join("\n")).toBe(true);
+    expect(store.get("remove-alpha")).toBe("old-alpha");
+    expect(store.get("remove-beta")).toBe("old-beta");
     expect(store.get("preserve")).toBe("old-preserve");
-    expect(store.get("concurrent")).toBe("new");
+    expect(store.get("concurrent")).toBeNull();
   }, 20_000);
 
   it.each([
@@ -575,8 +570,8 @@ describe("SecretDocumentStore atomicity and policy", () => {
     else symlinkSync(externalDir, path, "junction");
     const store = new SecretDocumentStore({ path, policy: "packaged", encryption: availableEncryption() });
 
-    await expect(store.migrate()).rejects.toThrow(SecretDocumentValidationError);
-    expect(() => store.get("api")).toThrow(SecretDocumentValidationError);
+    await expect(store.migrate()).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
+    expect(() => store.get("api")).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
     expect(lstatSync(path).isSymbolicLink()).toBe(true);
     expect(readFileSync(externalPath, "utf-8")).toBe(external);
   });

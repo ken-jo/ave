@@ -168,9 +168,36 @@ public static class HomeDirectoryDacl {
       Check(NtSetInformationFile(handle, out io, memory, (uint)size, 10), "Repair rename failed");
     } finally { Marshal.FreeHGlobal(memory); GC.KeepAlive(parent); }
   }
-  public static bool RemoveConfigurationLock(SafeFileHandle handle, SecurityIdentifier user) {
-    if ((Attributes(handle) & 0x410) != 0) throw new InvalidOperationException("Configuration lock is not a regular file");
-    return Delete(handle, user);
+  [StructLayout(LayoutKind.Sequential)]
+  private struct ConfigurationIdentity {
+    public uint Attributes;
+    public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
+    public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
+  }
+  [DllImport("kernel32.dll", SetLastError = true)]
+  private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ConfigurationIdentity identity);
+  public static byte[] ReadConfigurationFile(string directory, string leaf, string homePath, bool protectedDirectory, string device, string inode, SecurityIdentifier user, bool elevated) {
+    using (var root = String.IsNullOrEmpty(homePath) ? null : OpenHome(homePath, user, false, true)) {
+    if (!String.IsNullOrEmpty(homePath) && (root == null || !RootSafe(Read(root), user, elevated, 0x1200a9))) throw new InvalidOperationException("Configuration home protection is unverified");
+    using (var parent = protectedDirectory ? OpenRelative(root, "config", user, 1, true, true, true, true, 7) : root ?? OpenHome(directory, user, false, true)) {
+      if (parent == null) return null;
+      if (protectedDirectory && !OwnerOnly(Read(parent), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
+      using (var handle = OpenRelative(parent, leaf, user, 1, false, true, false, true, 1)) {
+        if (handle == null) return null;
+        if ((Attributes(handle) & 0x410) != 0) throw new InvalidOperationException("Configuration is not a regular file");
+        ConfigurationIdentity identity;
+        if (!GetFileInformationByHandle(handle, out identity)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        ulong index = ((ulong)identity.IndexHigh << 32) | identity.IndexLow;
+        if (identity.Volume.ToString() != device || index.ToString() != inode) throw new InvalidOperationException("Configuration identity changed before open");
+        using (var input = new System.IO.FileStream(handle, System.IO.FileAccess.Read))
+        using (var bytes = new System.IO.MemoryStream()) {
+          if (input.Length > 4 * 1024 * 1024) throw new InvalidOperationException("Configuration file exceeds the size limit");
+          input.CopyTo(bytes);
+          return bytes.ToArray();
+        }
+      }
+    }
+    }
   }
   private static bool Delete(SafeFileHandle handle, SecurityIdentifier user) {
     long attributes = Attributes(handle);
@@ -340,6 +367,34 @@ public static class HomeDirectoryDacl {
           }
           }
           if (refused) return diagnostics.ToArray();
+          for (int index = 0; index < names.Length; index++) {
+            if (!String.IsNullOrEmpty(expectedHashes[index])) continue;
+            string text = names[index] == "settings.json" ? "{}\\n" : names[index] == "policy.json"
+              ? "{\\"version\\":1,\\"requireExplicitApproval\\":true,\\"managed\\":false}\\n"
+              : "{\\"version\\":1,\\"entries\\":{}}\\n";
+            byte[] contents = System.Text.Encoding.UTF8.GetBytes(text);
+            using (var existing = OpenRelative(destination, names[index], user, 1, false, true, false, true, 1)) {
+              if (existing != null) {
+                if ((Attributes(existing) & 0x410) != 0) { diagnostics.Add("Configuration without a root source is not a regular file: " + names[index]); return diagnostics.ToArray(); }
+                using (var input = new System.IO.FileStream(existing, System.IO.FileAccess.Read))
+                using (var bytes = new System.IO.MemoryStream()) {
+                  input.CopyTo(bytes);
+                  byte[] previous = bytes.ToArray();
+                  bool identical = previous.Length == contents.Length;
+                  for (int offset = 0; identical && offset < previous.Length; offset++) identical = previous[offset] == contents[offset];
+                  if (!identical) { diagnostics.Add("Configuration without a root source requires recovery: " + names[index]); return diagnostics.ToArray(); }
+                }
+                continue;
+              }
+            }
+            string staged = "." + names[index] + ".migration-" + Guid.NewGuid().ToString("N");
+            using (var copy = OpenRelative(destination, staged, user, 2, false, true, false))
+            using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
+              output.Write(contents, 0, contents.Length);
+              output.Flush(true);
+              Rename(copy, destination, names[index], true);
+            }
+          }
           string hashRecord = "{";
           for (int index = 0; index < names.Length; index++) {
             if (String.IsNullOrEmpty(expectedHashes[index])) continue;

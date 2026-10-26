@@ -5,8 +5,8 @@ import { join } from "node:path";
 import { replaceStagedFile } from "../lib/atomic-file.js";
 import { validateSecretDocument } from "../data/secret-document-store.js";
 import { parseConfigurationObject, parsePolicyDocument } from "./configuration-document.js";
-import { AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_CONFIGURATION_MARKER, AVE_HOME_CONFIGURATION_MARKER_CONTENT, AveHomeConfigurationUntrustedError, isAveHomeConfigurationRefused, setAveHomeConfigurationRefusedAtBoot, verifyAveHomeConfiguration, win32SystemBinary, type AveHomePrivacy } from "./ave-home.js";
-import { withAveHomeConfigurationLock } from "./ave-home-configuration-lock.js";
+import { aveHomeConfigurationDirectory, AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_CONFIGURATION_MARKER, AVE_HOME_CONFIGURATION_MARKER_CONTENT, AveHomeConfigurationUntrustedError, isAveHomeConfigurationRefused, setAveHomeConfigurationRefusedAtBoot, verifyAveHomeConfiguration, win32SystemBinary, type AveHomePrivacy } from "./ave-home.js";
+import { withAveHomeConfigurationMigration } from "./ave-home-configuration-access.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
@@ -34,14 +34,16 @@ function validateConfiguration(name: string, bytes: Buffer): void {
 
 /** Boot completes this before settings or policy readers can observe the new paths. */
 export function migrateAveHomeConfiguration(home: string, privacy?: AveHomePrivacy): string[] {
-  if (privacy?.enforcement === "none" || isAveHomeConfigurationRefused(home)) {
-    setAveHomeConfigurationRefusedAtBoot(home);
-    return [];
-  }
-  return withAveHomeConfigurationLock(home, () => {
+  return withAveHomeConfigurationMigration(home, () => {
+    if (privacy?.enforcement === "none" || isAveHomeConfigurationRefused(home)) {
+      setAveHomeConfigurationRefusedAtBoot(home);
+      return [];
+    }
     const committed = verifyAveHomeConfiguration(home, true);
-    return committed ? cleanupRootConfiguration(home)
+    const diagnostics = committed ? cleanupRootConfiguration(home)
       : process.platform === "win32" ? migrateWindowsConfiguration(home) : migratePosixConfiguration(home);
+    aveHomeConfigurationDirectory(home);
+    return diagnostics;
   });
 }
 
@@ -158,6 +160,30 @@ function migratePosixConfiguration(home: string): string[] {
       }
     }
     if (diagnostics.length > 0) return diagnostics;
+    for (const name of CONFIGURATION_FILES) {
+      if (copied.some((file) => file.name === name)) continue;
+      const bytes = name === "settings.json" ? "{}\n" : name === "policy.json"
+        ? '{"version":1,"requireExplicitApproval":true,"managed":false}\n'
+        : '{"version":1,"entries":{}}\n';
+      const existing = entry(join(destinationRoot, name));
+      if (existing !== undefined) {
+        if (!existing.isFile() || existing.isSymbolicLink()) return [`Configuration without a root source is not a regular file: ${join(destination, name)}`];
+        const input = openSync(join(destinationRoot, name), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          const identity = fstatSync(input);
+          if (identity.ino !== existing.ino || identity.dev !== existing.dev || !readFileSync(input).equals(Buffer.from(bytes))) {
+            return [`Configuration without a root source requires recovery: ${join(destination, name)}`];
+          }
+        } finally { closeSync(input); }
+        continue;
+      }
+      const staged = join(destinationRoot, `.${name}.migration-${randomUUID()}`);
+      const output = openSync(staged, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      try { writeFileSync(output, bytes); fsyncSync(output); }
+      finally { closeSync(output); }
+      try { replaceStagedFile(staged, join(destinationRoot, name)); fsyncSync(directoryHandle); }
+      finally { if (entry(staged) !== undefined) unlinkSync(staged); }
+    }
     for (const identity of copied) {
       const current = entry(identity.source);
       if (current?.ino !== identity.ino || current.dev !== identity.dev) return [`Configuration source changed before commit: ${identity.source}`];

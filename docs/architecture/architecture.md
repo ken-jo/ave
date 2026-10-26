@@ -2171,20 +2171,28 @@ with its own owner rule:
   before deleting any copied root file. Both path owners use the root until commit.
   Only an interactive desktop process holding the single-instance lock migrates;
   execution-mode and child processes only resolve the current on-disk layout.
-  A refused home stays root-only, without migration or a configuration lock.
+  A refused home stays root-only, without migration.
   No process caches the configuration location. Every read and write inspects
   `config/` and its marker without following links. Reads compare the directory's
   exact identity (volume serial and file ID on Windows, device and inode on POSIX)
   with the last fully verified identity and rerun the root-admission and owner-only
   checks when presence or identity changes. An unchanged identity permits reopening
   paths because the verified boundaries prevent foreign child replacement.
-  Migration and every settings, policy and legacy-secret write share the exclusive
-  `config/.ave-config.lock`, created with exclusive no-follow creation. It records
-  the PID and process start time. A dead PID or a reused PID permits recovery;
-  unreadable records require a 30-second age bound. A live matching holder blocks
-  writers, with a named error after a bounded five-second wait. Every write fully
-  verifies both boundaries while holding this lock and resolves its destination
-  there, so an old root-era writer observes another process's marker commit.
+  Only the primary interactive instance may write configuration. Boot installs
+  the live single-instance capability; other processes start read-only and receive
+  `AveHomeConfigurationNotOwnerError` on mutation. Existing host routes retain
+  their permission gates. Execution-mode secret provisioning is refused and
+  non-owner boot skips secret migrations. There is no configuration file lock,
+  process-start identity or stale-record recovery. Owner mutations share an
+  in-process FIFO queue, verify boundaries and resolve their destination inside
+  that queue. Synchronous owner migration completes before services start.
+  `AVE_HOME` is used exactly as supplied, even when its basename is `config`.
+  Readers open without following links and validate the opened regular file.
+  A vanished file triggers one fresh resolution; persistent absence after an
+  observed file or commit raises `AveHomeConfigurationUntrustedError`.
+  Defaults require both candidate files and the migration marker to be absent.
+  Before a new commit, absent source documents become explicit default documents;
+  missing documents in an already committed home are never silently recreated.
   Before commit, every retry atomically replaces published copies from validated
   root sources. A linked, unreadable or invalid root source prevents commit and
   retains all roots with a diagnostic. A malformed regular marker can be removed

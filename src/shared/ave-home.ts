@@ -13,6 +13,8 @@ export const AVE_HOME_CONFIGURATION_MARKER_CONTENT = "ave-home-boundary-v1";
 
 let refusedConfigurationHome: string | undefined;
 const verifiedConfigurationIdentities = new Map<string, string>();
+const configurationHomes = new Set<string>();
+const committedConfigurationHomes = new Set<string>();
 
 export class AveHomeConfigurationUntrustedError extends Error {
   constructor(readonly path: string, readonly reason: string) {
@@ -37,6 +39,7 @@ export function isAveHomeConfigurationRefused(home: string): boolean {
 
 export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const root = resolve(home);
+  configurationHomes.add(root);
   if (isAveHomeConfigurationRefused(root)) return root;
   const key = configurationKey(root);
   const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
@@ -45,6 +48,7 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
     try { directory = lstatSync(config, { bigint: true }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      if (committedConfigurationHomes.has(key)) throw new Error("Committed configuration directory is missing");
       verifiedConfigurationIdentities.delete(key);
       return root;
     }
@@ -61,16 +65,30 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
       if (fileIdentityKey(lstatSync(config, { bigint: true })) !== identity) throw new Error("Configuration directory changed during verification");
       verifiedConfigurationIdentities.set(key, identity);
     }
-    if (marker === undefined) return root;
+    if (marker === undefined) {
+      if (committedConfigurationHomes.has(key)) throw new Error("Configuration commit marker is missing");
+      return root;
+    }
     if (marker.size !== BigInt(Buffer.byteLength(AVE_HOME_CONFIGURATION_MARKER_CONTENT)) || readFileSync(join(config, AVE_HOME_CONFIGURATION_MARKER), "utf8") !== AVE_HOME_CONFIGURATION_MARKER_CONTENT) {
       throw new Error("Configuration marker content is invalid");
     }
+    committedConfigurationHomes.add(key);
     return config;
   } catch (error) {
     verifiedConfigurationIdentities.delete(key);
     if (error instanceof AveHomeConfigurationUntrustedError) throw error;
     throw new AveHomeConfigurationUntrustedError(config, (error as Error).message);
   }
+}
+
+export function configurationHomeForFile(path: string): string | undefined {
+  const candidate = configurationKey(path);
+  for (const home of new Set([aveHome(), ...configurationHomes])) {
+    for (const name of ["settings.json", "policy.json", "ave-secrets.json"]) {
+      if (candidate === configurationKey(join(home, name)) || candidate === configurationKey(join(home, "config", name))) return home;
+    }
+  }
+  return undefined;
 }
 
 export function verifyAveHomeConfiguration(home: string, recoverInvalidMarker: boolean | "boundary" = false): boolean {
@@ -402,6 +420,8 @@ export function assertAveHomePrivacyForConfinement(): void {
 export function _resetAveHomePrivacyForTest(): void {
   refusedConfigurationHome = undefined;
   verifiedConfigurationIdentities.clear();
+  configurationHomes.clear();
+  committedConfigurationHomes.clear();
   bootHomePrivacy = undefined;
   extensionsWithoutIsolationApproved = false;
   reportPrivacyRefusal = undefined;
