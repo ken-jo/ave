@@ -22,6 +22,7 @@ struct PathFacts {
   std::wstring canonical;
   FILE_ID_INFO id{};
   BY_HANDLE_FILE_INFORMATION legacy{};
+  LARGE_INTEGER change_time{};
   FILE_ATTRIBUTE_TAG_INFO tag{};
   std::wstring reparse_target;
 };
@@ -69,9 +70,12 @@ bool path_components(const wchar_t* input, std::vector<std::wstring>& components
 }
 
 bool handle_facts(HANDLE handle, PathFacts& facts) {
+  FILE_BASIC_INFO basic{};
   if (!GetFileInformationByHandleEx(handle, FileAttributeTagInfo, &facts.tag, sizeof(facts.tag))
       || !GetFileInformationByHandleEx(handle, FileIdInfo, &facts.id, sizeof(facts.id))
+      || !GetFileInformationByHandleEx(handle, FileBasicInfo, &basic, sizeof(basic))
       || !GetFileInformationByHandle(handle, &facts.legacy)) return false;
+  facts.change_time = basic.ChangeTime;
   const DWORD length = GetFinalPathNameByHandleW(handle, nullptr, 0, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
   if (length == 0 || length > 32768) return false;
   std::vector<wchar_t> buffer(static_cast<size_t>(length) + 1);

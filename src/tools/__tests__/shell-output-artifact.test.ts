@@ -9,8 +9,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { ConversationHistory } from "../../engine/conversation-history.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
+import { makeConversationLoopDeps } from "../../engine/__tests__/conversation-loop-test-helpers.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { normalizeToolOutputArtifactInfo } from "../../shared/tool-output-artifact.js";
@@ -21,16 +22,23 @@ import { createReadToolResultChunkTool, TOOL_RESULT_CHUNK_READER_METADATA_KEY } 
 const SESSION = "3138f9c6-89f0-4645-85ea-2c205f9523f4";
 const TOOL = "shell_capture_test";
 const dirs: string[] = [];
-afterEach(async () => { for (const dir of dirs.splice(0)) await cleanupTmpDir(dir); });
+const loops: ConversationLoop[] = [];
+afterEach(async () => {
+  for (const loop of loops.splice(0)) {
+    updateApprovalSurface({ kind: "release", sessionId: loop.sessionId });
+    await loop.auditLogger.close();
+  }
+  for (const dir of dirs.splice(0)) await cleanupTmpDir(dir);
+});
 
 function setup() {
   const dir = mkdtempSync(join(tmpdir(), "ave-shell-artifact-"));
   dirs.push(dir);
   const memoryManager = new MemoryManager({ aveDir: dir });
-  const history = new ConversationHistory();
-  const loop = Object.assign(Object.create(ConversationLoop.prototype) as ConversationLoop, {
-    history, sessionId: SESSION, deps: { memoryManager },
-  });
+  const loop = new ConversationLoop(makeConversationLoopDeps({ memoryManager }));
+  loops.push(loop);
+  loop.sessionId = SESSION;
+  const history = loop.history;
   const shellContext = {
     cwd: dir, extraAllowedDirectories: [],
     metadata: { toolOutputCaptureFactory: () => memoryManager.startToolOutputCapture(SESSION, TOOL) },
@@ -87,7 +95,7 @@ describe.skipIf(process.platform === "win32")("foreground shell artifact recover
     expect(existsSync(join(dir, "sessions", SESSION, "tool-results"))).toBe(false);
     expect(memoryManager.rehydrateToolResultArtifacts(SESSION, saved)).toEqual(saved);
     const freshMemory = new MemoryManager({ aveDir: dir });
-    Object.assign(loop, { deps: { memoryManager: freshMemory } });
+    loop.deps.memoryManager = freshMemory;
     history.restore(saved);
     await freshMemory.saveSession(SESSION, history.getMessages());
     const after = JSON.parse((await chunk.execute({ toolUseId: TOOL, query: "TAIL-한글" }, chunkContext)).output);

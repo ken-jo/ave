@@ -8,16 +8,18 @@ import type { InitPluginRuntimeInput } from "./steps/plugin-runtime.js";
 import type { ReleasePrepInput, ReleasePrepOutput } from "./steps/post-boot.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { BrowserUploadPickerRequest } from "../main/browser/browser-upload.js";
+import type { OpenOAuthLogin } from "../main/oauth-login.js";
 
 /** Desktop-owned capabilities. The server has no presentation surface. */
 export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   "openAuthWindowService" | "openLinkWindowService" | "openAuthPartitionViewerService"
   | "clearAuthPartitionService" | "shellOpenExternal"> {
   getAppWindows(): BrowserWindow[];
+  openOAuthLogin: OpenOAuthLogin;
   getFocusedWindow(): BrowserWindow | null;
-  /** Resolve the session’s open window first; the prompt resolver may fall back to the active window. */
+  /** The live renderer hosting this exact session, or null when it is unhosted. */
   findSessionSurface(sessionId: string | undefined): WebContents | null;
-  /** Terminal approval prompts belong only to the window owning the tab; never fall back. */
+  /** The live terminal tab owner's renderer, or null; never fall back to another window. */
   findTerminalSurface(tabId: string): WebContents | null;
   getAuthPartition(partition: string): Session;
   installPluginPartition(pluginId: string, pluginRoot: string | undefined): void;

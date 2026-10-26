@@ -1,3 +1,4 @@
+import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 /** Opted-in approval memory follows target scope; new arguments still need a fresh review no riskier than the stored verdict.
  * Unscoped tools keep exact-argument memory, and recorded identity comes only from the host pending snapshot. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -72,13 +73,14 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     const rules = new RuleBasedRiskClassifier();
     const classify = vi.fn((ctx: ToolInvocationContext) => rules.classify(ctx));
     if (options.reviewer === false) {
+      wireJudgeForTest(manager);
       // No reviewer: every card is an unassessed ask, which may be remembered exactly; the lane a tool without a memory scope always uses.
       manager.setInteractiveAutoApprove("low");
     } else {
       // Every call reaches the card; nothing is auto-approved by threshold.
       manager.setInteractiveAutoApprove("off");
       reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
-      manager.setReviewer({
+      setReviewerForTest(manager, {
         classifier: { classify },
         cache: reviewerCache,
         deferredQueue: new DeferredQueue(join(aveHomeDir, "deferred.jsonl")),
@@ -86,7 +88,7 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
     }
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
-    const gate = new ApprovalGate({
+    const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
         if (channel !== "ave:approval:request") return;
@@ -114,10 +116,11 @@ describe("remembered decisions keyed on the tool's opted-in memory scope", () =>
             choice: choice === "deny-exact" ? "deny-once" : "allow-once",
             nonce: request.nonce,
             hmac: request.hmac,
-          });
+          }, nativeWebContents as never);
         })());
       },
-    } as never);
+    };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (

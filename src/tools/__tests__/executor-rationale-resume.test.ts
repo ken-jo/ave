@@ -396,6 +396,7 @@ describe("ToolExecutor sealed rationale resume", () => {
         "authorized-audit",
         "started-audit",
         "tool-start",
+        "audit-writable",
         "tool-execute",
         "config-post",
         "script-post",
@@ -509,6 +510,11 @@ describe("ToolExecutor sealed rationale resume", () => {
       expect(first.is_error).toBeUndefined();
       expect(second.is_error).toBe(true);
       expect(second.content).toContain("already started");
+      const sessionId = f.options.sessionId;
+      if (sessionId === undefined) throw new Error("Fixture session identity is missing");
+      expect(f.manager.getJudgeBreaker().snapshot(sessionId)).toEqual({
+        consecutive: 1, total: 1, open: false,
+      });
       expect(f.execute).toHaveBeenCalledOnce();
       expect(f.order.filter((entry) => entry === "tool-start")).toHaveLength(1);
       expect(f.invocationAudits.map((record) => record.state)).toEqual([

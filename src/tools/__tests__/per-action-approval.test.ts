@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** Per-action asks always require one-shot human approval with no memory reuse or recording.
  * Pass the authorized target scope to execution so moving targets can recheck it. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,7 +63,7 @@ describe("per-action approval and the authorized scope", () => {
     manager.setInteractiveAutoApprove(autoApprove);
     reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
     const classify = vi.fn(() => ({ level: "medium" as const, reason: "stub medium" }));
-    manager.setReviewer({
+    setReviewerForTest(manager, {
       classifier: { classify },
       cache: reviewerCache,
       deferredQueue: new DeferredQueue(join(aveHomeDir, "deferred.jsonl")),
@@ -70,7 +71,7 @@ describe("per-action approval and the authorized scope", () => {
     const cards: ApprovalRequest[] = [];
     const recorded: string[] = [];
     const recordings: Promise<void>[] = [];
-    const gate = new ApprovalGate({
+    const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
         if (channel !== "ave:approval:request") return;
@@ -96,10 +97,11 @@ describe("per-action approval and the authorized scope", () => {
             choice: "allow-once",
             nonce: request.nonce,
             hmac: request.hmac,
-          });
+          }, nativeWebContents as never);
         })());
       },
-    } as never);
+    };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (name: string, input: Record<string, unknown>) => {

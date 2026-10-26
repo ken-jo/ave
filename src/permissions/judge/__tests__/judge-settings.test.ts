@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { llmVendorModelOptions } from "../../../shared/llm-vendor-defaults.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
@@ -267,8 +268,15 @@ describe("judge settings", () => {
     expect(() => validateJudgeSettings(persisted)).toThrow(/chain\[1\] \(stage 'llm'\)\.escalateBelow/);
   });
 
-  it("breaker thresholds are configurable", () => {
-    expect(validateJudgeSettings({ breaker: { consecutive: 2, total: 5 } }).breaker).toEqual({ consecutive: 2, total: 5 });
+  it("accepts only the fixed classifier block thresholds", () => {
+    expect(validateJudgeSettings({ breaker: { consecutive: 3, total: 20 } }).breaker).toEqual({ consecutive: 3, total: 20 });
+    for (const breaker of [{ consecutive: 2, total: 5 }, { consecutive: 3, total: 21 }]) {
+      expect(() => validateJudgeSettings({ breaker })).toThrow(/3 consecutive or 20 total/);
+      const read = normalizeJudgeSettings({ breaker });
+      expect(read.issues.join(" ")).toContain("3 consecutive or 20 total");
+      expect(read.chainRejected).toBe(true);
+      expect(read.settings.breaker).toEqual({ consecutive: 3, total: 20 });
+    }
   });
 
   it("distinguishes rejected active chains from explicit off and unrelated warnings", () => {
@@ -304,41 +312,40 @@ describe("external stage env", () => {
 });
 
 describe("JudgeCircuitBreaker", () => {
-  it("re-evaluates existing counts when the limits change, closing under raised limits", () => {
+  it("rewiring keeps the pause and rejects noncanonical thresholds", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
-    for (let i = 0; i < 3; i++) b.record("s", "deny");
+    for (let i = 0; i < 3; i++) b.record("s", "deny", randomUUID());
     expect(b.isOpen("s")).toBe(true);
     b.setLimits({ consecutive: 3, total: 20 });
     expect(b.isOpen("s")).toBe(true);
-    b.setLimits({ consecutive: 5, total: 20 });
-    expect(b.snapshot("s")).toEqual({ consecutive: 3, total: 3, open: false });
-    b.setLimits({ consecutive: 5, total: 3 });
+    expect(() => b.setLimits({ consecutive: 5, total: 20 })).toThrow(/3 consecutive or 20 total/);
+    expect(b.snapshot("s")).toEqual({ consecutive: 3, total: 3, open: true });
+    expect(() => b.setLimits({ consecutive: 5, total: 3 })).toThrow(/3 consecutive or 20 total/);
     expect(b.isOpen("s")).toBe(true);
   });
 
-  it("trips on N consecutive denials; allow resets the streak, ask does not count", () => {
+  it("trips on three consecutive blocks; allow resets the streak and ask counts", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
-    b.record("s", "deny");
-    b.record("s", "deny");
-    b.record("s", "allow");
-    b.record("s", "deny");
-    b.record("s", "ask");
-    b.record("s", "deny");
+    b.record("s", "deny", randomUUID());
+    b.record("s", "deny", randomUUID());
+    b.record("s", "allow", randomUUID());
+    b.record("s", "deny", randomUUID());
+    b.record("s", "ask", randomUUID());
     expect(b.isOpen("s")).toBe(false);
-    expect(b.record("s", "deny")).toBe(true);
+    expect(b.record("s", "deny", randomUUID())).toBe(true);
     expect(b.isOpen("s")).toBe(true);
   });
 
   it("trips on M total denials even with allows between", () => {
     const b = new JudgeCircuitBreaker({ consecutive: 3, total: 20 });
     for (let i = 0; i < 19; i++) {
-      b.record("s", "deny");
-      b.record("s", "allow");
+      b.record("s", "deny", randomUUID());
+      b.record("s", "allow", randomUUID());
     }
     expect(b.isOpen("s")).toBe(false);
-    b.record("s", "deny");
+    b.record("s", "deny", randomUUID());
     expect(b.isOpen("s")).toBe(true);
-    expect(b.snapshot("s").total).toBe(20);
+    expect(b.snapshot("s").total).toBe(0);
   });
 });
 

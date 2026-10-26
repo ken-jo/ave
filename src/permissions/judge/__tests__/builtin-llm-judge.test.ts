@@ -1,5 +1,5 @@
+import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { describe, expect, it } from "vitest";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../../permission-manager.js";
 import {
@@ -9,7 +9,6 @@ import {
   type LlmRiskClassificationTrace,
   type RiskVerdict,
 } from "../../reviewer/risk-classifier.js";
-import type { ReviewerInteractiveAutoApprove } from "../../permission-settings-store.js";
 import { BuiltinLlmJudge, mapRiskVerdictToJudgeDecision, type TracingRiskClassifier } from "../builtin-llm-judge.js";
 import { collectingAudit, judgeInvocation, judgeRequest, judgeSettings } from "./judge-request-fixture.js";
 import { useTempDirs } from "../../../__tests__/test-helpers.js";
@@ -26,30 +25,20 @@ import type { ToolPermissionContext } from "../../../tools/executor.js";
 import { resolveJudge } from "../judge-engine.js";
 import { JudgeCircuitBreaker } from "../judge-breaker.js";
 
-const LEVELS = ["low", "medium", "high"] as const;
-const FLAGS = [undefined, false, true] as const;
-const AUTO: ReviewerInteractiveAutoApprove[] = ["off", "low", "medium"];
-
-describe("builtin-llm mapping is today's resolveReviewerDecision", () => {
-  it("matches PermissionManager for every level × flag × autoApprove × lane", () => {
-    const pm = new PermissionManager(join(tmpdir(), "ave-judge-equivalence", "permissions.json"));
-    let checked = 0;
-    for (const auto of AUTO) {
-      pm.setInteractiveAutoApprove(auto);
-      for (const level of LEVELS) {
-        for (const flag of FLAGS) {
-          const verdict: RiskVerdict = { level, reason: "r", ...(flag === undefined ? {} : { requiresExplicitApproval: flag }) };
-          expect(mapRiskVerdictToJudgeDecision(verdict, "foreground", auto)).toBe(
-            pm.resolveReviewerDecision(verdict, "foreground-auto").decision,
-          );
-          expect(mapRiskVerdictToJudgeDecision(verdict, "headless", auto)).toBe(
-            pm.resolveReviewerDecision(verdict, "headless").decision,
-          );
-          checked += 2;
-        }
-      }
-    }
-    expect(checked).toBe(AUTO.length * LEVELS.length * FLAGS.length * 2);
+describe("builtin risk decision thresholds", () => {
+  it.each([
+    ["low", undefined, "off", "allow"],
+    ["low", true, "low", "allow"],
+    ["medium", undefined, "low", "ask"],
+    ["medium", undefined, "medium", "allow"],
+    ["medium", false, "medium", "allow"],
+    ["medium", true, "medium", "ask"],
+    ["high", undefined, "medium", "ask"],
+  ] as const)("foreground %s explicit=%s threshold=%s produces %s", (level, requiresExplicitApproval, threshold, expected) => {
+    expect(mapRiskVerdictToJudgeDecision({ level, reason: "reviewed", requiresExplicitApproval }, "foreground", threshold)).toBe(expected);
+  });
+  it.each([["low", "allow"], ["medium", "deny"], ["high", "deny"]] as const)("headless %s produces %s", (level, expected) => {
+    expect(mapRiskVerdictToJudgeDecision({ level, reason: "reviewed" }, "headless", "medium")).toBe(expected);
   });
 });
 
@@ -115,7 +104,7 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
           const finalInput = { command };
           const classifier = new LlmRiskClassifier(provider, "model-under-test", fallbackOnError, {}, NO_RETRY);
           const pm = new PermissionManager(join(dir, "permissions.json"));
-          pm.setReviewer({
+          setReviewerForTest(pm, {
             classifier,
             cache: new VerdictCache(join(dir, "cache.jsonl")),
             deferredQueue: new DeferredQueue(join(dir, "queue.jsonl")),
@@ -138,6 +127,7 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
             { trustOrigin: "llm-tool-arg", headless: lane === "headless" } as ToolPermissionContext,
             evaluationContext, {}, undefined, { groupId: "g1", toolUseId: "tu1", displayOrder: 0 }, undefined,
           ];
+          args[17] = "parity-session";
           const today =
             lane === "headless"
               ? (await dispatchReviewerForHeadless(...(args as Parameters<typeof dispatchReviewerForHeadless>))).permissionResult.decision
@@ -176,4 +166,13 @@ describe("builtin-llm parity with the shipped reviewer dispatch", () => {
     }
   }
   }
+});
+
+it("rejects unknown internal trace outcomes rather than mapping a default decision", async () => {
+  const judge = new BuiltinLlmJudge({
+    async classifyWithTrace() {
+      return { ruleVerdict: { level: "low", reason: "rule" }, llmVerdict: null, finalVerdict: { level: "low", reason: "rule" }, outcome: "unknown" } as never;
+    },
+  }, () => "medium");
+  await expect(judge.judge(judgeRequest(), new AbortController().signal)).rejects.toThrow("Invalid internal reviewer classification trace");
 });

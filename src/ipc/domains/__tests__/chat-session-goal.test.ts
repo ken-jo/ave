@@ -1,7 +1,7 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 // Stop pauses the goal too, or goal revival immediately reacquires the turn lease.
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { CHANNELS } from "../../../contract/app-contract.js";
-import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import { createConversationSurfaceRuntime } from "../../../engine/conversation-surface-runtime.js";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { SessionGoalStore } from "../../../main/session-goal-store.js";
@@ -31,6 +31,7 @@ async function setup() {
   });
   const abortCurrentTurn = vi.fn();
   const { registerChatHandlers } = await import("../chat.js");
+  await installNativeChatWindow();
   registerChatHandlers({
     conversationLoop: {
       getSessionId: () => SESSION,

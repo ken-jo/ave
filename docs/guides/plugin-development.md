@@ -262,6 +262,18 @@ The host creates the partition, collects cookies or tokens according to policy,
 and clears the partition when requested. Extensions must not embed arbitrary auth
 flows in renderer code.
 
+### Sign-in compatibility limits
+
+Native WebAuthn credential prompts bypass the window's permission handlers.
+Ave does not install a `configureWebAuthn` or account-selection handler, so
+macOS platform passkeys and discoverable-credential pickers may not work in
+the sign-in window. Try a security key, a phone passkey, or another sign-in
+method offered by the site.
+
+Scripted OTP **Paste** buttons that use `navigator.clipboard.readText` are
+blocked because the sign-in window denies `clipboard-read`. Paste the code
+with **Cmd+V** on macOS or **Ctrl+V** on Windows/Linux instead.
+
 ## Testing Checklist
 
 Before publishing or merging an extension change:

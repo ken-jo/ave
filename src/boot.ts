@@ -1,5 +1,6 @@
 import { readPluginRegistry, vouchedInstalledPluginIds } from "./plugins/registry.js";
-import { promptSurfaceResolver, requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
+import { requireDesktopHost, type BootHost } from "./boot/host-runtime.js";
+import { approvalSurfaceResolver } from "./boot/approval-surface.js";
 import { configureHostResources } from "./main/host-resources.js";
 /**
  * Boot Sequence — §4.2 (thin orchestrator).
@@ -308,10 +309,8 @@ export async function bootstrap(
   // live gate — without this ordering, plugins receive a hostApi missing the
   // namespace and §8 main-process approval routing silently no-ops.
   const approvalGate = await createApprovalGate(
-    // Headless runs have no desktop surface. Otherwise each approval card goes
-    // to the window resolved when it is raised — never a window bound at boot,
-    // which the user may close while another main window stays open.
-    mainWindow === null ? null : promptSurfaceResolver(host, getMainWindow),
+    // Resolve the current conversation owner on delivery, listing and response.
+    mainWindow === null ? null : approvalSurfaceResolver(),
     ctx.bootAuditLogger,
     ctx.notificationService,
     // Tier 2 of the sub-agent approval chain, supplied as accessors rather
@@ -864,7 +863,6 @@ export async function bootstrap(
     },
   });
   ctx.subscriptionProviderFactory = createSubscriptionChatLoopBindings({
-    shellOpenExternal: (url) => requireDesktopHost(host).shellOpenExternal(url),
     auditLogger: ctx.bootAuditLogger,
   }).subscriptionProviderFactory;
 

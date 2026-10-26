@@ -92,6 +92,11 @@ try {
   assert.equal(pins.code, 0, pins.stderr);
   const rows = JSON.parse(pins.stdout);
   assert.equal(rows.length, paths.length);
+  for (const row of rows.flatMap(row => [row, ...row.ancestors])) {
+    if (row.exists === true) assert.match(row.changeTime, /^0x[0-9a-f]{16}$/u, "changeTime is a hex-64 string");
+    else assert.equal(row.changeTime, null, "missing and uninspected objects have null changeTime");
+  }
+  assert.equal(JSON.parse(run("--pin", file).stdout)[0].changeTime, rows[0].changeTime, "unchanged pins have stable changeTime");
   for (const [index, path] of paths.slice(0, 2).entries()) {
     const stat = lstatSync(path, { bigint: true });
     assert.equal(BigInt(rows[index].volumeSerialNumber), stat.dev, "Node dev is the legacy 32-bit volume serial");
@@ -154,6 +159,7 @@ public static class FixtureReparse {
   const dacls = run("--dacl", "--parent", "--content", file);
   assert.equal(dacls.code, 0, dacls.stderr);
   const [dacl] = JSON.parse(dacls.stdout);
+  assert.equal(dacl.changeTime, rows[0].changeTime, "DACL facts carry the pinned changeTime");
   assert.deepEqual(dacl.identity, { volumeSerial: rows[0].volumeSerial, fileId: rows[0].fileId });
   assert.equal(Buffer.from(dacl.contentHex, "hex").toString(), "pinned bytes");
   assert.equal(typeof dacl.owner, "string");

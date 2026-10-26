@@ -1048,8 +1048,8 @@ describe("common subscription runtime IPC", () => {
   it("validates a runtime-supplied verification URL before opening it", async () => {
     const deps = makeDeps();
     runtime.openPendingVerificationUrl.mockImplementation(
-      async (_provider: SubscriptionRuntimeId, openExternal: (url: string) => Promise<void>) => {
-        await openExternal("javascript:alert('unsafe')");
+      async (_provider: SubscriptionRuntimeId, openAuthorizationUrl: (url: string) => Promise<void>) => {
+        await openAuthorizationUrl("javascript:alert('unsafe')");
         return readyStatus("kimi-code");
       },
     );

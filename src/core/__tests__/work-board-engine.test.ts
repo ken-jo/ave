@@ -1,4 +1,4 @@
-/** Use a real temporary board with injected runner and approval gate to test orchestration without model calls. */
+/** Use a real temporary board with an injected runner and real approval gate to test orchestration without model calls. */
 import { describe, it, expect } from "vitest";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -14,7 +14,7 @@ import { readRunTranscript } from "../../work-board/run-transcript.js";
 import {
   boardParentToolRegistry,
   memTranscriptStorage,
-  scriptedApprovalGate as fakeGate,
+  boardApprovalGate,
   tempBoardStore as tempBoard,
 } from "../../work-board/__tests__/board-test-fixtures.js";
 import { assistantEntry } from "../../__tests__/test-helpers.js";
@@ -65,6 +65,25 @@ function fakeRunner(): { runner: SubAgentRunner; calls: SpawnCall[] } {
 }
 
 describe("WorkBoardEngine — plan→approve→execute", () => {
+  it("denies an authenticated standing-grant answer that the plan card did not offer", async () => {
+    const { store, cleanup } = tempBoard();
+    try {
+      const created = await store.create({ title: "one plan at a time" });
+      if (created.status !== "created") throw new Error("setup failed");
+      const { runner, calls } = fakeRunner();
+      const { gate, owner, requests } = boardApprovalGate("allow-always");
+      const engine = createWorkBoardEngine({ store, getRunner: () => runner, approvalGate: gate, emitProgress: () => {} });
+      const result = await engine.runItem(created.itemId, { approvalSurface: owner });
+      expect(result.status).toBe("denied");
+      expect(result.reason).toBe("approval choice not allowed");
+      expect(calls).toHaveLength(1);
+      expect(requests).toHaveLength(1);
+      expect(requests[0].allowedChoices).toEqual(["allow-once", "deny-once"]);
+    } finally {
+      await cleanup();
+    }
+  });
+
   it("runs the full sequence on approval and persists plan + output", async () => {
     const { store, cleanup } = tempBoard();
     try {
@@ -74,7 +93,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       const id = created.itemId;
 
       const { runner, calls } = fakeRunner();
-      const { gate, requests } = fakeGate("allow-once");
+      const { gate, owner, requests } = boardApprovalGate("allow-once");
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({
         store,
@@ -83,7 +102,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
         emitProgress: (e) => events.push(e),
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
 
       expect(result.status).toBe("completed");
       expect(result.plan).toBe("PLAN: do A then B");
@@ -101,7 +120,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       expect(calls[1].projectRoot).toBe(projectRoot);
 
       expect(requests).toHaveLength(1);
-      const req = requests[0] as Record<string, unknown>;
+      const req = requests[0];
       expect(req.kind).toBe("agent-action");
       expect(req.toolCategory).toBe("meta");
       expect((req.args as { plan: string }).plan).toBe("PLAN: do A then B");
@@ -123,7 +142,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
     }
   });
 
-  it("runs an ACCEPTED PROPOSAL through the same gate, and one durable click never becomes a standing grant", async () => {
+  it("runs an ACCEPTED PROPOSAL through the same gate, and one approval never becomes a standing grant", async () => {
     const { store, cleanup } = tempBoard();
     try {
       const posted = await store.upsertProposal(
@@ -142,7 +161,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       if (accepted.status !== "accepted") throw new Error("setup failed");
 
       const { runner, calls } = fakeRunner();
-      const { gate, requests } = fakeGate("allow-always");
+      const { gate, owner, requests } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -150,18 +169,18 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
         emitProgress: () => {},
       });
 
-      const first = await engine.runItem(accepted.itemId);
+      const first = await engine.runItem(accepted.itemId, { approvalSurface: owner });
       expect(first.status).toBe("completed");
       // Plugin-supplied plan text must not gain mutating tools before approval.
       expect(calls[0].profileMode).toBe("plan");
       expect(calls[0].grantedToolNames).toContain("read_file");
 
-      const req = requests[0] as Record<string, unknown>;
+      const req = requests[0];
       expect(req.allowedChoices).toEqual(["allow-once", "deny-once"]);
       expect(req.durableApprovalRecordAllowed).toBe(false);
 
-      // A later run must ask again; a durable answer must not disable all future plan approvals.
-      const second = await engine.runItem(accepted.itemId);
+      // A later run must ask again; a prior answer must not disable future plan approvals.
+      const second = await engine.runItem(accepted.itemId, { approvalSurface: owner });
       expect(second.status).toBe("completed");
       expect(requests).toHaveLength(2);
     } finally {
@@ -177,7 +196,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       const id = created.itemId;
 
       const { runner, calls } = fakeRunner();
-      const { gate } = fakeGate("deny-once");
+      const { gate, owner } = boardApprovalGate("deny-once");
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({
         store,
@@ -186,7 +205,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
         emitProgress: (e) => events.push(e),
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
 
       expect(result.status).toBe("denied");
       expect(result.plan).toBe("PLAN: do A then B");
@@ -209,7 +228,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
     const { store, cleanup } = tempBoard();
     try {
       const { runner, calls } = fakeRunner();
-      const { gate, requests } = fakeGate("allow-once");
+      const { gate, owner, requests } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -217,7 +236,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(9999);
+      const result = await engine.runItem(9999, { approvalSurface: owner });
 
       expect(result.status).toBe("not_found");
       expect(calls).toHaveLength(0);
@@ -234,7 +253,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       if (created.status !== "created") throw new Error("setup failed");
       const id = created.itemId;
 
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => undefined,
@@ -242,7 +261,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
       expect(result.status).toBe("error");
 
       const got = await store.get(id);
@@ -310,7 +329,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
       const id = created.itemId;
 
       const runner = floodingRunner();
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const events: WorkBoardRunEvent[] = [];
       const transcriptStorage = memTranscriptStorage();
       const engine = createWorkBoardEngine({
@@ -321,7 +340,7 @@ describe("WorkBoardEngine — plan→approve→execute", () => {
         transcriptStorage,
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
       expect(result.status).toBe("completed");
 
       const turnEvents = events.filter((e) => e.turn !== undefined);

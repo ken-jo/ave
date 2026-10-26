@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { AuditEntry, AuditLogger } from "../../../audit/audit-logger.js";
 import type { PermissionAuditEntry, PermissionAuditEntryInput } from "../../../audit/audit-schema.js";
 import type { ToolInvocationContext } from "../../reviewer/risk-classifier.js";
@@ -25,6 +26,7 @@ export function judgeInvocation(overrides: Partial<ToolInvocationContext> = {}):
 
 export function judgeRequest(overrides: Partial<JudgeRequest> = {}): JudgeRequest {
   return {
+    invocationId: randomUUID(),
     sessionId: "session-root",
     lane: "foreground",
     invocation: judgeInvocation(),

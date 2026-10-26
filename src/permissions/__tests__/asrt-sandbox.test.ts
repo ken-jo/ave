@@ -1622,7 +1622,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       // Supply native-shaped pins locally so the identity-less snapshot is actually rejected first.
       const pin = vi.spyOn(facts, "pinWindowsPaths").mockImplementation(paths => paths.map(path => ({
         exists: true, canonical: path, volumeSerial: "0x0000000000000001", fileId: "0x00000000000000000000000000000001",
-        volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001",
+        volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001", changeTime: "0x0000000000000001",
         attributes: 0, reparseTag: 0, directory: false, reparseTarget: null, ancestors: [],
       })));
       let checked: ReturnType<typeof reader.recheckWindowsReadDenyEvidence>;

@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -25,7 +26,7 @@ describe("routine write permission dependency", () => {
       const manager = new PermissionManager(join(dir, "permissions.json"));
       manager.setMode("auto");
       const classify = vi.fn(() => ({ level: level ?? "high", reason: "External write" }));
-      if (level) manager.setReviewer({ classifier: { classify }, cache: new VerdictCache(join(dir, "cache.jsonl")), deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
+      if (level) setReviewerForTest(manager, { classifier: { classify }, cache: new VerdictCache(join(dir, "cache.jsonl")), deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
       const executor = new ToolExecutor(registry, undefined, manager);
       const [result] = await executor.executeAll([{ id: "reply", name: "samplemail_email_reply", input: {} }], {
         sessionId: "routine-session", permissionContext: userPermissionContext({ headless: true }),

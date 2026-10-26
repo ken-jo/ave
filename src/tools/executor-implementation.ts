@@ -333,6 +333,7 @@ export class ToolExecutor {
     context: ToolPermissionContext,
     approvalCacheKey: string | undefined,
     sandboxAttestation: { ownerPluginSandboxRoot?: string },
+    invocationId: string,
     mcpServerId?: string,
     workerId?: string,
     pluginId?: string,
@@ -340,7 +341,8 @@ export class ToolExecutor {
     auditInput?: Record<string, unknown>,
     sessionId?: string,
   ): Promise<PermissionCheckResult | null> {
-    return tryUserApprovalMemorySkipImpl(
+    if (this.permissionManager?.isAutomatedApprovalPaused(sessionId)) return null;
+    const result = await tryUserApprovalMemorySkipImpl(
       toolName,
       source,
       category,
@@ -352,6 +354,7 @@ export class ToolExecutor {
       context,
       approvalCacheKey,
       sandboxAttestation,
+      invocationId,
       mcpServerId,
       workerId,
       pluginId,
@@ -370,6 +373,7 @@ export class ToolExecutor {
         ? (...args) => this.permissionManager!.dispatchReviewer(...args)
         : undefined,
     );
+    return this.permissionManager?.isAutomatedApprovalPaused(sessionId) ? null : result;
   }
 
   async executeAll(
@@ -558,7 +562,9 @@ export class ToolExecutor {
     try {
       return await this.executeOne(
         toolUse,
-        randomUUID(),
+        // A sealed continuation is the original invocation, including when
+        // replay is refused by its start gate. Keep its review identity.
+        target.control.triggeringBatchDisposition.batchId,
         0,
         opts,
         undefined,

@@ -28,12 +28,13 @@ async function wiring(encrypted = true) {
   };
   const hostFetch = vi.fn();
   const shellOpenExternal = vi.fn(async () => {});
+  const openOAuthLogin = vi.fn(async (_url: string, _login: import("../../main/oauth-login.js").OAuthLoginOptions) => {});
   const context = {
     settingsService: settings, singleHopNetworkFetch: hostFetch,
-    host: { desktop: { shellOpenExternal } },
+    host: { desktop: { shellOpenExternal, openOAuthLogin } },
   } as unknown as BootContext;
   await setupMcp(context);
-  return { settings, hostFetch, shellOpenExternal, oauth: capture.args[9] as McpOAuthDependencies };
+  return { settings, hostFetch, shellOpenExternal, openOAuthLogin, oauth: capture.args[9] as McpOAuthDependencies };
 }
 
 describe("remote authorization boot boundaries", () => {
@@ -59,12 +60,14 @@ describe("remote authorization boot boundaries", () => {
   });
 
   it("stores credentials through the existing secret store and opens only the host browser surface", async () => {
-    const { settings, shellOpenExternal, oauth } = await wiring();
+    const { settings, shellOpenExternal, openOAuthLogin, oauth } = await wiring();
     await oauth.secrets.setSecret("mcp.oauth.record", "throwaway-secret");
     expect(settings.setSecret).toHaveBeenCalledWith("mcp.oauth.record", "throwaway-secret");
     await oauth.secrets.deleteSecret("mcp.oauth.record");
     expect(settings.deleteSecret).toHaveBeenCalledWith("mcp.oauth.record");
-    await oauth.openAuthorizationUrl("https://auth.example.test/authorize");
-    expect(shellOpenExternal).toHaveBeenCalledWith("https://auth.example.test/authorize");
+    const login = { completion: Promise.resolve(), onCancel: vi.fn(), timeoutMs: 10_000 };
+    await oauth.openAuthorizationUrl("https://auth.example.test/authorize", login);
+    expect(openOAuthLogin).toHaveBeenCalledWith("https://auth.example.test/authorize", login);
+    expect(shellOpenExternal).not.toHaveBeenCalled();
   });
 });

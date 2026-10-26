@@ -1,7 +1,9 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ApprovalChoice, ApprovalDecision, ApprovalGate } from "../../permissions/approval-gate.js";
+import type { WebContents } from "electron";
+import { ApprovalGate, type ApprovalChoice, type ApprovalRequest } from "../../permissions/approval-gate.js";
+import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
 import { WorkBoardStore } from "../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { WorkItemListResult, WorkItemResolved } from "../../shared/work-board-types.js";
@@ -50,18 +52,27 @@ export function tempBoardStore(): {
   };
 }
 
-export function scriptedApprovalGate(choice: ApprovalChoice): {
+/** Deliver signed cards through the real gate and answer as their registered owner. */
+export function boardApprovalGate(choice: ApprovalChoice): {
   gate: ApprovalGate;
-  requests: unknown[];
+  owner: WebContents;
+  requests: Array<ApprovalRequest & { durableApprovalRecordAllowed: boolean }>;
 } {
-  const requests: unknown[] = [];
-  const gate = {
-    async requestAndWait(request: unknown): Promise<ApprovalDecision> {
-      requests.push(request);
-      return { requestId: "scripted-gate-request", choice };
+  const requests: Array<ApprovalRequest & { durableApprovalRecordAllowed: boolean }> = [];
+  const owner = {
+    isDestroyed: () => false,
+    send: (channel: string, request: ApprovalRequest) => {
+      if (channel !== "ave:approval:request") return;
+      const snapshot = gate.getRequestSnapshot(request.id);
+      if (!snapshot) throw new Error("Missing board approval snapshot");
+      requests.push({ ...request, durableApprovalRecordAllowed: snapshot.durableApprovalRecordAllowed });
+      queueMicrotask(() => gate.resolveFromDesktopRenderer(request.id, {
+        requestId: request.id, choice, nonce: request.nonce, hmac: request.hmac,
+      }, owner));
     },
-  } as unknown as ApprovalGate;
-  return { gate, requests };
+  } as unknown as WebContents;
+  const gate = new ApprovalGate((sessionId, terminalTabId) => approvalSurfaceRegistry.resolve(sessionId, terminalTabId));
+  return { gate, owner, requests };
 }
 
 /** Use the real registry with every permission category and a plugin read tool so scope derivation cannot drift from execution. */
