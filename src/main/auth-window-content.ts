@@ -141,11 +141,6 @@ export function attachAuthWindowContent(input: {
     popups.clear();
   };
   window.on("closed", closePopups);
-  window.webContents.on("will-attach-webview", (event, preferences, params) => {
-    if (params.src !== input.url) { event.preventDefault(); return; }
-    hardenRemoteWebPreferences(preferences as Record<string, unknown>);
-    preferences.partition = partition;
-  });
   const updateLocation = (popup: BrowserWindow, url: string, certificateError = false): void => {
     if (popup.isDestroyed()) return;
     const html = buildAuthWindowShellHtml({ title, url, partition, nativeFrame: true, chromeOnly: true, certificateError });
@@ -171,14 +166,15 @@ export function attachAuthWindowContent(input: {
         createWindow: (options: Electron.BrowserWindowConstructorOptions) => {
           pendingPopups--;
           // Adopt the supplied guest to preserve its native opener and message channel.
-          const { webContents, ...chromeOptions } = options as Electron.BrowserWindowConstructorOptions & { webContents: WebContents };
+          const { webContents, x, y, width, height } = options as Electron.BrowserWindowConstructorOptions & { webContents: WebContents };
           if (!input.active() || window.isDestroyed() || webContents.session !== session) {
             webContents.close({ waitForBeforeUnload: false });
             throw new Error("Invalid auth popup session");
           }
-          const child = new BrowserWindow({ ...chromeOptions, webPreferences: {
-            sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false,
-          } });
+          const child = new BrowserWindow({
+            parent: window, x, y, width, height, autoHideMenuBar: true, frame: true,
+            webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false, webviewTag: false },
+          });
           guardShell(child);
           const guest = new WebContentsView({ webContents });
           child.contentView.addChildView(guest);

@@ -7,6 +7,7 @@ import { attachAuthWindowContent, buildAuthWindowShellHtml, type AuthNavigationF
 export { buildAuthWindowShellHtml } from "./auth-window-content.js";
 import { isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
 import { resolveAppIconPath } from "./app-icon.js";
+import { configureAuthWebviewAttach } from "./plugin-webview-attach.js";
 import {
   withAuthPartitionViewersClosed,
 } from "./auth-partition-viewer-service.js";
@@ -393,6 +394,9 @@ async function openAuthWindowInternal(
       webviewTag: true,
       sandbox: true,
     },
+  });
+  authWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    configureAuthWebviewAttach({ event, webPreferences: webPreferences as Record<string, unknown>, params, url, partition: effectivePartition });
   });
   // Centering only matters for visible windows; skip the geometry math when the caller asked for a hidden warmup.
   if (showRequested) centerAuthWindowOnScreen(authWindow);

@@ -126,6 +126,8 @@ vi.mock("../../lib/logger.js", () => ({
 
 const { openAuthWindow, openOAuthInAuthWindow, wirePluginAuthPartitionPersistence } = await import("../auth-window-service.js");
 const { buildPersistentBrowserUserAgent } = await import("../browser-user-agent.js");
+// Other modules on the import path create loggers too; pick the auth window's by name.
+const authWindowLogger = () => vi.mocked(createLogger).mock.results[vi.mocked(createLogger).mock.calls.findIndex(([name]) => name === "auth-window")].value;
 
 wirePluginAuthPartitionPersistence({
   write: vi.fn().mockResolvedValue(undefined),
@@ -620,7 +622,7 @@ describe("host OAuth auth window", () => {
 
   it("redacts authorization secrets and tokens from navigation and failure logs", async () => {
     const { openOAuthInAuthWindow } = await import("../auth-window-service.js");
-    const logger = vi.mocked(createLogger).mock.results[0].value;
+    const logger = authWindowLogger();
     for (const method of Object.values(logger)) if (vi.isMockFunction(method)) method.mockClear();
     const secrets = ["sensitive-code", "sensitive-state", "sensitive-token"];
     const url = `https://auth.example.test/authorize?code=${secrets[0]}&state=${secrets[1]}#access_token=${secrets[2]}`;
@@ -689,7 +691,7 @@ describe("host OAuth auth window", () => {
     const win = constructed[0];
     const guest = new FakeWebContents();
     win.webContents.emit("did-attach-webview", {}, guest);
-    const logger = vi.mocked(createLogger).mock.results[0].value;
+    const logger = authWindowLogger();
     logger.info.mockClear();
     const refusal = `https://accounts.google.com/signin/oauth/error?authError=${Buffer.from("\u000a\u0014disallowed_useragent").toString("base64url")}&state=private-state`;
     guest.emit("did-navigate", {}, refusal);
