@@ -1,3 +1,4 @@
+import type { CustomProviderWire } from "../../../shared/custom-provider.js";
 // Retry transient pre-stream failures only; auth, validation, cancellation, and partial output cannot fall back.
 import type {
   LLMProvider,
@@ -21,6 +22,7 @@ export interface FallbackChainEntry {
   provider: LLMVendor;
   model: string;
   baseUrl?: string;
+  wire?: CustomProviderWire;
   vertexProject?: string;
   vertexLocation?: string;
 }
@@ -281,6 +283,7 @@ export async function* streamWithFallback(
         apiKey,
         model: entry.model,
         ...(entry.baseUrl ? { baseUrl: entry.baseUrl } : {}),
+        ...(entry.wire ? { wire: entry.wire } : {}),
         ...(entry.vertexProject ? { vertexProject: entry.vertexProject } : {}),
         ...(entry.vertexLocation ? { vertexLocation: entry.vertexLocation } : {}),
       }),

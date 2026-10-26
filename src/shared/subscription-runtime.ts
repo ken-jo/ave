@@ -173,6 +173,11 @@ export interface SubscriptionChatRuntimeSelection {
   model?: string;
 }
 
+/** Only runtimes with host-verified model selection honor per-call overrides. */
+export function subscriptionAcceptsModelOverride(selection: SubscriptionChatRuntimeSelection): boolean {
+  return selection.provider === "codex";
+}
+
 interface ApiChatRuntimeSelection {
   kind: "api";
 }

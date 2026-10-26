@@ -13,9 +13,12 @@ import {
   normalizeSidePanelSplitPercent,
   normalizeSidePanelWidth,
   normalizeSidebarWidth,
+  normalizeFileTreeWidth,
 } from "../shared/side-panel.js";
 import { normalizeShutdownCleanupTimeoutMs } from "../shared/tool-timeout-policy.js";
 import type { PricingOverride } from "../shared/pricing-overrides.js";
+import { LlmProviderSettingsError } from "../shared/custom-provider.js";
+import { compactionModelRouteKey } from "../shared/compaction-model.js";
 import {
   sanitizePluginConfig,
   sanitizePluginConfigKey,
@@ -25,8 +28,8 @@ import {
 import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
 import type { UpstreamProxySettings } from "../shared/upstream-proxy.js";
 import {
-  isMarketplaceEligibleLLMVendor,
   activeLlmRouteModel,
+  getLlmVendorSettings,
   isRetiredLLMVendor,
   LLM_VENDORS,
   RETIRED_LLM_VENDOR_IDS,
@@ -54,8 +57,8 @@ import {
   normalizeLocaleSetting,
   type Locale,
 } from "../i18n/locale.js";
-import { normalizeAppMode, type InitialAppMode } from "../shared/initial-app-mode.js";
 import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
+import { isSidebarState, type SidebarState } from "../shared/sidebar-state.js";
 import { type InlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab, type SettingsTab } from "../shared/settings-tabs.js";
 import {
@@ -97,7 +100,6 @@ import {
   normalizeMarketplace,
   normalizeProjectRootList,
   normalizeProjectLabels,
-  pruneLazyLlmVendorBlocks,
   withoutMirroredMarketplaceProviderPresetEndpoint,
   withMarketplaceProviderPresetModelSlot,
   withRenamedLlmVendorIds,
@@ -154,6 +156,7 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
+const SYSTEM_APP_MODE_REMOVED_MIGRATION = "system-app-mode-removed";
 const BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION = "built-in-default-models-cleared";
 const MARKETPLACE_DEFAULT_MODEL_CLEARED_MIGRATION_PREFIX = "marketplace-default-model-cleared:";
 /** Frozen source: 26ab8c776^:src/shared/llm-vendor-defaults.ts, whose CORE_DEFAULT_MODEL and DEFAULT_MODEL preset expansion 26ab8c776
@@ -240,6 +243,7 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
+  SYSTEM_APP_MODE_REMOVED_MIGRATION,
   BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION,
 ];
 
@@ -358,7 +362,7 @@ export type { LLMVendor, LLMVendorSettings };
 export { LLM_VENDORS };
 export type { ShortcutSettings, ShortcutSettingsPatch };
 
-/** Single source of truth for the settings file path. Both `SettingsService` (writer) and the pre-`whenReady` synchronous readers (e.g. `readPersistedAppModeSync`) derive the
+/** Single source of truth for the settings file path. Both `SettingsService` (writer) and the pre-`whenReady` synchronous readers derive the
  * settings path from this helper so the two can never drift onto different files. `userDataPath` is `app.getPath("userData")` (e.g. on macOS `~/Library/Application Support/Ave`). */
 export function settingsFilePath(userDataPath: string): string {
   return resolve(userDataPath, "ave-settings.json");
@@ -366,6 +370,10 @@ export function settingsFilePath(userDataPath: string): string {
 
 /** Read lazy vendor blocks through getLlmVendorSettings; provider defaults govern sampling and stale controls drop on write. */
 export interface LLMSettings {
+  /** Empty uses the current chat model; another id stays on the active provider and credential route. */
+  compactionModel?: string;
+  /** Provider namespace that owns compactionModel; a different active route uses its current chat model. */
+  compactionModelRoute?: string;
   /** Selects the execution boundary for new chat turns. API credentials and their provider/model
    * configuration remain under `provider` and `vendors` even while a subscription runtime is active. */
   activeChatRuntime: ActiveChatRuntime;
@@ -398,6 +406,8 @@ export interface LLMSettings {
 
 /** Patch shape for `SettingsService.patch()`. Vendor blocks are partial so a UI save touching a single vendor doesn't have to send every default or marketplace provider block. */
 export interface LLMSettingsPatch {
+  compactionModel?: string;
+  compactionModelRoute?: string;
   activeChatRuntime?: ActiveChatRuntime;
   provider?: LLMVendor;
   marketplaceProviderPresetId?: string;
@@ -639,16 +649,10 @@ export interface WebViewSettings {
 
 export type SystemCloseBehavior = "hide-to-tray" | "quit";
 
-/** Workspace mode persisted across restarts. `"work"` is the inline working layout (expanded sidebar, centered work canvas); `"chat"` is the focused chat layout (collapsed icon rail, right-docked window). Persisted here so
- * the renderer can seed its first render from the saved value (no flash of the wrong mode) and the main process can size the window correctly at creation. SoT for the value union lives in `src/shared/initial-app-mode.ts`. */
-export type SystemAppMode = InitialAppMode;
-
 export interface SystemSettings {
   /** Use the default OS sound for background turn-completion notifications. Default true. */
   turnCompletionSoundEnabled?: boolean;
   closeBehavior: SystemCloseBehavior;
-  /** Persisted workspace mode (chat vs work). Default "work". */
-  appMode: SystemAppMode;
   /** Launch Ave automatically at OS login. Applied via `app.setLoginItemSettings({ openAtLogin })` (see
    * `src/main/startup-launch.ts`). Default `false`. No-op in dev (unpackaged) builds; the login item would point at the Electron dev binary. */
   launchAtStartup?: boolean;
@@ -678,13 +682,16 @@ export interface SystemSettings {
   /** Persisted width (px) of the primary (left) navigation sidebar card, set by the inner-edge drag handle. Durable shell-layout preference;
    * clamped to [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH] at drag time in the renderer. Default 232 (matches the historical expanded rail padding reserve). */
   sidebarWidth?: number;
-  /** Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer) split, one field per tab kind whose body is a list-over-viewer layout (file-browser / preview / subagent). A browser
+  /** Explicit navigation visibility. Absent lets the renderer choose its width-dependent default. */
+  sidebarState?: SidebarState;
+  /** Persisted Files tree column width in pixels; clamped to the shared file-tree range. Default 300. */
+  sidePanelFileTreeWidth?: number;
+  /** Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer) split, one field per tab kind whose body is a list-over-viewer layout (preview / subagent). A browser
    * tab is its address row and page only, so it has no split. Clamped to the [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at drag time in the renderer. Default 45. */
-  sidePanelSplitFilePercent?: number;
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
   /** Persisted active sidebar tab ("chats" = the plain ungrouped conversation list, "projects" = named-project groups). Durable
-   * UI preference, same family as `appMode`/`sidebarWidth`. Default "chats". SoT for the value set: `../shared/sidebar-tab.js`. */
+   * UI preference, same family as `sidebarWidth`. Default "chats". SoT for the value set: `../shared/sidebar-tab.js`. */
   sidebarActiveTab?: SidebarTab;
   /** Where the main window was when it last closed, so a restart resumes the user's location instead of always landing on home. Same durable-preference family as `sidebarActiveTab`. Default "home". SoT for the value set: `../shared/view-key.js`. Validation here is
    * STRUCTURAL only; this process cannot know which plugins are installed, and a `plugin:<id>:<viewId>` key stays well-formed after its plugin is uninstalled. The renderer therefore re-checks a restored plugin key against the views it actually loaded before navigating there. */
@@ -1070,12 +1077,25 @@ export class SettingsService {
         )
       : [];
     if (partial.llm) {
-      this.settings.llm = mergeLlmPatch(
+      const nextLlm = mergeLlmPatch(
         this.settings.llm,
         partial.llm,
-        nextMarketplace.installedProviderIds,
         nextMarketplace.installedProviderPresets,
       );
+      if (getLlmVendorSettings(nextLlm.vendors, "openai-compatible").wire
+        !== getLlmVendorSettings(this.settings.llm.vendors, "openai-compatible").wire) {
+        for (const [key, entry] of Object.entries(nextLlm.modelListCache)) {
+          if (entry.vendor === "openai-compatible" && !entry.credentialScope) delete nextLlm.modelListCache[key];
+        }
+      }
+      if (Object.hasOwn(partial.llm, "compactionModel")) {
+        const route = compactionModelRouteKey(nextLlm, nextMarketplace.installedProviderPresets);
+        if (Object.hasOwn(partial.llm, "compactionModelRoute") && partial.llm.compactionModelRoute !== route) {
+          throw new Error("Compaction provider route changed");
+        }
+        nextLlm.compactionModelRoute = route;
+      }
+      this.settings.llm = nextLlm;
       this.providerConfigChanged();
     }
     if (partial.chat) this.settings.chat = normalizeChat({ ...this.settings.chat, ...partial.chat });
@@ -1083,13 +1103,12 @@ export class SettingsService {
     if (partial.webSearch) this.settings.webSearch = { ...this.settings.webSearch, ...partial.webSearch };
     if (partial.marketplace) {
       this.settings.marketplace = nextMarketplace;
-      const prunedLlm = pruneLazyLlmVendorBlocks(
+      const normalizedLlm = mergeLlmPatch(
         this.settings.llm,
-        nextMarketplace.installedProviderIds,
+        {},
         nextMarketplace.installedProviderPresets,
-        { inferInstalledFromCustom: false },
       );
-      this.settings.llm = prunedLlm.llm;
+      this.settings.llm = normalizedLlm;
       this.settings.llm = withoutMarketplaceDefaultModels(
         this.settings.llm,
         nextMarketplace.installedProviderPresets,
@@ -1224,16 +1243,6 @@ export class SettingsService {
       // not clobbered by a malformed renderer / IPC payload. The disk-load path's `normalizeSystem` still backfills missing fields with defaults.
       const next: SystemSettings = { ...this.settings.system };
       acceptField(next, "closeBehavior", partial.system.closeBehavior, isCloseBehavior, "system", PATCHED_FIELD);
-      const rawAppMode = partial.system.appMode;
-      const normalizedAppMode = normalizeAppMode(rawAppMode);
-      if (normalizedAppMode !== null) {
-        next.appMode = normalizedAppMode;
-      } else if (rawAppMode !== undefined) {
-        log.warn(
-          `system.appMode patch ignored (received ${JSON.stringify(rawAppMode)}), keeping %s`,
-          this.settings.system.appMode,
-        );
-      }
       const rawLocalApi = partial.system.localApiServer;
       acceptField(next, "localApiServer", rawLocalApi, isBooleanValue, "system", PATCHED_FIELD);
       const rawHardwareAcceleration = partial.system.hardwareAcceleration;
@@ -1278,6 +1287,10 @@ export class SettingsService {
         next, "sidebarWidth", partial.system.sidebarWidth,
         normalizeSidebarWidth, "system", PATCHED_FIELD,
       );
+      acceptNormalizedField(
+        next, "sidePanelFileTreeWidth", partial.system.sidePanelFileTreeWidth,
+        normalizeFileTreeWidth, "system", PATCHED_FIELD,
+      );
       // Per-tab vertical split percents; each normalized independently through the shared clamp so an
       // out-of-range or non-finite value is ignored while a valid sibling is preserved (mirrors the width path above).
       for (const key of SIDE_PANEL_SPLIT_KEYS) {
@@ -1287,6 +1300,7 @@ export class SettingsService {
         );
       }
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
+      acceptField(next, "sidebarState", partial.system.sidebarState, isSidebarState, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
       // The reason only is logged on refusal (`normalizeMainLayout`): the value holds page addresses that may carry tokens. A refused patch keeps the saved layout.
       const patchedLayout = normalizeMainLayout(partial.system.mainLayout);
@@ -1397,13 +1411,12 @@ export class SettingsService {
         nextMarketplace.installedProviderPresets,
       );
       this.settings.marketplace = nextMarketplace;
-      const prunedLlm = pruneLazyLlmVendorBlocks(
+      const normalizedLlm = mergeLlmPatch(
         this.settings.llm,
-        nextMarketplace.installedProviderIds,
+        {},
         nextMarketplace.installedProviderPresets,
-        { inferInstalledFromCustom: false },
       );
-      this.settings.llm = prunedLlm.llm;
+      this.settings.llm = normalizedLlm;
       this.settings.llm = withoutMarketplaceDefaultModels(
         this.settings.llm,
         nextMarketplace.installedProviderPresets,
@@ -1700,6 +1713,15 @@ export class SettingsService {
         ? stored.appliedMigrations.filter((m): m is string => typeof m === "string")
         : [];
       let migrationWriteBack = false;
+      // The retired percent is consumed by normalizeSystem, then the next save retains only the pixel width.
+      if (stored.system !== null && typeof stored.system === "object"
+        && Object.hasOwn(stored.system, "sidePanelSplitFilePercent")) migrationWriteBack = true;
+
+      // The system normalizer drops the removed field; persist that cleanup once so it also leaves the saved file.
+      if (!appliedMigrations.includes(SYSTEM_APP_MODE_REMOVED_MIGRATION)) {
+        appliedMigrations.push(SYSTEM_APP_MODE_REMOVED_MIGRATION);
+        migrationWriteBack = true;
+      }
 
       // One-time rename of built-in vendor ids. It has to rewrite the file as read, ahead of everything below: each normalizer drops a vendor id this build does not know.
       let parsed = stored;
@@ -1722,15 +1744,16 @@ export class SettingsService {
       }
 
       const rawLlm = parsed.llm;
+      const storedCustom = rawLlm?.vendors?.["openai-compatible"];
+      if (storedCustom && !Object.hasOwn(storedCustom, "wire")) migrationWriteBack = true;
       let llm = mergeLlmPatch(
         DEFAULT_SETTINGS.llm,
         rawLlm !== null && typeof rawLlm === "object" && !Array.isArray(rawLlm)
           ? rawLlm as LLMSettingsPatch
           : {},
-        LLM_VENDORS.filter(isMarketplaceEligibleLLMVendor),
         undefined,
       );
-      // Clear before retirement detection and custom-block pruning: the old built-in model alone must not keep an otherwise unconfigured route.
+      // Clear before retirement detection: the old built-in model alone must not keep an otherwise unconfigured route.
       if (!appliedMigrations.includes(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION)) {
         llm = withoutBuiltInDefaultModels(llm);
         appliedMigrations.push(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION);
@@ -1765,18 +1788,13 @@ export class SettingsService {
         onDisk.schemaVersion !== 2 &&
         (typeof onDisk.theme === "string" || typeof onDisk.chatTheme === "string" || typeof onDisk.codeTheme === "string");
 
-      let marketplace = normalizeMarketplace(marketplaceParsed);
-      const prunedLlm = pruneLazyLlmVendorBlocks(
+      const marketplace = normalizeMarketplace(marketplaceParsed);
+      const normalizedLlm = mergeLlmPatch(
         llm,
-        marketplace.installedProviderIds,
+        {},
         marketplace.installedProviderPresets,
-        { inferInstalledFromCustom: true },
       );
-      llm = prunedLlm.llm;
-      marketplace = {
-        ...marketplace,
-        installedProviderIds: prunedLlm.installedProviderIds,
-      };
+      llm = normalizedLlm;
 
       const appearance = normalizeAppearance(parsed.appearance);
 
@@ -1854,7 +1872,8 @@ export class SettingsService {
         appliedMigrations,
       };
       return { settings: result, writeBack: needsV2WriteBack || migrationWriteBack };
-    } catch {
+    } catch (error) {
+      if (error instanceof LlmProviderSettingsError) throw error;
       const defaults = structuredClone(DEFAULT_SETTINGS);
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
       return { settings: defaults, writeBack: false };

@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, it, expect } from "vitest";
@@ -13,7 +13,7 @@ import {
   type CompactRecapReviewer,
 } from "../structured-compact.js";
 import type { GenericMessage } from "../llm/types.js";
-import { estimateMessagesTokens, markStaleToolResults } from "../auto-compact.js";
+import { estimateMessagesTokens, estimateTokens, markStaleToolResults } from "../auto-compact.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 let originalAveHome: string | undefined;
@@ -401,6 +401,43 @@ describe("compactWithBoundary — recap reviewer integration", () => {
     expect(focused.split("</compact-focus>")).toHaveLength(2);
     expect(focused.indexOf("<compact-focus>")).toBeGreaterThan(focused.indexOf("[user]"));
     expect(plain).not.toContain("<compact-focus>");
+  });
+
+  it("budgets a smaller summarizer independently from the chat model", async () => {
+    const prompts: string[] = [];
+    const memoryReviewer: CompactRecapReviewer = { review: async (_task, prompt) => {
+      prompts.push(prompt);
+      return makeFullSummaryText();
+    } };
+    await compactWithBoundary({ messages: makeLongHistory(500), memoryReviewer, preserveRecentTokens: 200,
+      sessionId: "small-summary", preflightTokens: 100_000, summaryInputTokens: 8_000, compactNum: 1 });
+    expect(prompts.length).toBeGreaterThan(0);
+    expect(prompts.every((prompt) => estimateTokens(prompt) <= 7_200)).toBe(true);
+  });
+
+  it("refuses an over-budget recap before calling a too-small summarizer", async () => {
+    let called = false;
+    const memoryReviewer: CompactRecapReviewer = { review: async () => { called = true; return makeFullSummaryText(); } };
+    await expect(compactWithBoundary({ messages: makeLongHistory(50), memoryReviewer, preserveRecentTokens: 200,
+      sessionId: "tiny-summary", preflightTokens: 100_000, summaryInputTokens: 10, compactNum: 1 }))
+      .rejects.toThrow("Compaction model input exceeds its context budget");
+    expect(called).toBe(false);
+  });
+
+  it("archives and clips a singleton that exceeds the separate summarizer input budget", async () => {
+    const source = "older detailed context ".repeat(4_000);
+    const messages: GenericMessage[] = [{ role: "user", content: "original task" }, { role: "assistant", content: source }, ...makeLongHistory(5)];
+    const prompts: string[] = [];
+    const memoryReviewer: CompactRecapReviewer = { review: async (_task, prompt) => { prompts.push(prompt); return makeFullSummaryText(); } };
+    const result = await compactWithBoundary({ messages, memoryReviewer, preserveRecentTokens: 200,
+      sessionId: "singleton-summary", preflightTokens: 100_000, summaryInputTokens: 8_000, compactNum: 1 });
+    expect(prompts.every((prompt) => estimateTokens(prompt) <= 7_200)).toBe(true);
+    expect(prompts.some((prompt) => prompt.includes("[earlier content archived]"))).toBe(true);
+    expect(result.truncatedCount).toBeGreaterThan(0);
+    expect(result.truncatedDir).toBeTruthy();
+    const archived = readdirSync(result.truncatedDir!).map((name) => readFileSync(join(result.truncatedDir!, name), "utf8")).join("\n");
+    expect(archived).toContain(source);
+    expect(messages[1]?.content).toBe(source);
   });
 
   it("uses the required common no-tool Memory Reviewer for recap", async () => {

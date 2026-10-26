@@ -105,7 +105,11 @@
       // without the site importing either. Knip's Next.js plugin infers that
       // only when web/node_modules exists, which CI's root install does not
       // create, so the reference is declared here.
-      "ignoreDependencies": ["react-dom", "@types/react-dom"]
+      "ignoreDependencies": ["react-dom", "@types/react-dom"],
+      // web/public is served as-is: the pages load its files by URL (the
+      // vendored font stylesheets through <link>, captures through <img>),
+      // never through an import, so Knip cannot see them used.
+      "ignoreFiles": ["public/**"]
     }
   },
   "vitest": {

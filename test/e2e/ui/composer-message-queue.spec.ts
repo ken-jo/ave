@@ -100,6 +100,33 @@ test('큐 항목 수정 (더블클릭) — input 진입 + Enter commit', async (
   await expect(mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]').first()).toContainText("edited text");
 });
 
+test('queue reorder keeps row focus and updates accessible positions', async ({ mainWindow, t }: Pick<ElectronFixtures, 'mainWindow' | 't'>) => {
+  await mainWindow.waitForFunction(
+    () => typeof (window as unknown as { __ave_message_queue_store__?: { add?: unknown } })
+      .__ave_message_queue_store__?.add === "function",
+  );
+  await mainWindow.evaluate(() => {
+    const store = (window as unknown as { __ave_message_queue_store__: { add: (text: string) => void } })
+      .__ave_message_queue_store__;
+    store.add("first queued");
+    store.add("second queued");
+    store.add("third queued");
+  });
+  const rows = mainWindow.locator(MAIN + '[data-testid="message-queue-row"]');
+  const texts = mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]');
+  await expect(texts).toHaveText(["first queued", "second queued", "third queued"]);
+  await rows.first().getByRole('button', { name: t('messageQueuePanel.moveDown'), exact: true }).click();
+  await expect(texts).toHaveText(["second queued", "first queued", "third queued"]);
+  await expect(rows.nth(1)).toBeFocused();
+  await expect(rows.nth(1)).toHaveAttribute('aria-posinset', '2');
+  await rows.nth(1).press('Alt+ArrowDown');
+  await expect(texts).toHaveText(["second queued", "third queued", "first queued"]);
+  await expect(rows.nth(2)).toBeFocused();
+  await expect(rows.nth(2).getByRole('button', { name: t('messageQueuePanel.moveDown'), exact: true })).toBeDisabled();
+  await rows.nth(2).press('Alt+ArrowUp');
+  await expect(texts).toHaveText(["second queued", "first queued", "third queued"]);
+});
+
 test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "↪ 큐에서" hint 로 표시', async ({ mainWindow, t }, testInfo) => {
   const initialText = "Start the first response";
   const queuedText = "끝나면 요약";

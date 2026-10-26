@@ -13,6 +13,18 @@ async function flushMicrotasks(): Promise<void> {
 }
 
 describe("MemoryReviewerService", () => {
+  it("keeps recap on its originating caller without changing other reviewer lanes", async () => {
+    const recap = vi.fn<ActiveChatOneShot>(async () => "compact");
+    const active = vi.fn<ActiveChatOneShot>(async () => "active");
+    const resolve = vi.fn(() => active);
+    const service = new MemoryReviewerService({ resolveActiveChatOneShot: resolve });
+    await expect(service.review("recap", "history", { recapCaller: recap })).resolves.toBe("compact");
+    await expect(service.review("capture", "memory", { recapCaller: recap })).resolves.toBe("active");
+    expect(resolve).toHaveBeenCalledTimes(1);
+    expect(recap).toHaveBeenCalledWith("history", expect.objectContaining({ maxTokens: 1_200 }));
+    expect(active).toHaveBeenCalledTimes(1);
+  });
+
   it("uses the task-specific bounded, toolless one-shot contract for every memory task", async () => {
     const oneShot = vi.fn<ActiveChatOneShot>(async () => "reviewed");
     const service = new MemoryReviewerService({ resolveActiveChatOneShot: () => oneShot });

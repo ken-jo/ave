@@ -9,7 +9,7 @@ import { getTerminalAttention, markTerminalRead } from "../../src/ui/renderer/pr
 import { resetMainLayoutRestoreForTest } from "../../src/ui/renderer/preview/main-layout-restore.js";
 import { MAIN_LAYOUT_SAVE_DELAY_MS } from "../../src/ui/renderer/hooks/use-main-layout.js";
 import { MOCK_DEFAULT_SETTINGS } from "./mock-ave-api.js";
-import { clearActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
+import { clearActiveSurface, getActiveSurface } from "../../src/ui/renderer/preview/active-surface.js";
 import { terminalSessionFixture } from "../../src/__tests__/support/terminal-session-fixtures.js";
 import type { TerminalSessionRef } from "../../src/shared/terminal-session.js";
 import { t } from "../../src/i18n/index.js";
@@ -50,6 +50,64 @@ function shownSurfaces(container: HTMLElement): Array<{ kind: string | null; tab
 }
 
 describe("main-area terminal and web panels", () => {
+  it.each(["web", "terminal"])("retargets an unchanged side browser selected from the sidebar after a main %s surface", async (view) => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as {
+      browserTabs: { emitBrowserTabOp: (request: unknown) => void };
+      setActiveSurface: ReturnType<typeof vi.fn>;
+    };
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "sidebar-retarget", op: "new", url: "about:blank" }));
+    const sideId = await waitFor(() => {
+      const host = document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]');
+      expect(host).not.toBeNull();
+      return host!.getAttribute("data-tab-id")!;
+    });
+    await waitFor(() => expect(getActiveSurface()?.tabId).toBe(sideId));
+    await clickSidebarNavRow("features", `sidebar-${view}`);
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const mainId = shownSurfaces(container)[0]!.tabId!;
+    await waitFor(() => expect(getActiveSurface()?.tabId).toBe(mainId));
+    await act(async () => fireEvent.click(container.querySelector(`[data-testid="sidebar-surface-${sideId}"]`)!));
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(0));
+    expect(getActiveSurface()?.tabId).toBe(sideId);
+    expect(browser.setActiveSurface).toHaveBeenLastCalledWith({ kind: "browser", tabId: sideId });
+    expect(container.querySelector(`[data-testid="sidebar-surface-${mainId}"]`)?.getAttribute("aria-current")).toBeNull();
+  });
+
+  it("clears the hidden browser's sidebar selection on Settings while retaining its tool target", async () => {
+    const { container } = await renderApp({ hasApiKey: true });
+    await clickSidebarNavRow("features", "sidebar-web");
+    await waitFor(() => expect(shownSurfaces(container)).toHaveLength(1));
+    const id = shownSurfaces(container)[0]!.tabId!;
+    const row = container.querySelector(`[data-testid="sidebar-surface-${id}"]`)!;
+    await waitFor(() => expect(row.getAttribute("aria-current")).toBe("page"));
+    await act(async () => fireEvent.click(container.querySelector('[data-testid="sidebar-settings"]')!));
+    await waitFor(() => expect(container.querySelector('[data-testid="sidebar-settings"]')?.getAttribute("aria-current")).toBe("page"));
+    expect(getActiveSurface()?.tabId).toBe(id);
+    expect(row.getAttribute("aria-current")).toBeNull();
+    expect(row.className).not.toContain("bg-primary/");
+    await act(async () => fireEvent.click(row));
+    expect(row.getAttribute("aria-current")).toBe("page");
+  });
+
+  it("clears the sidebar selection when a side panel closes while retaining its tool target", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as { browserTabs: { emitBrowserTabOp: (request: unknown) => void } };
+    await act(async () => fireEvent.click(container.querySelector('[data-testid="pane-panel-toggle"]')!));
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "sidebar-hidden-panel", op: "new", url: "about:blank" }));
+    const id = await waitFor(() => {
+      const host = document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]');
+      expect(host).not.toBeNull();
+      return host!.getAttribute("data-tab-id")!;
+    });
+    const row = container.querySelector(`[data-testid="sidebar-surface-${id}"]`)!;
+    await waitFor(() => expect(row.getAttribute("aria-current")).toBe("page"));
+    await act(async () => fireEvent.click(container.querySelector('[data-testid="pane-panel-toggle"]')!));
+    expect(getActiveSurface()?.tabId).toBe(id);
+    expect(row.getAttribute("aria-current")).toBeNull();
+    expect(row.className).not.toContain("bg-primary/");
+  });
+
   it("re-reports an already focused main page after a hidden side page becomes the target", async () => {
     const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
     const browser = api as unknown as {
@@ -114,8 +172,28 @@ describe("main-area terminal and web panels", () => {
     await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("browser"));
     expect(container.querySelector('[data-testid="web-panel-empty"]')).not.toBeNull();
 
-    await clickSidebarNavRow("features", "sidebar-terminal");
+    // The terminal the pane left is still running; the row brings THAT one back.
+    await act(async () => fireEvent.click(container.querySelector(`[data-testid="sidebar-surface-${terminal!.tabId}"]`)!));
     await waitFor(() => expect(shownSurfaces(container)[0]).toEqual(terminal));
+  });
+
+  it("opens a side-panel browser from its sidebar item after the pane has shown another surface", async () => {
+    const { container, api } = await renderApp({ hasApiKey: true, browserTabs: true });
+    const browser = api as unknown as { browserTabs: { emitBrowserTabOp: (request: unknown) => void } };
+    await act(async () => browser.browserTabs.emitBrowserTabOp({ requestId: "sidebar-side-page", op: "new", url: "about:blank" }));
+    const pageId = await waitFor(() => {
+      const tab = document.querySelector('[data-testid="chat-side-panel-browser-tab-host"]');
+      expect(tab).not.toBeNull();
+      return tab!.getAttribute("data-tab-id")!;
+    });
+    await clickSidebarNavRow("features", "sidebar-terminal");
+    await waitFor(() => expect(shownSurfaces(container)[0]?.kind).toBe("terminal"));
+    const terminalId = shownSurfaces(container)[0]!.tabId;
+    await act(async () => fireEvent.click(container.querySelector(`[data-testid="sidebar-surface-${pageId}"]`)!));
+    await waitFor(() => expect(container.querySelector('[data-testid="chat-side-panel-browser-tab-host"]')?.getAttribute("data-tab-id")).toBe(pageId));
+    expect(shownSurfaces(container)).toHaveLength(0);
+    expect(container.querySelectorAll(`[data-testid="sidebar-surface-${terminalId}"]`)).toHaveLength(1);
+    expect(container.querySelectorAll(`[data-testid="sidebar-surface-${pageId}"]`)).toHaveLength(1);
   });
 
   it("lets the agent browser tools reach a main web panel: reported as the active surface, shown, badged and closed there", async () => {

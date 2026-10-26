@@ -3,7 +3,7 @@
 ## Source of truth
 - Status: Active
 - Last refreshed: 2026-08-27 (Asia/Seoul)
-- Primary product surfaces: Ave desktop renderer, chat workspace, work mode, plugin pages, settings, marketplace, right-side action/activity surfaces.
+- Primary product surfaces: Ave desktop renderer, responsive chat workspace, plugin pages, settings, marketplace, right-side action/activity surfaces.
 - Evidence reviewed:
   - External index: `https://github.com/voltagent/awesome-design-md`
   - VS Code workbench benchmark (2026-08-27): `code.visualstudio.com/api/references/theme-color`,
@@ -20,7 +20,7 @@
 - Avoid: decorative cards, nested boxes, one-note color palettes, gradient blobs, hero composition, oversized headings inside tool surfaces, and heavy shadows as the primary hierarchy tool.
 
 ## Product goals
-- Give users a reliable desktop agent environment where chat, work mode, tools, plugins, settings, and local status can coexist without visual noise.
+- Give users a reliable desktop agent environment where chat, tools, plugins, settings, and local status can coexist without visual noise.
 - Make side effects and system state legible: files read/written, plugin calls, MCP calls, model/mode, approvals, indexing, and permissions.
 - Keep repeated workflows efficient: navigation must preserve context, controls must remain compact, and plugin pages must share one host-level layout grammar.
 - Support localized UI as a first-class path, including Japanese and Chinese, without falling back to English for newly added product text.
@@ -31,7 +31,7 @@
 - User jobs:
   - Continue a task while understanding what the agent is doing.
   - Inspect plugin/system state without losing chat or scroll context.
-  - Switch between chat and work modes without semantic ambiguity.
+  - Resize the workspace while keeping conversations, focus, and drafts intact.
   - Configure model, provider, reasoning, approvals, language, and theme with minimal hunting.
   - Review recent side effects quickly during or after a run.
 
@@ -39,7 +39,7 @@
 - Primary navigation: left sidebar owns app-wide routes and plugin entry points.
 - Primary canvas: route content owns the main work area. Page bodies should not be wrapped in extra decorative boxes when the page itself is already a surface.
 - Top/page navigation: first-depth plugin or settings pages may expose a simple back control when leaving the current page should return to the previous route.
-- Chat/work mode: mode controls are operational state, not navigation. Internal values and displayed labels must remain aligned.
+- Responsive layout: shell and canvas geometry determine sidebar placement, visible tiles, and panel docking. Resizing preserves conversation ownership and the saved tile layout.
 - Secondary surfaces: action panels, popovers, command pickers, and inspectors float above the canvas only when they are temporary or auxiliary.
 
 ## Design principles
@@ -218,10 +218,10 @@ What the frame owns, in order from the outside in:
   publishes (`usePanePanelSlot`). The docked-or-floating verdict is measured against the
   frame, never against the content the panel itself resizes.
 
-Floors are the frame's, not the content's, and there are two: `PANE_MIN_WIDTH` is the 448px
-support floor every surface already holds (see "Responsive behavior"), and `PANE_MIN_HEIGHT`
-is 280px — the measured height at which a tile still holds a header, a composer, and one
-visible turn. A split that would put either half under a floor is not offered.
+Split floors belong to the frame: `PANE_MIN_WIDTH` is 448px and `PANE_MIN_HEIGHT`
+is 280px. A split that would put either half under a floor is not offered. A
+single tile still fits a narrower window; when the canvas folds, split, close,
+maximize, and new-pane controls are unavailable while its conversations stay alive.
 
 What differs between kinds is exactly three props — the leading glyph and title, the action
 list, and the body inset — and nothing else. Everything a tile can have done to it (split,
@@ -393,14 +393,14 @@ Plugin UIs are **free**: the host contract provides no UI components, tokens, or
 
 ### Panel width is yours to spend
 - The host hands the panel the **full width of the main pane** and does not cap it (`plugin-ui-host.tsx`, `maxWidth="none"`). Deciding how much of that a given piece of content should use is the plugin's job.
-- Cap with `max-width`, never a fixed `width`. A fixed width makes the layout dead to the panel — the plugin renders identically at 928px and at 1960px, and widening the window changes nothing on screen. Stay fluid below the cap so the 448px floor still fills.
+- Cap with `max-width`, never a fixed `width`. A fixed width makes the layout dead to the panel — the plugin renders identically at 928px and at 1960px, and widening the window changes nothing on screen. Stay fluid below the cap so the panel fits the width the host supplies.
 - Pick the cap from the content: prose (mail subjects, summaries) wants a reading measure; tabular content (folder lists, counts, matrices) wants the room.
 - History: the host used to clamp every plugin panel to the chat reading column (~928px) because the plugin UIs were authored for a ~800px detached window and stretched at full width. That clamp treated the symptom and cost real width. It was removed once the plugins capped themselves; do not reintroduce it.
 
 ### Mandatory / recommended / free
 | Level | Items |
 |---|---|
-| **Mandatory** | Works at the 448px panel floor (mobile-class base; verify at 448/640/1024). No horizontal page scroll. Keyboard-reachable essential actions with visible focus. WCAG AA text contrast. `prefers-reduced-motion` respected. No second page chrome. |
+| **Mandatory** | Fits the supplied container, including the narrow single-tile layout (verify at 360/448/640/1024). No horizontal page scroll. Keyboard-reachable essential actions with visible focus. WCAG AA text contrast. `prefers-reduced-motion` respected. No second page chrome. |
 | **Recommended** | The philosophy in this document: operator-workbench feel, dense 4/8/12/16 rhythm, restrained accent (accent = work/selection, status colors literal), compact type scale, icons+tooltips over label noise, literal operational copy. |
 | **Free** | Layout, component library, visual identity inside the panel, iconography style, brand accents — anything not listed above. A plugin may look like itself. |
 
@@ -432,20 +432,22 @@ Plugin UIs are **free**: the host contract provides no UI components, tokens, or
 
 ### Support boundary
 - Ave is a **desktop-only** product: the sole runtime is a resizable desktop Electron window. There are no phone or tablet builds, no touch-first target, and no separate mobile app planned.
-- Even so, every surface is designed **responsively across window widths**, using tablet/mobile-class width tiers as design boundaries. This is not aspirational: the enforced floors already put real surfaces inside phone-class widths — the main window clamps at **460px** (`MAIN_WINDOW_MIN_WIDTH`, `src/main/main-window-bounds.ts`) and a plugin side panel renders at **448px** (`SIDE_PANEL_MIN_WIDTH`, `src/shared/side-panel.ts`). A surface that only works at laptop width is a defect, not a nice-to-have gap.
+- Every surface adapts to its container. The main window opens centered at **1243×768** and has a **360px** minimum width. Window bounds and responsive thresholds live in `src/shared/shell-geometry.ts`; [responsive shell and canvas](./design/tiled-chat-groups.md#responsive-shell-and-canvas) defines the layout decisions. Split floors and preferred panel widths do not raise the minimum width of a single tile.
 
-### Width tiers (the shared breakpoint system)
-Tiers map 1:1 onto the Tailwind default scale already used across the renderer (`sm:`/`md:`/`lg:` — no custom overrides), so the design language and the implementation utilities never diverge:
+### Width tiers
+These tiers guide content density. Shell and canvas decisions use the shared
+geometry thresholds and measured container width; viewport utilities do not
+determine whether a tile can split or a panel can dock.
 
 | Tier | Window/pane width | Tailwind | What must hold |
 |---|---|---|---|
-| **Mobile-class** | `< 640px` (floor: 448/460px) | base (mobile-first) | The **mandatory baseline**. Single-column layout; primary navigation compacts; every essential action reachable; no horizontal scroll of the page body; floating panels clamp to the viewport. Plugin panels live here whenever docked as a side panel. |
+| **Mobile-class** | `< 640px` (window floor: 360px) | base (mobile-first) | The **mandatory baseline**. Single-column layout; primary navigation compacts; every essential action reachable; no horizontal scroll of the page body; floating panels clamp to the viewport. Plugin panels live here whenever docked as a side panel. |
 | **Tablet-class** | `640–1023px` | `sm:` / `md:` | Two-pane layouts may appear (list + detail, chat + rail). Density increases; controls may gain labels that were icon-only at mobile-class. Typical for half-screen window snapping and narrow laptops. |
 | **Desktop-class** | `≥ 1024px` | `lg:` | Full workbench: sidebar + canvas + right-side action/activity surfaces concurrently. Multi-column settings and wide tables are allowed only here. |
 
-- **Author mobile-first**: style for the mobile-class base, then enhance upward with `sm:`/`md:`/`lg:`. Never author a desktop-only layout and patch it downward.
+- **Author mobile-first**: style for the narrow container, then enhance as its available width increases. Use container queries when a surface can live inside a tile.
 - Tier checks are on **container/window width**, not device detection — a desktop window dragged narrow IS the mobile-class experience.
-- Plugin authors: treat **448px** as your panel's hard floor and design the panel's base layout for mobile-class; a plugin page promoted to the main canvas may assume tablet-class and up. Verify at 448px, 640px, and 1024px before shipping.
+- Plugin authors: keep essential actions reachable at the width the host supplies, including a narrow main pane. Verify at 360px, 448px, 640px, and 1024px before shipping.
 
 ### Layout adaptations
 - Primary navigation may compact, but it must not duplicate route ownership.
@@ -473,8 +475,8 @@ Tiers map 1:1 onto the Tailwind default scale already used across the renderer (
 ## Content voice
 - Tone: concise, operational, literal.
 - Terminology:
-  - Use "Work" for the former action mode, including internal values.
-  - Use "Chat" for conversation-only mode.
+  - Use "tile" for a conversation area and "work panel" for its auxiliary tools.
+  - Describe layout changes by available width.
   - Use "provider", "model", "reasoning", "approval", "plugin", "MCP", and "local indexer" consistently.
 - Microcopy rules:
   - Do not add tutorial text inside normal app surfaces.

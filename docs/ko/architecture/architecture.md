@@ -17,6 +17,16 @@
 
 ---
 
+## 현재 반응형 창 계약 안내
+
+현재 앱은 창 폭에 맞춰 배치합니다. 창은 중앙에 1243×768로
+열리고 최소 너비는 360px입니다. 캔버스가 좁아지면 포커스된 타일 하나를 보여 주되
+숨겨진 대화와 배치·최대화 선택은 유지합니다. 작업 패널은 타일 안에 붙거나 겹쳐지고,
+패널을 열어도 운영체제 창 크기는 바뀌지 않습니다. 사이드바는 접힌 레일을 유지하며,
+펼친 상태에서 공간이 부족하면 캔버스 위에 겹쳐집니다. 기하 값과 판정 기준은
+[현재 설계](../../design/tiled-chat-groups.md#responsive-shell-and-canvas)를 따릅니다.
+아래 역사 스냅샷은 현재 계약이 아닙니다.
+
 ## 현재 브라우저·터미널 계약 안내
 
 이 안내는 아래 역사 스냅샷을 현행 사양으로 바꾸지 않습니다. 현재 기준은
@@ -1299,7 +1309,7 @@ ave/src/
 │   ├── context/                 # ChatContext (state provider for ChatView subtree)
 │   ├── state/                   # chat-scroll-store (module scroll singletons)
 │   ├── hooks/                   # domain hooks — 14 original + extracted App/ChatView hooks
-│   │                            #  (use-app-mode, use-routine-overlay, use-send-message,
+│   │                            #  (use-routine-overlay, use-send-message,
 │   │                            #   use-plugin-view-routing, use-onboarding-tour-controller,
 │   │                            #   use-chat-scroll, use-message-queue, use-attachment-picker,
 │   │                            #   use-permission-toasts, use-checkpoint-view,
@@ -1319,7 +1329,7 @@ ave/src/
 │   │                            #  (RoutinePanel → components/ as built-in view)
 │   ├── utils/                   # cost-format, html-preview, history, compose,
 │   │                            #  tool-activity, plugin-auth-error,
-│   │                            #  read-initial-app-mode, chat-entry-revision,
+│   │                            #  chat-entry-revision,
 │   │                            #  korea-date-key, classify-turn-entries
 │   └── types.ts, constants.ts, api-client.ts
 │
@@ -2009,6 +2019,17 @@ broken file + line 표시). `/permission audit verify` 는 keychain 의
 #### 6.3.9 — OS 실행 샌드박스 (ASRT)
 
 Windows에서는 각 거부 대상 자체의 DACL만 검사하므로, 쓰기 거부와 마찬가지로 비공개 디렉터리 아래에서 자체적으로 광범위한 허용 권한을 가진 자식은 감지하지 못한다. 앞선 거부 ACE는 무시하므로 실제로 읽을 수 없는 대상도 보수적으로 읽기 가능으로 분류할 수 있다. 증거는 객체 식별자에 연결되며 사용할 때마다 링크를 따라가지 않는 stat으로 다시 확인한다. 동일 객체의 제자리 ACL 변경은 감지하지 못한다.
+Windows에서는 모든 쓰기 허용 경로 밖의 존재하지 않는 거부 대상은 스탬핑하지 않지만, 쓰기 허용 경로가 닿는 대상은 샌드박스가 생성하지 못하도록 실체화하고 스탬핑한다. 정책 필터가 유지한 머신 루트 항목은 존재 여부와 관계없이 스탬핑 대상이다. 워커 쓰기 권한을 추가하기 전에는 세션과 이전 래핑의 원래 거부 목록 및 예정 정책에서 겹치는 모든 의무를 수집한다. 머신 읽기 거부와 생략 후 생성된 대상도 포함한다. DACL로 미래의 일치 대상을 보호할 수 없는 glob 거부와 겹치면 권한 추가를 거절한다. 먼저 실제 대상 DACL의 거부 강도를 읽고 정책 의무와 합쳐 스탬핑하므로, 같은 세션 홀더를 재사용해도 기존 읽기 보호를 약화하지 않는다. 스탬핑이 예외를 던져도 실제 DACL을 다시 검사하며, 샌드박스 SID의 필요한 거부 마스크, 디렉터리의 하위 상속, 부모의 자식 삭제 거부를 확인해야 한다. 없거나 검증할 수 없는 대상 또는 스탬핑 실패는 권한 추가를 거절한다. 스탬핑 성공만으로는 보호를 입증할 수 없다. 허용 권한 적용 실패는 해당 홀더만 해제한다. 워커 해제 후에도 세션 거부는 종료까지 유지되며 자리표시자는 남는다. 검사는 특정 시점의 증거이므로 동시 경로·DACL 변경과 상속이 차단된 자식 DACL은 한계로 남는다. 생략된 대상이 명령 실행 중 쓰기 허용 경로 밖에서 생성되면 다음 래핑 또는 워커/세션 재초기화 전까지 거부되지 않는다.
+
+권한 증명에는 배포된 경로 헬퍼의 동기 핸들 기반 DACL 모드를 사용한다.
+재분석 지점이 아닌 경로 구성 요소를 핸들로 고정하고 대상과 부모의 보안
+설명자를 해당 핸들에서 읽는다. 선두의 명시적 거부 ACE만 인정하며, 상속된
+거부나 허용 뒤의 거부는 증거가 되지 않는다. 의무 수집부터 네이티브 허용과
+상태 게시까지 await가 없다. 실행 직전에 의무 버전과 세션·봉인 상태를
+검사한다. 비동기 래핑도 네이티브 호출 직전에 수집한 세션과 봉인 상태를
+다시 확인하며 재설정은 첫 await 전에 새 실행을 차단한다.
+
+네이티브 거부 검증 실패 후에는 재설정까지 새 래핑과 워커 권한 추가를 거절한다. 호스트 실행으로 우회하지 못하도록 격리 활성 표시는 유지한다. 이미 발급된 명령은 이 검사로 취소되지 않는다.
 
 Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ 하는지를
 결정하지만, 허용된 shell/도구 spawn 을 OS 수준에서 물리적으로 격리하지는
@@ -2336,7 +2357,21 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   (`.cmd`/`.bat`, 또는 `npx` 처럼 배치 파일만 응답하는 bare 이름) 은 이유와 함께
   거부되고, relay 도 `cmd.exe` 도 지정하지 않은 Windows 샌드박스 spawn 은 거부된다 — srt-win 의 PowerShell 실행은
   stdin·환경·종료 코드를 모두 잃는다.
-  srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다** —
+  srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다**.
+  실행할 사본은 `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` 에 둔다.
+  실행 파일 바이트를 쓰기 전에 두 디렉터리를 현재 사용자 소유의 protected DACL 로
+  생성·검증하고, 기존 경로나 링크가 있으면 거부한다. 이미지와 `owner.json` 도
+  `bin` 안에 최종 보안 설명자로 새로 생성한다. 쓰기 거부 대상은 `bin` 이므로
+  부모의 상속 가능한 delete-child deny 는 Ave 소유 바깥 디렉터리에만 찍힌다.
+  해당 바깥 디렉터리 내부의 직접 grant 와 이를 포함하는 쓰기 grant 는 거부한다.
+  마지막 holder 해제나 session reset 은 deny 를 제거한다. holder 가 죽으면 ACE 가
+  남을 수 있고, 다음 native ACL 작업이 추적 중인 죽은 holder 를 정리한다.
+  stale-copy sweep 은 새 구조의 두 디렉터리 소유자·DACL 과 marker 를 검증하고,
+  기존 단일 디렉터리 구조도 같은 marker·소유자 조건으로 처리한다. 알려진 일반 파일
+  `srt-win.exe`, `owner.json` 두 개와 빈 디렉터리만 재귀 없이 삭제한다.
+  임시 루트에 sandbox 계정 ACE 가 있으면 `srt-win-temp-root-acl-owner-action-required`
+  진단을 남기며 ACL 은 바꾸지 않는다. 남은 기존 ACE 의 제거는 활성 holder 를 확인한 뒤
+  정확한 명시적 ACE 또는 상속 원본을 조사·수정하도록 소유자가 승인해야 한다.
   활성화는 _오직_ 명시적 consent 버튼이 호출하는 1회 self-elevating UAC 설치만
   트리거한다. Windows 계정 로그아웃은 요구하지 않는다.
   `checkAsrtDependencies()` 는 user/WFP readiness 전까지 errors 로 보고한다.
@@ -3027,7 +3062,7 @@ composer/status 영역에 붙여 사용자가 질문과 선택지를 즉시 확�
 워크스페이스 탭 state 는 `ChatSidePanel` 로컬 `useState` 가 아니라 **패널보다 상위에서 사는 스토어**가 소유한다.
 
 - **스토어:** `src/ui/renderer/preview/workspace-tabs.ts` 의 `useWorkspaceTabs()` — `tabs` / `activeTabId` / `browserUrlByTab` 를 소유하고 `addTab` / `closeTab` / `setActiveTabId` / `setBrowserTabUrl` 를 노출한다. `WorkspaceTabKind` / `WorkspaceTab` 타입도 이 모듈에 둔다(런처 SOT 인 `command-actions.ts` 와의 수렴은 PR-3).
-- **마운트 위치:** `ChatView` 레벨. `ChatSidePanel` 은 레일 닫힘 / home 이탈 / 세션 전환 시 **조건부 언마운트**(`{previewRailVisible ? <ChatSidePanel/> : null}`)되지만 `ChatView` 는 그 전이 동안 마운트를 유지하므로, 스토어를 여기 두면 **탭 state 가 세션 전환/패널 토글을 넘어 유지**된다. 이는 `sidePanelOpen` 이 `use-app-mode.ts` 에서 상위 소유되어 threaded-down 되는 패턴과 동일하다. 이 위치는 도구 활동의 open action(§6.10.5)이 스토어에 닿는 지점이기도 하다.
+- **마운트 위치:** `ChatView` 레벨. `ChatSidePanel` 은 레일 닫힘 / home 이탈 / 세션 전환 시 **조건부 언마운트**(`{previewRailVisible ? <ChatSidePanel/> : null}`)되지만 `ChatView` 는 그 전이 동안 마운트를 유지하므로, 스토어를 여기 두면 **탭 state 가 세션 전환/패널 토글을 넘어 유지**된다. 작업 패널 열림 상태도 상위에서 소유해 내려보낸다. 이 위치는 도구 활동의 open action(§6.10.5)이 스토어에 닿는 지점이기도 하다.
 - **PR-1 불변식(pure refactor):** 이 lift 는 **행동을 바꾸지 않는다**. 기본 4탭 · 카운트 · never-empty 가드 · 닫기 규칙이 전부 동일하며, state 가 사는 *위치*만 바뀐다. 후속 PR 이 모델(§6.10.2~6.10.6)을 실제로 변경한다.
 
 ### 6.10.8 반응형 / 인덱서 통합 (부가)

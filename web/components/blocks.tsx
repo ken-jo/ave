@@ -6,11 +6,7 @@ import { CopyButton } from "./client";
 import { Item } from "./chrome";
 import { Frame, Shot } from "./media";
 
-/**
- * The element a block wraps each of its parts in. Pages pass `RevealItem`
- * (components/motion.tsx) to have the parts enter in sequence; the default is
- * the plain element, so a page that does not animate ships no motion code.
- */
+/** The element a block wraps each of its parts in; the plain element by default. */
 export type ItemComponent = (props: { as?: "div" | "article" | "li"; className?: string; children: React.ReactNode }) => React.ReactNode;
 
 const Plain: ItemComponent = ({ as: Tag = "div", className, children }) => <Tag className={className}>{children}</Tag>;

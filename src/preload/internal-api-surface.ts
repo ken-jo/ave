@@ -1,5 +1,6 @@
 import type { RevocableEgressGrant } from "../shared/egress-grant-scopes.js";
 import type { AppRelaunchResult } from "../shared/app-relaunch.js";
+import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 // The internal renderer API is intentionally assembled in one typed surface.
 import { ipcRenderer } from "electron";
 import { buildBrowserTabsApiSurface } from "./browser-api-surface.js";
@@ -284,6 +285,10 @@ export function buildInternalApiSurface() {
   // A second, independently-streaming chat session. send/new/load/abort are invokes; onStream/onFallback subscribe to the DEDICATED CHANNELS.sidechat.{stream,fallback} events
   // (NOT chat.stream) and return an unsubscribe fn (the onChatStream pattern). All channels are INTERNAL; an external origin can never reach them (fail-closed isPublicChannel).
   sideChat: {
+    listShellTasks: async (expectedSessionId: string) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.listShellTasks, expectedSessionId) as Promise<ShellTask[]>,
+    controlShellTask: async (expectedSessionId: string, action: ShellTaskAction, shellId?: string) =>
+      ipcRenderer.invoke(CHANNELS.sidechat.controlShellTask, expectedSessionId, action, shellId) as Promise<ShellTaskActionResult>,
     send: async (
       input: string,
       attachments?: unknown[],
@@ -1300,17 +1305,6 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(CHANNELS.notification.clicked, payload),
 
   window: {
-    /** Resize the main window to match the current workspace mode. "work" → centered work canvas on
-     * the primary work area; "chat" → the right-docked initial bounds (computeInitialMainWindowBounds). */
-    resizeForMode: async (mode: "chat" | "work") =>
-      ipcRenderer.invoke(CHANNELS.window.resizeForMode, mode) as Promise<
-        { ok: true } | { ok: false; error: string }
-      >,
-    /** Resize the chat-mode main window for the right-side work panel. Opening adds side-panel width; closing restores the normal chat bounds. */
-    resizeForSidePanel: async (open: boolean) =>
-      ipcRenderer.invoke(CHANNELS.window.resizeForSidePanel, open) as Promise<
-        { ok: true } | { ok: false; error: string }
-      >,
     /** Open a render_html result in an isolated BrowserWindow. */
     openHtmlPreview: async (payload: OpenHtmlPreviewWindowPayload) =>
       ipcRenderer.invoke(CHANNELS.window.openHtmlPreview, payload) as Promise<OpenHtmlPreviewWindowResult>,

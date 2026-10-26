@@ -3,7 +3,7 @@ import { once } from "node:events";
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, win32 } from "node:path";
+import { basename, dirname, join, win32 } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
@@ -49,14 +49,27 @@ describe("Windows helper integrity", () => {
 
   // Owner SID and image sharing checks require the native filesystem APIs.
   describe.skipIf(process.platform !== "win32")("stale private image cleanup", () => {
-    function stage(): string {
+    function stage(layout: "single-level" | "two-level" = "two-level"): string {
       const { source } = fixture();
-      const original = dirname(prepareSrtWinExecutable(source));
+      const imageDirectory = dirname(prepareSrtWinExecutable(source));
+      const original = basename(imageDirectory) === "bin" ? dirname(imageDirectory) : imageDirectory;
       // Model another host's abandoned copy, outside this host's cache.
       const directory = `${original}-abandoned`;
       renameSync(original, directory);
       directories.push(directory);
-      return directory;
+      const staged = basename(imageDirectory) === "bin" ? join(directory, "bin") : directory;
+      const target = layout === "two-level" ? join(directory, "bin") : directory;
+      if (staged !== target) {
+        if (layout === "two-level") {
+          const script = `$ErrorActionPreference='Stop'; $acl=[System.IO.Directory]::GetAccessControl('${directory.replace(/'/g, "''")}'); [System.IO.Directory]::CreateDirectory('${target.replace(/'/g, "''")}',$acl) | Out-Null`;
+          execFileSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+            "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
+          ], { env: process.env, windowsHide: true, stdio: "pipe" });
+        }
+        for (const name of ["srt-win.exe", "owner.json"]) renameSync(join(staged, name), join(target, name));
+        if (staged !== directory) rmdirSync(staged);
+      }
+      return target;
     }
 
     function isolateTemp(): void {
@@ -69,6 +82,15 @@ describe("Windows helper integrity", () => {
     function abandon(directory: string): void {
       writeFileSync(join(directory, "owner.json"), JSON.stringify({ pid: 2147483647, started: "1" }));
     }
+
+    it.each(["single-level", "two-level"] as const)("removes only a verified stale %s copy", (layout) => {
+      isolateTemp();
+      const directory = stage(layout);
+      abandon(directory);
+      const outer = layout === "two-level" ? dirname(directory) : directory;
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(outer)).toBe(false);
+    });
 
     it("removes a dead owner's image but retains the current process even with a reused PID marker", () => {
       isolateTemp();
@@ -118,6 +140,48 @@ describe("Windows helper integrity", () => {
       expect(existsSync(link)).toBe(true);
       expect(existsSync(join(nested, "owner.json"))).toBe(true);
       expect(existsSync(join(target, "srt-win.exe"))).toBe(true);
+    });
+
+    it("retains a linked bin without reading its marker or deleting its target", () => {
+      isolateTemp();
+      const target = stage();
+      abandon(target);
+      mkdirSync(join(target, "keep"));
+      const directory = stage();
+      abandon(directory);
+      rmSync(join(directory, "srt-win.exe"));
+      rmSync(join(directory, "owner.json"));
+      rmdirSync(directory);
+      symlinkSync(target, directory, "junction");
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(join(directory, "owner.json"))).toBe(true);
+      expect(existsSync(join(target, "srt-win.exe"))).toBe(true);
+      rmdirSync(directory);
+    });
+
+    it("leaves a foreign-owned protected directory alone", (context) => {
+      isolateTemp();
+      const directory = join(tmpdir(), "ave-srt-win-foreign");
+      const script = [
+        "$ErrorActionPreference='Stop'",
+        "$sid=[System.Security.Principal.WindowsIdentity]::GetCurrent().User",
+        "$acl=New-Object System.Security.AccessControl.DirectorySecurity",
+        "$acl.SetOwner((New-Object System.Security.Principal.SecurityIdentifier('S-1-5-32-544')))",
+        "$acl.SetAccessRuleProtection($true,$false)",
+        "$acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($sid,'FullControl','ContainerInherit,ObjectInherit','None','Allow')))",
+        `try { [System.IO.Directory]::CreateDirectory('${directory.replace(/'/g, "''")}',$acl) | Out-Null } catch [System.UnauthorizedAccessException], [System.Security.AccessControl.PrivilegeNotHeldException] { exit 3 } catch [System.IO.IOException] { if (($_.Exception.HResult -band 0xffff) -eq 1307) { exit 3 }; throw }`,
+        `if ([System.IO.Directory]::GetAccessControl('${directory.replace(/'/g, "''")}').GetOwner([System.Security.Principal.SecurityIdentifier]) -eq $sid) { throw 'Foreign directory fixture retained the current owner' }`,
+      ].join("; ");
+      const result = spawnSync(win32.join(process.env.SystemRoot!, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+        "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64"),
+      ], { env: process.env, windowsHide: true, encoding: "utf8" });
+      if (result.status === 3) return context.skip("Token cannot create a directory with a different owner");
+      expect(result.status, result.stderr).toBe(0);
+      writeFileSync(join(directory, "srt-win.exe"), "fixture");
+      abandon(directory);
+      sweepStaleSrtWinDirectories();
+      expect(existsSync(join(directory, "srt-win.exe"))).toBe(true);
+      expect(existsSync(join(directory, "owner.json"))).toBe(true);
     });
 
     it("keeps a live owner, rejects PID reuse, and keeps a dead owner's image while another process holds it", async () => {
@@ -225,7 +289,7 @@ describe("Windows helper integrity", () => {
   it.skipIf(process.platform !== "win32")("allows runner read and execute access while keeping the host the sole image modifier", () => {
     const { source } = fixture();
     const executable = prepareSrtWinExecutable(source);
-    directories.push(dirname(executable));
+    directories.push(dirname(dirname(executable)));
     // Core cmdlets and.NET only. In this minimal environment a Utility cmdlet such as Write-Output would make PowerShell scan every installed module first, which took 40 s or more on the hosted runner.
     const script = [
       "$ErrorActionPreference='Stop'",
@@ -238,7 +302,7 @@ describe("Windows helper integrity", () => {
       "$full=[System.Security.AccessControl.FileSystemRights]::FullControl",
       "$modify=[System.Security.AccessControl.FileSystemRights]'Write,Delete,DeleteSubdirectoriesAndFiles,ChangePermissions,TakeOwnership'",
       "$image=[System.IO.Path]::Combine($env:AVE_SRT_PRIVATE_DIRECTORY, 'srt-win.exe')",
-      "foreach ($acl in @([System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY), [System.IO.File]::GetAccessControl($image))) {",
+      "foreach ($acl in @([System.IO.Directory]::GetAccessControl([System.IO.Path]::GetDirectoryName($env:AVE_SRT_PRIVATE_DIRECTORY)), [System.IO.Directory]::GetAccessControl($env:AVE_SRT_PRIVATE_DIRECTORY), [System.IO.File]::GetAccessControl($image))) {",
       "if ($acl.GetOwner([System.Security.Principal.SecurityIdentifier]) -ne $sid) { throw 'Wrong owner' }",
       "if (@($acl.Access).Count -ne 4) { throw 'Unexpected grants' }",
       "foreach ($entry in $acl.Access) {",
@@ -277,7 +341,8 @@ describe("Windows helper integrity", () => {
         if (directory) {
           expect(existsSync(directory)).toBe(false);
           mkdirSync(directory);
-          writeFileSync(join(directory, "srt-win.exe"), "");
+          mkdirSync(join(directory, "bin"));
+          writeFileSync(join(directory, "bin", "srt-win.exe"), "");
         }
         return Buffer.alloc(0);
       },
@@ -285,7 +350,7 @@ describe("Windows helper integrity", () => {
     vi.stubEnv("SystemRoot", process.env.SystemRoot ?? "C:\\Windows");
     try {
       const integrity = await import("../srt-win-integrity.js");
-      directories.push(dirname(integrity.prepareSrtWinExecutable(fixture().source)));
+      directories.push(dirname(dirname(integrity.prepareSrtWinExecutable(fixture().source))));
     } finally {
       vi.doUnmock("node:os");
       vi.doUnmock("node:child_process");
@@ -321,7 +386,7 @@ describe("Windows helper integrity", () => {
     // Anything already at the path refuses creation, before the create call.
     const refusal = script!.indexOf("throw 'Private directory already exists'");
     expect(refusal).toBeGreaterThan(-1);
-    expect(refusal).toBeLessThan(script!.indexOf("[System.IO.Directory]::CreateDirectory($directory, $security)"));
+    expect(refusal).toBeLessThan(script!.indexOf("[System.IO.Directory]::CreateDirectory($outer, $security)"));
     expect(script).toContain("[System.IO.FileMode]::CreateNew");
     expect(script).toContain("$fileSecurity)");
     expect(script).toContain("$stream.GetAccessControl().GetOwner(");
@@ -369,7 +434,7 @@ describe("Windows helper integrity", () => {
   it("revalidates a cached image and the source instead of trusting a previous check", () => {
     const { source, bytes } = fixture();
     const executable = prepareSrtWinExecutable(source);
-    directories.push(dirname(executable));
+    directories.push(dirname(dirname(executable)));
     expect(executable).not.toBe(source);
     expect(readFileSync(executable)).toEqual(bytes);
     writeFileSync(executable, Buffer.alloc(bytes.length));
@@ -383,7 +448,7 @@ describe("Windows helper integrity", () => {
   it.skipIf(process.platform !== "win32")("executes the private snapshot when the checked source is swapped before spawn", () => {
     const { source, bytes } = fixture();
     const executable = prepareSrtWinExecutable(source);
-    directories.push(dirname(executable));
+    directories.push(dirname(dirname(executable)));
     writeFileSync(source, Buffer.alloc(bytes.length));
     assertSrtWinSpawnIntegrity(executable);
     const result = spawnSync(executable, ["--srt-win", "--help"], {

@@ -7,9 +7,15 @@ export interface MessageQueueItem {
   createdAt: number;
 
   expiresAt: number;
+  /** Owns a guide request awaiting acceptance; these rows remain visible but cannot be sent again. */
+  handoffReservationId?: string;
   /** Keep accepted guidance visible until delivered at the next round boundary; engine acceptance alone does not mean it is
    * in the transcript. */
   handedOffAs?: string;
+}
+
+export function isQueueItemPending(item: MessageQueueItem): boolean {
+  return item.handedOffAs === undefined && item.handoffReservationId === undefined;
 }
 
 let nextId = 0;
@@ -90,8 +96,45 @@ export class MessageQueueStore {
 
   remove(id: string): void {
     const before = this.items.length;
-    this.items = this.items.filter((it) => it.id !== id);
+    this.items = this.items.filter((it) => it.id !== id || !isQueueItemPending(it));
     if (this.items.length !== before) this.notify();
+  }
+
+  /** Change delivery order only while both adjacent rows still belong to the queue. */
+  move(id: string, direction: -1 | 1): void {
+    this.prune();
+    const index = this.items.findIndex((item) => item.id === id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= this.items.length
+      || !isQueueItemPending(this.items[index]) || !isQueueItemPending(this.items[target])) return;
+    const next = [...this.items];
+    [next[index], next[target]] = [next[target], next[index]];
+    this.items = next;
+    this.notify();
+  }
+
+  /** Reserve the exact current batch before any asynchronous guide request starts. */
+  reservePending(): { id: string; items: readonly MessageQueueItem[] } | null {
+    const pending = this.getPending();
+    if (pending.length === 0) return null;
+    const id = makeId();
+    const ids = new Set(pending.map((item) => item.id));
+    this.items = this.items.map((item) => ids.has(item.id) ? { ...item, handoffReservationId: id } : item);
+    this.notify();
+    return { id, items: pending };
+  }
+
+  /** Settle only rows owned by this request; a cleared or replaced queue cannot be claimed by a late reply. */
+  settleReservation(id: string, handedOffAs?: string): void {
+    this.prune();
+    let changed = false;
+    this.items = this.items.map((item) => {
+      if (item.handoffReservationId !== id) return item;
+      changed = true;
+      const { handoffReservationId: _reservation, ...rest } = item;
+      return handedOffAs === undefined ? rest : { ...rest, handedOffAs };
+    });
+    if (changed) this.notify();
   }
 
   /** Mark rows as accepted by the engine, recording what it was given. */
@@ -99,7 +142,7 @@ export class MessageQueueStore {
     const target = new Set(ids);
     let changed = false;
     this.items = this.items.map((it) => {
-      if (!target.has(it.id) || it.handedOffAs === handedOffAs) return it;
+      if (!target.has(it.id) || !isQueueItemPending(it)) return it;
       changed = true;
       return { ...it, handedOffAs };
     });
@@ -137,7 +180,7 @@ export class MessageQueueStore {
   /** Rows the engine has not been given yet — the only ones a drain may send. */
   getPending(): readonly MessageQueueItem[] {
     this.prune();
-    return this.items.filter((it) => it.handedOffAs === undefined);
+    return this.items.filter(isQueueItemPending);
   }
 
   /** 큐 항목 텍스트 수정. 빈/cap 초과 throw — add 와 동일 contract. Returns: true 면 변경됨 (listener notify). 같은 텍스트면 false (no-op). 수정 시
@@ -155,7 +198,7 @@ export class MessageQueueStore {
     let changed = false;
     const now = Date.now();
     this.items = this.items.map((it) => {
-      if (it.id !== id) return it;
+      if (it.id !== id || !isQueueItemPending(it)) return it;
       if (it.text === trimmed) return it;
       changed = true;
       return { ...it, text: trimmed, expiresAt: now + MessageQueueStore.DEFAULT_TTL_MS };
@@ -167,7 +210,7 @@ export class MessageQueueStore {
   toggleSelect(id: string): void {
     let changed = false;
     this.items = this.items.map((it) => {
-      if (it.id !== id) return it;
+      if (it.id !== id || !isQueueItemPending(it)) return it;
       changed = true;
       return { ...it, selected: !it.selected };
     });
@@ -177,7 +220,7 @@ export class MessageQueueStore {
   clearSelection(): void {
     let changed = false;
     this.items = this.items.map((it) => {
-      if (!it.selected) return it;
+      if (!it.selected || !isQueueItemPending(it)) return it;
       changed = true;
       return { ...it, selected: false };
     });
@@ -191,27 +234,29 @@ export class MessageQueueStore {
     this.notify();
   }
 
-  /** 자연 인입 — 큐 전체를 꺼내고 비움. brake-point hook 에서 호출. Returns: items in insertion order (selection state 무시). */
+  /** Take pending rows in delivery order, regardless of selection; reserved and accepted rows stay visible. */
   takeAll(): MessageQueueItem[] {
-    if (this.items.length === 0) return [];
-    const taken = this.items;
-    this.items = [];
+    const taken = [...this.getPending()];
+    if (taken.length === 0) return [];
+    this.items = this.items.filter((item) => !isQueueItemPending(item));
     this.notify();
     return taken;
   }
 
   /** 즉시 주입 — 선택된 항목만 꺼내고 비움. 미선택 항목은 잔존. ⌘⏎ 인터럽트에서 호출. selection state 가 false 인 항목은 그대로. */
   takeSelected(): MessageQueueItem[] {
-    const selected = this.items.filter((it) => it.selected);
+    this.prune();
+    const selected = this.items.filter((it) => it.selected && isQueueItemPending(it));
     if (selected.length === 0) return [];
-    this.items = this.items.filter((it) => !it.selected);
+    this.items = this.items.filter((it) => !it.selected || !isQueueItemPending(it));
     this.notify();
     return selected;
   }
 
   /** 행별 즉시 — 특정 1 항목을 꺼내고 비움. 다른 항목은 잔존. 큐 행의 [↑ 즉시] 버튼에서 호출. */
   takeOne(id: string): MessageQueueItem | null {
-    const idx = this.items.findIndex((it) => it.id === id);
+    this.prune();
+    const idx = this.items.findIndex((it) => it.id === id && isQueueItemPending(it));
     if (idx === -1) return null;
     const taken = this.items[idx];
     this.items = [...this.items.slice(0, idx), ...this.items.slice(idx + 1)];
@@ -230,11 +275,11 @@ export class MessageQueueStore {
   }
   hasSelected(): boolean {
     this.prune();
-    return this.items.some((it) => it.selected);
+    return this.items.some((it) => it.selected && isQueueItemPending(it));
   }
   selectedCount(): number {
     this.prune();
-    return this.items.reduce((n, it) => (it.selected ? n + 1 : n), 0);
+    return this.items.reduce((n, it) => (it.selected && isQueueItemPending(it) ? n + 1 : n), 0);
   }
 
   /** useSyncExternalStore 호환 subscribe. 반환된 unsubscribe 함수로 listener 제거. */

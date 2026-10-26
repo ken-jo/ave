@@ -180,6 +180,9 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.chat.sessions, []],
   ["chat", CHANNELS.chat.mainActiveState, []],
   ["chat", CHANNELS.chat.sessionHistory, ["s"]],
+  ["chat", CHANNELS.chat.getTurnReview, ["s", "main"]],
+  ["chat", CHANNELS.chat.listShellTasks, ["main", "11111111-1111-4111-8111-111111111111"]],
+  ["chat", CHANNELS.chat.controlShellTask, ["main", "11111111-1111-4111-8111-111111111111", "background"]],
   ["chat", CHANNELS.memory.entriesList, [{}]],
   // Secret writes and the external-link opener.
   ["settings", CHANNELS.settings.update, [{}]],
@@ -201,6 +204,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ...Object.values(CHANNELS.pluginStudio).map((channel): readonly [string, string, unknown[]] => ["plugin-studio", channel, []]),
   // Side chat runs arbitrary tools on a second loop.
   ["sidechat", CHANNELS.sidechat.send, [{ input: "x" }]],
+  ["sidechat", CHANNELS.sidechat.listShellTasks, ["11111111-1111-4111-8111-111111111111"]],
+  ["sidechat", CHANNELS.sidechat.controlShellTask, ["11111111-1111-4111-8111-111111111111", "background"]],
   ["sidechat", CHANNELS.sidechat.getSubAgentTranscript, [{ originSessionId: "test-session", childSessionId: "child-session" }]],
   // Routines and the session tasks list.
   ["routines", ROUTINES.list, []],

@@ -1,9 +1,9 @@
 /** Use info foreground tokens; accent is a surface tint and is unreadable as text or a border on light themes. */
 import { chatSurface } from "./chat-surface.js";
 import { useSyncExternalStore, useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { ChevronDown, ChevronRight, MessageSquarePlus, ArrowUp, Check, X, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, MessageSquarePlus, ArrowUp, ArrowDown, Check, X, Pencil } from "lucide-react";
 import { Badge } from "../../../components/ui/badge.js";
-import type { MessageQueueStore, MessageQueueItem } from "../state/message-queue-store.js";
+import { isQueueItemPending, type MessageQueueStore, type MessageQueueItem } from "../state/message-queue-store.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
 
@@ -25,10 +25,11 @@ export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQ
   );
 
   const [expanded, setExpanded] = useState(true);
+  const [announcement, setAnnouncement] = useState("");
   const rowRefs = useRef<(HTMLLIElement | null)[]>([]);
 
   const selectedCount = useMemo(
-    () => items.reduce((n, it) => (it.selected ? n + 1 : n), 0),
+    () => items.reduce((n, it) => (it.selected && isQueueItemPending(it) ? n + 1 : n), 0),
     [items],
   );
 
@@ -102,10 +103,26 @@ export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQ
               onRemove={() => store.remove(item.id)}
               onEdit={(next) => store.update(item.id, next)}
               onMoveFocus={(delta) => focusRow(index + delta)}
+              position={index + 1}
+              count={items.length}
+              moveUpEnabled={index > 0 && isQueueItemPending(items[index - 1])}
+              moveDownEnabled={index < items.length - 1 && isQueueItemPending(items[index + 1])}
+              onMove={(direction) => {
+                const row = rowRefs.current[index];
+                store.move(item.id, direction);
+                const reordered = store.getItems();
+                const position = reordered.findIndex((candidate) => candidate.id === item.id) + 1;
+                if (position === index + 1 || position === 0) return;
+                row?.focus();
+                setAnnouncement(t("messageQueuePanel.movedAnnouncement", {
+                  text: item.text, position, count: reordered.length,
+                }));
+              }}
             />
           ))}
         </ul>
       )}
+      <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement}</span>
     </div>
   );
 }
@@ -119,6 +136,11 @@ interface MessageQueueRowProps {
 
   onEdit: (newText: string) => void;
   onMoveFocus: (delta: 1 | -1) => void;
+  position: number;
+  count: number;
+  moveUpEnabled: boolean;
+  moveDownEnabled: boolean;
+  onMove: (direction: -1 | 1) => void;
 }
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
@@ -135,6 +157,11 @@ function MessageQueueRow({
   onRemove,
   onEdit,
   onMoveFocus,
+  position,
+  count,
+  moveUpEnabled,
+  moveDownEnabled,
+  onMove,
 }: MessageQueueRowProps) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
@@ -145,6 +172,12 @@ function MessageQueueRow({
   // engine already holds — but it stays visible so the message is never
   // missing from both the queue and the transcript at once.
   const handedOff = item.handedOffAs !== undefined;
+  const handoffInProgress = item.handoffReservationId !== undefined;
+  const locked = !isQueueItemPending(item);
+
+  useEffect(() => {
+    if (locked) setEditing(false);
+  }, [locked]);
 
   const enterEdit = useCallback(() => {
     setDraft(item.text);
@@ -187,11 +220,23 @@ function MessageQueueRow({
       }
       data-testid="message-queue-row"
       data-selected={item.selected ? "true" : "false"}
+      aria-busy={handoffInProgress || undefined}
       tabIndex={editing ? -1 : 0}
       aria-selected={item.selected}
+      aria-posinset={position}
+      aria-setsize={count}
+      aria-keyshortcuts={locked ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
       onKeyDown={(e) => {
         if (editing) return;
         if (isTextEditingTarget(e.target)) return;
+        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.target === e.currentTarget
+          && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          e.preventDefault();
+          if (!locked && (e.key === "ArrowDown" ? moveDownEnabled : moveUpEnabled)) {
+            onMove(e.key === "ArrowDown" ? 1 : -1);
+          }
+          return;
+        }
         if (e.key === "ArrowDown") {
           e.preventDefault();
           onMoveFocus(1);
@@ -200,17 +245,17 @@ function MessageQueueRow({
           onMoveFocus(-1);
         } else if ((e.key === "Enter" || e.key === " ") && e.target === e.currentTarget) {
           e.preventDefault();
-          onToggle();
+          if (!locked) onToggle();
         } else if ((e.key === "Delete" || e.key === "Backspace") && e.target === e.currentTarget) {
           e.preventDefault();
-          onRemove();
+          if (!locked) onRemove();
         }
       }}
     >
       <button
         type="button"
         onClick={onToggle}
-        disabled={editing || handedOff}
+        disabled={editing || locked}
         className={
           "flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border transition-colors motion-reduce:transition-none " +
           (item.selected
@@ -247,15 +292,25 @@ function MessageQueueRow({
         <span
           className={
             "min-w-0 flex-1 truncate text-xs " +
-            (handedOff ? "text-muted-foreground" : "cursor-text text-foreground")
+            (locked ? "text-muted-foreground" : "cursor-text text-foreground")
           }
-          onDoubleClick={handedOff ? undefined : enterEdit}
-          title={handedOff
+          onDoubleClick={locked ? undefined : enterEdit}
+          title={handoffInProgress
+            ? t("messageQueuePanel.handoffInProgressTitle") : handedOff
             ? t("messageQueuePanel.handedOffTitle")
             : t("messageQueuePanel.doubleClickToEditTitle")}
           data-testid="message-queue-row-text"
         >
           {item.text}
+        </span>
+      )}
+      {!editing && handoffInProgress && (
+        <span
+          className="shrink-0 rounded border border-info/(--opacity-medium) bg-info/(--opacity-subtle) px-1.5 py-0.5 text-[10px] font-medium text-foreground"
+          title={t("messageQueuePanel.handoffInProgressTitle")}
+          data-testid="message-queue-row-handoff-in-progress"
+        >
+          {t("messageQueuePanel.handoffInProgressBadge")}
         </span>
       )}
       {!editing && handedOff && (
@@ -267,12 +322,34 @@ function MessageQueueRow({
           {t("messageQueuePanel.handedOffBadge")}
         </span>
       )}
-      {!editing && !handedOff && (
+      {!editing && !locked && (
         /* One action cluster, uniform 20px hit targets and a single gap so the
-           three verbs read as a row rather than three differently-sized chips.
+           actions read as a row.
            "즉시" keeps its label — it is the only destructive-adjacent action
            whose meaning an icon alone does not carry. */
         <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => onMove(-1)}
+            disabled={!moveUpEnabled}
+            className="inline-flex h-5 w-5 items-center justify-center rounded border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-muted hover:text-foreground disabled:opacity-40 motion-reduce:transition-none"
+            aria-label={t("messageQueuePanel.moveUp")}
+            title={t("messageQueuePanel.moveUp")}
+            data-testid="message-queue-row-move-up"
+          >
+            <ArrowUp className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(1)}
+            disabled={!moveDownEnabled}
+            className="inline-flex h-5 w-5 items-center justify-center rounded border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-muted hover:text-foreground disabled:opacity-40 motion-reduce:transition-none"
+            aria-label={t("messageQueuePanel.moveDown")}
+            title={t("messageQueuePanel.moveDown")}
+            data-testid="message-queue-row-move-down"
+          >
+            <ArrowDown className="h-3 w-3" />
+          </button>
           <button
             type="button"
             onClick={enterEdit}

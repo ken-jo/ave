@@ -1,3 +1,4 @@
+import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import {
   normalizeCorpCaCommonName,
@@ -9,6 +10,8 @@ import {
   normalizeSidePanelSplitPercent,
   normalizeSidePanelWidth,
   normalizeSidebarWidth,
+  normalizeFileTreeWidth,
+  fileTreeWidthFromLegacySplit,
 } from "../shared/side-panel.js";
 import {
   sanitizePluginConfig,
@@ -36,7 +39,6 @@ import {
   type LLMVendor,
   type LLMVendorSettingsMap,
   type LLMVendorSettings,
-  type MarketplaceEligibleLLMVendor,
 } from "../shared/llm-vendor-defaults.js";
 import {
   DEFAULT_BUNDLE_ID,
@@ -54,9 +56,9 @@ import {
   normalizeLocaleSetting,
 } from "../i18n/index.js";
 import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
-import { normalizeAppMode } from "../shared/initial-app-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
+import { isSidebarState } from "../shared/sidebar-state.js";
 import { isInlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import {
@@ -134,7 +136,7 @@ import { isRecord } from "../shared/is-record.js";
 const log = createLogger("settings");
 
 
-function normalizeSubscriptionChatRuntimeModel(value: unknown): string | undefined {
+function normalizeModelId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const model = value.trim();
   if (
@@ -145,6 +147,16 @@ function normalizeSubscriptionChatRuntimeModel(value: unknown): string | undefin
     return undefined;
   }
   return model;
+}
+
+function normalizeCompactionModelRoute(value: unknown): string {
+  if (typeof value !== "string" || value.length > 8_192) return "";
+  try {
+    const parts: unknown = JSON.parse(value);
+    return Array.isArray(parts) && parts.every((part) => typeof part === "string")
+      && ((parts[0] === "api" && parts.length === 4) || (parts[0] === "subscription" && parts.length === 2))
+      ? JSON.stringify(parts) : "";
+  } catch { return ""; }
 }
 
 /** Invalid subscription runtimes fall back to the API boundary without changing vendor secrets. */
@@ -187,23 +199,13 @@ export function normalizeActiveChatRuntime(input: unknown): ActiveChatRuntime {
     return { kind: "api" };
   }
   const model = subscriptionRuntimeDescriptor(raw.provider).supportsModelSelection
-    ? normalizeSubscriptionChatRuntimeModel(raw.model)
+    ? normalizeModelId(raw.model)
     : undefined;
   return {
     kind: "subscription",
     provider: raw.provider,
     ...(model ? { model } : {}),
   };
-}
-
-function isLlmProviderEnabled(
-  vendor: LLMVendor,
-  installedProviderIds: readonly MarketplaceEligibleLLMVendor[],
-): boolean {
-  return (
-    !isMarketplaceEligibleLLMVendor(vendor) ||
-    installedProviderIds.includes(vendor)
-  );
 }
 
 function isMarketplaceProviderPresetInstalled(
@@ -512,7 +514,6 @@ function isValidModelListUrl(value: unknown): value is string {
 
 function normalizeLlmModelListCache(
   input: unknown,
-  installedProviderIds: readonly MarketplaceEligibleLLMVendor[],
   installedProviderPresets?: readonly MarketplaceInstalledProviderPreset[],
 ): LlmModelListCache {
   if (!isRecord(input)) return {};
@@ -521,7 +522,6 @@ function normalizeLlmModelListCache(
     if (!isRecord(value)) continue;
     const entry = value as Partial<LlmModelListCacheEntry>;
     if (!isLLMVendor(entry.vendor)) continue;
-    if (!isLlmProviderEnabled(entry.vendor, installedProviderIds)) continue;
     if (!isValidModelListUrl(entry.endpoint)) continue;
     const models = normalizeCachedModelIds(entry.models);
     if (models.length === 0) continue;
@@ -557,7 +557,6 @@ function normalizeLlmModelListCache(
 export function mergeLlmPatch(
   base: LLMSettings,
   partial: LLMSettingsPatch,
-  installedProviderIds: readonly MarketplaceEligibleLLMVendor[],
   installedProviderPresets: readonly MarketplaceInstalledProviderPreset[] | undefined,
 ): LLMSettings {
   const activeChatRuntime = "activeChatRuntime" in partial
@@ -568,7 +567,6 @@ export function mergeLlmPatch(
     for (const [vendorId, incoming] of Object.entries(partial.vendors)) {
       if (!isLLMVendor(vendorId) || !incoming) continue;
       const v = vendorId;
-      if (!isLlmProviderEnabled(v, installedProviderIds)) continue;
       // Explicit undefined clears a setting; an omitted patch key preserves it.
       const previous = getLlmVendorSettings(vendors, v);
       const merged: LLMVendorSettings = { ...previous, ...incoming };
@@ -595,9 +593,7 @@ export function mergeLlmPatch(
   const requestedProvider: LLMVendor = isLLMVendor(partial.provider)
     ? partial.provider
     : base.provider;
-  const provider = isLlmProviderEnabled(requestedProvider, installedProviderIds)
-    ? requestedProvider
-    : DEFAULT_LLM_VENDOR;
+  const provider = requestedProvider;
   const requestedMarketplaceProviderPresetId =
     partial.marketplaceProviderPresetId !== undefined
       ? partial.marketplaceProviderPresetId
@@ -620,7 +616,6 @@ export function mergeLlmPatch(
   const fallbackChain = (partial.fallbackChain ?? base.fallbackChain)
     .filter((entry) =>
       isLLMVendor(entry.provider) &&
-      isLlmProviderEnabled(entry.provider, installedProviderIds) &&
       !(marketplaceProviderPresetId && entry.provider === "openai-compatible")
     );
   const isProviderSelectionAccepted = isLLMVendor(partial.provider)
@@ -630,18 +625,20 @@ export function mergeLlmPatch(
       || !requestedMarketplaceProviderPresetId
       || (typeof requestedMarketplaceProviderPresetId === "string"
         && marketplaceProviderPresetId === requestedMarketplaceProviderPresetId.trim()));
+  const modelListCache = normalizeLlmModelListCache(
+    "modelListCache" in partial ? partial.modelListCache : base.modelListCache,
+    installedProviderPresets,
+  );
   return {
     activeChatRuntime,
     provider: activeProvider,
     ...(marketplaceProviderPresetId ? { marketplaceProviderPresetId } : {}),
     vendors,
     streamSmoothing: partial.streamSmoothing ?? base.streamSmoothing,
+    compactionModel: normalizeModelId("compactionModel" in partial ? partial.compactionModel : base.compactionModel) ?? "",
+    compactionModelRoute: normalizeCompactionModelRoute("compactionModelRoute" in partial ? partial.compactionModelRoute : base.compactionModelRoute),
     fallbackChain,
-    modelListCache: normalizeLlmModelListCache(
-      "modelListCache" in partial ? partial.modelListCache : base.modelListCache,
-      installedProviderIds,
-      installedProviderPresets,
-    ),
+    modelListCache,
     pricingOverrides: normalizePricingOverrides(
       "pricingOverrides" in partial ? partial.pricingOverrides : base.pricingOverrides,
     ),
@@ -657,140 +654,6 @@ export function mergeLlmPatch(
       ? { retiredProvider: base.retiredProvider }
       : {}),
     // Drop the inert legacy host-resolver map rather than retaining internal hostnames.
-  };
-}
-
-const LLM_VENDOR_SETTING_KEYS = [
-  "model",
-  "outputTokenLimit",
-  // Preset models alone still make the generic block configured; do not prune them when switching vendors.
-  "presetModels",
-  // A custom endpoint window alone still counts as route configuration.
-  "contextWindow",
-  "catalogModel",
-  "imageInput",
-  "baseUrl",
-  "vertexProject",
-  "vertexLocation",
-  "enableThinking",
-  "thinkingBudgetTokens",
-] as const satisfies readonly (keyof LLMVendorSettings)[];
-
-function hasCustomLlmVendorSettings(
-  vendor: LLMVendor,
-  block: LLMVendorSettings,
-): boolean {
-  const normalized = getLlmVendorSettings({ [vendor]: block }, vendor);
-  const defaults = getLlmVendorSettings(undefined, vendor);
-  return LLM_VENDOR_SETTING_KEYS.some(
-    (key) => normalized[key] !== defaults[key],
-  );
-}
-
-function addUniqueMarketplaceProvider(
-  values: MarketplaceEligibleLLMVendor[],
-  vendor: LLMVendor,
-): MarketplaceEligibleLLMVendor[] {
-  if (!isMarketplaceEligibleLLMVendor(vendor)) return values;
-  return values.includes(vendor) ? values : [...values, vendor];
-}
-
-export function pruneLazyLlmVendorBlocks(
-  llm: LLMSettings,
-  installedProviderIds: MarketplaceEligibleLLMVendor[],
-  installedProviderPresets: readonly MarketplaceInstalledProviderPreset[],
-  options: { inferInstalledFromCustom: boolean },
-): {
-  llm: LLMSettings;
-  installedProviderIds: MarketplaceEligibleLLMVendor[];
-} {
-  const vendors: LLMVendorSettingsMap = {};
-  let inferredInstalledProviderIds = installedProviderIds;
-
-  if (options.inferInstalledFromCustom) {
-    for (const [vendorId, block] of Object.entries(llm.vendors)) {
-      if (!isLLMVendor(vendorId) || !block) continue;
-      if (!isMarketplaceEligibleLLMVendor(vendorId)) continue;
-      const normalized = getLlmVendorSettings({ [vendorId]: block }, vendorId);
-      if (!hasCustomLlmVendorSettings(vendorId, normalized)) continue;
-      inferredInstalledProviderIds = addUniqueMarketplaceProvider(
-        inferredInstalledProviderIds,
-        vendorId,
-      );
-    }
-  }
-
-  let provider = isLlmProviderEnabled(llm.provider, inferredInstalledProviderIds)
-    ? llm.provider
-    : DEFAULT_LLM_VENDOR;
-  const marketplaceProviderPresetId = normalizeActiveMarketplaceProviderPresetId(
-    provider,
-    llm.marketplaceProviderPresetId,
-    installedProviderPresets,
-  );
-  const removedActiveMarketplaceProviderPreset =
-    provider === "openai-compatible" &&
-    isMarketplaceProviderPresetId(llm.marketplaceProviderPresetId) &&
-    !marketplaceProviderPresetId;
-  if (removedActiveMarketplaceProviderPreset) {
-    provider = DEFAULT_LLM_VENDOR;
-  }
-  const fallbackChain = llm.fallbackChain.filter((entry) =>
-    isLlmProviderEnabled(entry.provider, inferredInstalledProviderIds) &&
-    !(marketplaceProviderPresetId && entry.provider === "openai-compatible")
-  );
-  const required = new Set<LLMVendor>(inferredInstalledProviderIds);
-  required.add(provider);
-  for (const entry of fallbackChain) {
-    required.add(entry.provider);
-  }
-
-  for (const [vendorId, block] of Object.entries(llm.vendors)) {
-    if (!isLLMVendor(vendorId) || !block) continue;
-    const vendor = vendorId;
-    const normalized = getLlmVendorSettings({ [vendor]: block }, vendor);
-    const marketplaceOnly = isMarketplaceEligibleLLMVendor(vendor);
-    const custom = hasCustomLlmVendorSettings(vendor, normalized);
-    const keep =
-      !marketplaceOnly ||
-      required.has(vendor) ||
-      (options.inferInstalledFromCustom && custom);
-    if (!keep) continue;
-    vendors[vendor] = normalized;
-    if (options.inferInstalledFromCustom && marketplaceOnly && custom) {
-      inferredInstalledProviderIds = addUniqueMarketplaceProvider(
-        inferredInstalledProviderIds,
-        vendor,
-      );
-    }
-  }
-
-  vendors[provider] = getLlmVendorSettings(vendors, provider);
-  const prunedLlm: LLMSettings = {
-    ...llm,
-    activeChatRuntime: normalizeActiveChatRuntime(llm.activeChatRuntime),
-    provider,
-    fallbackChain,
-    vendors,
-    modelListCache: normalizeLlmModelListCache(
-      llm.modelListCache,
-      inferredInstalledProviderIds,
-      installedProviderPresets,
-    ),
-    pricingOverrides: normalizePricingOverrides(llm.pricingOverrides),
-    pinnedModels: normalizePinnedModels(llm.pinnedModels),
-    modelCatalogRefresh: normalizeModelCatalogRefresh(llm.modelCatalogRefresh),
-    subscriptionReasoningSpeed: normalizeSubscriptionReasoningSpeed(llm.subscriptionReasoningSpeed),
-  };
-  if (marketplaceProviderPresetId) {
-    prunedLlm.marketplaceProviderPresetId = marketplaceProviderPresetId;
-  } else {
-    delete prunedLlm.marketplaceProviderPresetId;
-  }
-
-  return {
-    llm: prunedLlm,
-    installedProviderIds: inferredInstalledProviderIds,
   };
 }
 
@@ -885,6 +748,12 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   const gitMode = raw.git && typeof raw.git === "object" ? (raw.git as { mode?: unknown }).mode : undefined;
   if (isGitRuntimeMode(gitMode)) merged.git = { mode: gitMode };
   else delete merged.git;
+  if (raw.installedProviderIds !== undefined && !Array.isArray(raw.installedProviderIds)) {
+    throw new LlmProviderSettingsError("marketplace.installedProviderIds", "marketplace.installedProviderIds must be an array");
+  }
+  if (raw.installedProviderIds?.some((id) => !isMarketplaceEligibleLLMVendor(id))) {
+    log.warn("marketplace.installedProviderIds contains invalid provider ids");
+  }
   merged.installedProviderIds = uniqueValidList(
     raw.installedProviderIds,
     isMarketplaceEligibleLLMVendor,
@@ -1121,7 +990,6 @@ export function normalizeProjectLabels(raw: unknown): Record<string, string> {
 }
 
 export const SIDE_PANEL_SPLIT_KEYS = [
-  "sidePanelSplitFilePercent",
   "sidePanelSplitPreviewPercent",
   "sidePanelSplitSubagentPercent",
 ] as const satisfies readonly (keyof SystemSettings)[];
@@ -1134,16 +1002,6 @@ export function normalizeSystem(input: unknown): SystemSettings {
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
   acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
-  const rawAppMode = obj.appMode;
-  const normalizedAppMode = normalizeAppMode(rawAppMode);
-  if (normalizedAppMode !== null) {
-    result.appMode = normalizedAppMode;
-  } else if (rawAppMode !== undefined) {
-    log.warn(
-      `system.appMode invalid (received ${JSON.stringify(rawAppMode)}), using default %s`,
-      DEFAULT_SETTINGS.system.appMode,
-    );
-  }
   const rawLocalApi = obj.localApiServer;
   acceptField(result, "localApiServer", rawLocalApi, isBooleanValue, "system", STORED_FIELD);
   const rawHardwareAcceleration = obj.hardwareAcceleration;
@@ -1182,6 +1040,8 @@ export function normalizeSystem(input: unknown): SystemSettings {
     result, "sidebarWidth", obj.sidebarWidth,
     normalizeSidebarWidth, "system", STORED_FIELD,
   );
+  result.sidePanelFileTreeWidth = normalizeFileTreeWidth(obj.sidePanelFileTreeWidth)
+    ?? fileTreeWidthFromLegacySplit(obj.sidePanelSplitFilePercent);
   for (const key of SIDE_PANEL_SPLIT_KEYS) {
     acceptNormalizedField(
       result, key, obj[key],
@@ -1189,6 +1049,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
     );
   }
   acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
+  acceptField(result, "sidebarState", obj.sidebarState, isSidebarState, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
   // Avoid acceptNormalizedField here: its rejected-value warning could expose page tokens.
   const storedLayout = normalizeMainLayout(obj.mainLayout);

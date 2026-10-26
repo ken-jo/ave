@@ -1,33 +1,24 @@
-// Seed persisted app mode before boot to verify native initial bounds.
+// Verify native initial geometry.
 import { test, expect } from "@playwright/test";
 import { ElectronApplication } from "playwright";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { computeWorkModeBounds } from "../../../src/main/main-window-bounds.js";
 import { buildIsolatedElectronEnv, launchElectron } from "../ui/seeded-electron.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const DIST_MAIN = resolve(HERE, "../../../dist/src/main/main.js");
-const EXPECTED_WIDTH = 460;
-const EXPECTED_HEIGHT = 840;
-const EXPECTED_MIN_HEIGHT = 640;
-const EXPECTED_RIGHT_GAP = 10;
-const EXPECTED_TOP_GAP = 24;
-const EXPECTED_BOTTOM_GAP = 24;
 
 test.describe("initial window size", () => {
   test.skip(!existsSync(DIST_MAIN), "dist/src/main/main.js not built — skipping");
-
   let app: ElectronApplication | undefined;
   let tempHome: string | undefined;
   let userDataDir: string | undefined;
 
-  async function launch(settings?: object): Promise<ElectronApplication> {
+  async function launch(): Promise<ElectronApplication> {
     tempHome = mkdtempSync(resolve(tmpdir(), "ave-e2e-home-"));
     userDataDir = mkdtempSync(resolve(tmpdir(), "ave-e2e-initial-size-"));
-    if (settings) writeFileSync(resolve(userDataDir, "ave-settings.json"), JSON.stringify(settings));
     app = await launchElectron({
       args: [DIST_MAIN, `--user-data-dir=${userDataDir}`, "--no-sandbox"],
       env: buildIsolatedElectronEnv({
@@ -45,18 +36,6 @@ test.describe("initial window size", () => {
     return app;
   }
 
-  async function windowBounds(launched: ElectronApplication) {
-    return launched.evaluate(({ BrowserWindow, screen }) => {
-      const [win] = BrowserWindow.getAllWindows();
-      if (!win) throw new Error("main BrowserWindow was not created");
-      return {
-        bounds: win.getBounds(),
-        workArea: screen.getPrimaryDisplay().workArea,
-        platform: process.platform,
-      };
-    });
-  }
-
   test.afterEach(async () => {
     await app?.close();
     app = undefined;
@@ -64,32 +43,19 @@ test.describe("initial window size", () => {
     if (tempHome) rmSync(tempHome, { recursive: true, force: true });
   });
 
-  test("first run opens in work mode, centered at the work-mode size", async () => {
-    const { bounds, workArea } = await windowBounds(await launch());
-    const expected = computeWorkModeBounds(workArea);
-    expect(Math.abs(bounds.width - expected.width)).toBeLessThanOrEqual(8);
-    expect(Math.abs(bounds.height - expected.height)).toBeLessThanOrEqual(8);
-    expect(Math.abs(bounds.x - expected.x)).toBeLessThanOrEqual(8);
-    expect(Math.abs(bounds.y - expected.y)).toBeLessThanOrEqual(8);
-  });
-
-  test("chat mode opens narrow, taller, and right-aligned", async () => {
-    const { bounds, workArea, platform } = await windowBounds(await launch({ system: { appMode: "chat" } }));
-
-    const expectedWidth = EXPECTED_WIDTH;
-    const expectedHeight = Math.max(EXPECTED_MIN_HEIGHT, Math.min(EXPECTED_HEIGHT, workArea.height));
-    expect(bounds.width).toBeGreaterThanOrEqual(expectedWidth);
-    expect(bounds.width).toBeLessThanOrEqual(expectedWidth + 8);
-    expect(bounds.height).toBeGreaterThanOrEqual(expectedHeight);
-    expect(bounds.height).toBeLessThanOrEqual(expectedHeight + 8);
-    const rightGap = (workArea.x + workArea.width) - (bounds.x + bounds.width);
-    const expectedRightGap = bounds.width < workArea.width ? EXPECTED_RIGHT_GAP : 0;
-    expect(Math.abs(rightGap - expectedRightGap)).toBeLessThanOrEqual(8);
-    const availableVerticalSpace = Math.max(0, workArea.height - bounds.height);
-    const expectedY = platform === "win32"
-      ? workArea.y + Math.max(0, availableVerticalSpace - EXPECTED_BOTTOM_GAP)
-      : workArea.y + Math.min(EXPECTED_TOP_GAP, availableVerticalSpace);
-    expect(Math.abs(bounds.y - expectedY)).toBeLessThanOrEqual(8);
-    expect(bounds.height).toBeGreaterThanOrEqual(600);
+  test("opens centered at 1243 by 768 with a 360px minimum width", async () => {
+    const launched = await launch();
+    const { bounds, workArea, minimumSize } = await launched.evaluate(({ BrowserWindow, screen }) => {
+      const [win] = BrowserWindow.getAllWindows();
+      if (!win) throw new Error("main BrowserWindow was not created");
+      return { bounds: win.getBounds(), workArea: screen.getPrimaryDisplay().workArea, minimumSize: win.getMinimumSize() };
+    });
+    const width = Math.min(1243, workArea.width);
+    const height = Math.min(768, workArea.height);
+    expect(Math.abs(bounds.width - width)).toBeLessThanOrEqual(8);
+    expect(Math.abs(bounds.height - height)).toBeLessThanOrEqual(8);
+    expect(Math.abs(bounds.x - (workArea.x + Math.round((workArea.width - width) / 2)))).toBeLessThanOrEqual(8);
+    expect(Math.abs(bounds.y - (workArea.y + Math.round((workArea.height - height) / 2)))).toBeLessThanOrEqual(8);
+    expect(minimumSize[0]).toBe(360);
   });
 });

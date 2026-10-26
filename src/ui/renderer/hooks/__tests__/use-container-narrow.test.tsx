@@ -1,13 +1,11 @@
 import "../../../../../test/renderer/setup.js";
 
-/** Derive docking from panel reserve plus transcript floor; measure the chat container so chat-mode windows can dock within
- * their reserved width. */
+/** Docking follows its independent container with hysteresis. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { useRef } from "react";
-import { DOCK_ENTER_WIDTH, DOCK_EXIT_WIDTH, MIN_DOCKED_TRANSCRIPT_WIDTH, useContainerNarrow, sidePanelLayout } from "../use-container-narrow.js";
+import { useContainerNarrow, sidePanelLayout } from "../use-container-narrow.js";
 import { SIDE_PANEL_MIN_RESERVE, SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
-import { MAIN_WINDOW_MIN_WIDTH } from "../../../../shared/shell-geometry.js";
+import { DOCK_ENTER_WIDTH, DOCK_EXIT_WIDTH, MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../../shared/shell-geometry.js";
 
 /** A controllable ResizeObserver stub: capture the callback so a test can push a specific content-box inline size and
  * assert the hook's reaction. Replaces the no-op stub from the shared setup for the lifetime of a test. */
@@ -51,12 +49,8 @@ function installControllableResizeObserver() {
 }
 
 function renderContainerNarrow() {
-  return renderHook(() => {
-    const ref = useRef<HTMLDivElement | null>(null);
-    // Give the ref a real element so the effect attaches the observer.
-    if (!ref.current) ref.current = document.createElement("div");
-    return useContainerNarrow(ref);
-  });
+  const element = document.createElement("div");
+  return renderHook(() => useContainerNarrow(element));
 }
 
 describe("useContainerNarrow", () => {
@@ -65,21 +59,16 @@ describe("useContainerNarrow", () => {
   });
 
   it("derives the docking threshold from the side-panel SoT (not a magic 900)", () => {
-    // The enter threshold must leave room for the panel plus a transcript column, and must sit BELOW chat mode's reserved
-    // container so chat docks.
     expect(DOCK_ENTER_WIDTH).toBeGreaterThan(SIDE_PANEL_MIN_WIDTH);
     expect(DOCK_EXIT_WIDTH).toBeGreaterThan(DOCK_ENTER_WIDTH);
-    // The chat-mode side-panel window reserves SIDE_PANEL_MIN_RESERVE on top of the ~460px base window; after the collapsed
-    // sidebar padding the observed chat-view-root is ≈ 800px. Docking must be allowed there.
-    expect(DOCK_EXIT_WIDTH).toBeLessThan(MAIN_WINDOW_MIN_WIDTH + SIDE_PANEL_MIN_RESERVE);
+    expect(DOCK_ENTER_WIDTH).toBe(SIDE_PANEL_MIN_RESERVE + MIN_DOCKED_TRANSCRIPT_WIDTH);
+    expect(DOCK_EXIT_WIDTH - DOCK_ENTER_WIDTH).toBe(60);
   });
 
-  it("docks (isNarrow=false) at chat-mode side-panel container width", () => {
+  it("docks when both columns fit inside the container", () => {
     const observer = installControllableResizeObserver();
     try {
       const { result } = renderContainerNarrow();
-      // Chat mode with the side panel open: ~460 base + 448 panel window minus the collapsed sidebar padding + chrome ≈ 800px
-      // chat-view-root.
       observer.emit(800);
       expect(result.current.isNarrow).toBe(false);
     } finally {

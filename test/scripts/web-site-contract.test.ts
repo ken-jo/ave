@@ -29,6 +29,29 @@ const DOC_SLUGS = JSON.parse(
   /export const DOC_SLUGS = (\[[^\]]*\]) as const;/u.exec(docsSource)?.[1] ?? "[]",
 ) as string[];
 
+describe("responsive app copy", () => {
+  it("describes the same width-driven window in both guide locales, and no retired mode names on the home and feature pages", () => {
+    // The home page no longer describes the tiles; the workbench guide does, in both languages.
+    const home = read(resolve(web, "lib/home.ts"));
+    const workbench = [...docsSource.matchAll(/^  workbench: \{[\s\S]*?^  \},?$/gmu)].map((match) => match[0]);
+    expect(workbench).toHaveLength(2);
+    expect(workbench[0]).toMatch(/넓은 캔버스/u);
+    expect(workbench[1]).toMatch(/wide canvas/u);
+    for (const source of [home, read(resolve(web, "lib/features.ts"))]) {
+      expect(source).not.toMatch(/\b(?:work|chat)[ -]mode\b|(?:업무|채팅|작업)\s*모드/iu);
+    }
+    // The app is one responsive shell (#255): no page or built fragment may
+    // name the retired modes or draw the Chat | Work switch.
+    const components = readdirSync(resolve(web, "components")).filter((name) => name.endsWith(".tsx"));
+    expect(components.length).toBeGreaterThan(0);
+    for (const name of components) {
+      const source = read(resolve(web, "components", name));
+      expect(source, name).not.toMatch(/\b(?:work|chat)[ -]mode\b|(?:업무|채팅|작업)\s*모드|\bis-work\b|data-mode=/iu);
+      expect(source, name).not.toMatch(/>\s*Chat\s*<[\s\S]{0,200}>\s*Work\s*</u);
+    }
+  });
+});
+
 /** Every route the static export produces, as slashed URL paths. */
 function sitePaths(): Set<string> {
   const paths = new Set<string>();

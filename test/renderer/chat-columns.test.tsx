@@ -98,64 +98,40 @@ describe("chat columns", () => {
     expect(second.container.querySelector('[data-testid="chat-thumbnail-column"]')).not.toBeNull();
   });
 
-  it("ignores width-hidden toggle clicks and restores open columns when space returns", async () => {
-    const original = window.ResizeObserver;
-    const observers: { callback: ResizeObserverCallback; element?: Element }[] = [];
-    window.ResizeObserver = class {
-      private readonly observation: typeof observers[number];
-      constructor(callback: ResizeObserverCallback) { this.observation = { callback }; observers.push(this.observation); }
-      observe(element: Element) { this.observation.element = element; }
-      unobserve() {}
-      disconnect() {}
-    };
-    try {
-      const view = await renderApp({ hasApiKey: true });
-      const thumbnailToggle = view.container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.paneThumbnailToggle))!;
-      const panelToggle = view.container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.panePanelToggle))!;
-      expect(thumbnailToggle.getAttribute("aria-disabled")).not.toBe("true");
-      expect(panelToggle.getAttribute("aria-disabled")).not.toBe("true");
-      for (const toggle of [thumbnailToggle, panelToggle]) expect(toggle.classList.contains("aria-disabled:cursor-not-allowed")).toBe(true);
-      fireEvent.click(thumbnailToggle);
-      fireEvent.click(panelToggle);
-      const resize = (width: number) => act(() => {
-        for (const observer of observers.filter(({ element }) => element?.querySelector(':scope > [data-testid="pane-panel-slot"]'))) {
-          observer.callback([{ target: observer.element!, contentRect: { width } } as ResizeObserverEntry], {} as ResizeObserver);
-        }
-      });
-      resize(950);
-      expect(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))?.getAttribute("aria-pressed")).toBe("false");
-      expect(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))?.getAttribute("aria-label")).toBe(t("chatThumbnails.hiddenForWidth"));
-      expect(view.container.querySelector('[data-testid="chat-thumbnail-column"]')).toBeNull();
-      await waitFor(() => expect(view.container.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden")).toBe("false"));
-      expect.soft(thumbnailToggle.getAttribute("aria-disabled")).toBe("true");
-      expect(thumbnailToggle.title).toBe(t("chatThumbnails.hiddenForWidth"));
-      expect(panelToggle.getAttribute("aria-disabled")).not.toBe("true");
-      fireEvent.click(thumbnailToggle);
-      expect.soft(thumbnailToggle.getAttribute("aria-disabled")).toBe("true");
-      expect(thumbnailToggle.getAttribute("aria-pressed")).toBe("false");
-      resize(700);
-      expect(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))?.getAttribute("aria-pressed")).toBe("false");
-      expect(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))?.getAttribute("aria-label")).toBe(t("chatPreviewRail.hiddenForWidth"));
-      await waitFor(() => expect(view.container.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden") ?? "true").toBe("true"));
-      expect.soft(panelToggle.getAttribute("aria-disabled")).toBe("true");
-      expect(panelToggle.title).toBe(t("chatPreviewRail.hiddenForWidth"));
-      fireEvent.click(panelToggle);
-      expect.soft(panelToggle.getAttribute("aria-disabled")).toBe("true");
-      expect(panelToggle.getAttribute("aria-pressed")).toBe("false");
-      resize(1600);
-      await waitFor(() => expect(view.container.querySelector('[data-testid="chat-thumbnail-column"]')).not.toBeNull());
-      expect(view.container.querySelector(testIdSelector(TEST_IDS.paneThumbnailToggle))?.getAttribute("aria-pressed")).toBe("true");
-      expect(view.container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))?.getAttribute("aria-pressed")).toBe("true");
-      expect(thumbnailToggle.getAttribute("aria-disabled")).not.toBe("true");
-      expect(panelToggle.getAttribute("aria-disabled")).not.toBe("true");
-      fireEvent.click(thumbnailToggle);
-      fireEvent.click(panelToggle);
-      expect(thumbnailToggle.getAttribute("aria-pressed")).toBe("false");
-      expect(panelToggle.getAttribute("aria-pressed")).toBe("false");
-      fireEvent.click(thumbnailToggle);
-      fireEvent.click(panelToggle);
-      expect(thumbnailToggle.getAttribute("aria-pressed")).toBe("true");
-      expect(panelToggle.getAttribute("aria-pressed")).toBe("true");
-    } finally { window.ResizeObserver = original; }
+  it("hides thumbnails when space is tight, keeps the panel available as an overlay, and restores preferences", async () => {
+    const view = await renderApp({ hasApiKey: true, shellWidth: 1600, canvasWidth: 1600 });
+    const thumbnailToggle = view.container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.paneThumbnailToggle))!;
+    const panelToggle = view.container.querySelector<HTMLButtonElement>(testIdSelector(TEST_IDS.panePanelToggle))!;
+    fireEvent.click(thumbnailToggle);
+    fireEvent.click(panelToggle);
+    await view.resizeContainers({ canvasWidth: 950 });
+    expect(thumbnailToggle.getAttribute("aria-disabled")).toBe("true");
+    expect(thumbnailToggle.getAttribute("aria-pressed")).toBe("false");
+    expect(thumbnailToggle.title).toBe(t("chatThumbnails.hiddenForWidth"));
+    expect(view.container.querySelector('[data-testid="chat-thumbnail-column"]')).toBeNull();
+    fireEvent.click(thumbnailToggle);
+    expect(thumbnailToggle.getAttribute("aria-pressed")).toBe("false");
+
+    await view.resizeContainers({ canvasWidth: 600 });
+    const motion = await waitFor(() => {
+      const found = view.container.querySelector('[data-testid="chat-side-panel-motion"]');
+      expect(found?.getAttribute("data-panel-mode")).toBe("overlay");
+      expect(found?.getAttribute("aria-hidden")).toBe("false");
+      return found!;
+    });
+    expect(motion.getAttribute("aria-hidden")).toBe("false");
+    expect(panelToggle.getAttribute("aria-disabled")).not.toBe("true");
+    expect(panelToggle.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(panelToggle);
+    expect(panelToggle.getAttribute("aria-pressed")).toBe("false");
+    fireEvent.click(panelToggle);
+    expect(panelToggle.getAttribute("aria-pressed")).toBe("true");
+
+    await view.resizeContainers({ canvasWidth: 1600 });
+    await waitFor(() => expect(view.container.querySelector('[data-testid="chat-thumbnail-column"]')).not.toBeNull());
+    expect(thumbnailToggle.getAttribute("aria-pressed")).toBe("true");
+    expect(thumbnailToggle.getAttribute("aria-disabled")).not.toBe("true");
+    expect(panelToggle.getAttribute("aria-pressed")).toBe("true");
+    expect(view.container.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("data-panel-mode")).toBe("docked");
   });
 });

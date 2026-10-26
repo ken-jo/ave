@@ -18,7 +18,6 @@ import {
 } from "../../main/startup-launch.js";
 import {
   isLLMVendor,
-  isMarketplaceEligibleLLMVendor,
   llmRouteBaseUrlSignature,
 } from "../../shared/llm-vendor-defaults.js";
 import {
@@ -30,6 +29,7 @@ import {
   type MarketplaceProviderModelDiscoveryPolicy,
 } from "../../shared/marketplace-package-assets.js";
 import type { LlmModelListRequest } from "../../shared/llm-model-list.js";
+import { customProviderWire } from "../../shared/custom-provider.js";
 import type { IpcDeps } from "../types.js";
 import type {
   LLMSettings,
@@ -316,6 +316,7 @@ function activeLlmIdentity(
         vendor: reviewerVendor,
         model: reviewerBlock?.model ?? null,
         baseUrl: reviewerBlock?.baseUrl ?? null,
+        wire: reviewerBlock?.wire ?? null,
         vertexProject: reviewerBlock?.vertexProject ?? null,
         vertexLocation: reviewerBlock?.vertexLocation ?? null,
       },
@@ -328,6 +329,7 @@ function activeLlmIdentity(
         : null,
     model: block?.model ?? null,
     baseUrl: block?.baseUrl ?? null,
+    wire: block?.wire ?? null,
     vertexProject: block?.vertexProject ?? null,
     vertexLocation: block?.vertexLocation ?? null,
   });
@@ -419,14 +421,6 @@ async function finishProviderPresetMarketplaceMutation(
   return rewireError;
 }
 
-function isProviderEnabledForSecrets(deps: IpcDeps, vendor: unknown): vendor is string {
-  if (!isLLMVendor(vendor)) return false;
-  if (!isMarketplaceEligibleLLMVendor(vendor)) return true;
-  const installedProviderIds =
-    deps.settingsService.get("marketplace").installedProviderIds ?? [];
-  return installedProviderIds.includes(vendor);
-}
-
 function isMarketplaceProviderPresetInstalled(deps: IpcDeps, providerId: string): boolean {
   return marketplaceProviderPresetForId(deps, providerId) !== undefined;
 }
@@ -475,7 +469,7 @@ function llmSecretKeyForInput(deps: IpcDeps, vendor?: unknown): string | undefin
         ? marketplaceProviderPresetSecretKey(providerPresetId)
         : undefined;
     }
-    return isProviderEnabledForSecrets(deps, vendor)
+    return isLLMVendor(vendor)
       ? `llm.apiKey.${vendor}`
       : undefined;
   }
@@ -486,7 +480,7 @@ function llmSecretKeyForInput(deps: IpcDeps, vendor?: unknown): string | undefin
       ? marketplaceProviderPresetSecretKey(llm.marketplaceProviderPresetId)
       : undefined;
   }
-  return isProviderEnabledForSecrets(deps, llm.provider)
+  return isLLMVendor(llm.provider)
     ? `llm.apiKey.${llm.provider}`
     : undefined;
 }
@@ -1064,13 +1058,11 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     const vendor = request && typeof request.vendor === "string"
       ? request.vendor
       : settingsService.get("llm").provider;
-    if (!isProviderEnabledForSecrets(deps, vendor)) {
+    if (!isLLMVendor(vendor)) {
       return {
         ok: false,
-        error: isLLMVendor(vendor) ? "provider-not-installed" : "invalid-provider",
-        message: isLLMVendor(vendor)
-          ? "Install this marketplace provider before syncing its models."
-          : "Unknown LLM provider.",
+        error: "invalid-provider",
+        message: "Unknown LLM provider.",
       };
     }
     const baseUrl = request && typeof request.baseUrl === "string"
@@ -1089,6 +1081,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     return listLlmModelsFromSettings(settingsService, {
       vendor,
       baseUrl,
+      ...(request?.wire !== undefined ? { wire: customProviderWire(request.wire) } : {}),
       credentialScope,
       ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
     }, {

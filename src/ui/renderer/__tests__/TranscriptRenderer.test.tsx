@@ -8,6 +8,7 @@ import { TooltipProvider } from "../../../components/ui/tooltip.js";
 import { TranscriptRenderer, type TurnSummary } from "../components/TranscriptRenderer.js";
 import type { ChatEntry } from "../../../lib/chat-stream-state.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
+import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
 
 // Radix Tooltip (used by WorkGroup / TurnActionBar primitives) requires a provider in the tree — the real app mounts it in
 // App.tsx. Wrap the isolated core the same way so these unit renders mirror production context.
@@ -43,6 +44,34 @@ const completedTurnSummary = (): Map<number, TurnSummary> => new Map([[
     tokensOut: 20,
   },
 ]]);
+
+describe("transcript file locations", () => {
+  const reference = { path: "src/example.ts", startLine: 3, endLine: 5, turnId: "source-turn", hunkId: "change" };
+  const text = `Please inspect ${formatFileMentionReference(1, reference)} next.`;
+
+  it("opens a persisted location through the preview callback after reload", () => {
+    const onPreviewTarget = vi.fn();
+    const view = renderCore(<TranscriptRenderer entries={[userEntry(text)]} streaming={false} currentSessionId="s1" onPreviewTarget={onPreviewTarget} />);
+    fireEvent.click(view.getByRole("button", { name: "src/example.ts:3-5" }));
+    expect(onPreviewTarget).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "file", path: reference.path, startLine: 3, endLine: 5, sourceTurnId: "source-turn",
+    }));
+    expect(view.getByTestId("user-message-bubble").textContent).toContain("Please inspect src/example.ts:3-5 next.");
+  });
+
+  it("retains search highlights around locations and on their visible labels", () => {
+    const view = renderCore(<TranscriptRenderer entries={[userEntry(text)]} streaming={false} currentSessionId="s1"
+      onPreviewTarget={vi.fn()} search={{ searchOpen: true, searchMatches: [0], searchMatchSet: new Set([0]), searchIdx: 0, searchHighlight: "src" }} />);
+    expect(view.getByRole("button", { name: "src/example.ts:3-5" }).querySelector("mark")).toBeTruthy();
+  });
+
+  it("leaves ordinary and malformed markers as plain text", () => {
+    const plain = "inspect [File #1] [File #2 — path: invalid]";
+    const view = renderCore(<TranscriptRenderer entries={[userEntry(plain)]} streaming={false} currentSessionId="s1" onPreviewTarget={vi.fn()} />);
+    expect(view.getByTestId("user-message-bubble").textContent).toContain(plain);
+    expect(view.queryByRole("button", { name: "invalid" })).toBeNull();
+  });
+});
 
 describe("TranscriptRenderer — minimal (required-only) contract", () => {
   const minimal = [userEntry("q"), assistant("a")];

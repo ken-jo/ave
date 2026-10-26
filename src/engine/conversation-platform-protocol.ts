@@ -137,6 +137,7 @@ export type PlatformConversationEvent =
     readonly estimatedBefore: number;
     readonly preflight: number;
   }
+  | { readonly kind: "compaction.failed" }
   | { readonly kind: "compaction.recovery.exhausted" }
   | {
     readonly kind: "compaction.completed";
@@ -363,6 +364,9 @@ export function projectSharedConversationEvent(
       return { kind: "compaction.started" };
     case "compaction.completed":
       return { kind: "compaction.completed" };
+    case "compaction.failed":
+      // Local transcript notice only; maintenance failure never closes a shared turn.
+      return undefined;
     case "turn.error": {
       // Re-validate producer summaries against the closed category union and bounded fields.
       const failure = toSafeTurnFailureSummary(event.failure);

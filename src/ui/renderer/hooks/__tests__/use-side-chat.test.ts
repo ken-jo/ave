@@ -1449,3 +1449,21 @@ describe("useSideChat — the session a view shows", () => {
     expect(spies.send.mock.calls.at(-1)![5]).toBeUndefined();
   });
 });
+
+
+describe("side conversation compaction failure", () => {
+  it("keeps its transcript notice local and continues the same chat turn", async () => {
+    const { api, emit, acceptTurn } = makeApi();
+    const { result } = renderHook(() => useSideChat(api));
+    await act(async () => { await result.current.send("hello"); });
+    acceptTurn(1);
+    emit({ type: "text_delta", streamId: 1, text: "Before " });
+    emit({ type: "compact_failed", streamId: 1 });
+    expect(result.current.isStreaming).toBe(true);
+    expect(result.current.entries.some((entry) => entry.kind === "system" && /압축|compaction/.test(entry.text))).toBe(true);
+    emit({ type: "text_delta", streamId: 1, text: "after" });
+    emit({ type: "done", streamId: 1 });
+    expect(lastAssistant(result.current.entries)).toMatchObject({ text: "Before after", streaming: false });
+    expect(result.current.isStreaming).toBe(false);
+  });
+});
