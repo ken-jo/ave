@@ -36,6 +36,19 @@ vi.mock("node:fs", async original => {
   return { ...actual, default: { ...actual, realpathSync }, realpathSync };
 });
 
+// On a POSIX host the simulated install keeps ASRT's vendored srt-win on the simulated drive, so no real repository path becomes a stamp target.
+vi.mock("node:module", async original => {
+  const actual = await original<typeof import("node:module")>();
+  if (process.platform === "win32") return actual;
+  const createRequire = (...args: Parameters<typeof actual.createRequire>) => {
+    const real = actual.createRequire(...args);
+    const resolve = Object.assign((id: string, options?: { paths?: string[] }) => process.platform === "win32" && id === "@anthropic-ai/sandbox-runtime/package.json"
+      ? String.raw`C:\ave\node_modules\@anthropic-ai\sandbox-runtime\package.json` : real.resolve(id, options), { paths: real.resolve.paths });
+    return Object.assign((id: string) => real(id), real, { resolve });
+  };
+  return { ...actual, default: { ...actual, createRequire }, createRequire };
+});
+
 // Lifecycle fixtures on another kernel validate spellings but cannot open native handles.
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
