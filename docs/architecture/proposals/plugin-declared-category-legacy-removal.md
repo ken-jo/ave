@@ -133,7 +133,7 @@ document inventories all of it and proposes a staged removal.
 `src/tools/__tests__/executor.test.ts:4703`,
 `src/tools/__tests__/executor-plugin-read-relaxation.test.ts`,
 `src/tools/pipeline/__tests__/risk-classification-producer.test.ts:108`
-(enforcement-off case), `src/mcp/__tests__/stdio-child-transport.test.ts:50`.
+(enforcement-off case).
 
 Inventory size: the flag identifier appears at ~30 non-test locations across
 ~15 source files, plus ~10 test files; the ON/OFF fork is concentrated in the
