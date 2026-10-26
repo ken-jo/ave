@@ -12,11 +12,9 @@ const deniedPathSegments = new Set([
   "screenshots",
 ]);
 
-// These suites inspect shared generated branding assets, rather than source-only
-// fixtures. This is a preparation boundary, not evidence that a test is flaky;
-// keep it until concurrent asset regeneration is covered by the targeted tier.
+// These consumers still require their own targeted preparation validation.
+// The icon pixel suite uses the normal runner's prepared assets.
 const generatedAssetTestBasenames = new Set([
-  "app-icon-assets.test.ts",
   "desktop-packaging.test.ts",
   "tray-icon.test.ts",
 ]);
