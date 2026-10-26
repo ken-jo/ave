@@ -18,6 +18,7 @@ import { resolveAppIconPath } from "./app-icon.js";
 import {
   withAuthPartitionViewersClosed,
 } from "./auth-partition-viewer-service.js";
+import { applyBrowserSessionIdentity } from "./browser-user-agent.js";
 import { normalizeCookieDomain } from "./auth-partition-cookie-jar.js";
 import {
   normalizeAllowedHosts,
@@ -372,6 +373,8 @@ export async function openAuthWindow(
       ? persistPartition
       : `ephemeral-auth-${randomBytes(8).toString("hex")}`;
   rememberPluginAuthPartition(effectivePartition);
+  const partitionSession = session.fromPartition(effectivePartition);
+  applyBrowserSessionIdentity(partitionSession);
 
   // Idempotency guard — a single visible auth window per (partition, title). Silent warmups (show:false) are never deduped: they are invisible and may
   // overlap an interactive login. For visible calls, focus + await an already open/in-flight window instead of spawning a duplicate.
