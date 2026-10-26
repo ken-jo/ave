@@ -27,8 +27,8 @@ vi.mock("node:fs", async original => {
   if (process.platform === "win32") return actual;
   const simulated = (real: (...args: unknown[]) => unknown) => (...args: unknown[]) => {
     const [path] = args;
-    if (typeof path !== "string" || !/^[A-Za-z]:[\/]/.test(path)) return real(...args);
-    if (/^[A-Za-z]:[\/]$/.test(path)) return path;
+    if (typeof path !== "string" || !/^[A-Za-z]:[\\/]/.test(path)) return real(...args);
+    if (/^[A-Za-z]:[\\/]$/.test(path)) return path;
     throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: "ENOENT" });
   };
   const realpathSync = Object.assign(simulated(actual.realpathSync as (...args: unknown[]) => unknown),
