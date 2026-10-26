@@ -4,13 +4,13 @@ import { mkdir, open, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
-import { aveHome, AVE_HOME_CONFIGURATION_DIRECTORY } from "../shared/ave-home.js";
+import { aveHome, aveHomeConfigurationDirectory } from "../shared/ave-home.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
 const log = createLogger("policy-store");
 
-export const userPolicyPath = (home = aveHome()): string => resolve(home, AVE_HOME_CONFIGURATION_DIRECTORY, "policy.json");
+export const userPolicyPath = (home = aveHome()): string => resolve(aveHomeConfigurationDirectory(home), "policy.json");
 
 export function getAdminPolicyPath(): string {
   switch (process.platform) {

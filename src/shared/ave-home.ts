@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { closeSync, constants, fchmodSync, mkdirSync, openSync } from "node:fs";
+import { closeSync, constants, fchmodSync, lstatSync, mkdirSync, openSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
@@ -7,6 +7,36 @@ import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
 
 export const AVE_HOME_CONFIGURATION_DIRECTORY = "config";
+export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
+
+let bootConfiguration: { home: string; migrated: boolean } | undefined;
+
+/** Boot pins its verified decision before any configuration reader starts. */
+export function setAveHomeConfigurationAtBoot(home: string, migrated: boolean): void {
+  bootConfiguration = { home: resolve(home), migrated };
+}
+
+export function aveHomeConfigurationDirectory(home = aveHome()): string {
+  const root = resolve(home);
+  if (bootConfiguration !== undefined) {
+    const bootHome = bootConfiguration.home;
+    if (process.platform === "win32" ? bootHome.toLowerCase() === root.toLowerCase() : bootHome === root) {
+      return bootConfiguration.migrated ? join(root, AVE_HOME_CONFIGURATION_DIRECTORY) : root;
+    }
+  }
+  // Outside boot there is no confinement authority: only boot writes this marker,
+  // and security-relevant readers use its pinned, handle-verified decision above.
+  const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
+  try {
+    const directory = lstatSync(config);
+    if (!directory.isDirectory() || directory.isSymbolicLink()) return root;
+    const marker = lstatSync(join(config, AVE_HOME_CONFIGURATION_MARKER));
+    return marker.isFile() && !marker.isSymbolicLink() ? config : root;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return root;
+    throw error;
+  }
+}
 
 export const AVE_HOME_PROTECTED_DIRECTORIES: readonly string[] = Object.freeze([
   "secrets", "subscription-runtimes", "keys", "certs", AVE_HOME_CONFIGURATION_DIRECTORY,
@@ -263,6 +293,7 @@ export function assertAveHomePrivacyForConfinement(): void {
 
 /** Test teardown only; production seals the result during boot. */
 export function _resetAveHomePrivacyForTest(): void {
+  bootConfiguration = undefined;
   bootHomePrivacy = undefined;
   extensionsWithoutIsolationApproved = false;
   reportPrivacyRefusal = undefined;

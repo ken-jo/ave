@@ -4,6 +4,7 @@ export const WINDOWS_HOME_BOUNDARY_SOURCE = `${WINDOWS_OWNER_CLAIM_SOURCE}
 public static class HomeDirectoryDacl {
   private const string RepairMarker = ".ave-repair-created";
   private const string NoticeMarker = ".ave-repair-notice-pending";
+  private const string ConfigurationMarker = ".ave-config-migrated";
   public static readonly System.Collections.Generic.List<string> CleanupWarnings = new System.Collections.Generic.List<string>();
   [DllImport("kernel32.dll", SetLastError = true)]
   private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out long attributes, uint size);
@@ -187,7 +188,7 @@ public static class HomeDirectoryDacl {
   private static int Copy(SafeFileHandle source, SafeFileHandle destination, SecurityIdentifier user) {
     int skipped = 0;
     foreach (string name in RepairEntries(source)) {
-      if (name == RepairMarker || name == NoticeMarker) continue;
+      if (name == RepairMarker || name == NoticeMarker || name == ConfigurationMarker) continue;
       using (var child = OpenRelative(source, name, user, 1, false, false, false)) {
         if (child == null) throw new InvalidOperationException("Repair entry disappeared during copy");
         long attributes = Attributes(child);
@@ -213,11 +214,16 @@ public static class HomeDirectoryDacl {
       if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
       using (var destination = OpenRelative(home, directory, user, 1, true, true, true)) {
         if (destination == null || !OwnerOnly(Read(destination), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
-        foreach (string name in names) {
+        var retained = new System.Collections.Generic.List<IDisposable>();
+        var deletions = new System.Collections.Generic.Dictionary<SafeFileHandle, string>();
+        try {
+          foreach (string name in names) {
           string oldPath = System.IO.Path.Combine(path, name);
           string newPath = System.IO.Path.Combine(path, directory, name);
-          using (var source = OpenRelative(home, name, user, 1, false, false, false)) {
+          {
+            var source = OpenRelative(home, name, user, 1, false, false, false);
             if (source == null) continue;
+            retained.Add(source);
             if ((Attributes(source) & 0x410) != 0) {
               diagnostics.Add("Skipped non-regular configuration source \\"" + oldPath + "\\" for \\"" + newPath + "\\"");
               continue;
@@ -229,15 +235,24 @@ public static class HomeDirectoryDacl {
               }
             }
             string staged = "." + name + ".migration-" + Guid.NewGuid().ToString("N");
+            var input = new System.IO.FileStream(source, System.IO.FileAccess.Read);
+            retained.Add(input);
             using (var copy = OpenRelative(destination, staged, user, 2, false, true, false))
-            using (var input = new System.IO.FileStream(source, System.IO.FileAccess.Read))
             using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
               input.CopyTo(output);
               output.Flush(true);
               Rename(copy, destination, name);
-              if (!Delete(source, user)) diagnostics.Add("Legacy configuration retained after copy: " + oldPath);
+              deletions.Add(source, oldPath);
             }
           }
+          }
+          EnsureMarker(destination, ConfigurationMarker, user);
+          if (!HasMarker(destination, ConfigurationMarker, user)) throw new InvalidOperationException("Configuration migration marker is invalid");
+          foreach (var deletion in deletions) {
+            if (!Delete(deletion.Key, user)) diagnostics.Add("Legacy configuration retained after copy: " + deletion.Value);
+          }
+        } finally {
+          for (int index = retained.Count - 1; index >= 0; index--) retained[index].Dispose();
         }
       }
     }
@@ -305,7 +320,7 @@ public static class HomeDirectoryDacl {
     CleanupWarnings.Add("Aside retained without changing attributes: " + path);
   }
   private static bool HasMarker(SafeFileHandle directory, string name, SecurityIdentifier user) {
-    using (var marker = OpenRelative(directory, name, user, 1, false, false, false)) {
+    using (var marker = OpenRelative(directory, name, user, 1, false, true, false)) {
       if (marker == null) return false;
       if ((Attributes(marker) & 0x410) != 0) return false;
       using (var stream = new System.IO.FileStream(marker, System.IO.FileAccess.Read)) {

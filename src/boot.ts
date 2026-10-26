@@ -237,7 +237,7 @@ export async function bootstrap(
 
   // An unverified root has no protected config boundary to migrate into; legacy root files stay in place.
   if (homePrivacy.enforcement === "none") log.warn("boot: legacy root configuration is not migrated while home protection is unverified");
-  else for (const diagnostic of migrateAveHomeConfiguration(homePrivacy.home)) log.warn(`boot: ${diagnostic}`);
+  for (const diagnostic of migrateAveHomeConfiguration(homePrivacy.home, homePrivacy)) log.warn(`boot: ${diagnostic}`);
 
   // The application-owned scratch directory the agent may stage work in
   // without an approval. It is offered to the model and to the Layer 1

@@ -1,18 +1,18 @@
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
-import { ensureAveHomePrivate } from "../ave-home.js";
+import { ensureAveHomePrivate, _resetAveHomePrivacyForTest } from "../ave-home.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
-import { permissionSettingsPath } from "../../permissions/permission-settings-store.js";
-import { userPolicyPath } from "../../permissions/policy-store.js";
+import { permissionSettingsPath, writePermissionSettings } from "../../permissions/permission-settings-store.js";
+import { savePolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { buildMandatorySandboxWritePolicy } from "../../permissions/sandbox-write-policy.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
 
 const home = useTempPaths("ave-config-", ".ave");
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); _resetAveHomePrivacyForTest(); });
 
 function fixture(): string {
   const dir = home();
@@ -22,15 +22,55 @@ function fixture(): string {
 }
 
 describe("protected home configuration", () => {
-  it("routes both path owners through the protected directory", () => {
-    const dir = home();
+  it("routes both path owners through the protected directory after migration", () => {
+    const dir = fixture();
+    migrateAveHomeConfiguration(dir);
     vi.stubEnv("AVE_HOME", dir);
     expect(permissionSettingsPath()).toBe(join(dir, "config", "settings.json"));
     expect(userPolicyPath()).toBe(join(dir, "config", "policy.json"));
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
+  });
+
+  it("keeps both owners at the root before migration even with published copies", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "policy.json"), "root");
+    writeFileSync(join(dir, "config", "policy.json"), "published");
+    vi.stubEnv("AVE_HOME", dir);
+    expect(permissionSettingsPath()).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath()).toBe(join(dir, "policy.json"));
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
+    migrateAveHomeConfiguration(dir);
+    expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
+    expect(readFileSync(userPolicyPath(dir), "utf8")).toBe("published");
+    expect(readFileSync(join(dir, "policy.json"), "utf8")).toBe("root");
+  });
+
+  it("writes a migration marker for a fresh home with no root files", () => {
+    const dir = fixture();
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
+  });
+
+  it("does not follow a marker junction outside boot", () => {
+    const dir = fixture();
+    const target = join(dirname(dir), "marker-target");
+    mkdirSync(target);
+    symlinkSync(target, join(dir, "config", ".ave-config-migrated"), process.platform === "win32" ? "junction" : "dir");
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
   });
 
   it("projects the protected directory into host and sandbox denies", () => {
     const dir = join(home(), "profile");
+    mkdirSync(dirname(dir), { recursive: true });
+    setFixtureOwner(dirname(dir));
+    expect(ensureAveHomePrivate(dir).enforcement).not.toBe("none");
+    migrateAveHomeConfiguration(dir);
     vi.stubEnv("AVE_HOME", dir);
     expect(SENSITIVE_PATH_ENTRIES).toContainEqual({ anchor: "ave-home", segments: ["config"], kind: "dir", why: "permission settings, user policy, and legacy secrets" });
     expect(SENSITIVE_PATH_PATTERNS).toContain("**/.ave/config/**");
@@ -40,6 +80,34 @@ describe("protected home configuration", () => {
     expect(buildMandatorySandboxWritePolicy([]).denyWrite).toContain(join(dir, "config", "policy.json"));
     expect(getDefaultSensitiveWriteDenyPaths().map((path) => path.replace(/\\/g, "/").replace(/\/$/, "")))
       .toContain(join(dir, "config").replace(/\\/g, "/"));
+  });
+
+  it("pins the boot decision while explicit other homes use their own marker", () => {
+    const dir = fixture();
+    const privacy = ensureAveHomePrivate(dir);
+    migrateAveHomeConfiguration(dir, privacy);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+    unlinkSync(join(dir, "config", ".ave-config-migrated"));
+    vi.stubEnv("AVE_HOME", dir);
+    expect(permissionSettingsPath()).toBe(join(dir, "config", "settings.json"));
+    expect(userPolicyPath()).toBe(join(dir, "config", "policy.json"));
+    const other = home();
+    expect(permissionSettingsPath(other)).toBe(join(other, "settings.json"));
+    expect(userPolicyPath(other)).toBe(join(other, "policy.json"));
+  });
+
+  it("saves through both legacy owners for the next protected boot", async () => {
+    const dir = fixture();
+    vi.stubEnv("AVE_HOME", dir);
+    await writePermissionSettings({ reviewer: { mode: "strict" } });
+    await savePolicy({ requireExplicitApproval: true }, undefined, join(dirname(dir), "absent-admin.json"));
+    expect(existsSync(join(dir, "settings.json"))).toBe(true);
+    expect(existsSync(join(dir, "policy.json"))).toBe(true);
+    expect(existsSync(join(dir, "config", "settings.json"))).toBe(false);
+    expect(existsSync(join(dir, "config", "policy.json"))).toBe(false);
+    migrateAveHomeConfiguration(dir);
+    expect(JSON.parse(readFileSync(permissionSettingsPath(), "utf8")).permissions.reviewer.mode).toBe("strict");
+    expect(JSON.parse(readFileSync(userPolicyPath(), "utf8")).requireExplicitApproval).toBe(true);
   });
 
   it("copies complete files into the boundary and deletes their root names once", () => {

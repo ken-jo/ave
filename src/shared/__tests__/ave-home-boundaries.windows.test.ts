@@ -10,10 +10,13 @@ import { NotificationService } from "../../main/notification-service.js";
 import { notifyHomeBoundaryRepairs } from "../../boot/steps/home-privacy-notice.js";
 import { windowsPowerShellEnv } from "../windows-powershell-env.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
+import { permissionSettingsPath, readPermissionSettings } from "../../permissions/permission-settings-store.js";
+import { loadPolicy, userPolicyPath } from "../../permissions/policy-store.js";
+import { PermissionManager } from "../../permissions/permission-manager.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
 
 describe.runIf(process.platform === "win32")("protected home boundaries", () => {
-  afterEach(() => { _resetAveHomePrivacyForTest(); });
+  afterEach(() => { _resetAveHomePrivacyForTest(); vi.unstubAllEnvs(); });
   const home = useTempPaths("ave-boundaries-", ".ave");
   function fixture(): string {
     const dir = home();
@@ -53,6 +56,69 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expectBoundary(join(dir, "keys"));
     expectBoundary(join(dir, "certs"));
     expectBoundary(join(dir, "config"));
+  });
+  it("keeps root policy and deny rules active during a refused boot without migrating", async () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "policy.json"), JSON.stringify({ version: 1, managed: true, requireExplicitApproval: true }));
+    writeFileSync(join(dir, "permissions.json"), JSON.stringify({ version: 1, mode: "allow", rules: [{ pattern: "web_fetch", action: "deny" }], updatedAt: new Date().toISOString() }));
+    writeFileSync(join(dir, "settings.json"), JSON.stringify({ permissions: { reviewer: { mode: "strict" } } }));
+    grant(dir, "W");
+    const privacy = ensureAveHomePrivate(dir);
+    expect(privacy.enforcement).toBe("none");
+    vi.stubEnv("AVE_HOME", dir);
+    setAveHomePrivacyAtBoot(privacy);
+    expect(migrateAveHomeConfiguration(dir, privacy)).toEqual([]);
+    expect(() => assertAveHomePrivacyForConfinement()).toThrow();
+    expect(permissionSettingsPath()).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath()).toBe(join(dir, "policy.json"));
+    expect(await loadPolicy(undefined, join(dirname(dir), "absent-admin.json"))).toMatchObject({ source: "user", managed: true, requireExplicitApproval: true });
+    expect(readPermissionSettings().permissions.reviewer.mode).toBe("strict");
+    const manager = new PermissionManager();
+    await manager.loadRulesFromFile();
+    expect(manager.checkDetailed("web_fetch", "builtin", "read")).toMatchObject({ decision: "deny", layer: 1 });
+    expect(existsSync(join(dir, "config", "policy.json"))).toBe(false);
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+    expect(existsSync(join(dir, "policy.json"))).toBe(true);
+    writeFileSync(join(dir, "config", ".ave-config-migrated"), "ave-home-boundary-v1");
+    expect(permissionSettingsPath()).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath()).toBe(join(dir, "policy.json"));
+    expect(permissionSettingsPath(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "settings.json"));
+    expect(userPolicyPath(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "policy.json"));
+  });
+  it("refuses an invalid migration marker without deleting root configuration", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "settings.json"), "root");
+    writeFileSync(join(dir, "config", ".ave-config-migrated"), "invalid");
+    expect(() => migrateAveHomeConfiguration(dir)).toThrow();
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("root");
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("invalid");
+  });
+  it("discards a migration marker copied from an unprotected configuration boundary", () => {
+    const dir = fixture();
+    const config = join(dir, "config");
+    writeFileSync(join(config, ".ave-config-migrated"), "ave-home-boundary-v1");
+    damage(config);
+    expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl", repairs: [config] });
+    expect(existsSync(join(config, ".ave-config-migrated"))).toBe(false);
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
+  });
+  it("keeps every root file until the migration marker commits published copies", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "settings.json"), "settings");
+    writeFileSync(join(dir, "policy.json"), "policy");
+    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("Rename(copy, destination, name);",
+      'Rename(copy, destination, name); if (name == "policy.json") throw new InvalidOperationException("migration interrupted");');
+    expect(native("try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json','policy.json'),$u,$false) } catch { 'interrupted' }", dir, source)).toBe("interrupted");
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("settings");
+    expect(readFileSync(join(dir, "policy.json"), "utf8")).toBe("policy");
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
+    expect(migrateAveHomeConfiguration(dir)).toHaveLength(2);
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
   });
   it("migrates root configuration into fresh files without foreign read grants", () => {
     const dir = fixture();

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { AVE_HOME_CONFIGURATION_DIRECTORY, win32SystemBinary } from "./ave-home.js";
+import { AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_CONFIGURATION_MARKER, setAveHomeConfigurationAtBoot, win32SystemBinary, type AveHomePrivacy } from "./ave-home.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
@@ -17,19 +17,36 @@ function entry(path: string): ReturnType<typeof lstatSync> | undefined {
 }
 
 /** Boot completes this before settings or policy readers can observe the new paths. */
-export function migrateAveHomeConfiguration(home: string): string[] {
-  if (!CONFIGURATION_FILES.some((name) => entry(join(home, name)) !== undefined)) return [];
-  if (process.platform === "win32") return migrateWindowsConfiguration(home);
+export function migrateAveHomeConfiguration(home: string, privacy?: AveHomePrivacy): string[] {
+  if (privacy?.enforcement === "none") {
+    setAveHomeConfigurationAtBoot(home, false);
+    return [];
+  }
+  const diagnostics = process.platform === "win32" ? migrateWindowsConfiguration(home) : migratePosixConfiguration(home);
+  if (privacy !== undefined) setAveHomeConfigurationAtBoot(home, true);
+  return diagnostics;
+}
+
+function migratePosixConfiguration(home: string): string[] {
   const destination = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
   const directoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW;
   const homeHandle = openSync(home, directoryFlags);
   let directoryHandle: number | undefined;
   const diagnostics: string[] = [];
+  const copied: Array<{ source: string; ino: number | bigint; dev: number | bigint }> = [];
   try {
     directoryHandle = openSync(destination, directoryFlags);
     fchmodSync(directoryHandle, 0o700);
     const sourceRoot = process.platform === "linux" ? `/proc/self/fd/${homeHandle}` : home;
     const destinationRoot = process.platform === "linux" ? `/proc/self/fd/${directoryHandle}` : destination;
+    const markerPath = join(destinationRoot, AVE_HOME_CONFIGURATION_MARKER);
+    const markerEntry = entry(markerPath);
+    if (markerEntry !== undefined) {
+      const marker = openSync(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+      try {
+        if (!fstatSync(marker).isFile() || readFileSync(marker, "utf8") !== "ave-home-boundary-v1") throw new Error("Configuration migration marker is invalid");
+      } finally { closeSync(marker); }
+    }
     for (const name of CONFIGURATION_FILES) {
       const oldPath = join(home, name);
       const newPath = join(destination, name);
@@ -62,14 +79,26 @@ export function migrateAveHomeConfiguration(home: string): string[] {
         }
         renameSync(staged, target);
         fsyncSync(directoryHandle);
-        const current = entry(source);
-        if (current?.ino !== identity.ino || current.dev !== identity.dev) throw new Error("Configuration source changed before deletion");
-        unlinkSync(source);
-        fsyncSync(homeHandle);
+        copied.push({ source, ino: identity.ino, dev: identity.dev });
       } finally {
         closeSync(input);
         if (entry(staged) !== undefined) unlinkSync(staged);
       }
+    }
+    if (markerEntry === undefined) {
+      const marker = openSync(markerPath, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      try {
+        fchmodSync(marker, 0o600);
+        writeFileSync(marker, "ave-home-boundary-v1");
+        fsyncSync(marker);
+      } finally { closeSync(marker); }
+    }
+    fsyncSync(directoryHandle);
+    for (const identity of copied) {
+      const current = entry(identity.source);
+      if (current?.ino !== identity.ino || current.dev !== identity.dev) throw new Error("Configuration source changed before deletion");
+      unlinkSync(identity.source);
+      fsyncSync(homeHandle);
     }
   } finally {
     if (directoryHandle !== undefined) closeSync(directoryHandle);

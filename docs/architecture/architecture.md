@@ -2163,7 +2163,13 @@ with its own owner rule:
   The boundary list is checked against the sensitive-path table. Permission
   settings, user policy and legacy root secrets migrate into `config` by
   copying into a fresh staged file, publishing it inside the protected directory,
-  then deleting the root file. Existing destination files win without merging;
+  then flushing and verifying `config/.ave-config-migrated` before deleting any
+  copied root file. Both path owners use the root until this commit marker exists.
+  A protected boot completes migration before publishing its verified decision;
+  a refused boot pins the legacy paths and skips migration. Readers and writers
+  share that decision without probing alternate files. Outside boot, explicit
+  homes use a no-follow marker existence check without claiming confinement.
+  Existing destination files win without merging on resumed migration;
   both paths are logged and the root copy is retained.
   Feature storage asserts that boundaries already
   exist and never creates them on Windows.
