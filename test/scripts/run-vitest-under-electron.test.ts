@@ -30,6 +30,14 @@ class FakeChild extends EventEmitter {
 }
 
 describe("Electron Node-mode Vitest runner", () => {
+  it("keeps transformed modules in the checkout when dependencies are shared", async () => {
+    const configUrl = new URL("../../config/vitest.analysis.config.ts", import.meta.url);
+    const config = (await import(configUrl.href)).default as { test: { fsModuleCachePath?: string } };
+    expect(config.test.fsModuleCachePath).toBe(
+      fileURLToPath(new URL("../../.cache/vitest/modules", import.meta.url)),
+    );
+  });
+
   it("passes file URLs to worker preloads", async () => {
     const configUrl = new URL("../../config/vitest.analysis.config.ts", import.meta.url);
     const analysisConfig = (await import(configUrl.href)).default as { test: { execArgv: string[] } };
