@@ -89,11 +89,21 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
       expect(runtime.grantWindowsAcl).not.toHaveBeenCalled(); expect(update).not.toHaveBeenCalled();
     });
   }
-  it.each(["allowWrite", "allowRead", "denyWrite", "denyRead"] as const)("refuses a reparse ancestor in %s at pin time", async list => {
+  it.each(["allowWrite", "allowRead"] as const)("refuses a reparse ancestor in %s at pin time", async list => {
     const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const target = scratch(); mkdirSync(join(target, "leaf"));
     const alias = link(target, join(scratch(), "alias"));
     expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] })).toThrow(/reparse/i);
+  });
+
+  it.each(["denyRead", "denyWrite"] as const)("keeps uncertain %s rows outside grant admission", async list => {
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+    const alias = link(scratch(), join(scratch(), "alias"));
+    const rows = [join(alias, "missing"), join(scratch(), "OTHER~1", "locked"), join(scratch(), "*")];
+    const pinned = pinWindowsFilesystemConfig<Partial<import("@anthropic-ai/sandbox-runtime").FilesystemConfig>>({ [list]: rows });
+    expect(pinned[list]).toBe(rows);
+    expect(pinned.allowRead).toEqual([]);
+    expect(pinned.allowWrite).toEqual([]);
   });
 
   it("derives control-file denies from the pinned canonical grant", async () => {

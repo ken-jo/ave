@@ -66,8 +66,8 @@ describe("native host external key path protection", () => {
     const config = buildSandboxConfig({
       allowedDomains: [], allowRead: [root], allowWrite: [root], denyRead: [], denyWrite: [],
     });
-    expect(config.filesystem.allowRead).toContain(root);
-    expect(config.filesystem.allowWrite).toContain(root);
+    expect(config.filesystem.allowRead?.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(root);
+    expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(root);
     expect(config.filesystem.denyRead).toContain(keyPath);
     expect(config.filesystem.denyWrite).toContain(keyPath);
     expect(config.filesystem.denyRead).not.toContain(join(root, "notes.txt"));

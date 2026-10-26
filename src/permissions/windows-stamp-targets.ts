@@ -121,7 +121,8 @@ function assertRuntimeReadsAs(path: string, target: string): void {
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
   const prefixes: string[] = [];
-  for (const entries of [filesystem.allowRead, filesystem.allowWrite, filesystem.denyRead, filesystem.denyWrite]) {
+  // Deny rows are conservative match expressions, not targets receiving allow ACEs.
+  for (const entries of [filesystem.allowRead, filesystem.allowWrite]) {
     for (const entry of entries ?? []) {
       const path = typeof entry === "string" ? entry : entry.path;
       checkWindowsCanonicalIntermediates(path);
@@ -136,31 +137,28 @@ export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> |
   if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixes);
   const prefixPins = pinWindowsPaths(prefixes);
   const prefixLiterals = guardedStampLiterals(prefixes, prefixPins);
-  // Deny expansion retains match spellings as well as canonical targets. Check both before accepting any grant.
-  const lists = [filesystem.allowRead, filesystem.allowWrite, filesystem.denyRead, filesystem.denyWrite]
+  // Retain match spellings during expansion so every possible grant identity is checked.
+  const lists = [filesystem.allowRead, filesystem.allowWrite]
     .map(entries => expandWindowsFsPaths(entries ?? [], { mode: "deny" }).map(path => path.replace(/\//g, "\\")));
   for (const entry of prefixLiterals) if (typeof entry !== "string") void entry.path;
   const snapshots = pinWindowsPaths(lists.flat());
   let snapshotIndex = 0;
-  const pin = (paths: readonly string[], mode: "grant" | "deny"): FilesystemPathEntry[] =>
+  const pin = (paths: readonly string[]): FilesystemPathEntry[] =>
     paths.flatMap(path => {
       assertPlainWindowsStampPath(path);
       const snapshot = snapshots[snapshotIndex++]!;
-      const canonical = mode === "grant" ? snapshot.path.replace(/^(.*[^:])\\$/, "$1")
-        : /\\$/.test(path) && !/\\$/.test(snapshot.path) ? `${snapshot.path}\\` : snapshot.path;
+      const canonical = snapshot.path.replace(/^(.*[^:])\\$/, "$1");
       assertPlainWindowsStampPath(canonical);
-      const literals = mode === "deny" && path !== canonical ? [path, canonical] : [canonical];
+      const literals = [canonical];
       for (const literal of literals) assertRuntimeReadsAs(literal, canonical);
       const entries = guardedStampLiterals(literals, [snapshot]);
       // Missing grants still need policy checks and control denies; omit them only at native handoff.
-      if (mode === "grant" && !snapshot.exists) for (const entry of entries) if (typeof entry !== "string") missingWindowsGrants.add(entry);
+      if (!snapshot.exists) for (const entry of entries) if (typeof entry !== "string") missingWindowsGrants.add(entry);
       return entries;
     });
   return {
     ...filesystem,
-    allowRead: pin(lists[0]!, "grant"),
-    allowWrite: pin(lists[1]!, "grant"),
-    denyRead: pin(lists[2]!, "deny"),
-    denyWrite: pin(lists[3]!, "deny"),
+    allowRead: pin(lists[0]!),
+    allowWrite: pin(lists[1]!),
   };
 }

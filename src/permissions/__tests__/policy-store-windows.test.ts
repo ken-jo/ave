@@ -79,7 +79,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     });
     const denyRead = config.filesystem.denyRead.map((entry) => typeof entry === "string" ? entry : entry.path);
     const denyWrite = config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path);
-    expect(config.filesystem.allowWrite).toContain(workspace);
+    expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(workspace);
     expect(denyWrite).toContain(join(workspace, ".git", "config"));
     expect(denyWrite).toContain(join(workspace, ".git", "hooks"));
     expect(denyRead).toContain(locked);
@@ -93,7 +93,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     const child = join(blocked, "child");
     await mkdir(child, { recursive: true });
     const config = buildSandboxConfig({ allowedDomains: [], allowWrite: [child], denyWrite: [blocked] });
-    expect(config.filesystem.allowWrite).toContain(child);
+    expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(child);
     expect(config.filesystem.denyWrite.map((entry) => typeof entry === "string" ? entry : entry.path)).toContain(blocked);
   });
 

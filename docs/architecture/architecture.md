@@ -1691,8 +1691,10 @@ existing component, refusing any reparse point in the chain. Ancestor handles
 exclude write and delete sharing while final paths and file identities are read.
 Machine-root checks, control-file deny derivation and private-helper overlap
 checks consume the pinned canonical result. Policy composition retains those
-literal grant objects and pins composed denies at their existing post-filter point; it never resolves an
-admitted grant again. The manager receives that pinned filesystem object, while
+literal grant objects; it never resolves an admitted grant again. Composed deny
+rows follow the separate deny projection, preserving unprovable identities and
+patterns without applying the grant pin or plain-path grammar. The manager receives
+the same pinned grant objects alongside those deny rows, while
 the direct ACL API receives string arrays whose reads validate the same component
 identities. This validation runs in production as well as isolated tests.
 Each composition expands leading `~` and supported profile environment references
@@ -1705,12 +1707,27 @@ introduces `*`, `?`, `[` or `]` is refused with `filesystem-expansion-glob`:
 the runtime has no glob escape syntax, so expanded data cannot become a pattern.
 Braces remain ordinary characters. Windows machine-root writes are refused at
 this entry before narrowing or any native account lookup, including held grants.
-The Windows grammar checks intermediate components and expansion prefixes.
-Missing deny tails retain literal components beneath a checked canonical ancestor.
+The Windows grant grammar checks intermediate components and expansion prefixes.
+Composed denies retain the deny projection's spelling and identity rules.
 
-On Windows, filesystem lists are expanded once before runtime handoff; a new glob match created afterward is not stamped by this wrap. Junctions and symlinks are refused even when their targets would be permitted. Every pinned literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` forms are refused. The runtime normalizes each entry again, so its result must exactly match a checked spelling, with no case folding, before any existence check. A missing grant is dropped. A swap before pinning is refused as a reparse point; a replacement between pinning, policy checks and native handoff is refused by the retained identities. After the final identity validation, the native string API can still follow a later swap. Closing that native residual requires calls that consume held handles.
+On Windows, grant lists are expanded once before runtime handoff; a new glob match created afterward receives no allow ACE from this wrap. Grant junctions and symlinks are refused even when their targets would be permitted. Every pinned grant literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` grant forms are refused. The runtime normalizes each grant entry again, so its result must exactly match a checked spelling, with no case folding, before any existence check. A missing grant is dropped. A swap before pinning is refused as a reparse point; a replacement between pinning, policy checks and native handoff is refused by the retained identities. After the final identity validation, the native string API can still follow a later swap. Closing that native residual requires calls that consume held handles.
 
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
+On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; machine-root rows retained by the policy filter remain eligible for stamping regardless of absence. Before adding a worker write grant, raw session and earlier-wrap denies plus the pending policy identify every overlapping obligation, including machine read rows and targets created after omission. An overlapping deny glob refuses the grant because a DACL cannot protect future matches. Native target DACLs determine existing deny strength; stamping unions that strength with the obligations so reusing the session holder cannot downgrade its earlier read protection. After stamping, even if it throws, native DACLs must show the sandbox SID's expected deny mask, subtree inheritance for directories, and parent delete-child protection. A missing or unverifiable target refuses the grant, as does any stamp failure; successful stamping alone proves nothing. Grant failures revoke only the grant holder. Worker release leaves session denies until teardown; placeholders remain. These are point-in-time checks: concurrent path or DACL changes and protected descendant DACLs remain limitations. An omitted target created outside write grants while a command is running is not denied until the next wrap or worker/session re-initialization.
+
+Grant proof uses the shipped path helper's synchronous handle-based DACL mode.
+It pins non-reparse path components and reads target and parent descriptors
+from those handles. Only leading explicit deny ACEs count; inherited denies or
+denies after an allow supply no proof. Obligation capture through native grant
+and publication contains no await. An obligation revision and session/seal
+check guard the effect boundary; asynchronous wraps recheck their captured
+session and seal immediately before entering the native wrapper. Reset
+invalidates admission before its first await.
+
+A failed native deny verification seals the session against further wraps and
+worker grants until reset. Confinement stays marked active so callers cannot
+fall back to host execution. Previously issued commands are not revoked by this
+check.
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
@@ -2198,15 +2215,27 @@ with its own owner rule:
 - **The Windows sandbox helper copy is created with its final security
   descriptor.** `prepareSrtWinExecutable` in
   `src/permissions/srt-win-integrity.ts` picks a random, unpublished
-  `ave-srt-win-` name, and one PowerShell step creates the directory there with
-  the token user as owner and a protected DACL: full control for the user,
+  `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
+  both directories with the token user as owner and a protected DACL: full control for the user,
   read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at that path, a link included, refuses creation. The empty image and
-  the owner marker are then created new inside it, each with its own
+  already at either directory path, a link included, refuses creation. The empty image and
+  the owner marker are then created new inside `bin`, each with its own
   descriptor, and each owner is read on the handle that created the file. No
   step changes the owner or DACL of an object that already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
+  The write-deny target is `bin`, so its parent's inheritable delete-child deny
+  lands on the private outer directory, never `%TEMP%`. Grants inside or writable
+  grants covering that outer directory are refused. Session reset or holder
+  release removes the deny when its final hold ends. A dead holder leaves its
+  ACE until a later native ACL operation prunes its tracked hold.
+  The stale-copy sweep checks both directory owners and DACLs for the new layout,
+  and also accepts the old single-level layout with its original marker checks.
+  It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
+  without recursion. A sandbox-account ACE found on the temporary root emits
+  `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
+  Any remaining legacy ACE requires owner-approved inspection and repair of the
+  exact explicit ACE or its inheritance source, with active holders accounted for.
 - **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
   When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
   directory does not exist yet,

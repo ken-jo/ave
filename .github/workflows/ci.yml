@@ -615,12 +615,34 @@ jobs:
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: bun run check:plugin-host-protocol-schema
+      - name: Provision sandbox for native permission tests
+        if: steps.docs-impact.outputs.docs_only != 'true'
+        working-directory: ave
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $principal = [Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent())
+          if (!$principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+            throw 'Native sandbox provisioning requires an elevated runner'
+          }
+          node scripts/check-srt-win-integrity.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $helper = Join-Path $PWD 'node_modules/@anthropic-ai/sandbox-runtime/vendor/srt-win/x64/srt-win.exe'
+          & $helper install
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $status = & $helper user status | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or !$status.user.exists -or !$status.cred_present) {
+            throw 'Native sandbox provisioning did not produce a usable account'
+          }
       - name: Run Windows permission regressions
         if: steps.docs-impact.outputs.docs_only != 'true'
         working-directory: ave
         run: >
           bun run test --
           src/permissions/__tests__/asrt-sandbox.test.ts
+          src/permissions/__tests__/asrt-deny-absent.test.ts
+          src/permissions/__tests__/asrt-deny-absent-native.test.ts
+          src/permissions/__tests__/windows-deny-acl.test.ts
           src/permissions/__tests__/allowed-directories.test.ts
           src/permissions/__tests__/sensitive-paths-canonicalize.test.ts
           src/permissions/__tests__/policy-home.test.ts
@@ -653,6 +675,7 @@ jobs:
           src/shared/__tests__/windows-admin-policy.test.ts
           src/__tests__/program-data-isolation.test.ts
           src/permissions/__tests__/asrt-stamp-targets.test.ts
+          src/permissions/__tests__/filesystem-policy-boundary.test.ts
           src/shared/__tests__/windows-read-deny-evidence.test.ts
           src/tools/__tests__/file-read-core.test.ts
           src/tools/__tests__/preview-document-process.test.ts

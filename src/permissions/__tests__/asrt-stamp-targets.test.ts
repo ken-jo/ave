@@ -47,17 +47,21 @@ afterEach(async () => {
   syncBuiltinESMExports();
 });
 
-async function initializeFixtureSandbox() {
+async function initializeFixtureSandbox(filesystem: { allowRead?: string[]; allowWrite?: string[] } = {}) {
   vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
   const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
-  vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
+  const initialize = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
   const sandbox = await import("../asrt-sandbox.js");
-  await sandbox.initializeAsrtSandbox({ windows: { externalConfinement: true } });
-  return { SandboxManager, sandbox };
+  await sandbox.initializeAsrtSandbox({ ...filesystem, windows: { externalConfinement: true } });
+  return { SandboxManager, sandbox, sharedConfig: initialize.mock.calls.at(-1)![0] };
 }
 
 function runtimeDenyWrite(filesystem: Partial<FilesystemConfig> | undefined): string[] {
   return expandWindowsFsPaths(filesystem?.denyWrite ?? [], { mode: "deny" }).map(path => resolve(path));
+}
+
+function runtimeAllowWrite(filesystem: Partial<FilesystemConfig> | undefined): string[] {
+  return expandWindowsFsPaths(filesystem?.allowWrite ?? [], { mode: "grant" }).map(path => resolve(path));
 }
 
 it("enforces the filesystem policy producer inventory", () => {
@@ -119,15 +123,15 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(initialize).not.toHaveBeenCalled();
   });
 
-  it("refuses a direct machine deny-write target before native initialization", async () => {
+  it("refuses a retained machine deny-read target before native initialization", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    const target = join("C:\\ProgramData", "Ave", "stamp-fixture");
+    const target = "C:\\ProgramData";
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
-      denyWrite: [target],
+      denyRead: [target],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
   });
@@ -139,7 +143,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
-      denyRead: [join(inject("realAccountHome"), ".curlrc")],
+      denyRead: [inject("realAccountHome")],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
   });
@@ -151,7 +155,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
-      denyRead: ["\\\\?\\" + join(inject("realAccountHome"), ".curlrc")],
+      denyRead: ["\\\\?\\" + inject("realAccountHome")],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
   });
@@ -248,7 +252,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(initialize).not.toHaveBeenCalled();
   });
 
-  it.each(["allowWrite", "allowRead", "denyWrite", "denyRead"] as const)("refuses an intermediate dotted junction in %s before appending a leaf", async list => {
+  it.each(["allowWrite", "allowRead"] as const)("refuses an intermediate dotted junction in %s before appending a leaf", async list => {
     const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const parent = scratch();
     mkdirSync(join(parent, "document", "leaf"), { recursive: true });
@@ -258,7 +262,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] })).toThrow(/not a plain drive path|reparse point/);
   });
 
-  it.each(["allowWrite", "allowRead", "denyWrite", "denyRead"] as const)("refuses wildcard data introduced by Windows home expansion in %s", async list => {
+  it.each(["allowWrite", "allowRead"] as const)("refuses wildcard data introduced by Windows home expansion in %s", async list => {
     const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const profile = join(scratch(), "alice*");
     vi.stubEnv("USERPROFILE", profile);
@@ -326,7 +330,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     await expect(sandbox.wrapToolCommand("echo fixture", {
       commandId: TEST_COMMAND_ID,
-      filesystem: { denyRead: [join(inject("realAccountHome"), ".curlrc")] },
+      filesystem: { denyRead: [inject("realAccountHome")] },
     })).rejects.toThrow(refusal);
     expect(wrap).not.toHaveBeenCalled();
   });
@@ -336,7 +340,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     await expect(sandbox.wrapWorkerCommand("echo fixture", {
       commandId: TEST_COMMAND_ID,
-      filesystem: { denyWrite: [join(inject("realAccountHome"), ".curlrc")] },
+      filesystem: { denyWrite: [inject("realAccountHome")] },
     })).rejects.toThrow(refusal);
     expect(wrap).not.toHaveBeenCalled();
   });
@@ -358,30 +362,31 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     writeFileSync(existing, "");
     vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
       writeFileSync(late, "");
-      const paths = runtimeDenyWrite(config.filesystem);
+      const paths = runtimeAllowWrite(config.filesystem);
       expect(paths).toContain(existing);
       expect(paths).not.toContain(late);
-      expect(config.filesystem.denyWrite).not.toContain(glob);
+      expect(config.filesystem.allowWrite).not.toContain(glob);
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await initializeAsrtSandbox({ windows: { externalConfinement: true }, denyWrite: [glob] });
+    await initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [glob] });
   });
 
   it("pins tool glob matches before the runtime's asynchronous lookups", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const existing = join(process.env.USERPROFILE!, "existing.stamp-fixture");
     const late = join(process.env.USERPROFILE!, "late.stamp-fixture");
     const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
     writeFileSync(existing, "");
+    const { SandboxManager, sandbox, sharedConfig } = await initializeFixtureSandbox({ allowWrite: [glob] });
     vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
       writeFileSync(late, "");
-      const paths = runtimeDenyWrite(config?.filesystem);
+      expect(config?.filesystem?.allowWrite).toEqual([]);
+      const paths = runtimeAllowWrite(sharedConfig.filesystem);
       expect(paths).toContain(existing);
       expect(paths).not.toContain(late);
-      expect(config?.filesystem?.denyWrite).not.toContain(glob);
+      expect(sharedConfig.filesystem.allowWrite).not.toContain(glob);
       return { argv: ["fixture"], env: {} };
     });
-    await sandbox.wrapToolCommand("echo fixture", { commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [glob] } });
+    await sandbox.wrapToolCommand("echo fixture", { commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] } });
   });
 
   it("refuses a session junction glob before runtime initialization", async () => {
@@ -393,42 +398,49 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const alias = link(target, join(scratch(), "alias"));
     const initialize = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, denyWrite: [join(alias, "*.stamp-fixture")] }))
+    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [join(alias, "*.stamp-fixture")] }))
       .rejects.toThrow(/reparse point|Sandbox stamp target identity changed/);
     expect(initialize).not.toHaveBeenCalled();
   });
 
   it("refuses a tool junction literal with a missing tail before runtime wrapping", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const target = scratch();
-    const alias = link(target, join(scratch(), "alias"));
+    const alias = join(scratch(), "alias");
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox({ allowWrite: [join(alias, "missing", "leaf")] });
+    link(target, alias);
     const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     await expect(sandbox.wrapToolCommand("echo fixture", {
-      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(alias, "missing", "leaf")] },
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] },
     })).rejects.toThrow(/reparse point|Sandbox stamp target identity changed/);
     expect(wrap).not.toHaveBeenCalled();
   });
 
-  it("refuses fixture junction deny lists before runtime initialization", async () => {
+  it("keeps fixture junction deny lists on the deny path at initialization", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const target = scratch();
     const alias = link(target, join(scratch(), "alias"));
-    vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      expect(config.filesystem.denyRead).toContain(alias);
+      expect(config.filesystem.denyWrite).toContain(alias);
+    });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, denyRead: [alias], denyWrite: [alias] })).rejects.toThrow(/reparse point/);
-    expect(SandboxManager.initialize).not.toHaveBeenCalled();
+    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, denyRead: [alias], denyWrite: [alias] })).resolves.toBeUndefined();
+    expect(initialize).toHaveBeenCalledOnce();
   });
 
-  it("refuses a fixture junction deny before runtime wrapping", async () => {
+  it("keeps a fixture junction deny on the deny path when wrapping", async () => {
     const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const target = scratch();
     const alias = link(target, join(scratch(), "alias"));
-    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      expect(config?.filesystem?.denyWrite).toContain(alias);
+      return { argv: ["fixture"], env: {} };
+    });
     await expect(sandbox.wrapToolCommand("echo fixture", {
       commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [alias] },
-    })).rejects.toThrow(/reparse point|Sandbox stamp target identity changed/);
-    expect(wrap).not.toHaveBeenCalled();
+    })).resolves.toBeDefined();
+    expect(wrap).toHaveBeenCalledOnce();
   });
 
   it("refuses fixture junction grants before runtime initialization", async () => {
@@ -442,13 +454,14 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(SandboxManager.initialize).not.toHaveBeenCalled();
   });
 
-  it("refuses a deny with a missing tail through chained intermediate junctions", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+  it("refuses a grant with a missing tail through chained intermediate junctions", async () => {
     const intermediate = link(scratch(), join(scratch(), "intermediate"));
-    const alias = link(intermediate, join(scratch(), "alias"));
+    const alias = join(scratch(), "alias");
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox({ allowWrite: [join(alias, "missing", "leaf")] });
+    link(intermediate, alias);
     const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
     await expect(sandbox.wrapToolCommand("echo fixture", {
-      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(alias, "missing", "leaf")] },
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] },
     })).rejects.toThrow(/reparse point|Sandbox stamp target identity changed/);
     expect(wrap).not.toHaveBeenCalled();
   });
@@ -461,29 +474,30 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
       renameSync(target, target + "-original");
       writeFileSync(target, "replacement");
-      runtimeDenyWrite(config.filesystem);
+      runtimeAllowWrite(config.filesystem);
     });
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, denyWrite: [target] }))
+    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [target] }))
       .rejects.toThrow(/Sandbox stamp target identity changed/);
   });
 
   it("refuses a replaced ancestor when the runtime consumes a pinned tool list", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const target = join(scratch(), "target");
     mkdirSync(target);
+    const { SandboxManager, sandbox, sharedConfig } = await initializeFixtureSandbox({ allowWrite: [target] });
     vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
       renameSync(target, target + "-original");
-      link(inject("realAccountHome"), target);
-      runtimeDenyWrite(config?.filesystem);
+      link(scratch(), target);
+      expect(config?.filesystem?.allowWrite).toEqual([]);
+      runtimeAllowWrite(sharedConfig.filesystem);
       return { argv: ["fixture"], env: {} };
     });
     await expect(sandbox.wrapToolCommand("echo fixture", {
-      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(target, "missing")] },
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] },
     })).rejects.toThrow(/Sandbox stamp target identity changed/);
   });
 
-  it.each(["allowWrite", "allowRead", "denyWrite"] as const)("refuses a %s target the runtime would reread through an environment reference", async (list) => {
+  it.each(["allowWrite", "allowRead"] as const)("refuses a %s target the runtime would reread through an environment reference", async (list) => {
     const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const template = join(scratch(), "%HOMEPATH%");
     mkdirSync(join(template, "leaf"), { recursive: true });
@@ -505,34 +519,25 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
   });
 
   it("accepts a missing tail created as a plain directory before consumption", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const parent = scratch();
-    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
-      runtimeDenyWrite(config?.filesystem);
-      mkdirSync(join(parent, "missing"));
-      runtimeDenyWrite(config?.filesystem);
-      return { argv: ["fixture"], env: {} };
-    });
-    await expect(sandbox.wrapToolCommand("echo fixture", {
-      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(parent, "missing") + "\\"] },
-    })).resolves.toBeDefined();
+    const target = join(parent, "missing");
+    const pinned = pinWindowsFilesystemConfig<Partial<FilesystemConfig>>({ allowRead: [target] });
+    mkdirSync(target);
+    expect(pinned.allowRead!.map(entry => typeof entry === "string" ? entry : entry.path)).toEqual([target]);
   });
 
   it("refuses a missing tail created as a junction before consumption", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const parent = scratch();
-    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
-      link(scratch(), join(parent, "missing"));
-      runtimeDenyWrite(config?.filesystem);
-      return { argv: ["fixture"], env: {} };
-    });
-    await expect(sandbox.wrapToolCommand("echo fixture", {
-      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(parent, "missing", "leaf")] },
-    })).rejects.toThrow(/Sandbox stamp target identity changed/);
+    const pinned = pinWindowsFilesystemConfig<Partial<FilesystemConfig>>({ allowRead: [join(parent, "missing", "leaf")] });
+    link(scratch(), join(parent, "missing"));
+    expect(() => pinned.allowRead!.map(entry => typeof entry === "string" ? entry : entry.path))
+      .toThrow(/Sandbox stamp target identity changed/);
   });
 
   it("pins rebuilt session configs on worker registration and release", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox({ allowWrite: [scratch()] });
     const updates: SandboxRuntimeConfig[] = [];
     vi.spyOn(SandboxManager, "updateConfig").mockImplementation(config => { updates.push(config); });
     const holder = {};
@@ -541,7 +546,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     await sandbox.unregisterWorkerUnixSocketDir(socketDir, holder);
     expect(updates).toHaveLength(2);
     for (const config of updates) {
-      for (const entries of [config.filesystem.denyRead, config.filesystem.denyWrite, config.filesystem.allowRead, config.filesystem.allowWrite]) {
+      for (const entries of [config.filesystem.allowRead, config.filesystem.allowWrite]) {
         expect(entries?.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
       }
     }
@@ -554,9 +559,9 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const readable = join(root, "readable");
     const writable = join(root, "writable");
     const missingGrant = join(root, "missing-grant");
-    const missingDeny = join(root, "missing-deny");
+    const missingDeny = join(writable, "missing-deny");
     writeFileSync(readable, "");
-    writeFileSync(writable, "");
+    mkdirSync(writable);
     vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
       const filesystem = config.filesystem;
       expect(expandWindowsFsPaths(filesystem.allowRead ?? [], { mode: "grant" }).map(path => resolve(path))).toEqual([readable]);
@@ -564,7 +569,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       expect(expandWindowsFsPaths(filesystem.denyRead, { mode: "deny" }).map(path => resolve(path))).toContain(missingDeny);
       const entries = filesystem.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
       expect(entries).toContain(missingDeny + "\\");
-      for (const list of [filesystem.allowRead, filesystem.allowWrite, filesystem.denyRead, filesystem.denyWrite]) {
+      for (const list of [filesystem.allowRead, filesystem.allowWrite]) {
         expect(list?.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
       }
     });
@@ -577,32 +582,35 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
   });
 
   it("pins worker and terminal wrap lists before the runtime reads them", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const target = join(scratch(), "target");
     writeFileSync(target, "");
+    const { SandboxManager, sandbox, sharedConfig } = await initializeFixtureSandbox({ allowWrite: [target] });
     vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
-      const entries = config?.filesystem?.denyWrite ?? [];
+      expect(config?.filesystem?.allowWrite).toEqual([]);
+      const entries = sharedConfig.filesystem.allowWrite;
       expect(entries.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
-      expect(runtimeDenyWrite(config?.filesystem)).toContain(realpathSync.native(target));
+      expect(runtimeAllowWrite(sharedConfig.filesystem)).toContain(realpathSync.native(target));
       return { argv: ["fixture"], env: {} };
     });
-    await sandbox.wrapWorkerCommand("echo fixture", { commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [target] } });
-    await sandbox.wrapTerminalCommand("echo fixture", { commandId: TEST_COMMAND_ID, ownTty: "/dev/ttys000", filesystem: { denyWrite: [target] } });
+    await sandbox.wrapWorkerCommand("echo fixture", { commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] } });
+    await sandbox.wrapTerminalCommand("echo fixture", { commandId: TEST_COMMAND_ID, ownTty: "/dev/ttys000", filesystem: { denyWrite: [] } });
     expect(SandboxManager.wrapWithSandboxArgv).toHaveBeenCalledTimes(2);
   });
 
-  it("refuses a literal replaced after runtime expansion before wrap return", async () => {
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+  it("refuses a literal replaced between runtime reads of a shared grant", async () => {
     const target = join(scratch(), "target");
     writeFileSync(target, "original");
+    const { SandboxManager, sandbox, sharedConfig } = await initializeFixtureSandbox({ allowWrite: [target] });
     vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
-      expect(runtimeDenyWrite(config?.filesystem)).toContain(target);
+      expect(config?.filesystem?.allowWrite).toEqual([]);
+      expect(runtimeAllowWrite(sharedConfig.filesystem)).toContain(target);
       renameSync(target, target + "-original");
       writeFileSync(target, "replacement");
+      runtimeAllowWrite(sharedConfig.filesystem);
       return { argv: ["fixture"], env: {} };
     });
     await expect(sandbox.wrapToolCommand("echo fixture", {
-      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [target] },
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] },
     })).rejects.toThrow(/Sandbox stamp target identity changed/);
   });
 
