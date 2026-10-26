@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,7 @@ describe("headless reviewer governed audit projection", () => {
         join(directory, "deferred-queue.jsonl"),
       );
       permissionManager.setMode("strict");
-      permissionManager.setReviewer({
+      setReviewerForTest(permissionManager, {
         classifier: new RuleBasedRiskClassifier(),
         cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
         deferredQueue,
@@ -51,6 +52,7 @@ describe("headless reviewer governed audit projection", () => {
         undefined,
         undefined,
         { operation: "status" },
+        "reviewer-governed-audit-session",
       );
 
       const [pending] = deferredQueue.listPending();

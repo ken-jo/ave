@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // The dispatch input's `disposableSubstrate` must reach the reviewer as the `disposable-container` capability. The executor tests stub `dispatchReviewer`, so this is the one place the argument threading through `resolveReviewerSandboxCacheState` is pinned: drop it and guest calls silently regress to host grading.
 import { afterEach, describe, expect, it } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
@@ -21,7 +22,7 @@ function makeManager(): { pm: PermissionManager; seen: ToolInvocationContext[] }
     },
   };
   const pm = new PermissionManager(tmpFile("permissions.json"));
-  pm.setReviewer({
+  setReviewerForTest(pm, {
     classifier,
     cache: resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl")),
     deferredQueue: new DeferredQueue(tmpFile("deferred-queue.jsonl")),
@@ -30,6 +31,7 @@ function makeManager(): { pm: PermissionManager; seen: ToolInvocationContext[] }
 }
 
 const baseInput = {
+  sessionId: "permission-manager-disposable-substrate-session",
   source: "builtin" as const,
   category: "shell" as const,
   pathFields: [] as string[],

@@ -1,3 +1,4 @@
+import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Sensitive targets must reach the approval hard block and deny before dialog dispatch or tool execution.
 import { afterEach, describe, it, expect, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -551,7 +552,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
       const deferredQueue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer would otherwise allow" })),
         },
@@ -860,7 +861,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
       permMgr.setInteractiveAutoApprove("low");
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
         },
@@ -956,7 +957,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       permMgr.setMode("default");
       permMgr.setInteractiveAutoApprove("low");
       const classifySpy = vi.fn(() => ({ level: "low" as const, reason: "reviewer says safe" }));
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
@@ -1027,7 +1028,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         level: "medium" as const,
         reason: `reviewed ${String(ctx.finalInput.payload)}`,
       }));
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
@@ -1123,7 +1124,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         level: "medium" as const,
         reason: "needs user confirmation",
       }));
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
@@ -1235,7 +1236,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         reason: "headless data egress",
       }));
       const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: queue,
@@ -1301,7 +1302,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
         level: "medium" as const,
         reason: "needs user confirmation",
       }));
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
@@ -1369,7 +1370,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
       permMgr.setMode("auto");
       // Foreground auto-review also requires the interactive setting.
       permMgr.setInteractiveAutoApprove("low");
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: {
           classify: vi.fn(() => ({ level: "low", reason: "reviewer says safe" })),
         },
@@ -1712,6 +1713,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     permMgr.dispatchReviewer = vi.fn(async () => ({
       verdict: { level: "low" as const, reason: "read-only paging of child output" },
       outcome: "fresh" as const,
+      judge: reviewerJudgeOutcomeForTest("allow", "read-only paging of child output"),
     })) as never;
     const approvalGate = {
       requestAndWait: vi.fn(async (req: { id: string }) => ({
@@ -1819,7 +1821,7 @@ describe("ToolExecutor — C1 sensitive-path hard-block wiring", () => {
     const permMgr = new PermissionManager(join(dir, "permissions.json"));
     permMgr.setMode("auto");
     permMgr.setInteractiveAutoApprove("medium");
-    permMgr.setReviewer({
+    setReviewerForTest(permMgr, {
       classifier: new RuleBasedRiskClassifier(),
       cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
       deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),
@@ -2134,6 +2136,7 @@ describe("ToolExecutor — D4 ordered approval/execution (§4.5.3)", () => {
         { id: "cancel-2", name: "tool_cancel_b", input: { value: "b" } },
       ],
       {
+        sessionId: "executor-session",
         abortSignal: ac.signal,
         permissionContext: userPermissionContext(),
         callbacks: {
@@ -3449,7 +3452,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("strict");
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: queue,
@@ -3511,7 +3514,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: queue,
@@ -3616,7 +3619,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier,
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: queue,
@@ -3683,7 +3686,7 @@ describe("ToolExecutor — Layer 1 allowed-directories", () => {
       const queue = new DeferredQueue(join(dir, "deferred-queue.jsonl"));
       const permMgr = new PermissionManager(join(dir, "permissions.json"));
       permMgr.setMode("auto");
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: { classify },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: queue,
@@ -4663,7 +4666,7 @@ describe("ToolExecutor — host-classifies-risk enforcement scope", () => {
       permMgr.setMode("default");
       permMgr.setInteractiveAutoApprove("low");
       const classifySpy = vi.fn(() => ({ level: "medium" as const, reason: "review" }));
-      permMgr.setReviewer({
+      setReviewerForTest(permMgr, {
         classifier: { classify: classifySpy },
         cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
         deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),

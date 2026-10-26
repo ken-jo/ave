@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** Foreground memory reuse requires a matching tuple and non-escalated verdict, records an audit hit, and never bypasses deny or forced-modal gates.
  * Revoked or legacy-null approvals re-prompt; headless calls remain outside this path. */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -275,7 +276,7 @@ describe("ToolExecutor — explicit-approval memory skips the foreground modal (
       reviewer: { route: "foreground-auto" },
     });
     const classifySpy = vi.fn(() => ({ level: "high" as const, reason: "should not run" }));
-    permMgr.setReviewer({
+    setReviewerForTest(permMgr, {
       classifier: { classify: classifySpy },
       cache: {} as never,
       deferredQueue: {} as never,

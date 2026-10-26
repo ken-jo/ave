@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import {
   ApprovalGate,
   approvalAnswererAuditToken,
@@ -704,12 +705,15 @@ describe("ApprovalGate", () => {
           pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
         }),
       });
-      const reviewer = await new PermissionManager("/workspace/permissions.json").dispatchReviewer(req.toolName, {
+      const manager = new PermissionManager("/workspace/permissions.json");
+      wireJudgeForTest(manager);
+      const reviewer = await manager.dispatchReviewer(req.toolName, {
+        sessionId: "approval-gate-review-session",
         source: "builtin", category: "shell", finalInput: req.args as Record<string, unknown>,
         pathFields: [], executionCwd: req.evaluationContext!.executionCwd,
         allowedDirectories: ["/workspace/project"], sensitivePathsAdjacent: [],
         trustOrigin: "user-keyboard", approvalCacheKey: req.approvalCacheKey,
-      });
+      }, undefined, { defer: "none" });
       const pending = gate.requestAndWait({ ...req, reviewerApprovalBasis: reviewer.approvalBasis });
       const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
       expect(sent.persistentAllowAllowed).toBe(true);
@@ -748,11 +752,14 @@ describe("ApprovalGate", () => {
       }),
       ...restriction,
     });
-    const reviewer = await new PermissionManager("/workspace/permissions.json").dispatchReviewer("bash", {
+    const manager = new PermissionManager("/workspace/permissions.json");
+    wireJudgeForTest(manager);
+    const reviewer = await manager.dispatchReviewer("bash", {
+      sessionId: "approval-gate-review-session",
       source: "builtin", category: "shell", finalInput: { command: "printf hello" },
       pathFields: [], executionCwd: "/workspace/project", allowedDirectories: ["/workspace/project"],
       sensitivePathsAdjacent: [], trustOrigin: "user-keyboard", approvalCacheKey: "scoped-exact-request",
-    });
+    }, undefined, { defer: "none" });
     const pending = gate.requestAndWait({ ...req, reviewerApprovalBasis: reviewer.approvalBasis });
     const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
     expect(sent.persistentAllowAllowed).toBe(false);

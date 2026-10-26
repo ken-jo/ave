@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -146,7 +147,7 @@ function reviewerPermissionManager(directory: string, classify = vi.fn(() => ({
   const manager = new PermissionManager(join(directory, "permissions.json"));
   manager.setMode("auto");
   manager.setInteractiveAutoApprove("low");
-  manager.setReviewer({
+  setReviewerForTest(manager, {
     classifier: { classify },
     cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
     deferredQueue: new DeferredQueue(join(directory, "deferred-queue.jsonl")),

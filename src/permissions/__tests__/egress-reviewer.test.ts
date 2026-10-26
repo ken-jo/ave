@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import type { PermissionManager } from "../permission-manager.js";
 import { createApprovalGateEgressRequester } from "../egress-approval.js";
 import type { EgressShellApprovalRequest } from "../egress-ask.js";
@@ -13,11 +14,12 @@ const request: EgressShellApprovalRequest = {
 function reviewer(decision: "allow" | "ask", mode: "auto" | "default" = "auto") {
   const dispatchReviewer = vi.fn(async () => ({
     verdict: { level: decision === "allow" ? "low" : "medium", reason: "reviewed destination" },
-    outcome: "host-determined", cacheReason: "miss-not-found", builtinDecision: decision,
+    outcome: "host-determined", cacheReason: "miss-not-found",
+    judge: reviewerJudgeOutcomeForTest(decision, "reviewed destination"),
   }));
   return {
     getMode: () => mode, hasJudge: () => false, dispatchReviewer,
-    resolveReviewerDecision: vi.fn(() => ({ decision, layer: 5 })),
+    resumeAutomatedApproval: vi.fn(),
   };
 }
 
@@ -42,7 +44,7 @@ describe("sandbox domain review", () => {
     expect(manager.dispatchReviewer).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
       evaluationContext: expect.objectContaining({ headless: false }),
     }), undefined, { defer: "none" });
-    expect(manager.resolveReviewerDecision).toHaveBeenCalledWith(expect.any(Object), "foreground-auto", "allow");
+    expect(requestAndWait).not.toHaveBeenCalled();
   });
 
   it("keeps an attended ordinary request on its approval dock", async () => {

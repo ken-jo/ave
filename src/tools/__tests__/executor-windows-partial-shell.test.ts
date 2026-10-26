@@ -1,3 +1,4 @@
+import { reviewerJudgeOutcomeForTest, setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({ execFileSync: vi.fn() }));
@@ -180,7 +181,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     registry.register(shellProbe(executed));
     const { gate, send } = gateResolving("allow-once");
     const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "deny", reason: "hard policy denial", layer: 1 }), undefined, gate);
-    const result = await executor.executeAll([{ id: "explicit-host-deny", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { permissionContext: permissionContext() });
+    const result = await executor.executeAll([{ id: "explicit-host-deny", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host execution environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext() });
     expect(result[0].is_error).toBe(true);
     expect(executed).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
@@ -194,7 +195,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const { gate, send } = gateResolving("allow-once");
     const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", layer: 6 }), undefined, gate);
     const context = origin === "headless" ? { headless: true } : { remoteControllerAuthority: { kind: "tailnet-controller" as const, actorId: "tailnet:fixture" as const } };
-    const result = await executor.executeAll([{ id: "unavailable-host", name: "bash", input: { command: "echo host", cwd: "/outside-host-request", executionMode: "host", justification: "Use the host environment" } }], { permissionContext: permissionContext(context) });
+    const result = await executor.executeAll([{ id: "unavailable-host", name: "bash", input: { command: "echo host", cwd: "/outside-host-request", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext(context) });
     expect(result[0].is_error).toBe(true);
     expect(result[0].content.toLowerCase()).toMatch(/headless|remote controller|remote-controller/);
     expect(send).not.toHaveBeenCalled();
@@ -210,7 +211,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     registry.register(shellProbe(executed));
     const { gate, send } = gateResolving("allow-once", audit.auditLogger);
     const executor = new ToolExecutor(registry, undefined, pmReturning({ decision: "allow", reason: "ordinary allow", layer: 3 }), undefined, gate, undefined, audit.auditLogger);
-    const result = await executor.executeAll([{ id: "headless-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host environment" } }], { permissionContext: permissionContext({ headless: true }) });
+    const result = await executor.executeAll([{ id: "headless-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: "Use the host environment" } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext({ headless: true }) });
     expect(result[0].is_error).toBe(true);
     expect(result[0].content).toMatch(/headless/i);
     expect(send).not.toHaveBeenCalled();
@@ -222,7 +223,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     fullDarwinAsrt();
     const registry = new ToolRegistry();
     registry.register(new BashTool());
-    const result = await new ToolExecutor(registry).executeAll([{ id: "malformed-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: " " } }], { permissionContext: permissionContext() });
+    const result = await new ToolExecutor(registry).executeAll([{ id: "malformed-host", name: "bash", input: { command: "echo host", executionMode: "host", justification: " " } }], { sessionId: "executor-windows-partial-shell-session", permissionContext: permissionContext() });
     expect(result[0].is_error).toBe(true);
     expect(result[0].content).toContain("nonblank justification");
   });
@@ -241,13 +242,14 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       reviewer: { route: "foreground-auto" },
     });
     const checkDetailed = vi.spyOn(pm, "checkDetailed");
-    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn(async (_toolName, input) => {
       reviewerInput = input;
       return {
         verdict: { level: "low" as const, reason: "full ASRT reviewed" },
         cacheReason: "miss-not-found" as const,
         outcome: "fresh" as const,
+        judge: reviewerJudgeOutcomeForTest("allow", "full ASRT reviewed"),
       };
     }) as never;
 
@@ -285,7 +287,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     pm.setMode(mode);
     pm.setInteractiveAutoApprove("medium");
     pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
-    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
       requestId: request.id,
@@ -358,7 +360,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-rule.json");
     pm.setMode(mode);
     pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow" }]);
-    pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+    setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn();
     const result = await new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never).executeAll(
@@ -669,7 +671,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       registry.register(shellProbe(execute));
       const pm = new PermissionManager(`/tmp/nonexistent-requested-unavailable-${platform}.json`);
       pm.setMode("auto");
-      pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
+      setReviewerForTest(pm, { classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
       pm.dispatchReviewer = vi.fn() as never;
       const requestAndWait = vi.fn(async (request: { id: string }) => ({ requestId: request.id, choice: "deny-once" as const }));
       const executor = new ToolExecutor(registry, undefined, pm, undefined, { requestAndWait } as never);

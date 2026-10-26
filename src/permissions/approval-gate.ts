@@ -1,4 +1,5 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { recordManualApproval } from "./judge/manual-approval.js";
 import type { WebContents } from "electron";
 import { t } from "../i18n/index.js";
 import type { PolicyFile } from "./policy-store.js";
@@ -2235,6 +2236,7 @@ export class ApprovalGate {
       type: "approval",
       output: `[approval:decided] ${requestId} ${formatApprovalAuditFields({ ...entry, answeredBy }, entry.executionPlan)} choice=${resolvedDecision.choice} rememberPattern=${resolvedDecision.rememberPattern ?? "none"}${entry.kind === "egress-host" ? ` egressScope=${resolvedDecision.egressScope ?? "none"}` : ""}`,
     });
+    if (nativeRenderer && entry.sessionId !== undefined) recordManualApproval(resolvedDecision, entry.sessionId);
     entry.resolve(resolvedDecision);
     return resolvedDecision;
   }

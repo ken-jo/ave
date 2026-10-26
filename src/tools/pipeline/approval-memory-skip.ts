@@ -173,10 +173,11 @@ export async function tryUserApprovalMemorySkip(
         allowedPluginIds: context.allowedPluginIds ? [...context.allowedPluginIds] : undefined,
         additionalDirectories: context.additionalDirectories ?? [],
       },
-      // This assesses whether the saved user grant covers these arguments. The configured judge runs only after applicable grants are resolved.
-      { defer: "none", judgeBypass: true },
-    ).catch(() => null);
+      // Assess the saved grant through the builtin chain before optional stages.
+      { defer: "none", purpose: "approval-scope" },
+    );
     const assessed = reviewed !== null &&
+      reviewed.judge?.judged === true && reviewed.judge.pause === undefined && reviewed.judge.fallback === undefined &&
       (reviewed.outcome === "fresh" || reviewed.outcome === "cache" || reviewed.outcome === "host-determined") &&
       reviewed.verdict.requiresExplicitApproval !== true;
     // No reviewer configured: the deterministic rules (egress screen included) are the whole assessment, now and at approval time. Reuse only a row that was itself approved on rules alone; the gate records

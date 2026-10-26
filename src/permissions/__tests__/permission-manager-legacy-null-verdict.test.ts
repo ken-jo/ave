@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 // Regression test for the fail-closed gate against legacy user-approval entries with `verdictAtApproval: null`. Earlier the user-approval entry shape did not have a `verdictAtApproval` field. A naive `?? "medium"` coerce on read would have turned every such legacy entry into a medium-risk memory hit — fail-permissive for inputs whose original verdict was HIGH. The fail-closed gate rejects the memory hit and forces a fresh approval flow when `verdictAtApproval == null`. This file is the regression guard for that gate.
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { readFile, writeFile } from "node:fs/promises";
@@ -98,6 +99,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       // Force the reviewer to read the persisted record rather than its cache.
       __resetSessionStoreForTest();
       const input = {
+        sessionId: "permission-manager-legacy-null-verdict-session",
         source: "builtin" as const,
         category: "write" as const,
         pathFields: ["path"],
@@ -111,7 +113,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
 
       const remembered = await pm.dispatchReviewer("write_file", input, undefined, { defer: "none" });
       expect(remembered).toMatchObject({ outcome: "approval-memory", verdict: { level: ceiling } });
-      expect(pm.resolveReviewerDecision(remembered.verdict, "foreground-auto").decision).toBe("allow");
+      expect(remembered.judge).toMatchObject({ judged: true, decision: "allow" });
       expect(broadcast).toHaveBeenLastCalledWith({
         toolName: "write_file", scope: "persistent", verdictAtApproval: "high",
       });
@@ -129,7 +131,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
         ...input, allowedDirectories: [],
       }, undefined, { defer: "none" });
       expect(escalated).toMatchObject({ outcome: "approval-memory", verdict: { level: "high" } });
-      expect(pm.resolveReviewerDecision(escalated.verdict, "foreground-auto").decision).toBe("ask");
+      expect(escalated.judge).toMatchObject({ judged: true, decision: "ask" });
       expect(broadcast).toHaveBeenLastCalledWith({
         toolName: "write_file", scope: "persistent", verdictAtApproval: "high",
       });
@@ -183,6 +185,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
     __resetSessionStoreForTest();
 
     const result = await pm.dispatchReviewer("write_file", {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -207,6 +210,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
     const finalInput = { operation: "inspect" };
     const approvalCacheKey = "plugin_probe:inspect";
     const input = {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "plugin" as const,
       category: "write" as const,
       pathFields: [],
@@ -221,7 +225,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
     };
     const fresh = await pm.dispatchReviewer("plugin_probe", input, undefined, { defer: "none" });
     expect(fresh.verdict).toMatchObject({ level: "medium", requiresExplicitApproval: true });
-    expect(pm.resolveReviewerDecision(fresh.verdict, "foreground-auto").decision).toBe("ask");
+    expect(fresh.judge).toMatchObject({ judged: true, decision: "ask" });
     expect(broadcast).not.toHaveBeenCalled();
 
     await recordApproval("plugin_probe", canonicalStringify(finalInput), "plugin", {
@@ -241,7 +245,7 @@ describe("PermissionManager — scoped approval memory with a separate risk ceil
       verdict: { level: "medium" },
     });
     expect(result.verdict.requiresExplicitApproval).toBeUndefined();
-    expect(pm.resolveReviewerDecision(result.verdict, "foreground-auto").decision).toBe("allow");
+    expect(result.judge).toMatchObject({ judged: true, decision: "allow" });
     expect(broadcast).toHaveBeenCalledWith({
       toolName: "plugin_probe", scope: "persistent", verdictAtApproval: "high",
     });
@@ -256,7 +260,7 @@ function makeManager(): {
   const classifier = new RuleBasedRiskClassifier();
   const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
   const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
-  pm.setReviewer({ classifier, cache, deferredQueue: queue });
+  setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
   return { pm, classifier };
 }
 
@@ -288,6 +292,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     };
 
     await pm.dispatchReviewer("fs_write", {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -332,6 +337,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     };
 
     await pm.dispatchReviewer("fs_write", {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -367,6 +373,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     mockLookupResult = null;
 
     await pm.dispatchReviewer("fs_write", {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -407,9 +414,10 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
     );
     const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
     const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
 
     await pm.dispatchReviewer("write_file", {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -437,6 +445,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
 
   it("reviewer audit masks finalInput and preserves the trust tuple", async () => {
     await pm.dispatchReviewer("plugin_send", {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "plugin",
       category: "network",
       pathFields: [],
@@ -472,6 +481,7 @@ describe("PermissionManager — fail-closed gate against legacy null-verdict ent
 
   it("reviewer audit persists the Host-owned governed projection", async () => {
     await pm.dispatchReviewer("plugin_checkin_read", {
+      sessionId: "permission-manager-legacy-null-verdict-session",
       source: "plugin",
       category: "read",
       pathFields: [],

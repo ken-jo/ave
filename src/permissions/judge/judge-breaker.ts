@@ -1,50 +1,69 @@
-// Count final denials per root session, including subagents; fallback/timeouts do not count. Allows reset only the consecutive streak, and a tripped breaker returns calls to normal prompting.
+// Count successful classifier blocks per root session. Failures and host safety refusals never enter this counter.
+import { JudgeContractError } from "./judge-contract.js";
 import type { JudgeBreakerSettings } from "./judge-settings.js";
+
+export const JUDGE_BLOCK_THRESHOLDS: Readonly<JudgeBreakerSettings> = Object.freeze({ consecutive: 3, total: 20 });
+
+type PauseReason = "consecutive" | "total";
 
 interface SessionCounters {
   consecutive: number;
   total: number;
-  open: boolean;
+  pauseReason?: PauseReason;
 }
 
 export class JudgeCircuitBreaker {
   private readonly sessions = new Map<string, SessionCounters>();
 
-  constructor(private limits: JudgeBreakerSettings) {}
+  constructor(limits: JudgeBreakerSettings) {
+    this.setLimits(limits);
+  }
 
-  // Apply new limits to every session's existing counts, both ways: lowered limits can open a breaker, raised limits close one whose counts are now under them. The counts themselves are kept.
+  // Rewiring cannot change the fixed thresholds or clear a paused session.
   setLimits(limits: JudgeBreakerSettings): void {
-    this.limits = { ...limits };
-    for (const counters of this.sessions.values()) {
-      counters.open = counters.consecutive >= limits.consecutive || counters.total >= limits.total;
+    if (limits.consecutive !== JUDGE_BLOCK_THRESHOLDS.consecutive || limits.total !== JUDGE_BLOCK_THRESHOLDS.total) {
+      throw new JudgeContractError("Judge block thresholds must be 3 consecutive or 20 total");
     }
   }
 
   private counters(sessionId: string): SessionCounters {
     let c = this.sessions.get(sessionId);
     if (!c) {
-      c = { consecutive: 0, total: 0, open: false };
+      c = { consecutive: 0, total: 0 };
       this.sessions.set(sessionId, c);
     }
     return c;
   }
 
   isOpen(sessionId: string): boolean {
-    return this.sessions.get(sessionId)?.open ?? false;
+    return this.pauseReason(sessionId) !== undefined;
+  }
+
+  pauseReason(sessionId: string): PauseReason | undefined {
+    return this.sessions.get(sessionId)?.pauseReason;
   }
 
   // Record one judge decision. Returns true when this record tripped the breaker.
   record(sessionId: string, decision: "allow" | "ask" | "deny"): boolean {
+    if (decision !== "allow" && decision !== "ask" && decision !== "deny") {
+      throw new JudgeContractError("Judge block counter requires allow, ask or deny");
+    }
     const c = this.counters(sessionId);
+    if (c.pauseReason !== undefined) return false;
     if (decision === "allow") {
       c.consecutive = 0;
       return false;
     }
-    if (decision === "ask") return false;
     c.consecutive += 1;
     c.total += 1;
-    if (!c.open && (c.consecutive >= this.limits.consecutive || c.total >= this.limits.total)) {
-      c.open = true;
+    // The session total is consumed only when its own limit causes fallback.
+    if (c.total >= JUDGE_BLOCK_THRESHOLDS.total) {
+      c.total = 0;
+      c.pauseReason = "total";
+      return true;
+    }
+    if (c.consecutive >= JUDGE_BLOCK_THRESHOLDS.consecutive) {
+      c.pauseReason = "consecutive";
       return true;
     }
     return false;
@@ -52,7 +71,17 @@ export class JudgeCircuitBreaker {
 
   snapshot(sessionId: string): { consecutive: number; total: number; open: boolean } {
     const c = this.sessions.get(sessionId);
-    return c ? { ...c } : { consecutive: 0, total: 0, open: false };
+    return c
+      ? { consecutive: c.consecutive, total: c.total, open: c.pauseReason !== undefined }
+      : { consecutive: 0, total: 0, open: false };
+  }
+
+  // Only the host's authenticated manual-approval path may call this after an allowed action.
+  resume(sessionId: string): void {
+    const c = this.sessions.get(sessionId);
+    if (!c) return;
+    c.consecutive = 0;
+    delete c.pauseReason;
   }
 
   // Drop a session's counters when the conversation ends.

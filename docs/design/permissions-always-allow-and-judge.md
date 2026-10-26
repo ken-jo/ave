@@ -154,9 +154,14 @@ dispatch, canonical DLP redactor, audit writer and `DeferredQueue`.
 
 The `builtin-llm` provider retains the existing `LlmRiskClassifier`,
 `max(rule, llm)` verdict, verdict cache, approval provenance and dispatch outcome.
-Absent judge settings or a valid empty chain leave existing auto-mode behavior
-intact; they do not disable the existing reviewer. Relocation must preserve every
-existing auto-mode test unchanged, including eligible host-built-in `meta` calls.
+All automated review enters the judge engine, including auto mode, foreground
+LOW/MEDIUM review, headless execution and the authoritative shadow baseline.
+Absent judge settings or a valid empty configured chain use the default builtin
+reviewer chain. Classification and failure behavior remain unchanged, including
+eligible host-built-in `meta` calls, except for the unified pause and resume
+behavior below.
+Automated review requires a conversation or task session identity; a missing
+identity is an explicit contract error.
 
 **2. Settings and model selection.** The canonical persisted shape is an ordered
 `permissions.judge.chain`. The [settings parser](../../src/permissions/judge/judge-settings.ts)
@@ -183,14 +188,16 @@ followed by the current reviewer model is configured as follows:
 }
 ```
 
-- A valid empty chain turns the configured chain off; legacy auto-review remains.
+- A valid empty chain turns the configured chain off; automated review uses the
+  default builtin reviewer chain through the same engine.
   The earlier single-stage `provider: "off" |
   "builtin-llm" | "external"` form is accepted on read and serialized as a
   chain on save. Mixing the two forms is invalid.
 - A configured chain defaults to `shadow`. Shadow records the chain's result
-  without applying it; the existing approval path
-  remains authoritative, including when the breaker is already open. Shadow
-  creates no judge-induced deferred entries and does not change breaker counters.
+  without applying it; the builtin reviewer chain remains authoritative.
+  Shadow observations create no deferred entries and do not count as blocks.
+  The authoritative baseline still participates in the shared breaker once per
+  request, including pause and resume.
   In `active`, the chain's result decides eligible calls.
 - Settings offers ordered stages, provider/transport, mode, categories and a
   model picker. Its English and Korean text use the same setting semantics.
@@ -228,8 +235,9 @@ followed by the current reviewer model is configured as follows:
   and conservatively applies the existing unavailable fallback to judgeable
   categories: forced foreground approval or headless deny plus defer, without
   legacy/provider fallback. This changes the effective host failure response,
-  not the persisted mode or normalizer defaults. A missing file or block remains
-  valid off; a parsed rejected shadow chain retains the baseline described above.
+  not the persisted mode or normalizer defaults. A missing file or block leaves
+  the configured chain off and uses the default builtin reviewer chain; a parsed
+  rejected shadow chain retains the baseline described above.
 - Invalid writes fail before persistence, and saving preserves unrelated
   settings. If runtime refresh fails after a save, the host's write receipt
   restores the original, unnormalized judge subtree, including its absence.
@@ -279,9 +287,10 @@ application configuration remain enforced independently.
 `ask` requests user approval. A timeout, provider error, malformed verdict or
 unavailable final stage never allows and asks with the forced approval surface.
 In headless execution, an active non-allow decision denies the current invocation
-and appends an item to the existing `DeferredQueue`. An open breaker asks in the
-active foreground lane or denies and defers in the active headless lane; shadow
-keeps the pre-judge path.
+and appends an item to the existing `DeferredQueue`. A paused breaker routes
+interactive requests to the normal user approval card; without an available
+user, it denies with a reason naming the threshold. The existing approval card
+and notification surfaces explain the pause in English and Korean.
 Caller cancellation remains terminal; internal contract violations and failures
 to write the active audit propagate instead of becoming an approval.
 
@@ -294,15 +303,28 @@ reviewer outcomes never map their conservative verdict into an allow, including
 when `fallbackOnError` is `"rule"`. Existing foreground auto-approval-off behavior
 and failure metadata remain unchanged.
 
-**8. Breaker.** The default thresholds are 3 consecutive or 20 total final judge
-denials per root conversation, configurable in judge settings. Counts span the
-whole chain. An `allow` resets the consecutive count; `ask`, timeouts and other
-failures neither increment nor reset it. Intermediate verdicts do not count, and
-shadow does not mutate counters. Once open, the breaker remains open until the
-conversation ends; there is no Settings reset control. Subagents resolve to the
-same root conversation for breaker and judge audit identity. Deferred entries retain the
-actual requesting session so later approval returns to the correct conversation.
-Rewiring settings does not create a fresh counter for that conversation.
+**8. Breaker.** One chain-owned breaker counts successful classifier blocks per
+root conversation across all automated lanes. A final non-allow verdict counts
+once, including a builtin foreground `ask`; intermediate stage verdicts, shadow
+observations, classifier failures, timeouts and separate host safety rejections
+do not count. The thresholds are fixed at 3 consecutive or 20 total blocks.
+The block is counted after the provider and host hook complete, before audit
+append. A stop during append does not undo that completed block; a stop before
+review completion counts nothing.
+
+An allowed action resets only the consecutive count. The total persists for the
+session and resets only when its own threshold triggers a fallback. Reaching
+either threshold pauses automation: the triggering request and subsequent
+requests require normal manual approval when a user is available, or deny with
+the threshold reason when nobody can answer. Authenticated human approval of a
+prompted action resumes automation and clears the consecutive count; it does
+not otherwise reset the total. Parent-agent, away-authority and remembered
+automatic approvals cannot resume it.
+
+Subagents resolve to the same root conversation for breaker and judge audit
+identity. Deferred entries retain the actual requesting session so later
+approval returns to the correct conversation. Rewiring settings does not create
+a fresh counter for that conversation.
 
 **9. Hooks.** `beforeJudge` may redact the judge's input or short-circuit to
 ask/deny. It cannot change the executing invocation. `afterJudge` may only keep
@@ -316,7 +338,8 @@ channel. Active audit failure prevents execution.
 
 Module tests establish chain and adapter semantics. Call-site acceptance also
 requires parity through the real foreground and headless dispatch lanes,
-unchanged auto-mode tests, deferred/root-session integration, settings write
+trace/cancellation and failure parity, threshold and resume behavior,
+deferred/root-session integration, settings write
 protection, and changed-flow Settings UI validation. A mocked classifier test
 alone does not establish dispatch parity or a live provider's behavior.
 

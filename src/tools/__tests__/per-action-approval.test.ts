@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** Per-action asks always require one-shot human approval with no memory reuse or recording.
  * Pass the authorized target scope to execution so moving targets can recheck it. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -62,7 +63,7 @@ describe("per-action approval and the authorized scope", () => {
     manager.setInteractiveAutoApprove(autoApprove);
     reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
     const classify = vi.fn(() => ({ level: "medium" as const, reason: "stub medium" }));
-    manager.setReviewer({
+    setReviewerForTest(manager, {
       classifier: { classify },
       cache: reviewerCache,
       deferredQueue: new DeferredQueue(join(aveHomeDir, "deferred.jsonl")),

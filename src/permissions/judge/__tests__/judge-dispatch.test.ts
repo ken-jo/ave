@@ -1,3 +1,10 @@
+import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
+import { ApprovalGate, type ApprovalRequest } from "../../approval-gate.js";
+import { sentApprovalCards } from "../../../__tests__/test-helpers.js";
+import { AuditLogger } from "../../../audit/audit-logger.js";
+import { verifyChain } from "../../../audit/hmac-chain.js";
+import * as sandboxAuditSink from "../../../audit/sandbox-audit-sink.js";
+import { t } from "../../../i18n/index.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -43,7 +50,7 @@ function makeSubject(classifier: RiskClassifier = new RuleBasedRiskClassifier())
   const audit = collectingAudit();
   manager.setMode("default");
   manager.setInteractiveAutoApprove("medium");
-  manager.setReviewer({ classifier, cache, deferredQueue: queue });
+  setReviewerForTest(manager, { classifier, cache, deferredQueue: queue });
   return { root, manager, cache, queue, audit };
 }
 
@@ -87,7 +94,7 @@ function external(subject: Subject, verdict: JudgeVerdict | (() => Promise<Judge
   return provider;
 }
 
-async function dispatch(subject: Subject, lane: Lane, sessionId = "session-root", command = "echo hello", statuses?: string[]) {
+async function dispatch(subject: Subject, lane: Lane, sessionId = "session-root", command = "echo hello", statuses?: string[], approvalSurface?: "interactive" | "unavailable") {
   const headless = lane === "headless";
   const evaluation = buildPermissionEvaluationContext({
     policyMode: subject.manager.getMode(), headless,
@@ -97,7 +104,7 @@ async function dispatch(subject: Subject, lane: Lane, sessionId = "session-root"
   });
   const args: Parameters<typeof dispatchReviewerForHeadless> = [
     subject.manager, "bash", "builtin", "shell", [], { command }, [subject.root], [],
-    { trustOrigin: "user-keyboard", headless }, evaluation, {},
+    { trustOrigin: "user-keyboard", headless, ...(approvalSurface ? { approvalSurface } : {}) }, evaluation, {},
     statuses ? { onPermissionReview: (event) => statuses.push(event.status) } : undefined,
     { groupId: "judge-dispatch", toolUseId: "judge-call", displayOrder: 0 }, undefined,
     undefined, undefined, undefined, sessionId,
@@ -383,7 +390,7 @@ describe("configured judge dispatch lanes", () => {
     expect(reviewer.calls()).toBe(1);
     expect(judgeRecords(subject.audit)).toEqual([expect.objectContaining({
       fallback: "unavailable", stages: [], applied: false, mode: "shadow",
-    })]);
+    }), expect.objectContaining({ applied: true, decision: "allow", mode: "active" })]);
     expect(subject.queue.listPending()).toHaveLength(0);
     expect(subject.manager.getJudgeBreaker().snapshot("session-root")).toEqual({ consecutive: 0, total: 0, open: false });
   });
@@ -550,10 +557,10 @@ describe("configured judge dispatch lanes", () => {
     resumeReviewer.release();
     expect(await pending).toMatchObject({ decision: lane === "foreground" ? "ask" : "deny", forceModal: true });
     expect(reviewerCalls).toBe(1);
-    expect(judgeRecords(subject.audit)).toHaveLength(2);
+    expect(judgeRecords(subject.audit)).toHaveLength(3);
     expect(judgeRecords(subject.audit).at(-1)).toMatchObject({
       fallback: "unavailable", rationale: "Permission policy changed during judge review",
-      decision: lane === "foreground" ? "ask" : "deny", applied: false, mode: "shadow",
+      decision: lane === "foreground" ? "ask" : "deny", applied: true, mode: "active",
     });
     expect(statuses).not.toContain("auto_approved");
     expect(subject.manager.getJudgeBreaker().snapshot("session-root").total).toBe(0);
@@ -653,7 +660,7 @@ describe("configured judge dispatch lanes", () => {
     expect(judgeRecords(subject.audit)[0]).toMatchObject({ decision: "deny", applied: false });
   });
 
-  it("retains automatic baseline lanes when shadow is selected with the breaker already open", async () => {
+  it("preserves the automatic pause when shadow is selected with the breaker already open", async () => {
     const subject = makeSubject();
     subject.manager.setMode("auto");
     const provider = answering({ decision: "deny", rationale: "denied" });
@@ -663,15 +670,59 @@ describe("configured judge dispatch lanes", () => {
     expect(subject.manager.getJudgeBreaker().isOpen("session-root")).toBe(true);
     wire(subject, chain, { mode: "shadow" });
     for (const lane of ["foreground", "headless"] as const) {
-      expect(await dispatch(subject, lane)).toMatchObject({ decision: "allow" });
+      expect(await dispatch(subject, lane)).toMatchObject({ decision: lane === "foreground" ? "ask" : "deny", forceModal: true });
     }
-    expect(subject.queue.listPending()).toHaveLength(0);
+    expect(subject.queue.listPending()).toHaveLength(1);
     expect(provider.requests).toHaveLength(3);
     expect(subject.manager.getJudgeBreaker().snapshot("session-root")).toEqual({ consecutive: 3, total: 3, open: true });
   });
 });
 
 describe("builtin reviewer parity through real dispatch lanes", () => {
+  it.each(["foreground", "headless"] as const)("pauses both builtin paths after three medium blocks in %s", async (lane) => {
+    const subjects = [false, true].map((configured) => {
+      let calls = 0;
+      const provider: LlmReviewerProvider = {
+        async complete() {
+          calls += 1;
+          return {
+            text: JSON.stringify({ level: calls <= 3 ? "medium" : "low", reason: "sequence review" }),
+            tokensIn: 1, tokensOut: 1, costUsd: 0,
+          };
+        },
+      };
+      const classifier = new LlmRiskClassifier(provider, "sequence-reviewer", "deny", {}, {
+        maxAttempts: 1, baseDelayMs: 0, jitterPct: 0,
+      });
+      const subject = makeSubject(classifier);
+      subject.manager.setMode("auto");
+      subject.manager.setInteractiveAutoApprove("low");
+      if (configured) wire(subject, [builtin(subject, classifier)]);
+      return { ...subject, calls: () => calls };
+    });
+    const baseline = subjects[0]!;
+    const configured = subjects[1]!;
+    for (let call = 1; call <= 4; call += 1) {
+      const command = `echo review-${call}`;
+      const before = await dispatch(baseline, lane, "session-root", command);
+      const after = await dispatch(configured, lane, "session-root", command);
+      expect(before.decision).toBe(lane === "headless" ? "deny" : "ask");
+      expect(baseline.calls()).toBe(Math.min(call, 3));
+      expect(configured.calls()).toBe(Math.min(call, 3));
+      if (call === 3) {
+        expect(baseline.manager.getJudgeBreaker().snapshot("session-root").open).toBe(true);
+        expect(configured.manager.getJudgeBreaker().snapshot("session-root").open).toBe(true);
+      }
+      if (call === 4) {
+        expect(before.forceModal).toBe(true);
+        expect(after.forceModal).toBe(true);
+        expect(after.reason).toBe(before.reason);
+        expect(after.reason).toMatch(/3|3회/);
+      }
+      expect(after.decision, `headless decision on call ${call}`).toBe(before.decision);
+    }
+  });
+
   const decisions = {
     foreground: {
       low: { low: "allow", medium: "ask", high: "ask" },
@@ -757,7 +808,7 @@ describe("builtin reviewer parity through real dispatch lanes", () => {
         expect(after.decision).toBe(before.decision);
         expect(after.reviewer?.outcome).toBe(before.reviewer?.outcome);
         if (lane === "headless") {
-          expect(before.deferred).toBeUndefined();
+          expect(before.deferred?.queueId).toEqual(expect.any(String));
           expect(after.deferred?.queueId).toEqual(expect.any(String));
         } else {
           expect(Boolean(after.forceModal)).toBe(Boolean(before.forceModal));
@@ -899,4 +950,160 @@ describe("unavailable selected reviewer model through real dispatch lanes", () =
     expect(result).toMatchObject({ decision: "ask", forceModal: true });
     expect(reviewer.calls()).toBe(0);
   });
+});
+
+describe("automatic review pause and evidence", () => {
+  it.each(["foreground", "headless"] as const)("counts twenty separated blocks once through shadow in %s", async (lane) => {
+    let calls = 0;
+    const classifier = new LlmRiskClassifier({
+      async complete() {
+        return { text: JSON.stringify({ level: ++calls % 2 === 1 ? "medium" : "low", reason: "sequence review" }), tokensIn: 1, tokensOut: 1, costUsd: 0 };
+      },
+    }, "sequence-reviewer");
+    const subject = makeSubject(classifier);
+    subject.manager.setMode("auto");
+    subject.manager.setInteractiveAutoApprove("low");
+    external(subject, { decision: "deny", rationale: "shadow observation" }, { mode: "shadow" });
+    for (let call = 1; call <= 39; call += 1) {
+      const result = await dispatch(subject, lane, "session-root", `echo total-${call}`);
+      expect(result.decision).toBe(call % 2 === 0 ? "allow" : lane === "foreground" ? "ask" : "deny");
+    }
+    expect(calls).toBe(39);
+    expect(subject.manager.getJudgeBreaker().snapshot("session-root")).toEqual({ consecutive: 1, total: 0, open: true });
+    expect(subject.manager.getJudgeBreaker().pauseReason("session-root")).toBe("total");
+    const paused = await dispatch(subject, lane, "session-root", "echo paused");
+    expect(paused).toMatchObject({ decision: lane === "foreground" ? "ask" : "deny", forceModal: true });
+    expect(paused.reason).toBe(t(lane === "foreground" ? "permissionJudge.pausedTotal" : "permissionJudge.pausedNoUserTotal"));
+    expect(calls).toBe(39);
+  });
+
+  it("resumes only after an authenticated manual approval and preserves the session total", async () => {
+    let calls = 0;
+    const subject = makeSubject(new LlmRiskClassifier({
+      async complete() {
+        return { text: JSON.stringify({ level: ++calls <= 3 ? "medium" : "low", reason: "sequence review" }), tokensIn: 1, tokensOut: 1, costUsd: 0 };
+      },
+    }, "sequence-reviewer"));
+    subject.manager.setMode("auto");
+    subject.manager.setInteractiveAutoApprove("low");
+    for (let call = 1; call <= 3; call += 1) await dispatch(subject, "foreground", "session-root", `echo block-${call}`);
+    const paused = await dispatch(subject, "foreground", "session-root", "echo next");
+    expect(paused).toMatchObject({ decision: "ask", forceModal: true });
+    const wc = { send: vi.fn(), isDestroyed: () => false };
+    const notifications = { fire: vi.fn() };
+    const gate = new ApprovalGate(wc as never, undefined, undefined, undefined, notifications as never);
+    const pending = gate.requestAndWait({
+      id: "resume-automation", sessionId: "session-root", category: "tool", kind: "tool",
+      toolName: "bash", toolCategory: "shell", source: "builtin", args: { command: "echo next" },
+      reason: paused.reason, createdAt: Date.now(), forceExplicit: true,
+      reviewerVerdict: { level: "medium", reason: "manual review" }, allowedChoices: ["allow-once", "deny-once"],
+    });
+    await vi.waitFor(() => expect(sentApprovalCards(wc)).toHaveLength(1));
+    const card = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+    expect(card.reason).toBe(t("permissionJudge.pausedConsecutive"));
+    expect(notifications.fire).toHaveBeenCalledWith(expect.objectContaining({ kind: "approval", body: `bash: ${card.reason}` }));
+    const answer = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
+    subject.manager.resumeAutomatedApproval("session-root", answer);
+    expect(subject.manager.getJudgeBreaker().isOpen("session-root")).toBe(true);
+    gate.resolveFromDesktopRenderer(card.id, answer);
+    const approved = await pending;
+    subject.manager.resumeAutomatedApproval("other-session", approved);
+    expect(subject.manager.getJudgeBreaker().isOpen("session-root")).toBe(true);
+    subject.manager.resumeAutomatedApproval("session-root", approved);
+    expect(subject.manager.getJudgeBreaker().snapshot("session-root")).toEqual({ consecutive: 0, total: 3, open: false });
+    expect(await dispatch(subject, "foreground", "session-root", "echo next")).toMatchObject({ decision: "allow" });
+    expect(calls).toBe(4);
+    expect(subject.manager.getJudgeBreaker().snapshot("session-root")).toEqual({ consecutive: 0, total: 3, open: false });
+  });
+
+  it("preserves raw classification trace fields in sandbox audit and nulls LLM evidence on a cache hit", async () => {
+    const reviewer = llm("medium");
+    const subject = makeSubject(reviewer.classifier);
+    const classify = vi.spyOn(reviewer.classifier, "classifyWithTrace");
+    const audit = vi.spyOn(sandboxAuditSink, "emitSandboxAudit");
+    expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow", reviewer: { outcome: "fresh" } });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(classify.mock.calls[0]?.[1]?.abortSignal).toBeInstanceOf(AbortSignal);
+    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({ reviewer: { ruleVerdict: "low", llmVerdict: "medium", finalVerdict: "medium" } });
+    expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow", reviewer: { outcome: "cache" } });
+    expect(classify).toHaveBeenCalledTimes(1);
+    expect(audit.mock.calls.at(-1)?.[0]).toMatchObject({ reviewer: { ruleVerdict: "low", llmVerdict: null, finalVerdict: "medium" } });
+  });
+
+  it("writes default automated decisions to the real HMAC channel and keeps shadow rows separate", async () => {
+    const subject = makeSubject(llm("low").classifier);
+    subject.manager.setMode("auto");
+    const logger = new AuditLogger(join(subject.root, "audit"));
+    const secret = "ab".repeat(32);
+    try {
+      await logger.setupPermissionAuditChain(secret);
+      const settings = judgeSettings({ chain: [] });
+      subject.manager.setJudge({ settings, chain: [], breaker: subject.manager.getJudgeBreaker(), audit: logger });
+      expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow" });
+      const observer = answering({ decision: "deny", rationale: "shadow observation" });
+      const shadow = judgeSettings({ mode: "shadow" });
+      subject.manager.setJudge({ settings: shadow, chain: [{ settings: shadow.chain[0]!, judge: observer.judge }], breaker: subject.manager.getJudgeBreaker(), audit: logger });
+      expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "allow" });
+      await logger.flush();
+      const lines = readFileSync(logger.getPermissionAuditLogFile(), "utf8").trim().split("\n");
+      expect(lines).toHaveLength(2);
+      expect(verifyChain(secret, lines)).toEqual({ ok: true });
+      expect(lines.map((line) => JSON.parse(line).judgeRecord)).toEqual([
+        expect.objectContaining({ applied: true, mode: "active", decision: "allow" }),
+        expect.objectContaining({ applied: true, mode: "active", decision: "allow" }),
+      ]);
+      const changed = JSON.parse(lines[0]!);
+      changed.judgeRecord.decision = "deny";
+      expect(verifyChain(secret, [JSON.stringify(changed), lines[1]!])).toMatchObject({ ok: false });
+      const append = vi.spyOn(logger, "appendPermissionAuditEntry").mockRejectedValueOnce(new Error("audit unavailable"));
+      await expect(dispatch(subject, "foreground")).rejects.toThrow("audit unavailable");
+      expect(append).toHaveBeenCalled();
+    } finally {
+      await logger.close();
+    }
+  });
+});
+
+describe("shadow baseline isolation", () => {
+  it("keeps optional shadow timeouts from constraining the authoritative builtin review", async () => {
+    const subject = makeSubject(new LlmRiskClassifier({
+      async complete() {
+        await new Promise((resolve) => setTimeout(resolve, 650));
+        return { text: '{"level":"low","reason":"review completed"}', tokensIn: 1, tokensOut: 1, costUsd: 0 };
+      },
+    }, "delayed-reviewer"));
+    subject.manager.setMode("auto");
+    external(subject, { decision: "deny", rationale: "shadow observation" }, { mode: "shadow", timeoutMs: 500 });
+    const result = await dispatch(subject, "foreground");
+    expect(result).toMatchObject({ decision: "allow", reviewer: { outcome: "fresh" } });
+    expect(judgeRecords(subject.audit).at(-1)).toMatchObject({ decision: "allow", applied: true, fallback: null });
+  });
+
+  it("retains authoritative failure provenance behind a shadow observer", async () => {
+    const subject = makeSubject(llm("low", "timeout").classifier);
+    subject.manager.setMode("auto");
+    external(subject, { decision: "allow", rationale: "shadow observation" }, { mode: "shadow" });
+    expect(await dispatch(subject, "foreground")).toMatchObject({ decision: "ask", forceModal: true, reviewer: { outcome: "timeout" } });
+    expect(subject.manager.getJudgeBreaker().snapshot("session-root").total).toBe(0);
+  });
+});
+
+it("denies a paused foreground request when no user approval surface is available", async () => {
+  const subject = makeSubject(llm("medium").classifier);
+  subject.manager.setMode("auto");
+  subject.manager.setInteractiveAutoApprove("low");
+  for (let call = 1; call <= 3; call += 1) await dispatch(subject, "foreground", "session-root", `echo unavailable-${call}`);
+  const result = await dispatch(subject, "foreground", "session-root", "echo unavailable-next", undefined, "unavailable");
+  expect(result).toMatchObject({ decision: "deny", forceModal: true });
+  expect(result.reason).toBe(t("permissionJudge.pausedNoUserConsecutive"));
+});
+
+it("rejects a missing automated-review session identity without running a classifier", async () => {
+  const reviewer = llm("low");
+  const subject = makeSubject(reviewer.classifier);
+  await expect(subject.manager.dispatchReviewer("bash", {
+    source: "builtin", category: "shell", pathFields: [], finalInput: { command: "echo hello" },
+    executionCwd: subject.root, allowedDirectories: [subject.root], sensitivePathsAdjacent: [], trustOrigin: "user-keyboard",
+  }, undefined, { defer: "none" })).rejects.toThrow("Automated permission review requires a session id");
+  expect(reviewer.calls()).toBe(0);
 });

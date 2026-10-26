@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -213,7 +214,7 @@ describe("plain-shell invocation authorization", () => {
     manager.setInteractiveAutoApprove("medium");
     const classifier = { classify: vi.fn(async (): Promise<{ level: "low" | "high"; reason: string }> => ({ level: "low", reason: "bounded host effect" })) };
     const cache = new VerdictCache(join(dir, "review-cache.jsonl"));
-    manager.setReviewer({ classifier, cache, deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
+    setReviewerForTest(manager, { classifier, cache, deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
     return { classifier, cache };
   }
 

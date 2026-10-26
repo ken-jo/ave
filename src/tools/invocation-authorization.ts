@@ -1647,7 +1647,8 @@ export async function authorizeToolInvocation(
           source: source as ToolSource,
           createdAt: Date.now(),
           ...(targetFilePath ? { target: { filePath: targetFilePath } } : {}),
-          isReadOnly: deriveApprovalIsReadOnly({
+          isReadOnly: permissionResult.forceModal === true && services.permissionManager?.isAutomatedApprovalPaused(sessionId)
+            ? false : deriveApprovalIsReadOnly({
             invocationCategory,
             approvalReasonPrefix,
             remoteControllerAuthority:
@@ -1872,6 +1873,7 @@ export async function authorizeToolInvocation(
         // Host-derived from the exact decision object the gate returned — a
         // structural lookalike arriving from anywhere else is not in that map,
         // so nothing a renderer or a child can build reads as a parent answer.
+        if (sessionId !== undefined) services.permissionManager?.resumeAutomatedApproval(sessionId, decision);
         const parentAnswer = parentAdjudicationOf(decision);
         if (parentAnswer !== undefined) {
           emitPermissionReview(callbacks, {

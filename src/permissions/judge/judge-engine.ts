@@ -25,6 +25,9 @@ type PriorRuleDecision = "allow" | "ask" | "deny" | "undecided";
 
 // What the layers before the judge concluded about this call.
 export interface JudgeGate {
+  // The host already selected its ordinary reviewer lane; category switches
+  // configure optional stages, not whether that baseline may review the call.
+  reviewerBaseline?: boolean;
   // Outcome of floors + user rules + mode matrix; the judge runs only on `undecided`.
   priorDecision: PriorRuleDecision;
   strictMode: boolean;
@@ -86,7 +89,7 @@ type JudgeSkipReason =
   | "category-disabled"
   | "breaker-open";
 
-type JudgeOutcomeSource = "judge" | "hook" | "fallback";
+type JudgeOutcomeSource = "judge" | "hook" | "fallback" | "breaker";
 
 export interface JudgeAuditRecord {
   event: "permission-judge";
@@ -112,6 +115,7 @@ export interface JudgeAuditRecord {
   latencyMs: number;
   fallback: JudgeFailureKind | null;
   breakerTripped: boolean;
+  pause?: "consecutive" | "total";
   // Input keys a beforeJudge hook hid from the judge.
   policyRedactedKeys?: string[];
 }
@@ -153,6 +157,7 @@ export type JudgeOutcome =
       suggestedRule?: string;
       rationale: string;
       breakerTripped: boolean;
+      pause?: "consecutive" | "total";
     };
 
 function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDeps): JudgeSkipReason | null {
@@ -162,8 +167,8 @@ function skipReason(gate: JudgeGate, request: JudgeRequest, deps: JudgeEngineDep
   if (gate.capabilityGrant) return "capability-grant";
   if (gate.remoteController) return "remote-controller";
   const category = request.invocation.category;
-  if (!isJudgeCategory(category)) return "category-not-judged";
-  if (!deps.settingsUnreadable && !deps.settings.categories[category]) return "category-disabled";
+  if (!gate.reviewerBaseline && !isJudgeCategory(category)) return "category-not-judged";
+  if (!gate.reviewerBaseline && isJudgeCategory(category) && !deps.settingsUnreadable && !deps.settings.categories[category]) return "category-disabled";
   if (!deps.chainRejected && !deps.settingsUnreadable && deps.breaker.isOpen(request.sessionId)) return "breaker-open";
   return null;
 }
@@ -366,7 +371,9 @@ export async function resolveJudge(
   signal?: AbortSignal,
 ): Promise<JudgeOutcome> {
   const skip = skipReason(gate, request, deps);
-  if (skip) return { judged: false, skip };
+  if (skip && skip !== "breaker-open") return { judged: false, skip };
+  if (signal?.aborted) throw signal.reason;
+  let pause = skip === "breaker-open" ? deps.breaker.pauseReason(request.sessionId) : undefined;
 
   const now = deps.now ?? Date.now;
   const started = now();
@@ -380,14 +387,16 @@ export async function resolveJudge(
   let rationale: string;
   const stages: JudgeStageRecord[] = [];
 
-  const before: BeforeJudgeResult = deps.hooks?.beforeJudge
+  const before: BeforeJudgeResult = pause
+    ? { action: "short-circuit", decision: "ask", reason: `Automated approval paused: ${pause === "consecutive" ? "3 consecutive" : "20 total"} classifier blocks` }
+    : deps.hooks?.beforeJudge
     ? await deps.hooks.beforeJudge(structuredClone(request))
     : { action: "continue" };
   if (before.action === "short-circuit") {
     if (before.decision !== "ask" && before.decision !== "deny") {
       throw new JudgeContractError("beforeJudge may only short-circuit to ask or deny");
     }
-    source = before.fallback ? "fallback" : "hook";
+    source = pause ? "breaker" : before.fallback ? "fallback" : "hook";
     fallback = before.fallback;
     decision = before.decision;
     rationale = before.reason;
@@ -433,17 +442,24 @@ export async function resolveJudge(
     }
   }
 
+  if (signal?.aborted) throw signal.reason;
   const headless = request.lane === "headless";
   if (headless && decision === "ask") decision = "deny";
   const applied = mode === "active";
   // Shadow must never change behavior, so it never asks the call site to defer.
-  const defer = applied && headless && decision !== "allow";
 
   let breakerTripped = false;
   if (applied && source === "judge" && verdict) {
     // One counter per session across the whole chain: the chain's final verdict.
     breakerTripped = deps.breaker.record(request.sessionId, verdict.decision);
+    pause = deps.breaker.pauseReason(request.sessionId);
+    if (pause) {
+      source = "breaker";
+      decision = headless ? "deny" : "ask";
+      rationale = `Automated approval paused: ${pause === "consecutive" ? "3 consecutive" : "20 total"} classifier blocks`;
+    }
   }
+  const defer = applied && headless && decision !== "allow";
 
   // The audit always describes the call that executes, not the judge's view.
   const redacted = redactJudgeRequest(request);
@@ -468,8 +484,16 @@ export async function resolveJudge(
     latencyMs: Math.max(0, now() - started),
     fallback: fallback ?? null,
     breakerTripped,
+    ...(pause ? { pause } : {}),
     ...(redactedKeys.length > 0 ? { policyRedactedKeys: [...redactedKeys] } : {}),
   });
+  if (signal?.aborted) throw signal.reason;
+
+  // A sibling review can trip the shared breaker while this call awaits its
+  // audit write. Publish a recorded pause instead of a stale automatic allow.
+  if (applied && source === "judge" && deps.breaker.isOpen(request.sessionId)) {
+    return resolveJudge(gate, request, deps, signal);
+  }
 
   return {
     judged: true,
@@ -491,5 +515,6 @@ export async function resolveJudge(
     ...(verdict?.suggestedRule ? { suggestedRule: verdict.suggestedRule } : {}),
     rationale: safeRationale,
     breakerTripped,
+    ...(pause ? { pause } : {}),
   };
 }
