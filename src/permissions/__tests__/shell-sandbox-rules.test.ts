@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -142,9 +143,10 @@ function executorWithDock(options: { executionMode?: "host" | "sandbox"; headles
   const send = vi.fn((channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
     requests.push(request);
-    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
   });
-  gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
+  const nativeWebContents = { isDestroyed: () => false, send };
+  gate = new ApprovalGate(nativeWebContents as never);
   const auditLogger = new AuditLogger();
   auditLoggers.push(auditLogger);
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
@@ -213,7 +215,7 @@ describe("plain-shell invocation authorization", () => {
     manager.setInteractiveAutoApprove("medium");
     const classifier = { classify: vi.fn(async (): Promise<{ level: "low" | "high"; reason: string }> => ({ level: "low", reason: "bounded host effect" })) };
     const cache = new VerdictCache(join(dir, "review-cache.jsonl"));
-    manager.setReviewer({ classifier, cache, deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
+    setReviewerForTest(manager, { classifier, cache, deferredQueue: new DeferredQueue(join(dir, "deferred.jsonl")) });
     return { classifier, cache };
   }
 

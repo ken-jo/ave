@@ -27,16 +27,19 @@ describe("judge settings persistence", () => {
     expect(readJudgeSettings(path).settings).toEqual(configured);
   });
 
-  it("preserves unrelated settings and merges category and breaker patches", async () => {
+  it("preserves unrelated settings and merges categories with fixed breaker thresholds", async () => {
     const { path } = fixture();
     const original = { theme: "dark", permissions: { allow: ["Read(*)"], reviewer: { model: "saved" } } };
     writeFileSync(path, JSON.stringify(original));
     await setJudgeSettingsPersist({ chain: [{ provider: "builtin-llm" }], mode: "active" }, path);
-    const { settings: updated } = await setJudgeSettingsPersist({ categories: { network: true }, breaker: { consecutive: 4 } }, path);
+    const { settings: updated } = await setJudgeSettingsPersist({ categories: { network: true }, breaker: { consecutive: 3 } }, path);
     expect(updated.categories).toEqual({ shell: true, write: true, network: true });
-    expect(updated.breaker).toEqual({ consecutive: 4, total: 20 });
+    expect(updated.breaker).toEqual({ consecutive: 3, total: 20 });
     expect(updated.mode).toBe("active");
     expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject(original);
+    const saved = readFileSync(path, "utf8");
+    await expect(setJudgeSettingsPersist({ breaker: { consecutive: 4 } }, path)).rejects.toThrow("3 consecutive or 20 total");
+    expect(readFileSync(path, "utf8")).toBe(saved);
   });
 
   it("round-trips a configured model containing slashes with the live catalog", async () => {

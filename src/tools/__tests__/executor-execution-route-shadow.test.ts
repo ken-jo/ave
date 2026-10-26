@@ -1,3 +1,4 @@
+import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -335,6 +336,7 @@ describe("execution route shadow metadata", () => {
         dispatched.push(input as Record<string, unknown>);
         return {
           verdict: { level: "medium", reason: "shell unclassified" },
+          judge: reviewerJudgeOutcomeForTest("deny", "shell unclassified"),
           outcome: "fresh",
           cacheReason: "miss-not-found",
         };
@@ -381,6 +383,7 @@ describe("execution route shadow metadata", () => {
         dispatched.push(input as Record<string, unknown>);
         return {
           verdict: { level: "medium", reason: "shell unclassified" },
+          judge: reviewerJudgeOutcomeForTest("deny", "shell unclassified"),
           outcome: "fresh",
           cacheReason: "miss-not-found",
         };

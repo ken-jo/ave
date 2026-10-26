@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 /** The agent browser tools through the real ToolExecutor, PermissionManager, ApprovalGate and approval store, over the real main-side tab registry with fake guests and fake page actions. Covers
  * who is asked when (agent tab vs user tab, per origin, per action), the TOCTOU re-check, window scope, denied schemes, the untrusted-content fence, and user takeover cancelling a pending action. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -172,14 +173,14 @@ describe("browser tools", () => {
     manager.setMode(options.mode ?? "auto");
     manager.setInteractiveAutoApprove("off");
     reviewerCache = new VerdictCache(join(aveHomeDir, "reviewer-cache.jsonl"));
-    manager.setReviewer({
+    setReviewerForTest(manager, {
       classifier: { classify: vi.fn(() => ({ level: "medium" as const, reason: "stub medium" })) },
       cache: reviewerCache,
       deferredQueue: new DeferredQueue(join(aveHomeDir, "deferred.jsonl")),
     });
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
-    const gate = new ApprovalGate({
+    const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
         if (channel !== "ave:approval:request") return;
@@ -206,10 +207,11 @@ describe("browser tools", () => {
             choice: "allow-once",
             nonce: request.nonce,
             hmac: request.hmac,
-          });
+          }, nativeWebContents as never);
         })());
       },
-    } as never);
+    };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (name: string, input: Record<string, unknown>, sessionId: string | undefined = HOST_SESSION) => {

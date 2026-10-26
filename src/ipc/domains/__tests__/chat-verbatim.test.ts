@@ -1,9 +1,9 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import path from "node:path";
 import os from "node:os";
 import { mkdirSync, realpathSync } from "node:fs";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
-import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
 import * as shellTasks from "../../../tools/shell-tools.js";
 import {
@@ -182,6 +182,7 @@ async function setupHandlers(
   vi.clearAllMocks();
   const { registerChatHandlers } = await import("../chat.js");
   const deps = makeMinimalDeps(loop, opts);
+  await installNativeChatWindow(deps.getMainWindow());
   registerChatHandlers(deps as any);
   return deps;
 }

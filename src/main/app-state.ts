@@ -2,6 +2,7 @@
 import type { BrowserWindow, Tray, WebContents } from "electron";
 import type { AppServices } from "../boot.js";
 import { terminalOwnerWindowId } from "./terminal/pty-manager.js";
+import { updateApprovalSurface } from "../permissions/approval-surface-registry.js";
 import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
 // Broadcast only to live main windows, never all windows, which includes remote-content viewers.
@@ -19,6 +20,10 @@ function recordFocus(id: number): void {
   if (index >= 0) focusHistory.splice(index, 1);
   focusHistory.push(id);
   focusedMainWindowId = id;
+  updateApprovalSurface({
+    kind: "attach-unattributed",
+    surface: mainWindows.find((win) => win.id === id)?.webContents ?? null,
+  });
 }
 
 function liveMainWindows(): BrowserWindow[] {
@@ -54,6 +59,9 @@ export function registerMainWindow(win: BrowserWindow, role: MainWindowRole): vo
 }
 
 export function unregisterMainWindow(win: BrowserWindow): void {
+  // Revoking the owner never approves or settles an outstanding card. Without
+  // a turn abort, it remains pending until the normal five-minute deny timeout.
+  updateApprovalSurface({ kind: "release-owner", surface: win.webContents });
   const index = mainWindows.indexOf(win);
   if (index >= 0) mainWindows.splice(index, 1);
   const historyIndex = focusHistory.indexOf(win.id);
@@ -64,6 +72,7 @@ export function unregisterMainWindow(win: BrowserWindow): void {
     focusedMainWindowId = [...focusHistory].reverse().find((id) => liveIds.has(id)) ?? null;
   }
   if (primaryMainWindowId === win.id) primaryMainWindowId = null;
+  updateApprovalSurface({ kind: "attach-unattributed", surface: getMainWindow()?.webContents ?? null });
 }
 
 export function markMainWindowFocused(win: BrowserWindow): void {
@@ -89,8 +98,7 @@ export function setSessionContentsLookup(value: SessionContentsLookup | null): v
   sessionContentsLookup = value;
 }
 
-// The live main window renderer whose tile shows `sessionId`, or null when no open window shows it. Prompts about a session (approvals, ask-user
-// questions) go here first; boot falls back to the window in use.
+// The live main window renderer whose chat tile shows `sessionId`, or null when no open tile holds it. Prompt callers apply their own routing policy.
 export function findSessionMainWindowContents(sessionId: string | undefined): WebContents | null {
   if (sessionId === undefined) return null;
   const holder = sessionContentsLookup?.(sessionId) ?? null;
@@ -121,6 +129,8 @@ export function sideChatOwnerWindow(): BrowserWindow | null {
 
 // @internal test-only reset for isolated module-state tests.
 export function resetMainWindowsForTests(): void {
+  for (const window of mainWindows) updateApprovalSurface({ kind: "release-owner", surface: window.webContents });
+  updateApprovalSurface({ kind: "attach-unattributed", surface: null });
   mainWindows.length = 0;
   focusHistory.length = 0;
   focusedMainWindowId = null;

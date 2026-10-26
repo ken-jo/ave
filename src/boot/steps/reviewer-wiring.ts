@@ -251,6 +251,7 @@ export function wireReviewerAgent(deps: WireReviewerDeps): WireReviewerResult {
     cache,
     deferredQueue,
     degradedToRule,
+    ...(runtimeMode === "llm" ? { model: `${effectiveSettings.provider}/${effectiveSettings.model}` } : {}),
     ...(unavailableReason !== undefined ? { unavailableReason } : {}),
     cacheScope: {
       // Partition by runtime mode so healed model review cannot reuse verdicts produced by degraded rules.

@@ -1,3 +1,4 @@
+import { reviewerJudgeOutcomeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
@@ -218,6 +219,7 @@ describe("executor broker shell route", () => {
       dispatched.push(input);
       return {
         verdict: { level: "low", reason: "shell confined to disposable guest" },
+        judge: reviewerJudgeOutcomeForTest("allow", "shell confined to disposable guest"),
         outcome: "fresh",
         cacheReason: "miss-not-found",
       };

@@ -35,7 +35,7 @@ describe("domain grant management boundary", () => {
       const pending = ask(destination, { attributionKey: first.token, identity: "listener", phase: "name" });
       await vi.waitFor(() => expect(sentApprovalCards(wc)).toHaveLength(1));
       const card = sentApprovalCards<ApprovalRequest>(wc)[0]!;
-      gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", egressScope: "always", nonce: card.nonce, hmac: card.hmac });
+      gate.resolveFromDesktopRenderer(card.id, { requestId: card.id, choice: "allow-once", egressScope: "always", nonce: card.nonce, hmac: card.hmac }, wc as never);
       expect(await pending).toBe(true);
       expect(await ask(destination, { attributionKey: first.token, identity: "listener", phase: "resolved", addresses: ["93.184.215.14"], resolution: "pinned" })).toBe(true);
       const target = { scope: "always", origin: "shell", ...destination, network: "public" };
@@ -52,7 +52,7 @@ describe("domain grant management boundary", () => {
       const afterRevoke = ask(destination, { attributionKey: second.token, identity: "listener", phase: "name" });
       await vi.waitFor(() => expect(sentApprovalCards(wc)).toHaveLength(2));
       const next = sentApprovalCards<ApprovalRequest>(wc)[1]!;
-      gate.resolveFromDesktopRenderer(next.id, { requestId: next.id, choice: "deny-once", nonce: next.nonce, hmac: next.hmac });
+      gate.resolveFromDesktopRenderer(next.id, { requestId: next.id, choice: "deny-once", nonce: next.nonce, hmac: next.hmac }, wc as never);
       expect(await afterRevoke).toEqual({ allow: false, reason: "denied by the user" });
       expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ output: expect.stringContaining("[egress-grant:revoke]") }));
     } finally {

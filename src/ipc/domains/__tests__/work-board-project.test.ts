@@ -7,6 +7,7 @@ import { registerWorkBoardHandlers } from "../work-board.js";
 import type { IpcDeps } from "../../types.js";
 import type { WorkItemResolved } from "../../../main/work-board-store.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { auditUnauthorized, UNAUTHORIZED_FRAME } from "../../gated.js";
 
 const ipc = vi.hoisted(() => {
   const handlers = new Map<string, (...args: unknown[]) => unknown>();
@@ -79,6 +80,46 @@ afterEach(async () => {
 });
 
 describe("work-board project authorization", () => {
+  it("passes the registered board main frame as the owner of runs and briefings", async () => {
+    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
+    const other = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
+    const window = { isDestroyed: () => false, webContents: owner };
+    const runItem = vi.fn(async () => ({ status: "completed" }));
+    const runBriefing = vi.fn(async () => ({ status: "empty", kind: "daily", reason: "no findings" }));
+    registerWorkBoardHandlers({
+      workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
+      workBoardEngine: { runItem, runBriefing }, auditLogger: { log: vi.fn() },
+      getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps);
+    const event = { sender: owner, senderFrame: owner.mainFrame };
+    await registeredHandler(WORK_BOARD.run)(event, 7, { agentName: "writer", approvalSurface: other });
+    await registeredHandler(WORK_BOARD.runBriefing)(event, "daily", workspace);
+    expect(runItem).toHaveBeenCalledWith(7, { agentName: "writer", approvalSurface: owner });
+    expect(runBriefing).toHaveBeenCalledWith("daily", { projectRoot: workspace, includeUnscoped: true, approvalSurface: owner });
+  });
+
+  it.each(["subframe", "unregistered", "destroyed"] as const)("rejects a %s initiating frame before it can register a board approval owner", async (kind) => {
+    const owner = { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } };
+    const sender = kind === "unregistered"
+      ? { isDestroyed: () => false, mainFrame: { url: "file:///index.html" } }
+      : owner;
+    const window = { isDestroyed: () => kind === "destroyed", webContents: owner };
+    const runItem = vi.fn();
+    const runBriefing = vi.fn();
+    registerWorkBoardHandlers({
+      workBoardStore: { get: async () => ({ status: "found", item: { ...deniedItem(workspace), projectRoot: workspace } }) },
+      workBoardEngine: { runItem, runBriefing }, auditLogger: { log: vi.fn() },
+      getMainWindow: () => window, getAppWindows: () => [window],
+    } as unknown as IpcDeps);
+    const event = { sender, senderFrame: kind === "subframe" ? { url: "file:///index.html" } : sender.mainFrame };
+    vi.mocked(auditUnauthorized).mockClear();
+    await expect(registeredHandler(WORK_BOARD.run)(event, 7)).resolves.toEqual(UNAUTHORIZED_FRAME);
+    await expect(registeredHandler(WORK_BOARD.runBriefing)(event, "daily", workspace)).resolves.toEqual(UNAUTHORIZED_FRAME);
+    expect(runItem).not.toHaveBeenCalled();
+    expect(runBriefing).not.toHaveBeenCalled();
+    expect(auditUnauthorized).toHaveBeenCalledTimes(2);
+  });
+
   it("defaults missing list and report filters to the app-managed workspace project", async () => {
     const list = vi.fn(async () => ({ status: "ok", items: [] }));
     const generate = vi.fn(async () => ({
