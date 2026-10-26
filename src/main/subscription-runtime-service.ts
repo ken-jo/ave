@@ -1,5 +1,6 @@
 // Keep subscription credentials, process transports, safe status projection, and shutdown within this main-process boundary.
 import { join } from "node:path";
+import type { OpenOAuthLogin } from "./oauth-login.js";
 import { claimPrivateOwnership } from "./codex-executable-location.js";
 import type { StreamEvent, ToolSchema } from "../engine/llm/types.js";
 import {
@@ -299,9 +300,9 @@ export class AcpSubscriptionRuntimeRegistry {
 
   async openPendingVerificationUrl(
     provider: AcpSubscriptionProviderId,
-    openExternal: (url: string) => Promise<void>,
+    openAuthorizationUrl: OpenOAuthLogin,
   ): Promise<AcpSubscriptionStatus> {
-    return this.clients[provider].openPendingVerificationUrl(openExternal);
+    return this.clients[provider].openPendingVerificationUrl(openAuthorizationUrl);
   }
 
   async cancelLogin(provider: AcpSubscriptionProviderId): Promise<AcpSubscriptionStatus> {
@@ -341,7 +342,7 @@ export class AcpSubscriptionRuntimeRegistry {
 const MAX_QUEUED_EVENTS = 256;
 const HOST_TOOL_ACCEPTED = "Ave accepted the host tool request and will provide its result in the next model round.";
 
-export type SubscriptionOpenExternal = (url: string) => Promise<void> | void;
+export type SubscriptionOpenAuthorizationUrl = OpenOAuthLogin;
 
 // A redacted audit observation: never include prompt, path, command, or RPC params.
 export interface SubscriptionRuntimeAuditEvent {
@@ -1069,7 +1070,7 @@ export class SubscriptionRuntimeService {
   ) {}
 
   static async create(
-    openExternal: SubscriptionOpenExternal,
+    openAuthorizationUrl: SubscriptionOpenAuthorizationUrl,
     options: SubscriptionRuntimeServiceCreateOptions = {},
   ): Promise<SubscriptionRuntimeService> {
     const namespace = options.namespace ?? openFeatureNamespace("subscription-runtimes");
@@ -1117,7 +1118,7 @@ export class SubscriptionRuntimeService {
       sqliteHome: codexSqlite,
       workspaceDir: loginWorkspace,
       runtimeTempDir: loginTemp,
-      openExternal,
+      openAuthorizationUrl,
       resolveRuntime: () => codexRuntimeLocator.resolve(),
       lastKnownVersion: () => codexRuntimeLocator.lastKnownVersion(),
     });
@@ -1125,13 +1126,13 @@ export class SubscriptionRuntimeService {
     const chatGptPlanRuntime = options.chatGptPlanRuntime !== undefined
       ? options.chatGptPlanRuntime
       : planDeps
-        ? createChatGptPlanRuntime(planDeps, openExternal)
+        ? createChatGptPlanRuntime(planDeps, openAuthorizationUrl)
         : null;
     const claudeCodeClient = options.claudeCodeClient ?? new ClaudeCodeSubscriptionClient({
       runtimeHome: claudeHome,
       workspaceDir: claudeWorkspace,
       runtimeTempDir: claudeTemp,
-      openExternal,
+      openAuthorizationUrl,
     });
     return new SubscriptionRuntimeService(
       codexClient,
@@ -1289,15 +1290,15 @@ export class SubscriptionRuntimeService {
 
   async openPendingVerificationUrl(
     runtimeId: SubscriptionRuntimeId,
-    openExternal: SubscriptionOpenExternal,
+    openAuthorizationUrl: SubscriptionOpenAuthorizationUrl,
   ): Promise<SubscriptionRuntimeStatus> {
     this.assertRunning();
     if (!isAcpRuntime(runtimeId)) {
       throw new SubscriptionRuntimeServiceError("subscription-verification-url-unavailable");
     }
     return this.withStableErrors(async () => this.projectAcpStatus(
-      await this.acpRegistry.openPendingVerificationUrl(runtimeId, async (url) => {
-        await openExternal(url);
+      await this.acpRegistry.openPendingVerificationUrl(runtimeId, async (url, login) => {
+        await openAuthorizationUrl(url, login);
       }),
     ));
   }
@@ -1729,13 +1730,13 @@ let stopped = false;
 
 // Lazily create the one main-owned service. The opener must be main-validated.
 export async function getSubscriptionRuntimeService(
-  openExternal: SubscriptionOpenExternal,
+  openAuthorizationUrl: SubscriptionOpenAuthorizationUrl,
   options: GetSubscriptionRuntimeServiceOptions = {},
 ): Promise<SubscriptionRuntimeService> {
   if (stopped) throw new SubscriptionRuntimeServiceError("subscription-operation-failed");
   if (service) return service;
   if (!createPromise) {
-    createPromise = SubscriptionRuntimeService.create(openExternal, options)
+    createPromise = SubscriptionRuntimeService.create(openAuthorizationUrl, options)
       .then(async (created) => {
         if (stopped) {
           await created.stop();

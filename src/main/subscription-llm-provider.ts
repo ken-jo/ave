@@ -34,7 +34,7 @@ import {
   getSubscriptionImageAttachmentLimits,
   SubscriptionRuntimeServiceError,
   type GetSubscriptionRuntimeServiceOptions,
-  type SubscriptionOpenExternal,
+  type SubscriptionOpenAuthorizationUrl,
   type SubscriptionRuntimeService,
   type SubscriptionTextSession,
 } from "./subscription-runtime-service.js";
@@ -91,7 +91,7 @@ export interface SubscriptionLlmProviderOptions {
   // Parent selection for a transient sub-agent Codex model candidate.
   readonly fallbackSelection?: SubscriptionChatRuntimeSelection;
   // Main-owned opener used only if the singleton has not already been created.
-  readonly openExternal?: SubscriptionOpenExternal;
+  readonly openAuthorizationUrl?: SubscriptionOpenAuthorizationUrl;
   // Main-test seam; production resolves the process singleton.
   readonly service?: Pick<SubscriptionRuntimeService, "openTextSession">
     & Partial<Pick<SubscriptionRuntimeService, "listModels" | "requireChatGptPlan">>;
@@ -609,9 +609,9 @@ export class SubscriptionLlmProvider implements LLMProvider {
     Pick<SubscriptionRuntimeService, "openTextSession"> & Partial<Pick<SubscriptionRuntimeService, "listModels">>
   > {
     if (this.options.service) return this.options.service;
-    if (!this.options.openExternal) throw new Error("subscription-runtime-opener-missing");
+    if (!this.options.openAuthorizationUrl) throw new Error("subscription-runtime-opener-missing");
     return getSubscriptionRuntimeService(
-      this.options.openExternal,
+      this.options.openAuthorizationUrl,
       this.options.runtimeServiceOptions,
     );
   }
@@ -641,8 +641,8 @@ export function createSubscriptionLlmProvider(
         transport: new ChatGptPlanTransport(selection, async () => {
           const service = options.service?.requireChatGptPlan
             ? options.service
-            : options.openExternal
-              ? await getSubscriptionRuntimeService(options.openExternal, options.runtimeServiceOptions)
+            : options.openAuthorizationUrl
+              ? await getSubscriptionRuntimeService(options.openAuthorizationUrl, options.runtimeServiceOptions)
               : undefined;
           if (!service?.requireChatGptPlan) throw new Error("subscription-runtime-opener-missing");
           return service.requireChatGptPlan();

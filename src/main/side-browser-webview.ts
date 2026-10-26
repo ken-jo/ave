@@ -20,6 +20,7 @@ import {
   observeBrowserWorkspaceGuest,
   registerBrowserWorkspacePopup,
 } from "./browser/browser-workspace-desktop.js";
+import { hardenRemoteWebPreferences } from "./remote-browser-preferences.js";
 
 const log = createLogger("ave");
 
@@ -125,22 +126,6 @@ export function createSideBrowserDownloadPolicy(options: {
 
 export function isSideBrowserContents(contents: WebContents): boolean {
   return contents.session === session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
-}
-
-// Preferences forced on every remote-content surface of the side browser: the `<webview>` guest at attach time and every popup window it opens. Remote
-// pages never get a preload, Node, or a nested `<webview>`.
-function hardenRemoteWebPreferences(prefs: Record<string, unknown>): void {
-  delete prefs.preload;
-  delete prefs.preloadURL;
-  delete prefs.additionalArguments;
-  prefs.nodeIntegration = false;
-  prefs.nodeIntegrationInWorker = false;
-  prefs.nodeIntegrationInSubFrames = false;
-  prefs.contextIsolation = true;
-  prefs.webSecurity = true;
-  prefs.sandbox = true;
-  prefs.javascript = true;
-  prefs.webviewTag = false;
 }
 
 export function configureSideBrowserWebviewAttach(input: {

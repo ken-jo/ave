@@ -96,6 +96,7 @@ class FakeBrowserWindow extends FakeEmitter {
       this.emit("closed");
     }
   });
+  public destroy = vi.fn(() => this.close());
 
   constructor() {
     super();
@@ -108,6 +109,8 @@ let currentFakeWindow: FakeBrowserWindow;
 // Shared partition session returned by session.fromPartition in grace-collect.
 const fakePartitionSession = {
   setUserAgent: vi.fn(),
+  clearStorageData: vi.fn().mockResolvedValue(undefined),
+  clearCache: vi.fn().mockResolvedValue(undefined),
   cookies: {
     get: vi.fn(),
     set: vi.fn().mockResolvedValue(undefined),
@@ -521,7 +524,7 @@ describe("openAuthWindow — retainCookies makes the harvested session survive a
 
   async function loginThroughWebview(
     fakeWv: FakeWebContents,
-    opts: { retainCookies?: boolean } = { retainCookies: true },
+    opts: { retainCookies?: boolean; persistPartition?: string } = { retainCookies: true },
   ) {
     const parent = makeParentWindow() as unknown as import("electron").BrowserWindow;
     const resultPromise = openAuthWindow(parent, {
@@ -543,6 +546,26 @@ describe("openAuthWindow — retainCookies makes the harvested session survive a
     await flushAsync();
     return outcomePromise;
   }
+
+  it.each([
+    ["plugin-auth:sample", false], ["plugin-auth:sample", true],
+    [VAULT_PARTITION, false], [VAULT_PARTITION, true],
+  ] as const)("delivers cookies to the consumer and preserves %s with retention=%s", async (partition, retainCookies) => {
+    const { partitionCookieHeaderForUrl } = await import("../auth-partition-cookie-jar.js");
+    fakePartitionSession.clearStorageData.mockClear();
+    fakePartitionSession.clearCache.mockClear();
+    const startedAt = Date.now();
+    const guest = new FakeWebContents(COMPLETION_URL, [RESTART_SESSION_COOKIE]);
+    const outcome = await loginThroughWebview(guest, { persistPartition: partition, retainCookies });
+    expect(outcome.ok).toBe(true);
+    if (outcome.ok) expect(outcome.value).toEqual([expect.objectContaining({ name: "session", value: retainCookies ? "" : "abc123" })]);
+    expect(currentFakeWindow.isDestroyed()).toBe(true);
+    expect(fakePartitionSession.clearStorageData).not.toHaveBeenCalled();
+    expect(fakePartitionSession.clearCache).not.toHaveBeenCalled();
+    expect(await partitionCookieHeaderForUrl(guest.session as unknown as import("electron").Session, new URL(COMPLETION_URL))).toBe("session=abc123");
+    if (retainCookies) expectBoundedExpiry(guest.session.cookies.set.mock.calls[0][0], startedAt);
+    else expect(guest.session.cookies.set).not.toHaveBeenCalled();
+  });
 
   it("re-sets the session cookie into the partition with a bounded expiry and flushes; the plugin sees neither the value nor the expiry", async () => {
     const startedAt = Date.now();

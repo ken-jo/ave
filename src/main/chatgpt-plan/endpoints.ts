@@ -37,5 +37,3 @@ export const CHATGPT_PLAN_SCOPES = Object.freeze([
 /** Loopback callback: only the port may vary between attempts. */
 export const CHATGPT_PLAN_CALLBACK_HOST = "127.0.0.1";
 export const CHATGPT_PLAN_CALLBACK_PATH = "/auth/callback";
-/** The first registration's documented port; any free port is used when it is busy. */
-export const CHATGPT_PLAN_PREFERRED_CALLBACK_PORT = 1455;

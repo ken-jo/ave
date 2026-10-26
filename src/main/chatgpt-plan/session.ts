@@ -16,6 +16,8 @@ import {
 } from "./oauth.js";
 import type { ChatGptPlanCallbackListener } from "./loopback.js";
 import type { SubscriptionRuntimeNotice } from "../../shared/subscription-runtime.js";
+import type { OpenOAuthLogin } from "../oauth-login.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 /** The settings-store surface the session needs: encrypted secrets only. */
 export interface ChatGptPlanSecretStore {
@@ -103,7 +105,7 @@ export interface ChatGptPlanSessionOptions {
   readonly fetch: typeof fetch;
   readonly secrets: ChatGptPlanSecretStore;
   readonly hostId: () => Promise<string>;
-  readonly openExternal: (url: string) => Promise<void>;
+  readonly openAuthorizationUrl: OpenOAuthLogin;
   /** Starts the loopback listener for one attempt; it completes only on a callback carrying `expectedState`. */
   readonly startListener: (expectedState: string) => Promise<ChatGptPlanCallbackListener>;
   readonly verifier: Pick<ChatGptPlanIdTokenVerifier, "verify">;
@@ -280,13 +282,17 @@ export class ChatGptPlanSession {
     // The caller observes completion; an unobserved rejection must not crash main.
     completion.catch(() => undefined);
     this.emit({ event: "sign-in-started" });
-    try {
-      await this.options.openExternal(url);
-    } catch {
+    const openWindow = async () => {
+      await this.options.openAuthorizationUrl(url, {
+        completion: listener.callback,
+        onCancel: () => listener.close(),
+        timeoutMs: TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
+      });
+    };
+    void openWindow().catch(async () => {
       listener.close();
       await completion.catch(() => undefined);
-      throw new ChatGptPlanSessionError("sign-in-failed");
-    }
+    });
     return { completion };
   }
 
