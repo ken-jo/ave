@@ -219,7 +219,11 @@ lifecycle coverage are described in the architecture contract.
 
 ## Shell Credential And Sink Classification
 
-Host-shell credential and exfiltration analysis uses three buckets. An
+Host-shell credential/sink classification is separate from exact raw-word
+identity. Unsandboxed input over 2,000 characters asks, or denies headless,
+before command-dependent work. Floor inspection has an independent
+8,000-character pre-inspection input limit; that limit or actual floor-analysis
+budget exhaustion forces per-call modal approval and cannot auto-allow. An
 identified floor takes precedence over an ordinary reason in the same input.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
@@ -227,8 +231,9 @@ requirements keep their own authority.
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
 | Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | `ordinaryAsk` / `ordinaryShellAsk` at layer 6 without `forceModal`; applicable rules and saved grants may satisfy it |
-| Normal | Neither a floor nor an ordinary reason | Existing category, mode, rules and grants |
+| Work limit | Floor input over 8,000 characters or actual floor-analysis budget exhaustion | Forced modal at layer 2; exact rules, saved grants, reviewers and modes cannot auto-allow |
+| Ordinary | Parser refusal, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No credential/sink floor by this label alone; unsandboxed execution still requires proven exact raw-word coverage; legacy shell grants remain inert |
+| Normal | Neither a floor nor an ordinary reason | Sandboxed execution follows its route after floor work completes; unsandboxed automatic allowance still requires proven exact raw-word coverage |
 
 The path scan checks a glob argument's literal directory prefix, before its
 first wildcard, as well as its expansions, so a wildcard below a protected
@@ -274,13 +279,14 @@ not stop the sandboxed automatic lane, whose OS floor still confines reads. A
 later relative recursive search is a floor in every lane, because its root
 cannot be ruled out.
 
-Ordinary asks remain rememberable under the existing approval-scope and risk
-requirements. A parser refusal cannot establish a `Bash(...)` allow-rule match,
-but it does not invalidate an otherwise applicable tool allow rule or saved
-grant. An analysis failure retains visible credential and upload checks rather
-than replacing an identified floor with an ordinary reason.
+An ordinary classifier reason does not establish reusable shell authority. A
+parser or lexer/analysis-budget failure cannot match an exact command rule;
+tool-wide allows and saved shell grants do not repair it. Identified credential
+and upload evidence retains its floor, while actual floor-analysis exhaustion
+itself forces per-call modal approval. No rule, reviewer or mode bypasses that
+work-limit gate.
 
-Hidden code alone limits `Bash(...)` allow-rule coverage; it does not create an ordinary ask. Statically bound direct interpreter inline and script-file forms follow normal mode handling without explicit restrictions, credential/sink evidence, opaque bindings or retained file-execution provenance. Existing deny/ask command-rule visibility behavior remains in force, and an allow rule does not prove script contents.
+Visible literal interpreter code and file/stdin/network indirection remain eligible for exact rules; the host does not certify referenced code or future effects. A carrier classification alone does not make an unrelated restriction uncertain. Actual visible deny/ask matches and syntax uncertainty keep their precedence. Exact identity preserves raw argument text and quote style, normalizing only interword whitespace and the existing permitted command head; argument values and parameter casing are never normalized.
 
 These are permission-classifier outcomes, not execution admission. A hard deny
 cannot be approved. A floor's forced ask requires per-call consent but cannot
@@ -305,7 +311,8 @@ option-shaped word before the command prevents persistence unless a literal
 `--` establishes that boundary. No per-option arity or known-safe task table is
 used. `npx tsc`, `npm test`, `pnpm dlx tsc` and `corepack pnpm install` retain
 grantable persistent prefixes. Ambiguous forms remain ordinary and may be
-covered by applicable exact-input saved grants, subject to independent gates.
+covered by exact raw-word command rules when otherwise proven; legacy shell
+grants remain inert.
 Classifying a local argument as data does not grant execution, prove read-only
 effects or establish a runner command boundary.
 
@@ -319,12 +326,15 @@ The structural parser, sink vocabulary, Windows credential rows and general file
 PowerShell script blocks and `pwsh`/`powershell` inline command text use the PowerShell catalogue. Other interpreter code receives generic credential/sink inspection without inheriting PowerShell command meanings. Known catalogue effects remain floors through shared wrappers, process-launcher payloads, background execution and static or opaque transport splats. Sink-only wrapper inspection preserves the forwarded native command identity and grants no rule coverage.
 
 `Bash(...)` rules match Bash and `PowerShell(...)` rules match PowerShell,
-at user, project or session scope. Unsandboxed execution requires a matching
-exact command rule with literal, unambiguous canonical identity; legacy shell
+at user, project or session scope. Unsandboxed automatic allowance requires a matching
+exact command rule with literal raw-word identity; legacy shell
 grants remain inert. Visible literal code and file/stdin/network indirection
 are eligible subject to retained visible floors. Parser or lexer/analysis-budget
-failure, nonliteral words and PowerShell encoded-execution operands cannot
-match an exact allow. A command over the shared unsandboxed input limit asks
+failure and nonliteral words cannot match an exact allow. For a recognized
+PowerShell launcher, every following argv token is trimmed, stripped of leading
+hyphen/slash/U+2013/U+2014/U+2015, and lowercased; any result starting with `e`
+is unproven, including `ExecutionPolicy`, past `-File` or `--`, with no operand
+required. A command over the shared unsandboxed input limit asks
 or denies headless before further command processing.
 
 The sink catalogue remains a host policy floor, including for unsandboxed

@@ -179,7 +179,7 @@ describe("shared runner decisions", () => {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
         ? { floor: 288, ordinary: 1655, normal: 88 }
-        : { floor: 317, ordinary: 1613, normal: 101 };
+        : { floor: 321, ordinary: 1611, normal: 99 };
       for (const bucket of ["floor", "ordinary", "normal"] as const) {
         expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
       }
@@ -295,7 +295,7 @@ describe("shared runner decisions", () => {
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
   });
 
-  // Proof limits prevent exact-rule reuse; absent a visible floor, the sandbox remains the execution boundary.
+  // Proof limits prevent exact-rule reuse; exceeding the independent floor budget also requires per-call consent in the sandbox.
   it.each([
     { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
@@ -305,7 +305,7 @@ describe("shared runner decisions", () => {
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
     expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
-    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it.each([

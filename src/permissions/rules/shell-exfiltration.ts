@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { expandShellTildePaths } from "../../shared/home-tilde.js";
 import { isAbsolute, join, resolve } from "node:path";
 import {
+  analyzeShell,
   staticShellWord,
   type ShellCommand,
   type ShellStatement,
@@ -24,8 +25,6 @@ import {
 import {
   SHELL_PREFIX_POLICY,
   arithmeticEvaluationReason,
-  asParsedShellCommand,
-  parseShellCommand,
   shellFact,
   type ParsedShellCommand,
   type ShellCommandInput,
@@ -36,6 +35,7 @@ import {
   wrapperCommand,
   runnerCommandIndexes,
 } from "./shell-prefix-policy.js";
+import { SHELL_FLOOR_BUDGET_REASON, shellFloorBudgetSignals, shellFloorInputExceeded, shellFloorParserBudgetExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
 
 const PATH_READERS = new Set([
   "cat", "tac", "base64", "base32", "tar", "gzip", "bzip2", "xz", "zstd", "zip", "xxd", "od", "hexdump",
@@ -491,6 +491,11 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   spend?.(1, glob.length);
   if (!glob || glob === "-") return null;
   const absolute = isAbsolute(glob) ? glob : resolve(cwd ?? "/", glob);
+  if (!hasWildcard(absolute)) {
+    const path = unescapeGlob(absolute);
+    spend?.(canonical ? MAX_WALK_UP + 1 : 1, path.length);
+    return match(caseFoldForMatch(canonical ? canonicalizePathForMatch(path) : foldCanonicalPathSeparators(path)));
+  }
   const segments = absolute.split(/[\\/]/);
   // Whatever a wildcard expands to stays below its literal directory prefix:
   // `~/.mozilla/firefox/*/log*ns.json` reads inside `~/.mozilla` however the
@@ -673,6 +678,7 @@ interface ScanState {
   hidden: boolean;
   sender?: boolean;
   ordinaryAsk?: string;
+  analysisLimited?: true;
   match: (path: string) => string | null;
   pathResults: Map<string, string | null>;
   fallbackSteps: number;
@@ -691,6 +697,7 @@ function createScanState(cwd: string | undefined, dotglob: boolean, spend?: Scan
   if (/auto_?cd/i.test(command)) markCwdUnknown(state, "autocd can change directory");
   state.spend = spend ?? ((nextSteps, nextChars = 0) => {
     if (steps + nextSteps > SHELL_PATH_SCAN_LIMITS.steps || chars + nextChars > SHELL_PATH_SCAN_LIMITS.chars) {
+      state.analysisLimited = true;
       state.ordinaryAsk = "Analysis budget exceeded";
       throw new ShellScanBudgetError(state.ordinaryAsk);
     }
@@ -702,7 +709,10 @@ function createScanState(cwd: string | undefined, dotglob: boolean, spend?: Scan
 
 function lexicalPathHit(glob: string, cwd: string | undefined, state: ScanState, braceExpansion: boolean): string | null {
   const spend: ScanWork = (steps) => {
-    if (state.fallbackSteps + steps > SHELL_PATH_SCAN_LIMITS.steps) throw new ShellScanBudgetError("Analysis budget exceeded");
+    if (state.fallbackSteps + steps > SHELL_PATH_SCAN_LIMITS.steps) {
+      state.analysisLimited = true;
+      throw new ShellScanBudgetError("Analysis budget exceeded");
+    }
     state.fallbackSteps += steps;
   };
   const globEvidence = hasWildcard(glob) || (braceExpansion && glob.includes("{"));
@@ -717,6 +727,7 @@ function lexicalPathHit(glob: string, cwd: string | undefined, state: ScanState,
       return null;
     } catch (error) {
       if (!(error instanceof ShellScanBudgetError)) throw error;
+      state.analysisLimited = true;
       return "glob too broad to rule out a sensitive path";
     }
   }
@@ -740,6 +751,7 @@ function checkGlob(glob: string, state: ScanState, braceExpansion = false): void
             : sensitivePathHit(candidate, cwd, state.dotglob, state.match, state.spend);
         } catch (error) {
           if (!(error instanceof ShellScanBudgetError)) throw error;
+          state.analysisLimited = true;
           state.ordinaryAsk = error.message;
           state.sensitive = lexicalPathHit(candidate, cwd, state, braceExpansion);
         }
@@ -797,6 +809,7 @@ function checkRawText(raw: string, state: ScanState): void {
     try { globs = state.ordinaryAsk ? [rawGlobText(raw, home)] : rawGlobs(raw, home, state.spend); }
     catch (error) {
       if (!(error instanceof ShellScanBudgetError)) throw error;
+      state.analysisLimited = true;
       state.ordinaryAsk = error.message;
       globs = [rawGlobText(raw, home)];
     }
@@ -839,9 +852,10 @@ function scanCodeText(text: string, state: ScanState): void {
 
 // The sensitive-table pattern one path-like argument reaches, or null — for a quoted argument of non-bash code whose path holds spaces (`"…\User Data\Default\Login Data"`), which the token scan would split.
 export function sensitivePathInArgumentText(text: string, cwd: string | undefined, spend?: ScanWork): string | null {
+  if (shellFloorInputExceeded(text)) return SHELL_FLOOR_BUDGET_REASON;
   const state = createScanState(cwd, false, spend);
   checkRawText(text, state);
-  return state.sensitive;
+  return state.analysisLimited ? SHELL_FLOOR_BUDGET_REASON : state.sensitive;
 }
 
 function commandArgv(cmd: ShellCommand): (string | undefined)[] {
@@ -1578,6 +1592,11 @@ function scanStateFor(parsed: ParsedShellCommand, cwd: string | undefined): Scan
 
 function scanParsedInto(parsed: ParsedShellCommand, state: ScanState): void {
   if (!parsed.analysis.ok) {
+    if (shellFloorParserBudgetExceeded(parsed.analysis.reason)) {
+      state.analysisLimited = true;
+      state.ordinaryAsk = SHELL_FLOOR_BUDGET_REASON;
+      return;
+    }
     const visible = boundedInspectionText(parsed.command);
     state.ordinaryAsk ??= parsed.analysis.reason;
     state.hidden = true;
@@ -1619,7 +1638,8 @@ function staticFeederText(cmd: ShellCommand): string | undefined {
 }
 
 function signalFor(command: string, ctx: Context): string | null {
-  const parsed = parseShellCommand(command);
+  if (shellFloorInputExceeded(command)) return SHELL_FLOOR_BUDGET_REASON;
+  const parsed = floorParsedCommand(command);
   const specific = signalForParsed(parsed, ctx);
   if (specific) return specific;
   scanParsedInto(parsed, ctx.scan);
@@ -1638,7 +1658,8 @@ function signalForParsed(parsed: ParsedShellCommand, ctx: Context): string | nul
 
 // The exfiltration signal for a shell command, or `null`. `cwd` resolves relative path arguments for the sensitive-path check. Pass a ParsedShellCommand to share one parse with the other consumers.
 export function shellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null {
-  const parsed = asParsedShellCommand(input);
+  if (shellFloorInputExceeded(input)) return SHELL_FLOOR_BUDGET_REASON;
+  const parsed = floorParsedCommand(input);
   return shellFact(parsed, `exfiltration\0${cwd ?? ""}`, () => {
     const specific = signalForParsed(parsed, { cwd, depth: 0, tainted: new Set(), scan: scanStateFor(parsed, cwd) });
     if (specific) return specific;
@@ -1649,13 +1670,17 @@ export function shellExfiltrationSignal(input: ShellCommandInput, cwd?: string):
 
 // The sensitive-path floor for shell commands, or `null`: a sensitive or secret path anywhere in the command line (same normalization as the exfiltration scan). Never allowed by a rule; asks in every mode.
 export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null {
-  const hit = scanCommand(asParsedShellCommand(input), cwd).sensitive;
+  if (shellFloorInputExceeded(input)) return SHELL_FLOOR_BUDGET_REASON;
+  const scan = scanCommand(floorParsedCommand(input), cwd);
+  if (scan.analysisLimited) return SHELL_FLOOR_BUDGET_REASON;
+  const hit = scan.sensitive;
   return hit ? `sensitive path argument (${hit})` : null;
 }
 
 // Exact rules require complete analysis and a canonical directory; indirect input remains an accepted limit.
 export function shellScanProofBlocker(input: ShellCommandInput, cwd?: string): string | null {
-  const parsed = asParsedShellCommand(input);
+  if (shellFloorInputExceeded(input)) return SHELL_FLOOR_BUDGET_REASON;
+  const parsed = floorParsedCommand(input);
   if (!parsed.analysis.ok) return parsed.analysis.reason;
   const scan = scanCommand(parsed, cwd);
   return scan.ordinaryAsk ?? scan.cdAsk ?? null;
@@ -1663,8 +1688,39 @@ export function shellScanProofBlocker(input: ShellCommandInput, cwd?: string): s
 
 // Incomplete path inspection is an ordinary ask, never credential evidence.
 export function shellScanOrdinaryAsk(input: ShellCommandInput, cwd?: string): string | null {
-  const parsed = asParsedShellCommand(input);
+  if (shellFloorInputExceeded(input)) return SHELL_FLOOR_BUDGET_REASON;
+  const parsed = floorParsedCommand(input);
   if (!parsed.analysis.ok) return parsed.analysis.reason;
   const scan = scanCommand(parsed, cwd);
   return scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk ?? null;
+}
+
+// Floor work has its own input bound; the literal-rule parser's smaller limit does not truncate sandbox inspection.
+function floorParsedCommand(input: ShellCommandInput): ParsedShellCommand {
+  if (typeof input !== "string" && (input.analysis.ok || input.analysis.reason !== "literal command length limit exceeded")) return input;
+  const command = typeof input === "string" ? input : input.command;
+  try {
+    return { command, analysis: analyzeShell(command, "bash"), facts: new Map() };
+  } catch (error) {
+    return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError: error, facts: new Map() };
+  }
+}
+
+export function inspectShellCommand(input: ShellCommandInput, cwd?: string): ShellFloorSignals {
+  if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
+  const parsed = floorParsedCommand(input);
+  if (!parsed.analysis.ok && shellFloorParserBudgetExceeded(parsed.analysis.reason)) return shellFloorBudgetSignals();
+  return shellFact(parsed, `floor-signals\0${cwd ?? ""}`, () => {
+    try {
+      const exfiltration = shellExfiltrationSignal(parsed, cwd);
+      const sensitive = shellSensitivePathSignal(parsed, cwd);
+      const scan = scanCommand(parsed, cwd);
+      if (scan.analysisLimited || sensitive === SHELL_FLOOR_BUDGET_REASON || exfiltration === SHELL_FLOOR_BUDGET_REASON) return shellFloorBudgetSignals();
+      const ordinaryAsk = scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk;
+      return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}) };
+    } catch (error) {
+      if (error instanceof ShellScanBudgetError) return shellFloorBudgetSignals();
+      throw error;
+    }
+  });
 }

@@ -16,8 +16,9 @@ import type { ScopedPermissionRule, ScopedPermissionRuleError, ShellRuleDialect 
 import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal } from "./rules/shell-exfiltration.js";
-import { inspectPowerShellCommand, inspectPowerShellVisibleText } from "./rules/powershell-exfiltration.js";
+import { inspectShellCommand } from "./rules/shell-exfiltration.js";
+import { SHELL_FLOOR_BUDGET_REASON, shellFloorInputExceeded } from "./rules/shell-floor-policy.js";
+import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
 import { parseShellCommand } from "./rules/shell-prefix-policy.js";
@@ -1211,12 +1212,15 @@ export class PermissionManager {
         };
       }
     }
-    // An oversized unsandboxed input cannot authorize execution. Do not enter command analysis, project I/O or floors for it.
-    if (context.ruleSubject?.kind === "shell" && !context.shellExecution?.runsSandboxed
-      && context.ruleSubject.command.length > MAX_LITERAL_COMMAND_LENGTH) {
+    // Length checks precede command analysis and project I/O in either execution lane.
+    const shellInput = context.ruleSubject?.kind === "shell" ? context.ruleSubject.command : undefined;
+    const unsandboxedShell = !context.shellExecution?.runsSandboxed;
+    if (shellInput !== undefined && (unsandboxedShell
+      ? shellInput.length > MAX_LITERAL_COMMAND_LENGTH : shellFloorInputExceeded(shellInput))) {
       const deny = this.rules.find((rule) => rule.action === "deny" && (!rule.source || rule.source === source)
         && !isRuleSpecifier(rule.pattern) && globMatch(toolName, rule.pattern));
       if (deny) return { decision: "deny", reason: t("be_permissionManager.denyRuleReason", { pattern: deny.pattern }), layer: 1 };
+      if (!unsandboxedShell) return { decision: "ask", reason: SHELL_FLOOR_BUDGET_REASON, layer: 2, forceModal: true };
       return context.headless === true
         ? { decision: "deny", reason: t("be_permissionManager.shellUnsandboxedHeadlessReason"), layer: 6 }
         : { decision: "ask", reason: t("be_permissionManager.shellUnsandboxedReason"), layer: 6 };
@@ -1277,9 +1281,7 @@ export class PermissionManager {
         : parseShellCommand(ruleSubject.command)
       : undefined;
     const powerShellSignals = ruleSubject?.dialect === "powershell"
-      ? commandOverLimit
-        ? inspectPowerShellVisibleText(ruleSubject.command, ruleSubject.cwd)
-        : inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd)
+      ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd)
       : undefined;
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
@@ -1305,18 +1307,13 @@ export class PermissionManager {
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
+    const shellFloorSignals = shellSubject ? inspectShellCommand(shellSubject.command, shellSubject.cwd) : powerShellSignals;
     // Credential-exfiltration floor: never remembered, never auto-allowed, in any mode, for every host shell (rules/shell-exfiltration.ts, rules/powershell-exfiltration.ts).
-    const shellExfiltration = (shellSubject
-      ? shellExfiltrationSignal(shellSubject.command, shellSubject.cwd)
-      : ruleSubject?.dialect === "powershell"
-        ? powerShellSignals!.exfiltration
-        : null);
+    const shellExfiltration = shellFloorSignals?.exfiltration ?? null;
     // Sensitive-path floor for shell arguments (same normalization as the exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.
     const shellSensitivePath = shellExfiltration !== null
       ? null
-      : (shellSubject
-        ? shellSensitivePathSignal(shellSubject.command, shellSubject.cwd)
-        : ruleSubject?.dialect === "powershell" ? powerShellSignals!.sensitive : null);
+      : shellFloorSignals?.sensitive ?? null;
 
     // 1. Deny rules (highest priority, immutable)
     for (const rule of this.rules) {
@@ -1384,6 +1381,9 @@ export class PermissionManager {
         layer: 2,
         forceModal: true,
       };
+    }
+    if (shellFloorSignals?.analysisLimited) {
+      return { decision: "ask", reason: SHELL_FLOOR_BUDGET_REASON, layer: 2, forceModal: true };
     }
     if (scopedFloor) return { decision: "ask", reason: scopedFloor, layer: 2, forceModal: true };
     // Ask rules (after deny, before every allow lane and mode). A per-call hard ask: never remembered, never auto-reviewed.

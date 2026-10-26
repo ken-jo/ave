@@ -5,8 +5,8 @@ import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { canonicalPowerShellRuleTokens, isRuleSpecifier, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
-import { canonicalPowerShellName } from "./powershell-command-policy.js";
+import { canonicalPowerShellRuleTokens, isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
+import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 import { powerShellRuleShape } from "./powershell-exfiltration.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
@@ -167,12 +167,9 @@ function collectPowerShellRules(...scopes: ReadonlyArray<readonly PermissionRule
 }
 
 // A rule restricts (deny or ask) every command it is a prefix of; an exact rule names one argv.
-function matchesPowerShellRule(spec: PowerShellRuleSpecifier, argv: readonly (string | null)[], literalParameters: readonly number[] = []): boolean {
+function matchesPowerShellRule(spec: PowerShellRuleSpecifier, argv: readonly (string | null)[]): boolean {
   if (spec.wildcard ? argv.length < spec.tokens.length : argv.length !== spec.tokens.length) return false;
-  const expected = spec.literalParameters ?? [];
-  const actual = literalParameters.filter((index) => index < spec.tokens.length);
-  return expected.length === actual.length && expected.every((index, at) => actual[at] === index)
-    && spec.tokens.every((token, index) => argv[index] === token);
+  return spec.tokens.every((token, index) => argv[index] === token);
 }
 
 // The name a deny or ask rule compares, on both sides: a directory path, a `Module\` qualifier, trailing dots (Win32 strips them) and an executable
@@ -181,17 +178,23 @@ function matchesPowerShellRule(spec: PowerShellRuleSpecifier, argv: readonly (st
 // `Microsoft.PowerShell.Management\Remove-Item`, `ri` and `PowerShell(gci *)`'s `gci` meet their cmdlets. Matching more only narrows; an allow keeps
 // comparing the literal identity (`matchesPowerShellRule` on the unnormalized tokens).
 function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
-  const head = tokens[0];
-  if (typeof head !== "string") return [...tokens];
+  const values = tokens.map((token) => typeof token === "string" ? literalRuleWord(token, "powershell") ?? token : token);
+  const head = values[0];
+  if (typeof head !== "string") return [...values] as T[];
   const base = head.slice(Math.max(head.lastIndexOf("\\"), head.lastIndexOf("/")) + 1).replace(/\.+$/, "").replace(/\.(?:exe|com|cmd|bat)$/i, "").replace(/\.+$/, "");
   const name = canonicalPowerShellName(base.length > 0 ? base : head);
-  return canonicalPowerShellRuleTokens([name as T, ...tokens.slice(1).map((token) =>
-    typeof token === "string" ? token.replace(/[\u2013-\u2015]/g, "-") as T : token)]);
+  const policy = POWERSHELL_COMMAND_POLICIES[name];
+  return canonicalPowerShellRuleTokens([name as T, ...values.slice(1).map((token) => {
+    if (typeof token !== "string") return token as T;
+    const normalized = token.replace(/[\u2013-\u2015]/g, "-");
+    const parameter = policy !== undefined && policy.native === undefined ? /^(-[A-Za-z][A-Za-z0-9]*)(:[\s\S]*)?$/.exec(normalized) : null;
+    return (parameter ? parameter[1]!.toLowerCase() + (parameter[2] ?? "") : normalized) as T;
+  })]);
 }
 
 function matchesPowerShellRestriction(spec: PowerShellRuleSpecifier, argv: readonly (string | null)[]): boolean {
-  return matchesPowerShellRule(spec, argv, spec.literalParameters) ||
-    matchesPowerShellRule({ ...spec, literalParameters: [], tokens: restrictionTokens(spec.tokens) }, restrictionTokens(argv));
+  return matchesPowerShellRule(spec, argv) ||
+    matchesPowerShellRule({ ...spec, tokens: restrictionTokens(spec.tokens) }, restrictionTokens(argv));
 }
 
 // `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no floor signal is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
@@ -223,8 +226,8 @@ export function evaluatePowerShellSubject(
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
   if (subject.floorSignal !== null) return { decision: null, reason: subject.floorSignal };
   const patterns: string[] = [];
-  for (const [index, argv] of shape.commands.entries()) {
-    const rule = rules.allow.find((candidate) => matchesPowerShellRule(candidate.spec, argv, shape.literalParameters?.[index]));
+  for (const argv of shape.commands) {
+    const rule = rules.allow.find((candidate) => matchesPowerShellRule(candidate.spec, argv));
     if (!rule) return { decision: null, reason: "a command is not covered by any allow rule" };
     if (!patterns.includes(rule.pattern)) patterns.push(rule.pattern);
   }
