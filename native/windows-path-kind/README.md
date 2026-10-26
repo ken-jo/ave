@@ -54,9 +54,15 @@ or manages accounts.
 
 `ave-path-kind.exe --pin <absolute-path>...` prints one JSON array row per
 input, in input order. Each row has `exists`, `canonical`, `volumeSerial`,
-`fileId`, `volumeSerialNumber`, `fileIndex`, `attributes`, `reparseTag`,
-`directory`, and `ancestors` (root first, excluding the target). Ancestors
-have the same component fields. Canonical paths use
+`fileId`, `volumeSerialNumber`, `fileIndex`, `changeTime`, `attributes`,
+`reparseTag`, `reparseTarget`, `directory`, and `ancestors` (root first,
+excluding the target). Ancestors have the same component fields.
+`changeTime` is `FILE_BASIC_INFO.ChangeTime` read on the pinned handle, as a
+hex-64 string, or `null` when the object does not exist. It is captured at pin
+time, before any DACL or content read on that handle, so a caller can key a
+cache on volume serial, file ID and change time. Some filesystems report 0;
+callers must not cache on a zero value. `reparseTarget` is the substitute name
+read from the retained link handle, `null` for other objects. Canonical paths use
 `GetFinalPathNameByHandleW(FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)` and retain
 the extended DOS prefix (`\\?\` or `\\?\UNC\`). They are case-preserving OS
 names, not case-folded strings. Identity numbers are hexadecimal strings:

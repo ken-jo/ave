@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
+import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
@@ -120,6 +121,39 @@ describe("Windows path facts admission and evaluation", () => {
   });
 });
 
+// The decoder is platform-independent: stub the helper and its output so every shard runs these.
+describe("Windows path facts decoder", () => {
+  const PINNED = "/fixture/target";
+  const decode = (rows: unknown[]): readonly WindowsPathFacts[] => {
+    const helper = vi.spyOn(pathKindLauncher, "resolveWindowsPathKindHelper").mockReturnValue("ave-path-kind.exe");
+    const output = vi.spyOn(childProcess, "execFileSync").mockReturnValue(JSON.stringify(rows));
+    try { return pinWindowsPaths([PINNED]); } finally { output.mockRestore(); helper.mockRestore(); }
+  };
+
+  it("decodes a hex changeTime for targets and ancestors", () => {
+    const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
+    const row = { ...component, ancestors: [component] };
+    expect(decode([row])).toEqual([row]);
+    const changed = { ...component, changeTime: "0x0000000000000002" };
+    expect(windowsObjectKey(component)).toBe(windowsObjectKey(changed));
+    const missing = { ...component, exists: false, canonical: null, volumeSerial: null, fileId: null,
+      volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: 0, directory: false, ancestors: [] };
+    expect(decode([missing])).toEqual([missing]);
+  });
+
+  it.each(["target", "ancestor"])("refuses malformed changeTime on a %s and names the field", (position) => {
+    const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
+    const { changeTime: omitted, ...absent } = component;
+    expect(omitted).toBeDefined();
+    const invalid = [absent, ...["not-hex", "0x1", "0x0123456789ABCDEF", null].map(changeTime => ({ ...component, changeTime })),
+      { ...component, exists: false, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null,
+        fileIndex: null, attributes: 0, directory: false }];
+    for (const value of invalid) {
+      expect(() => decode([position === "target" ? { ...value, ancestors: [] } : { ...component, ancestors: [value] }])).toThrow(/changeTime/);
+    }
+  });
+});
+
 describe.runIf(process.platform === "win32")("Windows path facts native boundary", () => {
   let fixture: string;
   beforeAll(() => {
@@ -130,37 +164,6 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     symlinkSync(join(fixture, "directory"), join(fixture, "junction"), "junction");
   });
   afterAll(() => { if (fixture) { removeLinksUnder(fixture); rmSync(fixture, { recursive: true, force: true }); } });
-
-  it("decodes a hex changeTime for targets and ancestors", () => {
-    const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
-    const row = { ...component, ancestors: [component] };
-    const output = vi.spyOn(childProcess, "execFileSync").mockReturnValue(JSON.stringify([row]));
-    try {
-      expect(pinWindowsPaths([fixture])).toEqual([row]);
-      const changed = { ...component, changeTime: "0x0000000000000002" };
-      expect(windowsObjectKey(component)).toBe(windowsObjectKey(changed));
-      const missing = { ...component, exists: false, canonical: null, volumeSerial: null, fileId: null,
-        volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: 0, directory: false, ancestors: [] };
-      output.mockReturnValue(JSON.stringify([missing]));
-      expect(pinWindowsPaths([fixture])).toEqual([missing]);
-    } finally { output.mockRestore(); }
-  });
-
-  it.each(["target", "ancestor"])("refuses malformed changeTime on a %s and names the field", (position) => {
-    const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
-    const { changeTime: omitted, ...absent } = component;
-    expect(omitted).toBeDefined();
-    const invalid = [absent, ...["not-hex", "0x1", "0x0123456789ABCDEF", null].map(changeTime => ({ ...component, changeTime })),
-      { ...component, exists: false, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null,
-        fileIndex: null, attributes: 0, directory: false }];
-    const output = vi.spyOn(childProcess, "execFileSync");
-    try {
-      for (const value of invalid) {
-        output.mockReturnValue(JSON.stringify([position === "target" ? { ...value, ancestors: [] } : { ...component, ancestors: [value] }]));
-        expect(() => pinWindowsPaths([fixture])).toThrow(/changeTime/);
-      }
-    } finally { output.mockRestore(); }
-  });
 
   it("proves Node dev and ino use the legacy serial and file index for files and directories", () => {
     for (const path of [join(fixture, "directory"), join(fixture, "directory", "file")]) {
