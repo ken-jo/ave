@@ -117,7 +117,7 @@ describe("set-api-key broadcast (M3)", () => {
     expect(deadWindow.webContents.send).not.toHaveBeenCalled();
   });
 
-  it("rejects API keys for marketplace providers until the provider is installed", async () => {
+  it("accepts API keys for a bundled provider without a marketplace install", async () => {
     const deps = makeDeps([]);
 
     const { registerSettingsHandlers } = await import("../settings.js");
@@ -125,8 +125,8 @@ describe("set-api-key broadcast (M3)", () => {
 
     const result = await invoke("ave:settings:set-api-key", "groq", "gsk-test");
 
-    expect(result).toMatchObject({ ok: false, error: "provider-not-installed" });
-    expect(deps.settingsService.setSecret).not.toHaveBeenCalled();
+    expect(result).toEqual({ ok: true });
+    expect(deps.settingsService.setSecret).toHaveBeenCalledWith("llm.apiKey.groq", "gsk-test");
   });
 
   it("accepts API keys for installed marketplace providers", async () => {
@@ -149,17 +149,6 @@ describe("set-api-key broadcast (M3)", () => {
 
     expect(result).toEqual({ ok: true });
     expect(deps.settingsService.setSecret).toHaveBeenCalledWith("llm.apiKey.groq", "gsk-test");
-  });
-
-  it("rejects model list sync for uninstalled marketplace providers", async () => {
-    const deps = makeDeps([]);
-
-    const { registerSettingsHandlers } = await import("../settings.js");
-    registerSettingsHandlers(deps as never);
-
-    const result = await invoke("ave:settings:list-llm-models", { vendor: "groq" });
-
-    expect(result).toMatchObject({ ok: false, error: "provider-not-installed" });
   });
 
   it("rejects model list sync for unknown providers", async () => {

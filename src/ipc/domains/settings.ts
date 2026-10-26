@@ -1061,9 +1061,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       return {
         ok: false,
         error: "invalid-provider",
-        message: isLLMVendor(vendor)
-          ? "Install this marketplace provider before syncing its models."
-          : "Unknown LLM provider.",
+        message: "Unknown LLM provider.",
       };
     }
     const baseUrl = request && typeof request.baseUrl === "string"

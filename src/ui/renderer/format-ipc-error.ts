@@ -315,6 +315,7 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   // or `managed`.
   "package-not-installed": "formatIpcError.packageNotInstalled",
   "admin-plugin-uninstall-denied": "formatIpcError.adminPluginUninstallDenied",
+  "invalid-provider": "formatIpcError.invalidValue",
   "invalid-provider-preset-id": "formatIpcError.invalidValue",
   "marketplace-provider-preset-install-failed": "formatIpcError.installFailed",
   "marketplace-provider-preset-uninstall-failed": "formatIpcError.uninstallFailed",
