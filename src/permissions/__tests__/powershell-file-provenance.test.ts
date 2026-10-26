@@ -36,9 +36,9 @@ describe("PowerShell runtime-state boundary", () => {
     expect(result.exfiltration).not.toBeNull();
   });
 
-  it("accepts a direct literal executable as an intentional indirection limit", () => {
+  it("declines an executable without a positive argv grammar", () => {
     expect(inspectPowerShellCommand("./runner.exe notes.txt", CWD)).toMatchObject({
-      outcome: "static-complete",
+      outcome: "unproven",
       sensitive: null,
       exfiltration: null,
     });

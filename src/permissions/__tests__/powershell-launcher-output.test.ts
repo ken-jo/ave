@@ -121,10 +121,10 @@ describe("launcher payload and outbound-output floors", () => {
     expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
-  it("keeps repeated literal command-looking arguments eligible below the caps", () => {
+  it("declines repeated unknown command arguments below the caps", () => {
     const result = _inspectPowerShellForTest(`Unknown-Runner ${"'Unknown-Runner plain' ".repeat(300)}`, CWD);
     expect(result).toMatchObject({ sensitive: null, exfiltration: null, limited: false });
-    expect(result.ordinaryAsk).toBeUndefined();
+    expect(result).toMatchObject({ outcome: "unproven", ordinaryAsk: expect.any(String) });
   });
 
   it("refuses repeated arguments above the whole-command token cap", () => {
@@ -138,7 +138,7 @@ describe("launcher payload and outbound-output floors", () => {
     const command = `Unknown-Runner '${"pwsh -c ".repeat(20)}Get-ChildItem'`;
     const result = _inspectPowerShellForTest(command, CWD);
     expect(command.length).toBeLessThan(result.limits.inputChars);
-    expect(result).toMatchObject({ outcome: "static-complete", exfiltration: null, limited: false });
+    expect(result).toMatchObject({ outcome: "unproven", exfiltration: null, limited: false });
   });
 
   it("keeps a generated command argument unproven", () => {

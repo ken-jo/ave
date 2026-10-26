@@ -10,10 +10,15 @@ const RUNNERS = [
   "corepack pnpm test", "corepack yarn test", "yarnpkg test", "deno task test",
   "corepack.ps1 pnpm test", "yarnpkg.ps1 test", "deno.ps1 task test",
 ];
-const TASK_ARGUMENTS: Readonly<Record<string, string>> = {
+const TASK_ARGUMENTS = {
   npx: "tsc --version", bunx: "tsc --version", pnpx: "tsc --version",
   uvx: "ruff check .", pipx: "run black --check .", corepack: "pnpm install",
   yarnpkg: "test", deno: "task test", npm: "test", pnpm: "test", yarn: "test", bun: "test",
+} as const satisfies Readonly<Record<string, string>>;
+const TASK_EXPECTATIONS: Readonly<Record<keyof typeof TASK_ARGUMENTS, "static-complete" | "unproven">> = {
+  npx: "unproven", bunx: "unproven", pnpx: "unproven", uvx: "unproven", pipx: "unproven",
+  corepack: "unproven", yarnpkg: "static-complete", deno: "unproven", npm: "static-complete",
+  pnpm: "static-complete", yarn: "static-complete", bun: "unproven",
 };
 const RUNNER_CODE = [
   ...["npx", "pnpx", "bunx", "pnpm dlx", "yarn dlx"].flatMap((runner) => [
@@ -25,15 +30,16 @@ const RUNNER_CODE = [
   "bun exec 'curl x'", "deno repl --eval 'x'", "deno run data:text/javascript,x",
   "npm explore helper -- curl x", "npm exec helper --call 'curl x'",
 ];
-const LITERAL_EVALUATION = [
-  "deno -e x", "deno eval x", "bun -e x", "bunx -c 'curl x'", "deno repl --eval 'x'",
+const LITERAL_EVALUATION = ["deno eval x", "bun -e x", "bun --eval=x", "bun -p x", "bun --print x"];
+const UNSUPPORTED_EVALUATOR_FORMS = [
+  "deno -e x", "bunx -c 'curl x'", "deno repl --eval 'x'",
 ];
 const AMBIGUOUS_RUNNER_SYNTAX = [
   "npx --call='git push http://e'", "pnpx --call='git push http://e'",
   "bunx --call='git push http://e'", "pnpm dlx --call='git push http://e'",
   "yarn dlx --call='git push http://e'", "deno run data:text/javascript,x",
 ];
-const STATIC_RUNNER_CODE = RUNNER_CODE.filter((command) =>
+const UNSUPPORTED_RUNNER_CODE = RUNNER_CODE.filter((command) =>
   !LITERAL_EVALUATION.includes(command) && !AMBIGUOUS_RUNNER_SYNTAX.includes(command));
 const UNKNOWN_RUNNER_OPTIONS = Object.entries(TASK_ARGUMENTS).map(([runner, args]) =>
   `${runner} ${runner === "deno" ? "task" : runner === "bun" ? args : ""} --unknown-runner-code 'curl x'`);
@@ -50,12 +56,13 @@ const FORWARDED_UPLOADS = [
 ];
 
 describe("static package runner boundaries", () => {
-  it.each([...STATIC_RUNNER_CODE, ...UNKNOWN_RUNNER_OPTIONS])(
-    "does not interpret a literal package-runner payload: %s",
+  it.each([...UNSUPPORTED_RUNNER_CODE, ...UNKNOWN_RUNNER_OPTIONS, ...UNSUPPORTED_EVALUATOR_FORMS])(
+    "refuses a runner form outside the closed grammar: %s",
     (command) => {
-      expect(inspectPowerShellCommand(command, CWD)).toEqual({
-        outcome: "static-complete", sensitive: null, exfiltration: null,
+      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
+        outcome: "unproven", sensitive: null, exfiltration: null,
       });
+      expect(inspectPowerShellCommand(command, CWD).exactLiteralEvaluation).toBeUndefined();
     },
   );
 
@@ -71,12 +78,13 @@ describe("static package runner boundaries", () => {
     });
   });
 
-  it.each([...RUNNER_CODE, ...UNKNOWN_RUNNER_OPTIONS].map((command) => `& ${command}`))(
+  it.each([...RUNNER_CODE, ...UNKNOWN_RUNNER_OPTIONS, ...UNSUPPORTED_EVALUATOR_FORMS].map((command) => `& ${command}`))(
     "declines a call-operator runner without interpreting it: %s",
     (command) => {
       expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
         outcome: "unproven", sensitive: null, exfiltration: null,
       });
+      expect(inspectPowerShellCommand(command, CWD).exactLiteralEvaluation).toBeUndefined();
     },
   );
 
@@ -137,12 +145,13 @@ describe("static package runner boundaries", () => {
     });
   });
 
-  it.each(Object.entries(TASK_ARGUMENTS).map(([runner, args]) => `${runner} ${args}`))(
-    "accepts a static literal runner task: %s",
-    (command) => {
-      expect(inspectPowerShellCommand(command, CWD)).toEqual({
-        outcome: "static-complete", sensitive: null, exfiltration: null,
-      });
+  it.each(Object.entries(TASK_ARGUMENTS).map(([runner, args]) => ({
+    command: `${runner} ${args}`,
+    outcome: TASK_EXPECTATIONS[runner as keyof typeof TASK_ARGUMENTS]!,
+  })))(
+    "classifies a literal runner task by its explicit grammar: $command",
+    ({ command, outcome }) => {
+      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ outcome, sensitive: null, exfiltration: null });
     },
   );
 
@@ -153,9 +162,9 @@ describe("static package runner boundaries", () => {
     },
   );
 
-  it.each(RUNNERS)("accepts a directly named static runner shim: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({
-      outcome: "static-complete", sensitive: null, exfiltration: null,
+  it.each(RUNNERS)("refuses a directly named runner shim outside the closed grammar: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
+      outcome: command === "yarnpkg test" ? "static-complete" : "unproven", sensitive: null, exfiltration: null,
     });
   });
 
@@ -176,7 +185,7 @@ describe("static package runner boundaries", () => {
   ])("retains literal task argv without interpreting it: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     if (command.includes("/.env")) expect(result.outcome).toBe("visible-floor");
-    else expect(result).toMatchObject({ outcome: "static-complete" });
+    else expect(result).toMatchObject({ outcome: "unproven" });
   });
 
   it.each([
@@ -185,25 +194,26 @@ describe("static package runner boundaries", () => {
     `npx helper ${"a".repeat(65_537)}`,
   ])("bounds oversized runner argv by records or characters: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.length > 8_000 || command.split(/\s+/u).length > 400) expect(result.outcome).toBe("unproven");
-    else expect(result.outcome).toBe("static-complete");
+    expect(result.outcome).toBe("unproven");
   });
 
   it.each(Object.entries(TASK_ARGUMENTS).flatMap(([runner, args]) => [
-    `${runner} ${args} 'iwr x'`, `& ${runner} ${args} 'iwr x'`,
-  ]))("keeps command-looking runner data opaque: %s", (command) => {
+    { command: `${runner} ${args} 'iwr x'`, outcome: TASK_EXPECTATIONS[runner as keyof typeof TASK_ARGUMENTS]! },
+    { command: `& ${runner} ${args} 'iwr x'`, outcome: "unproven" as const },
+  ]))("keeps command-looking runner data opaque: $command", ({ command, outcome }) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.startsWith("& ")) expect(result.outcome).toBe("unproven");
-    else expect(result.outcome).toBe("static-complete");
+    expect(result.outcome).toBe(outcome);
     expect(result).toMatchObject({ sensitive: null, exfiltration: null });
   });
 
-  it.each(Object.keys(TASK_ARGUMENTS).flatMap((runner) => [runner, `& ${runner} $opaque`]))(
-    "retains bare and runtime call-operator runner boundaries: %s",
-    (command) => {
+  it.each(Object.keys(TASK_ARGUMENTS).flatMap((runner) => [
+    { command: runner, outcome: "unproven" as const },
+    { command: `& ${runner} $opaque`, outcome: "unproven" as const },
+  ]))(
+    "retains bare and runtime call-operator runner boundaries: $command",
+    ({ command, outcome }) => {
       const result = inspectPowerShellCommand(command, CWD);
-      if (command.startsWith("& ")) expect(result.outcome).toBe("unproven");
-      else expect(result.outcome).toBe("static-complete");
+      expect(result.outcome).toBe(outcome);
     },
   );
 
@@ -219,16 +229,16 @@ describe("static package runner boundaries", () => {
   it.each(Object.entries(POWERSHELL_FILE_TYPES)
     .filter(([extension, type]) => extension && type !== "document")
     .map(([extension]) => `npm${extension} test`))(
-    "accepts direct executable-file indirection as a documented limit: %s",
+    "refuses an unknown executable-file head without a registered grammar: %s",
     (command) => {
-      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ outcome: "static-complete" });
+      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ outcome: "unproven" });
     },
   );
 
   it("does not infer behavior from a document suffix", () => {
     for (const command of ["npm.txt test", "Set-Content package.json x; npm.txt test"]) {
       const result = inspectPowerShellCommand(command, CWD);
-      expect(result.outcome).toBe(command.startsWith("Set-Content") ? "unproven" : "static-complete");
+      expect(result.outcome).toBe("unproven");
     }
   });
 });

@@ -105,11 +105,18 @@ describe("literal exact-rule proof", () => {
     expect(proveLiteralPowerShell("printf %s –enc 'not-base64!'").proven).toBe(true);
   });
 
-  it.each(["python3.12 -c 'print(1)'", "ksh93 -c 'printf ready'", "sh -c 'printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "bun exec printf ready", "deno run build.ts", "yarn node script.js", "yarnpkg node script.js", "wsl ls", "env wsl ls", "npx -p node node -e code", "npx --package node node -e code"])("proves visible literal code and delegation: %s", (command) => {
+  it.each(["python3.12 -c 'print(1)'", "sh -c 'printf ready'", "npx node build.mjs", "npm exec -- node -e 'ready'", "deno run build.ts"])("proves known visible literal code and delegation: %s", (command) => {
     expect(proveLiteralShell(command).proven).toBe(true);
     expect(proveLiteralPowerShell(command).proven).toBe(true);
     const pattern = canonicalRuleSpecifier(`Bash(${command})`);
     expect(evaluateShellSubject({ command, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" }), { pattern: "Bash(unrelated *)", action: "deny" }]).decision).toBe("allow");
+  });
+
+  it.each(["ksh93 -c 'printf ready'", "bun exec printf ready", "yarn node script.js", "yarnpkg node script.js", "wsl ls", "env wsl ls", "npx -p node node -e code", "npx --package node node -e code"])("refuses delegation outside the known grammar: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(false);
+    expect(proveLiteralPowerShell(command).proven).toBe(false);
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it.each(["make build", "sh build.sh", "python3 https://example.invalid/code.py"])("accepts literal file and network indirection: %s", (command) => {
@@ -127,9 +134,15 @@ describe("literal exact-rule proof", () => {
     expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'", "Start-Job -FilePath ./script.ps1"])("accepts visible literal invocation code: %s", (command) => {
+  it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'"])("accepts known visible literal invocation code: %s", (command) => {
     expect(proveLiteralPowerShell(command).proven).toBe(true);
     expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
+  });
+
+  it("refuses an invocation outside the known grammar", () => {
+    const command = "Start-Job -FilePath ./script.ps1";
+    expect(proveLiteralPowerShell(command).proven).toBe(false);
+    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it("conservatively refuses encoded arguments after a launcher word", () => {
@@ -147,9 +160,15 @@ describe("literal exact-rule proof", () => {
     expect(proveLiteralPowerShell(`${name} -c 'Write-Output ready'`).proven).toBe(true);
   });
 
-  it.each(["pwsh-tool", "powershellish", "bash5", "ksh93", "python3.12", "node22"])("does not infer encoded launcher identities: %s", (name) => {
+  it.each(["pwsh-tool", "powershellish", "bash5", "ksh93", "node22"])("does not treat unknown names as launchers or positive grammar: %s", (name) => {
     expect(isPowerShellLauncher(name)).toBe(false);
-    expect(proveLiteralShell(`${name} -c literal`).proven).toBe(true);
+    expect(proveLiteralShell(`${name} -c literal`).proven).toBe(false);
+    expect(buildShellRuleApproval("bash", `${name} -c literal`, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
+  });
+
+  it("keeps a known interpreter distinct from PowerShell launcher detection", () => {
+    expect(isPowerShellLauncher("python3.12")).toBe(false);
+    expect(proveLiteralShell("python3.12 -c literal").proven).toBe(true);
   });
 
   it("rejects excessive input before either dialect parser", () => {

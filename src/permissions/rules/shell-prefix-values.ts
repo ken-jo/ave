@@ -23,11 +23,11 @@ export const WRAPPERS = [
 ];
 // Runner identities and literal prefixes that can introduce another command.
 export type RunnerCommandPrefix = string | readonly [verb: string, interpreter: string];
-export const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = {
+export const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = Object.freeze(Object.assign(Object.create(null) as Record<string, true | readonly RunnerCommandPrefix[]>, {
   npx: true, bunx: true, pnpx: true, uvx: true, corepack: true,
   pipx: ["run"], yarn: ["dlx", "exec", ["node", "node"]], yarnpkg: ["dlx", "exec", ["node", "node"]],
   pnpm: ["dlx", "exec", "x"], npm: ["exec", "x"], bun: ["x", "exec"], deno: [["run", "deno"], ["eval", "deno"]],
-};
+}));
 export const PACKAGE_RUNNERS = Object.keys(RUNNER_COMMAND_PREFIXES);
 
 export function runnerHasPrefix(prefixes: readonly RunnerCommandPrefix[], token: string | undefined): boolean {
@@ -126,8 +126,8 @@ export const BANNED_PREFIX_SUGGESTIONS: readonly (readonly string[])[] = [
   ["zsh", "-lc"],
 ];
 
-export const SHELL_SET = new Set(SHELLS.map((name) => name.toLowerCase()));
-export const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCase()));
+const SHELL_SET = new Set(SHELLS.map((name) => name.toLowerCase()));
+const INTERPRETER_SET = new Set(INTERPRETERS.map((name) => name.toLowerCase()));
 export const WRAPPER_SET = new Set(WRAPPERS.map((name) => name.toLowerCase()));
 export const RUNNER_SET = new Set(PACKAGE_RUNNERS);
 

@@ -38,6 +38,21 @@ async function expectReplay(dialect: ShellRuleDialect, saved: string, different:
   expect(check(reader, dialect, different, cwd, true)).toBe("deny");
 }
 
+async function expectInertIdentity(dialect: ShellRuleDialect, saved: string, different: string): Promise<void> {
+  const { cwd, file } = prepare();
+  const expected = pattern(dialect, saved);
+  expect(expected).not.toBe(pattern(dialect, different));
+  expect(buildShellRuleApproval(dialect, saved, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+  const writer = new PermissionManager(file);
+  await writer.addRulePersist({ pattern: expected, action: "allow" }, { kind: "user" });
+  const reader = new PermissionManager(file);
+  await reader.loadRulesFromFile();
+  expect(check(reader, dialect, saved, cwd)).toBe("ask");
+  expect(check(reader, dialect, saved, cwd, true)).toBe("deny");
+  expect(check(reader, dialect, different, cwd)).toBe("ask");
+  expect(check(reader, dialect, different, cwd, true)).toBe("deny");
+}
+
 describe("raw exact rule identity", () => {
   it.each((["bash", "powershell"] as const).flatMap((dialect) =>
     ["0x10", "001", "1.0", "1kb"].map((value) => ({ dialect, value }))))
@@ -78,7 +93,7 @@ describe("raw exact rule identity", () => {
     const bare = "Invoke-Probe ready";
     for (const [saved, other] of [[alpha, beta], [beta, alpha], [alpha, bare], [bare, alpha]]) {
       expect(pattern("powershell", saved)).not.toBe(pattern("powershell", other));
-      await expectReplay("powershell", saved, other);
+      await expectInertIdentity("powershell", saved, other);
     }
   });
 
@@ -86,7 +101,8 @@ describe("raw exact rule identity", () => {
     const mixed = dialect === "bash" ? "Printf ready" : "Write-Output ready";
     const lower = dialect === "bash" ? "printf ready" : "write-output ready";
     expect(pattern(dialect, mixed)).not.toBe(pattern(dialect, lower));
-    await expectReplay(dialect, mixed, lower);
+    if (dialect === "bash") await expectInertIdentity(dialect, mixed, lower);
+    else await expectReplay(dialect, mixed, lower);
     await expectReplay(dialect, lower, mixed);
   });
 

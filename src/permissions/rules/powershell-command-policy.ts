@@ -351,10 +351,6 @@ export function canonicalPowerShellName(text: string): string {
   return commandAliases.get(name) ?? name;
 }
 
-export function powerShellCommandsWithEffect(effect: PowerShellCommandPolicy["effects"][number]): Set<string> {
-  return new Set(Object.entries(POWERSHELL_COMMAND_POLICIES).filter(([, policy]) => policy.effects.includes(effect)).map(([name]) => name));
-}
-
 export const POWERSHELL_ANALYSIS_LIMITS = Object.freeze({ inputChars: 8_000, depth: 16, expressionDepth: 24 });
 
 export class PowerShellStructuralLimitError extends Error {}
