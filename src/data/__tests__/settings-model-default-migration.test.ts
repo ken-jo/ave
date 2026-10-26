@@ -220,7 +220,7 @@ describe("stored built-in default model migration", () => {
     expect(service.get("llm").vendors.openai?.model).toBe("");
     expect(service.get("llm").vendors.claude?.model).toBe("gpt-5.4-mini");
     expect(service.get("llm").vendors.gemini?.model).toBe("chosen-model");
-    expect(service.get("llm").vendors.deepseek).toBeUndefined();
+    expect(service.get("llm").vendors.deepseek?.model).toBe("");
     expect(service.get("marketplace").installedProviderIds).not.toContain("deepseek");
     expect(service.get("llm").vendors["azure-foundry"]?.model).toBe(" gpt-5.4-mini ");
     expect(service.get("llm").vendors["openai-compatible"]?.model).toBe("gpt-5.4-mini");

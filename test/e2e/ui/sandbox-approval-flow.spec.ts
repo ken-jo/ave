@@ -84,7 +84,7 @@ test.describe("Sandbox approval flow", () => {
     const approveBtn = page.getByTestId(TEST_IDS.approveButton);
     await expect(approveBtn).toBeEnabled();
     await expect(approveBtn).toHaveText(t("toolApprovalDialog.allowOnce"));
-    await expect(dialog.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    await expect(dialog.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     await expect(dialog.getByTestId("high-risk-audit-reason"))
       .toContainText("shell destructive verb");
     await expect(dialog.locator('input, textarea, [contenteditable="true"], [role="textbox"]'))
@@ -114,8 +114,8 @@ test.describe("Sandbox approval flow", () => {
     await expect(approveBtn).toBeEnabled();
 
     // The obsolete scope selector is replaced by three explicit decisions.
-    await expect(page.getByTestId(TEST_IDS.denyButton)).toHaveText(t("toolApprovalDialog.denyOnce"));
-    await expect(page.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveText(t("toolApprovalDialog.allowAlways"));
+    await expect(page.getByTestId(TEST_IDS.denyButton)).toHaveText(t("toolApprovalDialog.decisionDeny"));
+    await expect(page.getByTestId(TEST_IDS.allowSessionButton)).toHaveText(t("toolApprovalDialog.decisionAllowSession"));
     await expect(page.getByTestId(TEST_IDS.approveButton)).toHaveText(t("toolApprovalDialog.allowOnce"));
   });
 
@@ -166,7 +166,7 @@ test.describe("Sandbox approval flow", () => {
     await expect(dock.getByTestId("tool-approval-shell-environment")).toContainText(t("shellExecution.hostHome"));
     await expect(dock.getByTestId(TEST_IDS.approvalReviewDetails)).toHaveAttribute("open", "");
     await expect(dock.getByTestId("tool-approval-input")).toHaveText(command);
-    await expect(dock.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    await expect(dock.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
     await expect(dock.getByTestId(TEST_IDS.approveButton)).toBeEnabled();
     await expect(dock.getByTestId(TEST_IDS.denyButton)).toBeFocused();
     await expect(dock.locator('input, textarea, [contenteditable="true"]')).toHaveCount(0);

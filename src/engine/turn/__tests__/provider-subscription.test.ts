@@ -129,6 +129,20 @@ it("does not retry an RPC timeout after model output has reached the host", asyn
 });
 
 describe("buildProvider subscription model overrides", () => {
+  it("omits the parent model fallback for an explicit selection", () => {
+    const persisted = {
+      kind: "subscription",
+      provider: "codex",
+      model: "chat-model",
+    } as const satisfies SubscriptionChatRuntimeSelection;
+    const { deps, subscriptionProviderFactory } = buildSubscriptionDeps(persisted, "summary-model");
+
+    const provider = buildProvider(deps, { fallbackEnabled: false });
+
+    expect(provider?.subscriptionRuntime?.model).toBe("summary-model");
+    expect(subscriptionProviderFactory).toHaveBeenCalledExactlyOnceWith({ ...persisted, model: "summary-model" });
+  });
+
   it("forwards a clean Codex override as a new immutable selection", async () => {
     const persisted = {
       kind: "subscription",

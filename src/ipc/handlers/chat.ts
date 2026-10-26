@@ -36,6 +36,7 @@ import {
 import { resolveAuthorizedWorkspaceProject } from "../../main/project-root-authorization.js";
 import { projectRootEquals } from "../../shared/project-identity.js";
 import { isDefaultWorkspaceRoot } from "../../main/default-workspace-root.js";
+import { expandFileMentionContext } from "./file-mention-context.js";
 import {
   runStreamedTurn,
   STREAM_TURN_OPTIONS,
@@ -399,10 +400,10 @@ export async function markMainActiveAfterTurn(
 export interface ChatSendContext {
   createStreamEventSink: (streamId: number) => ConversationStreamEventSink;
   allocateStreamId: () => number;
-  trackStreamTurn: (factory: () => Promise<ChatSendResult>) => Promise<ChatSendResult>;
+  trackStreamTurn: (factory: (signal?: AbortSignal) => Promise<ChatSendResult>) => Promise<ChatSendResult>;
   /** Host-owned remote-controller authority; external payloads cannot supply it. */
   remoteControllerAuthority?: RemoteControllerAuthority;
-  /** Host-owned cancellation signal for a registered public remote turn. */
+  /** Host-owned cancellation from admission and, when present, the public-turn owner. */
   abortSignal?: AbortSignal;
 }
 
@@ -423,75 +424,97 @@ export async function handleChatSend(
   });
   if (!parsed.ok) return { ok: false, error: parsed.error };
   const { input, attachments, inputOrigin, userActivation, personaPromptId } = parsed.payload;
-  const personaPrompt = await resolvePersonaRolePrompt(personaPromptStore, personaPromptId);
-  // Recheck remote authority after asynchronous persona resolution; revocation may race it.
-  if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
-    return { ok: false, error: "remote-controller-revoked" };
-  }
-  if (conversationLoop.getSessionId() !== expectedSessionId) {
-    return { ok: false, error: "session-mismatch" };
-  }
-  if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
-  // Automatic queue intake has no live keyboard gesture; audit it separately from keyboard sends.
-  if (inputOrigin === "queue-auto") {
-    auditLogger.log({
-      timestamp: new Date().toISOString(),
-      sessionId: conversationLoop.getSessionId(),
-      type: "info",
-      input: `chat:utterance:queue-auto:start:len=${input.length}`,
-    });
-  }
   const validated = validateUserContentParts(attachments);
   const streamId = ctx.allocateStreamId();
   const sink = ctx.createStreamEventSink(streamId);
-  return ctx.trackStreamTurn(async () => {
-    // Check revoked remote authority inside the lease's deferred effect-entry factory.
-    if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
-      return { ok: false, error: "remote-controller-revoked" };
+  return ctx.trackStreamTurn(async (admissionSignal) => {
+    const abortSignal = admissionSignal && ctx.abortSignal
+      ? AbortSignal.any([admissionSignal, ctx.abortSignal]) : admissionSignal ?? ctx.abortSignal;
+    let turnEntered = false;
+    try {
+      abortSignal?.throwIfAborted();
+      const personaPrompt = await resolvePersonaRolePrompt(personaPromptStore, personaPromptId);
+      abortSignal?.throwIfAborted();
+      // Recheck remote authority after asynchronous persona resolution; revocation may race it.
+      if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
+        return { ok: false, error: "remote-controller-revoked" };
+      }
+      if (conversationLoop.getSessionId() !== expectedSessionId) {
+        return { ok: false, error: "session-mismatch" };
+      }
+      if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
+      // Automatic queue intake has no live keyboard gesture; audit it separately from keyboard sends.
+      if (inputOrigin === "queue-auto") {
+        auditLogger.log({
+          timestamp: new Date().toISOString(),
+          sessionId: conversationLoop.getSessionId(),
+          type: "info",
+          input: `chat:utterance:queue-auto:start:len=${input.length}`,
+        });
+      }
+      abortSignal?.throwIfAborted();
+      // Check revoked remote authority inside the lease's deferred effect-entry factory.
+      if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
+        return { ok: false, error: "remote-controller-revoked" };
+      }
+      // Snapshot the mailbox under the receiving turn's lease so session mutation cannot switch its owner.
+      const mailboxTurn = inputOrigin === "user-keyboard" || inputOrigin === "queue-auto"
+        ? await prepareParentMailboxTurn(deps)
+        : null;
+      if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
+        return { ok: false, error: "remote-controller-revoked" };
+      }
+      // Redact only under an accepted lease; refused overlapping sends must not create DLP records or notices.
+      const expanded = await expandFileMentionContext(conversationLoop, input, inputOrigin, validated, abortSignal);
+      abortSignal?.throwIfAborted();
+      if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
+        return { ok: false, error: "remote-controller-revoked" };
+      }
+      const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, expanded.input, validated);
+      const displayText = expanded.displayText === undefined ? undefined
+        : sanitizeOutgoingInput(settingsService, sink, expanded.displayText);
+      // No await may separate the last authority check from the model effect.
+      if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
+        return { ok: false, error: "remote-controller-revoked" };
+      }
+      abortSignal?.throwIfAborted();
+      turnEntered = true;
+      const result = await runStreamedTurn(
+        conversationLoop,
+        sanitized.input,
+        sink,
+        {
+          ...STREAM_TURN_OPTIONS,
+          attachments: sanitized.attachments,
+          inputOrigin,
+          ...(displayText === undefined ? {} : { displayText }),
+          ...(inputOrigin === "user-keyboard" && userActivation === true
+            ? { requestAnchorRawIntent: input }
+            : {}),
+          ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),
+          ...(mailboxTurn
+            ? {
+                initialGuidance: mailboxTurn.initialGuidance,
+                approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
+                subAgentReport: mailboxTurn.childTitle === undefined
+                  ? {}
+                  : { title: mailboxTurn.childTitle },
+              }
+            : {}),
+          ...(ctx.remoteControllerAuthority
+            ? { remoteControllerAuthority: ctx.remoteControllerAuthority }
+            : {}),
+          ...(abortSignal === undefined ? {} : { abortSignal }),
+        },
+      );
+      await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
+      await markMainActiveAfterTurn(deps, sanitized.input, inputOrigin);
+      return result;
+    } catch (error) {
+      if (turnEntered || !abortSignal?.aborted) throw error;
+      sink({ kind: "turn.completed" });
+      return { text: "", toolCalls: [], route: "default", stopReason: "interrupted" };
     }
-    // Snapshot the mailbox under the receiving turn's lease so session mutation cannot switch its owner.
-    const mailboxTurn = inputOrigin === "user-keyboard" || inputOrigin === "queue-auto"
-      ? await prepareParentMailboxTurn(deps)
-      : null;
-    if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
-      return { ok: false, error: "remote-controller-revoked" };
-    }
-    // Redact only under an accepted lease; refused overlapping sends must not create DLP records or notices.
-    const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, validated);
-    // No await may separate the last authority check from the model effect.
-    if (!isRemoteControllerAuthorityCurrent(ctx.remoteControllerAuthority)) {
-      return { ok: false, error: "remote-controller-revoked" };
-    }
-    const result = await runStreamedTurn(
-      conversationLoop,
-      sanitized.input,
-      sink,
-      {
-        ...STREAM_TURN_OPTIONS,
-        attachments: sanitized.attachments,
-        inputOrigin,
-        ...(inputOrigin === "user-keyboard" && userActivation === true
-          ? { requestAnchorRawIntent: input }
-          : {}),
-        ...(personaPrompt.rolePrompt ? { rolePrompt: personaPrompt.rolePrompt } : {}),
-        ...(mailboxTurn
-          ? {
-              initialGuidance: mailboxTurn.initialGuidance,
-              approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
-              subAgentReport: mailboxTurn.childTitle === undefined
-                ? {}
-                : { title: mailboxTurn.childTitle },
-            }
-          : {}),
-        ...(ctx.remoteControllerAuthority
-          ? { remoteControllerAuthority: ctx.remoteControllerAuthority }
-          : {}),
-        ...(ctx.abortSignal === undefined ? {} : { abortSignal: ctx.abortSignal }),
-      },
-    );
-    await acknowledgeParentMailboxAfterTurn(deps, mailboxTurn, result);
-    await markMainActiveAfterTurn(deps, sanitized.input, inputOrigin);
-    return result;
   });
 }
 

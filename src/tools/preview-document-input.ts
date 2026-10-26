@@ -4,8 +4,15 @@ import { PREVIEW_DOCUMENT_LIMITS } from "../shared/preview-document.js";
 import { TableDocumentError } from "./table-document-error.js";
 
 /** Read one opened regular file without reopening a checked pathname. */
-export async function readPreviewDocumentInput(path: string, signal?: AbortSignal): Promise<Buffer> {
+export async function readPreviewDocumentInput(
+  path: string,
+  signal?: AbortSignal,
+  maxBytes = PREVIEW_DOCUMENT_LIMITS.maxFileBytes,
+): Promise<Buffer> {
   signal?.throwIfAborted();
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) {
+    throw new TableDocumentError("too-large", "Invalid preview byte limit.");
+  }
   const handle = await open(path, constants.O_RDONLY
     | (process.platform === "win32" ? 0 : constants.O_NONBLOCK | constants.O_NOFOLLOW));
   try {
@@ -20,7 +27,7 @@ export async function readPreviewDocumentInput(path: string, signal?: AbortSigna
       throw new TableDocumentError("read-failed", "Document changed while being read.");
     }
     if (!initial.isFile()) throw new TableDocumentError("not-a-file", "Not a regular file.");
-    const limit = PREVIEW_DOCUMENT_LIMITS.maxFileBytes;
+    const limit = maxBytes;
     if (initial.size > limit) {
       throw new TableDocumentError("too-large", "Document exceeds the file size limit.", initial.size);
     }

@@ -32,9 +32,8 @@ IPC; they never reach host internals directly. The code entry points are
   [CLI subscription runtime](./claude-code-subscription-runtime.md): how
   provider connections plug into one engine.
 - [Image preparation](./image-preparation.md): the `view_image` pipeline.
-- [Native host secret encryption](./headless-secret-encryption.md) and the
-  [Linux workload resource controller](./linux-workload-resource-controller.md):
-  the native host's secret store and resource isolation.
+- [Native host secret encryption](./headless-secret-encryption.md):
+  the native host's secret store.
 
 ## Extensions, MCP, and hooks
 

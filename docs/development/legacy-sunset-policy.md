@@ -38,7 +38,6 @@ must live under an `experimental/` path or the entry must name an explicit
 | Work board legacy plugin-board migration | Keep. It is boot-time, but one-shot and data-preserving. Removal is blocked until the support floor expires and the copy/idempotency tests pass in the removal PR. |
 | Permission reviewer `disabled` migration | Keep. It prevents a silent security downgrade for pre-#664 settings files. Removal needs an explicit migration sunset issue because old settings can persist across app upgrades. |
 | Permission `allowedDirectories` alias convergence | Keep the write-time scrub only. Read-time behavior already ignores the legacy alias, and writes converge the file to `additionalDirectories`. |
-| MCP stdio out-of-process transport | Isolate as experimental. The serving loop and child transport are tested, but not production-wired; they now live under `src/mcp/experimental/` until promoted behind a feature flag or deleted. |
 
 ## Removal PR Rule
 

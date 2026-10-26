@@ -761,6 +761,23 @@ describe("ApprovalGate", () => {
     await pending;
   });
 
+  // The card offers an exact Always deny only where the record handler would accept one (`one-shot-not-recordable` otherwise).
+  it.each([
+    [{}, true],
+    [{ durableApprovalRecordAllowed: false as const }, false],
+    [{ allowedChoices: ["allow-once", "deny-once"] as const }, false],
+  ])("tells the card whether the exact-approval store records this request (%j)", async (restriction, recordable) => {
+    const wc = makeMockWebContents();
+    const gate = new ApprovalGate(wc as never);
+    const req = makeRequest({ toolName: "write_file", toolCategory: "write", args: { path: "/workspace/a.txt" }, ...restriction });
+    const pending = gate.requestAndWait(req);
+    const sent = sentApprovalCards<ApprovalRequest>(wc)[0]!;
+    expect(sent.exactRecordAllowed).toBe(recordable);
+    expect(gate.getRequestSnapshot(req.id)?.durableApprovalRecordAllowed).toBe(recordable);
+    gate.resolveFromDesktopRenderer(req.id, { requestId: req.id, choice: "deny-once", nonce: sent.nonce, hmac: sent.hmac });
+    await pending;
+  });
+
   it("webContents.send is called with the correct channel and payload shape", async () => {
     const wc = makeMockWebContents();
     const gate = new ApprovalGate(wc as never);

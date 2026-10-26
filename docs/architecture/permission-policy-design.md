@@ -1112,10 +1112,8 @@ host plan of a child that never spawns. The verdict
 cache keys by the guest identity, so a host verdict never serves a guest call
 and vice versa. An unverified or partially confined guest earns no relaxation.
 
-The [Linux workload resource controller](linux-workload-resource-controller.md)
-is a separate unwired foundation. Its cgroup-v2 leaf limits and OOM evidence do
-not issue either disposable authority. The Docker broker independently binds
-and revalidates the exact container cgroup's `memory.events` for OOM evidence.
+The Docker broker independently binds and revalidates the exact container cgroup's
+`memory.events` for OOM evidence.
 
 Execution location, configuration, authentication and OS identity are separate
 properties. ASRT launches processes on the current host with a temporary HOME

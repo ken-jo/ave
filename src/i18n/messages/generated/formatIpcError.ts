@@ -365,7 +365,7 @@ export const ko: Record<keyof typeof en, string> = {
   "formatIpcError.ruleRequired": "이 요청은 그대로 저장할 규칙이 없습니다. 규칙을 편집하거나 이번만 허용 또는 거부하세요.",
   "formatIpcError.scopeNotOffered": "이 요청에는 그 선택지를 제공하지 않습니다.",
   "formatIpcError.notRequestOwner": "이 요청은 해당 터미널 탭이 있는 창에서 응답하세요.",
-  "formatIpcError.denyRequiresPersistentScope": "정확한 항상 거절 결정은 설정에 영구 저장해야 합니다.",
+  "formatIpcError.denyRequiresPersistentScope": "정확한 항상 거부 결정은 설정에 영구 저장해야 합니다.",
   "formatIpcError.verdictMismatch": "표시된 위험도와 대기 중인 호스트 요청이 더 이상 일치하지 않습니다. 승인을 다시 여세요.",
   "formatIpcError.addFailed": "규칙 추가에 실패했습니다.",
   "formatIpcError.removeFailed": "규칙 삭제에 실패했습니다.",

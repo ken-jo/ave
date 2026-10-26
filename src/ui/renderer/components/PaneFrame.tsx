@@ -18,7 +18,8 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/
 import { useTranslation } from "../../../i18n/react.js";
 import { MAIN_CHAT_GROUP_ID, MAX_CHAT_GROUPS, MAX_PANES } from "../../../contract/app-contract.js";
 import { sameViewLocation, type ViewLocation } from "../utils/view-location.js";
-import { SIDE_PANEL_MIN_WIDTH } from "../../../shared/side-panel.js";
+import { PANE_MIN_WIDTH, SINGLE_TILE_ENTER_WIDTH, SINGLE_TILE_EXIT_WIDTH } from "../../../shared/shell-geometry.js";
+import { useContainerNarrow } from "../hooks/use-container-narrow.js";
 import { CHROME_GAP_TIGHT } from "../../../shared/shell-geometry.js";
 import type { AveApi } from "../types.js";
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
@@ -51,7 +52,7 @@ import { AXIS_OF,
 } from "./pane-tree.js";
 
 /** Use the shared 448px surface width floor; the 280px height floor retains a header, composer and one visible turn. */
-export const PANE_MIN_WIDTH = SIDE_PANEL_MIN_WIDTH;
+export { PANE_MIN_WIDTH } from "../../../shared/shell-geometry.js";
 export const PANE_MIN_HEIGHT = 280;
 
 /** The 1px hairline the frame draws itself with, on each of its four sides. */
@@ -636,7 +637,7 @@ export interface ChatGroupState {
   /** Where this tile sits, in percentages of the main area. */
   box: PaneBox;
   /**
-   * The view is not showing this group right now — chat mode draws one, and
+   * The view is not showing this group right now — a narrow canvas draws one, and
    * maximizing draws one. It stays MOUNTED: its conversation may be mid-turn,
    * and a turn's stream subscription, streaming flag and stop control all live
    * in the tile. Unmounting it would drop the frames on the floor, stop the
@@ -651,26 +652,31 @@ export interface ChatGroupState {
 export const PANE_HOME: ViewLocation = { view: "home" };
 
 /**
- * What the canvas draws. Chat mode collapses to the focused tile rather than
- * closing the others: switching modes is a view change, and losing a
- * conversation to it would make the toggle destructive. Maximizing is the same
- * kind of choice, made in work mode; chat mode's own rule wins there.
+ * A narrow canvas draws the focused tile while retaining the full tree and
+ * the user's maximized choice for when the canvas widens.
  */
-function visibleTreeFor(tree: PaneNode, appMode: "chat" | "work" | undefined, focusedId: string, maximizedId: string | null): PaneNode {
-  const shownAlone = appMode === "chat" ? focusedId : maximizedId;
+function visibleTreeFor(tree: PaneNode, isSingleTile: boolean, focusedId: string, maximizedId: string | null): PaneNode {
+  const shownAlone = isSingleTile ? focusedId : maximizedId;
   return shownAlone === null ? tree : leaf(shownAlone);
 }
 
 /** Conversation-group and canvas-leaf ceilings count different resources; keep loop ownership separate from pane geometry
  * and displayed content. */
-export function useChatGroups(appMode?: "chat" | "work") {
+export function useChatGroups(canvasElement: HTMLElement | null) {
+  const { isNarrow: isSingleTile } = useContainerNarrow(canvasElement, {
+    enter: SINGLE_TILE_ENTER_WIDTH, exit: SINGLE_TILE_EXIT_WIDTH,
+  });
   const [tree, setTree] = useState<PaneNode>(() => leaf(MAIN_CHAT_GROUP_ID));
   const [panelOpenIds, setPanelOpenIds] = useState<readonly string[]>([]);
   const [thumbnailOpenIds, setThumbnailOpenIds] = useState<readonly string[]>([]);
   const [focusedId, setFocusedId] = useState(MAIN_CHAT_GROUP_ID);
-  // The one tile shown alone, if any. A view choice, like chat mode's: the others keep their conversations and their places
+  // The one tile shown alone, if any. A view choice: the others keep their conversations and their places
   // until restored.
   const [maximizedId, setMaximizedId] = useState<string | null>(null);
+  // Restoring a maximized pane also restores focus so window controls address the visible conversation.
+  useEffect(() => {
+    if (!isSingleTile && maximizedId !== null) setFocusedId(maximizedId);
+  }, [isSingleTile, maximizedId]);
   // Monotonic, so a closed tile's id is never reused within this renderer.
   // Main-process loops are keyed by this id, and reusing one would hand a
   // new tile the previous tile's live history. (A reload starts the count
@@ -711,6 +717,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
    * in the gesture rather than as a rejection after the fact.
    */
   const dropOnEdge = useCallback((targetGroupId: string, edge: DropEdge): string | null => {
+    if (isSingleTile) return null;
     // Two ceilings, both binding: the drop opens a conversation (a loop) AND a
     // pane (a rectangle on the canvas). They are the same number today because
     // every pane holds a conversation, and they are asked separately so that
@@ -726,7 +733,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     // A tile added behind a maximized one would be a tile nobody can see.
     setMaximizedId(null);
     return id;
-  }, [tree, conversationIds]);
+  }, [tree, conversationIds, isSingleTile]);
 
   /** The header's split: halve `groupId` on `axis`, the new tile trailing — beside it for `row`, under it for `column`. The
    * direction is the user's; the control offers only the ones {@link splitFits} allows. */
@@ -752,7 +759,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
     return extent / 2 - PANE_CELL_INSET >= floor;
   }, [tree]);
 
-  /** Adoption respects the loop ceiling in both modes; at capacity release only an idle, non-focused group and disclose lost
+  /** Adoption respects the loop ceiling; at capacity release only an idle, non-focused group and disclose lost
    * draft/scroll state. */
   const adopt = useCallback((
     besideGroupId: string,
@@ -769,7 +776,8 @@ export function useChatGroups(appMode?: "chat" | "work") {
       // instead of where the user left off. Closing the primary is a gesture
       // the user makes deliberately; it is not something to do to them.
       released = leafIds(tree).find(
-        (id) => id !== besideGroupId && id !== focusedId && id !== MAIN_CHAT_GROUP_ID && isIdle(id),
+        (id) => id !== besideGroupId && id !== focusedId && id !== MAIN_CHAT_GROUP_ID
+          && (!isSingleTile || id !== maximizedId) && isIdle(id),
       ) ?? null;
       if (released === null) return null;
     }
@@ -796,19 +804,17 @@ export function useChatGroups(appMode?: "chat" | "work") {
       return next;
     });
     setFocusedId(id);
-    // When a work-mode split cannot meet tile floors, show the new group alone; chat mode already does so and must not retain
-    // a hidden maximize.
-    setMaximizedId(
-      appMode === "chat" || splitFits(besideGroupId, "row", canvasSize) ? null : id,
-    );
+    // Narrow adoption changes focus only; keep the user's wide-canvas maximized choice.
+    if (!isSingleTile) setMaximizedId(splitFits(besideGroupId, "row", canvasSize) ? null : id);
     return { chatGroupId: id, released };
-  }, [tree, focusedId, splitFits, appMode, conversationIds]);
+  }, [tree, focusedId, splitFits, isSingleTile, maximizedId, conversationIds]);
 
   // Any tile but the last can go, the primary included: once split, the
   // primary is one tile among the others to the user, and a close that works
   // on every tile but one reads as a bug on that one. Its loop stays — main
   // gives it a blank conversation on release rather than tearing it down.
   const close = useCallback((id: string) => {
+    if (isSingleTile) return;
     const next = closeLeaf(tree, id);
     if (next === tree) return;
     const survivors = leafIds(next);
@@ -829,19 +835,20 @@ export function useChatGroups(appMode?: "chat" | "work") {
       next.delete(id);
       return next;
     });
-  }, [tree]);
+  }, [tree, isSingleTile]);
 
   const toggleMaximize = useCallback((id: string) => {
+    if (isSingleTile) return;
     setMaximizedId((current) => (current === id ? null : id));
     setFocusedId(id);
-  }, []);
+  }, [isSingleTile]);
 
   // Focusing a hidden tile must move the maximize target too, or focus-derived controls would address an unseen
   // conversation.
   const focus = useCallback((id: string) => {
     setFocusedId(id);
-    setMaximizedId((current) => (current === null ? null : id));
-  }, []);
+    if (!isSingleTile) setMaximizedId((current) => (current === null ? null : id));
+  }, [isSingleTile]);
 
   /** Deduplicate locations over live panes only; home is exempt because each pane owns a distinct conversation. */
   const paneShowing = useCallback((location: ViewLocation): string | undefined => {
@@ -905,7 +912,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
   /** The drawn pane beside `id` in `direction`: the one sharing the most of `id`'s edge on that side. Undefined at the canvas
    * edge. */
   const paneNeighbor = useCallback((id: string, direction: "left" | "right" | "up" | "down"): string | undefined => {
-    const boxes = layoutBoxes(visibleTreeFor(tree, appMode, focusedId, maximizedId));
+    const boxes = layoutBoxes(visibleTreeFor(tree, isSingleTile, focusedId, maximizedId));
     const from = boxes.find((box) => box.chatGroupId === id);
     if (!from) return undefined;
     const EPS = 0.01;
@@ -924,7 +931,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
       if (overlap > EPS && (!best || overlap > best.overlap)) best = { id: box.chatGroupId, overlap };
     }
     return best?.id;
-  }, [tree, appMode, focusedId, maximizedId]);
+  }, [tree, isSingleTile, focusedId, maximizedId]);
 
   /** Conversation-scoped controls use the focused conversation or the last one focus left; update the ref from render so all
    * focus-changing paths agree. */
@@ -938,8 +945,8 @@ export function useChatGroups(appMode?: "chat" | "work") {
       ? lastFocusedConversationRef.current
       : leafIds(tree).find((id) => conversationIds.has(id)) ?? MAIN_CHAT_GROUP_ID;
 
-  // Chat mode hides other groups without closing them; mode changes must not destroy conversations.
-  const visibleTree: PaneNode = visibleTreeFor(tree, appMode, focusedId, maximizedId);
+  // Folding hides other groups without closing them or losing their layout.
+  const visibleTree: PaneNode = visibleTreeFor(tree, isSingleTile, focusedId, maximizedId);
   const groups = useMemo<ChatGroupState[]>(
     () => {
       const drawn = new Map(layoutBoxes(visibleTree).map((box) => [box.chatGroupId, box]));
@@ -958,22 +965,21 @@ export function useChatGroups(appMode?: "chat" | "work") {
         };
       });
     },
-    // `visibleTree` is rebuilt each render in chat mode, so the tree and the
-    // mode are the honest dependencies here, not the derived node.
+    // `visibleTree` is rebuilt while folded; depend on its inputs.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tree, appMode, focusedId, maximizedId, panelOpenIds, thumbnailOpenIds],
+    [tree, isSingleTile, focusedId, maximizedId, panelOpenIds, thumbnailOpenIds],
   );
 
   // Once split, every tile can be closed and any one can be shown alone —
   // even while one is: the tree, not the view, says how many there are. Not
-  // in chat mode, though: it shows one tile and nothing of the others, so a
+  // on a folded canvas, though: it shows one tile and nothing of the others, so a
   // close there would swap in a conversation the user has no way to expect.
   // `adopt` releases a group there instead, and only an idle one.
-  const closable = appMode !== "chat" && countLeaves(tree) > 1;
-  const canMaximize = appMode !== "chat" && countLeaves(tree) > 1;
+  const closable = !isSingleTile && countLeaves(tree) > 1;
+  const canMaximize = !isSingleTile && countLeaves(tree) > 1;
 
   // Offer split only while both the conversation and pane ceilings have room.
-  const canSplit = appMode !== "chat"
+  const canSplit = !isSingleTile
     && countLeaves(tree) < MAX_PANES
     && conversationIds.size < MAX_CHAT_GROUPS;
 
@@ -1016,11 +1022,11 @@ export function useChatGroups(appMode?: "chat" | "work") {
     setContentById((current) => Object.fromEntries(ids.map((id) => [id, layout.content[id] ?? current[id] ?? PANE_HOME])));
   }, []);
 
-  // Boundaries between tiles. Chat mode shows one leaf, so there are none.
+  // A folded canvas has one visible leaf and no boundaries.
   const gutters = useMemo(
     () => layoutGutters(visibleTree),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [tree, appMode, focusedId, maximizedId],
+    [tree, isSingleTile, focusedId, maximizedId],
   );
 
   const resize = useCallback((gutter: Pick<PaneGutter, "path" | "index">, leadingShare: number) => {
@@ -1038,6 +1044,7 @@ export function useChatGroups(appMode?: "chat" | "work") {
   );
 
   return {
+    isSingleTile,
     groups,
     gutters,
     tree,

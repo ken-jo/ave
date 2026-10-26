@@ -20,6 +20,7 @@ import { SettingsService, type SystemSettings } from "../settings-store.js";
 import { SecretDocumentStore } from "../secret-document-store.js";
 import { CredentialLeaseRegistry } from "../../plugins/secret-access/credential-lease-registry.js";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
+import { compactionModelRouteKey, selectedCompactionModel } from "../../shared/compaction-model.js";
 import { normalizeMarketplace } from "../settings-normalization.js";
 import { registerInstalledLocales } from "../../i18n/locale.js";
 import {
@@ -65,6 +66,94 @@ function currentSettingsJson(settings: Record<string, unknown>): string {
   return JSON.stringify({ ...settings, appliedMigrations: currentMigrations });
 }
 
+describe("bundled provider settings", () => {
+  it("reports malformed legacy installation state", () => {
+    expect(() => normalizeMarketplace({ installedProviderIds: "groq" })).toThrow(/installedProviderIds/);
+  });
+
+  it("rejects malformed stored installation state without overwriting settings", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "provider-installation-invalid-"));
+    try {
+      const path = join(userDataPath, "ave-settings.json");
+      const stored = currentSettingsJson({ marketplace: { installedProviderIds: "groq" } });
+      writeFileSync(path, stored);
+      expect(() => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath })).toThrow(/installedProviderIds/);
+      expect(readFileSync(path, "utf8")).toBe(stored);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("preserves a native model cache on reload and clears it when the format changes", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "custom-provider-cache-"));
+    try {
+      const baseUrl = "https://custom.example/v1";
+      const key = llmModelListCacheKey("openai-compatible", baseUrl);
+      const otherKey = llmModelListCacheKey("openai", "");
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm: {
+        provider: "openai-compatible",
+        vendors: { "openai-compatible": { baseUrl, model: "fixture", wire: "anthropic-messages" } },
+        modelListCache: {
+          [key]: { vendor: "openai-compatible", baseUrl, endpoint: baseUrl + "/models", models: ["fixture"], fetchedAt: "2026-01-01T00:00:00.000Z" },
+          [otherKey]: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: ["fixture-other"], fetchedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      } }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(service.get("llm").modelListCache[key]?.models).toEqual(["fixture"]);
+      await service.patch({ llm: { vendors: { "openai-compatible": { wire: "google-gemini" } } } });
+      expect(service.get("llm").modelListCache).not.toHaveProperty(key);
+      expect(service.get("llm").modelListCache[otherKey]?.models).toEqual(["fixture-other"]);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("loads legacy installations and retains bundled routes without them", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "bundled-providers-"));
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({
+        marketplace: { installedProviderIds: ["groq"] },
+        llm: { provider: "deepseek", vendors: { deepseek: { model: "fixture-model" } } },
+      }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(service.get("marketplace").installedProviderIds).toEqual(["groq"]);
+      expect(service.get("llm").provider).toBe("deepseek");
+      await service.patch({ llm: { provider: "ollama", vendors: { ollama: { model: "fixture-local" } } } });
+      expect(service.get("llm").provider).toBe("ollama");
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("writes the explicit chat format when loading an existing custom connection", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "custom-provider-migration-"));
+    try {
+      const path = join(userDataPath, "ave-settings.json");
+      writeFileSync(path, currentSettingsJson({ llm: {
+        provider: "openai-compatible", vendors: { "openai-compatible": { baseUrl: "https://custom.example/v1", model: "fixture" } },
+      } }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      await vi.waitFor(() => expect(JSON.parse(readFileSync(path, "utf8")).llm.vendors["openai-compatible"].wire).toBe("openai-chat"));
+      expect(getLlmVendorSettings(service.get("llm").vendors, "openai-compatible").wire).toBe("openai-chat");
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("rejects unknown stored custom formats without rewriting the file", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "custom-provider-invalid-"));
+    try {
+      const path = join(userDataPath, "ave-settings.json");
+      const stored = currentSettingsJson({ llm: { provider: "openai-compatible", vendors: { "openai-compatible": { wire: "unknown" } } } });
+      writeFileSync(path, stored);
+      expect(() => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath })).toThrow(/wire/);
+      expect(readFileSync(path, "utf8")).toBe(stored);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+});
+
 describe("SettingsService upstream proxy (main-owned)", () => {
   let userDataPath: string;
 
@@ -108,6 +197,27 @@ describe("SettingsService upstream proxy (main-owned)", () => {
     expect(service.get("upstreamProxy").bypass).toBe(bypass);
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("upstreamProxy").bypass).toBe(bypass);
+  });
+});
+
+describe("SettingsService compaction model route", () => {
+  it("binds model saves atomically and rejects an expected route that another settings write changed", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "settings-compaction-route-"));
+    try {
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      const expectedRoute = compactionModelRouteKey(service.get("llm"));
+      await service.patch({ llm: { compactionModel: "summary-model", compactionModelRoute: expectedRoute } });
+      expect(selectedCompactionModel(service.get("llm"))).toBe("summary-model");
+      const vendor = service.get("llm").provider;
+      await service.patch({ llm: { vendors: { [vendor]: { baseUrl: "https://another.example.test/v1" } } } });
+      expect(selectedCompactionModel(service.get("llm"))).toBeUndefined();
+      await expect(service.patch({ llm: { compactionModel: "wrong-route-model", compactionModelRoute: expectedRoute } }))
+        .rejects.toThrow("Compaction provider route changed");
+      expect(service.get("llm").compactionModel).toBe("summary-model");
+      expect(selectedCompactionModel(service.get("llm"))).toBeUndefined();
+      await service.patch({ llm: { compactionModel: "new-route-model" } });
+      expect(selectedCompactionModel(service.get("llm"))).toBe("new-route-model");
+    } finally { await cleanupTmpDir(userDataPath); }
   });
 });
 
@@ -1297,14 +1407,14 @@ describe("SettingsService marketplace defaults", () => {
       llm: { provider: "openai", vendors: { groq: { imageInput: { [key]: false } } } },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("marketplace").installedProviderIds).toEqual([]);
     expect(service.get("llm").vendors.groq?.model).toBe("");
     expect(service.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
     await service.patch({ llm: { provider: "groq" } });
     await service.patch({ llm: { provider: "openai" } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("llm").provider).toBe("openai");
-    expect(reloaded.get("marketplace").installedProviderIds).toContain("groq");
+    expect(reloaded.get("marketplace").installedProviderIds).toEqual([]);
     expect(reloaded.get("llm").vendors.groq?.model).toBe("");
     expect(reloaded.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
   });
@@ -1790,7 +1900,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("llm").vendors.groq).toMatchObject({ outputTokenLimit: 64_000, thinkingBudgetTokens: 8_000 });
-    expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("marketplace").installedProviderIds).toEqual([]);
     await service.patch({ llm: { provider: "groq" } });
     await service.patch({ llm: { provider: "openai" } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -1962,7 +2072,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     expect(service.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
   });
 
-  it("prunes legacy default marketplace vendor blocks while preserving custom ones", () => {
+  it("retains stored bundled vendor blocks without inferring installations", () => {
     const legacyVendors = freshAllVendorBlocks();
     legacyVendors.groq.model = "llama-3.3-70b-versatile";
     writeFileSync(
@@ -1980,15 +2090,15 @@ describe("SettingsService LLM per-vendor patching", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const settings = service.getAll();
 
-    expect(settings.llm.vendors["azure-foundry"]).toBeUndefined();
-    expect(settings.llm.vendors.ollama).toBeUndefined();
+    expect(settings.llm.vendors["azure-foundry"]?.model).toBe("");
+    expect(settings.llm.vendors.ollama?.model).toBe("");
     expect(getLlmVendorSettings(settings.llm.vendors, "groq").model).toBe(
       "llama-3.3-70b-versatile",
     );
-    expect(settings.marketplace.installedProviderIds).toEqual(["groq"]);
+    expect(settings.marketplace.installedProviderIds).toEqual([]);
   });
 
-  it("rejects uninstalled marketplace providers as active or fallback providers", async () => {
+  it("accepts bundled providers as active or fallback providers without installation", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
     await service.patch({
@@ -2000,14 +2110,14 @@ describe("SettingsService LLM per-vendor patching", () => {
     });
 
     const llm = service.get("llm");
-    expect(llm.provider).toBe(DEFAULT_LLM_VENDOR);
-    expect(llm.fallbackChain).toEqual([]);
-    expect(llm.vendors.groq).toBeUndefined();
-    expect(llm.vendors.ollama).toBeUndefined();
+    expect(llm.provider).toBe("groq");
+    expect(llm.fallbackChain).toEqual([{ provider: "ollama", model: "llama3.3" }]);
+    expect(llm.vendors.groq?.model).toBe("llama-3.3-70b-versatile");
+    expect(getLlmVendorSettings(llm.vendors, "ollama").baseUrl).toBe("http://localhost:11434/v1");
     expect(service.get("marketplace").installedProviderIds).toEqual([]);
   });
 
-  it("persists model list cache and prunes uninstalled marketplace provider caches", async () => {
+  it("persists bundled provider model caches independently of legacy installation state", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
     await service.patch({
@@ -2057,6 +2167,10 @@ describe("SettingsService LLM per-vendor patching", () => {
     await service.patch({ marketplace: { installedProviderIds: [] } });
 
     expect(service.get("llm").modelListCache).toEqual({
+      [llmModelListCacheKey("groq")]: {
+        vendor: "groq", endpoint: "https://api.groq.com/openai/v1/models",
+        models: ["llama-3.3-70b-versatile"], fetchedAt: "2026-07-06T00:00:00.000Z",
+      },
       [llmModelListCacheKey("openrouter")]: {
         vendor: "openrouter",
         endpoint: "https://openrouter.ai/api/v1/models",
@@ -2168,7 +2282,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     });
   });
 
-  it("allows installed marketplace providers and removes them durably on uninstall", async () => {
+  it("retains bundled routes when legacy installation state is cleared", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
     await service.patch({
@@ -2188,10 +2302,9 @@ describe("SettingsService LLM per-vendor patching", () => {
       marketplace: { installedProviderIds: [] },
     });
     const settings = service.getAll();
-    expect(settings.llm.provider).toBe(DEFAULT_LLM_VENDOR);
-    expect(settings.llm.fallbackChain).toEqual([]);
-    expect(settings.llm.vendors.groq).toBeUndefined();
-    expect(settings.llm.vendors.ollama).toBeUndefined();
+    expect(settings.llm.provider).toBe("groq");
+    expect(settings.llm.fallbackChain).toEqual([{ provider: "ollama", model: "llama3.3" }]);
+    expect(settings.llm.vendors.groq?.model).toBe("llama-3.3-70b-versatile");
     expect(settings.marketplace.installedProviderIds).toEqual([]);
   });
 
@@ -2426,7 +2539,7 @@ describe("SettingsService system preferences", () => {
 
   it("defaults closeBehavior to 'hide-to-tray' on a fresh install", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("applies default 'hide-to-tray' when system field is absent on disk (legacy settings.json)", () => {
@@ -2436,16 +2549,16 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("round-trips a 'quit' preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { closeBehavior: "quit" } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic M1; schema-invalid value on disk falls back to default for THIS field only; other settings sections must remain intact.
@@ -2465,7 +2578,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
     expect(service.get("marketplace").updateCheckEnabled).toBe(false);
@@ -2478,7 +2591,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic N1; patch-merge must NOT clobber a valid prior preference when an invalid value
@@ -2537,11 +2650,11 @@ describe("SettingsService system — pinned project roots", () => {
   });
 });
 
-describe("SettingsService system — workspace appMode", () => {
+describe("SettingsService system — workspace preferences", () => {
   let userDataPath: string;
 
   beforeEach(() => {
-    userDataPath = mkdtempSync(join(tmpdir(), "settings-system-appmode-"));
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-system-preferences-"));
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
   });
 
@@ -2550,67 +2663,10 @@ describe("SettingsService system — workspace appMode", () => {
     await cleanupTmpDir(userDataPath);
   });
 
-  it("defaults appMode to 'work' on a fresh install", () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system").appMode).toBe("work");
-  });
-
-  it("round-trips a 'chat' appMode across restart", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { appMode: "chat" } });
-    expect(service.get("system").appMode).toBe("chat");
-
-    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system").appMode).toBe("chat");
-  });
-
-  it("normalizes appMode and closeBehavior independently (one invalid, one valid)", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      currentSettingsJson({ system: { closeBehavior: "quit", appMode: "not-a-mode" } }),
-      "utf-8",
-    );
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // closeBehavior preserved; appMode falls back to default; neither clobbers the other.
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
-  });
-
-  it("normalizes legacy 'action' appMode on disk to 'work'", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { closeBehavior: "quit", appMode: "action" } }),
-      "utf-8",
-    );
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
-  });
-
-  it("normalizes a legacy 'action' appMode patch to 'work'", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { appMode: "action" as never } });
-    expect(service.get("system").appMode).toBe("work");
-  });
-
-  it("ignores invalid appMode patch and preserves prior 'chat' preference", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { appMode: "chat" } });
-    expect(service.get("system").appMode).toBe("chat");
-
-    await service.patch({ system: { appMode: "garbage" as never } });
-    expect(service.get("system").appMode).toBe("chat");
-  });
-
-  it("patching appMode does not clobber a prior closeBehavior", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { closeBehavior: "quit" } });
-    await service.patch({ system: { appMode: "chat" } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "chat", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
-  });
-
   it("round-trips a localApiServer=true preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { localApiServer: true } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelSplitFilePercent: 45, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("system").localApiServer).toBe(true);
@@ -2650,27 +2706,27 @@ describe("SettingsService system — workspace appMode", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({
       system: {
-        sidePanelSplitFilePercent: 60.4,
+        sidePanelFileTreeWidth: 360.4,
         sidePanelSplitPreviewPercent: 33.5,
         sidePanelSplitSubagentPercent: 50,
       },
     });
-    expect(service.get("system").sidePanelSplitFilePercent).toBe(60);
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(360);
     expect(service.get("system").sidePanelSplitPreviewPercent).toBe(34);
     expect(service.get("system").sidePanelSplitSubagentPercent).toBe(50);
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system").sidePanelSplitFilePercent).toBe(60);
+    expect(reloaded.get("system").sidePanelFileTreeWidth).toBe(360);
     expect(reloaded.get("system").sidePanelSplitPreviewPercent).toBe(34);
     expect(reloaded.get("system").sidePanelSplitSubagentPercent).toBe(50);
   });
 
   it("clamps out-of-range split percents to the [22, 78] pane range", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { sidePanelSplitFilePercent: 5 } });
-    expect(service.get("system").sidePanelSplitFilePercent).toBe(22);
-    await service.patch({ system: { sidePanelSplitFilePercent: 95 } });
-    expect(service.get("system").sidePanelSplitFilePercent).toBe(78);
+    await service.patch({ system: { sidePanelSplitPreviewPercent: 5 } });
+    expect(service.get("system").sidePanelSplitPreviewPercent).toBe(22);
+    await service.patch({ system: { sidePanelSplitPreviewPercent: 95 } });
+    expect(service.get("system").sidePanelSplitPreviewPercent).toBe(78);
   });
 
   it("ignores an invalid split-percent patch and preserves prior value", async () => {
@@ -4163,7 +4219,7 @@ describe("retired vendor profile migration", () => {
   });
 
   it.each([
-    { provider: "deepseek" },
+    { provider: "unknown-provider" },
     { provider: "openai-compatible", marketplaceProviderPresetId: "missing-preset" },
   ])("retains the retirement marker when a provider selection is unavailable: %j", async (llmPatch) => {
     writeCopilotProfile();
@@ -4481,5 +4537,62 @@ describe("SettingsService system — main window layout", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("system").mainLayout).toBeUndefined();
     expect(service.get("system").closeBehavior).toBe("quit");
+  });
+});
+
+describe("SettingsService Files tree width", () => {
+  let userDataPath: string;
+
+  beforeEach(() => {
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-files-tree-width-"));
+  });
+
+  afterEach(async () => {
+    await cleanupTmpDir(userDataPath);
+  });
+
+  it("migrates the old file split once, persists pixels, and removes the percent key", async () => {
+    const path = join(userDataPath, "ave-settings.json");
+    writeFileSync(path, currentSettingsJson({ system: { sidePanelSplitFilePercent: 60 } }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(400);
+    expect(service.get("system")).not.toHaveProperty("sidePanelSplitFilePercent");
+    await vi.waitFor(() => expect(JSON.parse(readFileSync(path, "utf-8")).system.sidePanelFileTreeWidth).toBe(400));
+    const stored = JSON.parse(readFileSync(path, "utf-8"));
+    expect(stored.system.sidePanelFileTreeWidth).toBe(400);
+    expect(stored.system).not.toHaveProperty("sidePanelSplitFilePercent");
+    expect(new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath }).get("system").sidePanelFileTreeWidth).toBe(400);
+  });
+
+  it.each([[45, 300], [5, 180], [95, 520], ["wide", 300]])("normalizes a legacy %s split to %s pixels", (legacy, expected) => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ system: { sidePanelSplitFilePercent: legacy } }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(expected);
+  });
+
+  it("keeps an explicit pixel width ahead of the retired percent value", () => {
+    writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ system: {
+      sidePanelSplitFilePercent: 60, sidePanelFileTreeWidth: 241.5,
+    } }));
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(242);
+  });
+
+  it("round-trips a clamped pixel preference and ignores invalid or retired-key patches", async () => {
+    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(300);
+    await service.patch({ system: { ...service.get("system"), sidePanelFileTreeWidth: 420.6 } });
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(421);
+    await service.patch({ system: { ...service.get("system"), sidePanelFileTreeWidth: 900 } });
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(520);
+    await service.patch({ system: { ...service.get("system"), sidePanelFileTreeWidth: 1 } });
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(180);
+    await service.patch({ system: { ...service.get("system"), sidePanelFileTreeWidth: Number.NaN } });
+    await service.patch({ system: { sidePanelFileTreeWidth: "wide" } } as never);
+    await service.patch({ system: { sidePanelSplitFilePercent: 78 } } as never);
+    expect(service.get("system").sidePanelFileTreeWidth).toBe(180);
+    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+    expect(reloaded.get("system").sidePanelFileTreeWidth).toBe(180);
+    expect(reloaded.get("system")).not.toHaveProperty("sidePanelSplitFilePercent");
   });
 });

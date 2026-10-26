@@ -1,3 +1,4 @@
+import type { CustomProviderWire } from "../../shared/custom-provider.js";
 
 
 
@@ -675,6 +676,7 @@ export interface ProviderConfig {
   vertexLocation?: string;
   /** Pins vendor="openai" to the Responses wire regardless of model family. */
   openaiWire?: "responses";
+  wire?: CustomProviderWire;
   /**
    * Marketplace/provider-package metadata selected at settings time. Runtime
    * adapters can use this to honor catalog-owned base URLs, auth policy,

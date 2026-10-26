@@ -3,6 +3,7 @@ import "../../../../../test/renderer/setup.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import { renderApproval } from "./support/render-approval.js";
+import { selectDecision } from "./support/decision-bar.js";
 import type { ApprovalRequest } from "../../types.js";
 import { TEST_IDS } from "../../../../shared/test-ids.js";
 import { buildPermissionEvaluationContext } from "../../../../permissions/evaluation-context.js";
@@ -45,7 +46,9 @@ describe("ToolApprovalContent allowed choices", () => {
     };
     renderApproval(request, onDecide);
     expect(screen.getByTestId("allow-always-exact-scope")).toHaveTextContent("/workspace/project");
-    const always = screen.getByTestId(TEST_IDS.allowAlwaysButton);
+    // The lasting exact approval is the project one, selected from the allow dropdown.
+    selectDecision("allow-project");
+    const always = screen.getByTestId(TEST_IDS.allowSessionButton);
     expect(always).toBeEnabled();
     fireEvent.click(always);
     await waitFor(() => expect(onDecide).toHaveBeenCalledWith("allow-always", undefined));
@@ -58,7 +61,7 @@ describe("ToolApprovalContent allowed choices", () => {
   it("keeps a non-recordable ordinary request disabled even when its displayed risk is medium", () => {
     const request = { ...makeOneShotPluginRequest(), allowedChoices: undefined, persistentAllowAllowed: false };
     renderApproval(request, vi.fn());
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
   });
 
   it("honors a host one-shot approval contract", () => {
@@ -67,9 +70,9 @@ describe("ToolApprovalContent allowed choices", () => {
     vi.stubGlobal("ave", { userApproval: { record } });
     renderApproval(makeOneShotPluginRequest(), onDecide);
 
-    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거절");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toHaveTextContent("항상 허용");
-    expect(screen.getByTestId(TEST_IDS.allowAlwaysButton)).toBeDisabled();
+    expect(screen.getByTestId(TEST_IDS.denyButton)).toHaveTextContent("거부");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toHaveTextContent("이번 세션 동안 허용");
+    expect(screen.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
 
     const approve = screen.getByTestId(TEST_IDS.approveButton);
     expect(approve).toHaveTextContent("한 번만 허용");

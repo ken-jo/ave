@@ -599,7 +599,7 @@ describe("model card (status-row model cell)", () => {
     } });
     getSettings.mockResolvedValue(settings);
     updateSettings.mockImplementation(async (patch: { llm?: LLMSettingsPatch }) => {
-      settings.llm = mergeLlmPatch(settings.llm, patch.llm ?? {}, settings.marketplace.installedProviderIds, settings.marketplace.installedProviderPresets);
+      settings.llm = mergeLlmPatch(settings.llm, patch.llm ?? {}, settings.marketplace.installedProviderPresets);
       return settings;
     });
     const { getByTestId, findByTestId, queryByTestId } = renderBar();
@@ -646,7 +646,7 @@ describe("model card (status-row model cell)", () => {
   it("names the vendor in the card, where the status row no longer says it", async () => {
     // The literal the catalogue holds for this vendor, not the same lookup the component makes; a derived
     // expectation would agree with a wrong label. The suite renders in Korean (src/i18n/testing/vitest-ambient-intl.ts).
-    const vendorLabel = "사용자 지정 (OpenAI 호환)";
+    const vendorLabel = "사용자 지정 제공업체";
     const { getByTestId, findByTestId } = renderBar({ onOpenModelSettings: vi.fn() });
     fireEvent.click(getByTestId("iab-status-model"));
     const card = await findByTestId("model-quick-picker");

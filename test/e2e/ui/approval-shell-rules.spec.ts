@@ -52,24 +52,28 @@ for (const locale of ["en", "ko"] as const) {
   test.describe(`Shell permission rules (${locale})`, () => {
     test.use({ seedLocale: locale });
 
-    // Owner 2026-10-25 (five-choice shell card): Deny, Allow once, This session, This project, Always; each save stores the shown exact rule.
-    test("shows the five choices with the exact rule and keeps credential requests one-time", async ({ app, mainWindow }, testInfo) => {
+    // Owner 2026-10-25 (unified approval card): Deny ▾ | Allow for session ▾ | Allow once; a selected choice shows the exact rule it saves and Edit rule.
+    test("shows the shared decision row with the exact rule and keeps credential requests one-time", async ({ app, mainWindow }, testInfo) => {
       await showShellRequest(app, mainWindow, true);
       const dock = mainWindow.getByTestId(TEST_IDS.approvalDock).first();
       await expect(dock.getByTestId("approval-shell-outside-sandbox")).toContainText(locale === "ko" ? "샌드박스 밖에서 실행" : "outside the sandbox");
-      await expect(dock.getByTestId("approval-shell-rule-pattern")).toHaveText("Bash(npm test)");
-      for (const testId of [TEST_IDS.denyButton, TEST_IDS.approveButton, "approval-allow-session", "approval-allow-project", TEST_IDS.allowAlwaysButton]) {
+      for (const testId of [TEST_IDS.denyButton, TEST_IDS.approveButton, TEST_IDS.allowSessionButton, "approval-deny-menu", "approval-allow-menu"]) {
         await expect(dock.getByTestId(testId)).toBeEnabled();
       }
-      await expect(dock.getByTestId("approval-deny-always")).toHaveCount(0);
+      await dock.getByTestId("approval-allow-menu").click();
+      await mainWindow.getByTestId("approval-choice-allow-project").click();
+      await expect(dock.getByTestId("approval-rule-pattern")).toHaveText("Bash(npm test)");
+      await expect(dock.getByTestId("approval-edit-rule")).toBeVisible();
       await mainWindow.screenshot({ path: testInfo.outputPath(`shell-rule-${locale}.png`) });
 
       await dock.getByTestId(TEST_IDS.denyButton).click();
       await showShellRequest(app, mainWindow, false);
-      for (const testId of ["approval-allow-session", "approval-allow-project", TEST_IDS.allowAlwaysButton]) {
-        await expect(dock.getByTestId(testId)).toBeDisabled();
+      await expect(dock.getByTestId(TEST_IDS.allowSessionButton)).toBeDisabled();
+      await dock.getByTestId("approval-allow-menu").click();
+      for (const choice of ["allow-session", "allow-project", "allow-everywhere"]) {
+        await expect(mainWindow.getByTestId(`approval-choice-${choice}`)).toHaveAttribute("data-disabled", "");
       }
-      await expect(dock.getByTestId("approval-shell-rule-pattern")).toHaveCount(0);
+      await mainWindow.keyboard.press("Escape");
       await mainWindow.screenshot({ path: testInfo.outputPath(`credential-floor-${locale}.png`) });
     });
   });

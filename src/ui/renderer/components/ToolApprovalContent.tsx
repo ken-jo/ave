@@ -9,7 +9,8 @@ import {
 import {
   isSessionOnlyApprovalMemoryScope,
   resolveUserApprovalVerdict,
-  type ShellRuleSaveScope,
+  type ApprovalRuleSave,
+  type UserApprovalScope,
   type UserApprovalVerdict,
 } from "../../../shared/permissions-events.js";
 import { Badge } from "../../../components/ui/badge.js";
@@ -63,7 +64,18 @@ import { TEST_IDS } from "../../../shared/test-ids.js";
 import type { RiskLevel, ToolCategory } from "../../../shared/permission-review-status.js";
 import { shellExecutionEnvironmentLines } from "../../../shared/shell-execution-environment.js";
 import { terminalCommandLookalikes } from "../../../shared/terminal-command-lookalikes.js";
-import { formatIpcError, resolveIpcErrorKey } from "../format-ipc-error.js";
+import { ApprovalDecisionBar, decisionSlotsDisabled, useApprovalDecisionState } from "./permissions/ApprovalDecisionBar.js";
+import {
+  allowRefusalKey,
+  exactDecisionModel,
+  oneShotDecisionModel,
+  FOLDER_ALLOW_LABEL_KEY,
+  pathGrantDecisionModel,
+  ruleSaveErrorText,
+  ruleSaveFor,
+  shellDecisionModel,
+  type ApprovalCardChoice,
+} from "./permissions/approval-decision.js";
 
 type ElicitationFieldKind = ElicitationSchemaFieldKind;
 type ElicitationFormValue = string | boolean;
@@ -607,15 +619,6 @@ function isSessionOnlyRemember(request: Pick<ApprovalRequest, "approvalMemory"> 
   return memory?.kind === "key" && isSessionOnlyApprovalMemoryScope(memory.scope);
 }
 
-/** The dock's message for a refused shell-rule save: the mapped reason for the host's error code, plus the host's
- * detail for a rejected rule or a storage failure so the user can tell an invalid rule from an unwritable file. */
-function shellRuleSaveError(result: { error?: string; message?: string } | undefined, fallback: string): string {
-  const code = result?.error;
-  const reason = resolveIpcErrorKey(code) ? formatIpcError(code, undefined) : fallback;
-  const detail = (code === "invalid-rule" || code === "rule-save-failed") && result?.message ? result.message : null;
-  return detail ? `${reason} (${detail})` : reason;
-}
-
 export function ToolApprovalContent({
   open,
   request,
@@ -762,36 +765,43 @@ export function ToolApprovalContent({
   // did not narrow the choices. A browser scope is remembered until restart only; the remember button says so and records `scope: "session"` (the record handler enforces it).
   const rememberIsSessionOnly = !outOfDirScopes && isSessionOnlyRemember(request);
   const shellRule = request?.shellRule;
-  // The exact `Bash(<command>)` rule the host derived; the card shows it and saves only it (owner 2026-10-25, five-choice shell card).
-  const shellExactRule = shellRule?.exactRule ?? null;
-  // A session allow belongs to the request's root conversation; a request with no conversation cannot hold one (the host answers `missing-session`).
-  const sessionRememberWithoutConversation = !shellRule && !outOfDirScopes && rememberIsSessionOnly && !request?.sessionId;
-  const alwaysAllowUnavailable = shellRule
-    ? !shellRule.persistentAllowed || shellExactRule === null
-    : outOfDirScopes
-    ? outOfDirScopes.always === null
-    : approvalIsOneShot || request?.persistentAllowAllowed === false || sessionRememberWithoutConversation ||
-      (finalVerdict === "high" && request?.persistentAllowAllowed !== true);
-  const persistentUnavailableReason = alwaysAllowUnavailable
-    ? shellRule
-      ? tHook("toolApprovalDialog.shellExactRuleUnavailable")
-      : outOfDirScopes
-      ? outOfDirSuggestedParent
-        ? tHook("toolApprovalDialog.persistentUnavailableOneShot")
-        : tHook("toolApprovalDialog.persistentUnavailableNoParent")
-      : sessionRememberWithoutConversation && !approvalIsOneShot && request?.persistentAllowAllowed !== false
-        ? tHook("toolApprovalDialog.sessionAllowNeedsConversation")
-      : finalVerdict === "high"
-        ? tHook("toolApprovalDialog.persistentUnavailableHighRisk")
-        : tHook("toolApprovalDialog.persistentUnavailableOneShot")
-    : null;
-  const denyDecisionDisabled = recordingDecision || interactionLocked ||
-    (outOfDirScopes !== null && outOfDirScopes.deny === null);
-  const alwaysAllowDecisionDisabled =
-    approveDisabled || alwaysAllowUnavailable || recordingDecision || interactionLocked;
-  const allowOnceDecisionDisabled =
-    approveDisabled || recordingDecision || interactionLocked ||
-    (outOfDirScopes !== null && outOfDirScopes.once === null);
+  // An exact tool approval is remembered only where the host allows it; the host checks again from its own snapshot.
+  const exactAllowRefusal = request?.persistentAllowAllowed === false
+    ? "toolApprovalDialog.persistentUnavailableOneShot"
+    : finalVerdict === "high" && request?.persistentAllowAllowed !== true
+      ? "toolApprovalDialog.persistentUnavailableHighRisk"
+      : null;
+  // The host records no exact decision, an Always deny included, for a one-shot ask (`one-shot-not-recordable`); such a card offers none.
+  const exactDenyRefusal = request?.exactRecordAllowed === false ? "toolApprovalDialog.persistentUnavailableOneShot" : null;
+  const settingsEditing = onOpenPermanentDeny !== undefined;
+  const hasSession = Boolean(request?.sessionId);
+  // One decision row for every approval type (owner 2026-10-25, unified approval card); only this model is type-specific. A request the host
+  // answers once only is one-shot whatever else it is, so that is decided before the folder card.
+  const decisionModel = useMemo(() => {
+    if (shellRule) return shellDecisionModel(shellRule);
+    if (approvalIsOneShot) {
+      return oneShotDecisionModel(finalVerdict === "high" ? "toolApprovalDialog.persistentUnavailableHighRisk" : "toolApprovalDialog.persistentUnavailableOneShot");
+    }
+    if (outOfDirScopes) {
+      return pathGrantDecisionModel(
+        outOfDirScopes.always?.path ?? null,
+        outOfDirSuggestedParent ? "toolApprovalDialog.persistentUnavailableOneShot" : "toolApprovalDialog.persistentUnavailableNoParent",
+        settingsEditing,
+        exactDenyRefusal,
+      );
+    }
+    return exactDecisionModel({ sessionOnly: rememberIsSessionOnly, hasSession, allowRefusalKey: exactAllowRefusal, denyRefusalKey: exactDenyRefusal, settingsEditing });
+  }, [shellRule, outOfDirScopes, outOfDirSuggestedParent, settingsEditing, approvalIsOneShot, finalVerdict, rememberIsSessionOnly, hasSession, exactAllowRefusal, exactDenyRefusal]);
+  const decision = useApprovalDecisionState(request?.id ?? null);
+  const slotsDisabled = decisionSlotsDisabled(decisionModel, decision, {
+    locked: recordingDecision || interactionLocked,
+    denyUnavailable: outOfDirScopes !== null && outOfDirScopes.deny === null,
+    allowUnavailable: approveDisabled,
+    allowOnceUnavailable: outOfDirScopes !== null && outOfDirScopes.once === null,
+  });
+  const [denyDecisionDisabled, alwaysAllowDecisionDisabled, allowOnceDecisionDisabled] = slotsDisabled;
+  const allowRefusal = allowRefusalKey(decisionModel);
+  const persistentUnavailableReason = allowRefusal === null ? null : tHook(allowRefusal);
 
   // Exactly one enabled decision must remain in the tab order. Default to the fail-closed Reject
   // action so a pending Enter/Space from the covered composer can never become an accidental approval.
@@ -810,8 +820,9 @@ export function ToolApprovalContent({
     request?.id,
   ]);
 
-  // A `/allow` sentence FILLS THE FORM: it moves focus onto the decision it named; the target line above rewrites with it; and nothing is
-  // decided until that button is pressed. A proposal naming a decision this request does not offer is ignored rather than approximated.
+  // A `/allow` sentence FILLS THE FORM: it moves focus onto the decision it named (an "always" allow also selects the lasting choice in the
+  // allow dropdown); the target line above rewrites with it; and nothing is decided until that button is pressed. A proposal naming a decision
+  // this request does not offer is ignored rather than approximated.
   const proposedDecisionIndex = proposedChoice === "deny-once"
     ? 0
     : proposedChoice === "allow-always"
@@ -819,6 +830,12 @@ export function ToolApprovalContent({
       : proposedChoice === "allow-once"
         ? 2
         : null;
+  const selectDecision = decision.select;
+  useEffect(() => {
+    if (proposedChoice !== "allow-always") return;
+    const lasting = decisionModel.variant === "path-grant" ? "allow-everywhere" : "allow-project";
+    if (decisionModel.options[lasting].offered) selectDecision(lasting);
+  }, [proposedChoice, decisionModel, selectDecision, request?.id]);
   useEffect(() => {
     if (proposedDecisionIndex === null) return;
     const disabled = [
@@ -865,21 +882,17 @@ export function ToolApprovalContent({
     denyDecisionDisabled,
   ]);
 
-  // Save remembered decisions before resolving the live request. Shell rules belong only to the scoped rule store; session approvals use exact memory.
-  const handleApprove = useCallback(async (
-    choice: ApprovalChoice,
-    pattern?: string,
-    extras?: ApprovalDecisionExtras,
-    shellAction?: ShellRuleSaveScope,
+  // Save a remembered decision before resolving the live request: a shell card saves a rule (`rule`), every other remembering card an exact
+  // tool approval. The request is answered only when the save succeeded, and only while it is still the card's request.
+  const recordThenRespond = useCallback(async (
+    record: { readonly decision: "allow" | "deny"; readonly scope: UserApprovalScope; readonly rule?: ApprovalRuleSave } | null,
+    respond: () => void,
   ) => {
     if (interactionLocked || recordingRequestIdRef.current !== null) return;
     const requestIdAtStart = request?.id ?? null;
     setRecordError(null);
-    // A path-grant allow-always persists through the host's directory grant (the rememberPattern argument);
-    // never as an exact-args tuple, so the user-approval record path is skipped for out-of-allowed-dir requests.
-    if (shellAction !== undefined && (!shellRule || shellExactRule === null ||
-      (shellAction === "session" ? !shellRule.sessionAllowed : !shellRule.persistentAllowed))) return;
-    if (request && ((choice === "allow-always" && !shellRule && !alwaysAllowUnavailable && !isOutOfDir) || shellAction)) {
+    if (request && record) {
+      const failureKey = record.rule ? "toolApprovalDialog.ruleDecisionSaveFailed" : "toolApprovalDialog.exactDecisionSaveFailed";
       // canonicalStringify: sort object keys so {a,b} and {b,a} produce the same string; matching how dispatchReviewer builds the lookup key.
       const canonicalArgs = canonicalStringifyForRenderer(request.args ?? {});
       recordingRequestIdRef.current = request.id;
@@ -890,9 +903,9 @@ export function ToolApprovalContent({
           toolName: request.toolName,
           args: canonicalArgs,
           source: request.source ?? "builtin",
-          decision: "allow",
-          scope: shellAction === "session" || (!shellRule && rememberIsSessionOnly) ? "session" : "persistent",
-          ...(shellAction === undefined ? {} : { rule: { action: "allow" as const, scope: shellAction } }),
+          decision: record.decision,
+          scope: record.scope,
+          ...(record.rule === undefined ? {} : { rule: record.rule }),
           verdictAtApproval: finalVerdict as UserApprovalVerdict,
           nlJustification: null,
           trustOrigin: request.trustOrigin,
@@ -900,16 +913,12 @@ export function ToolApprovalContent({
         });
         if (!result?.ok) {
           if (activeRequestIdRef.current === request.id) {
-            setRecordError(shellRule
-              ? shellRuleSaveError(result, tHook("toolApprovalDialog.ruleDecisionSaveFailed"))
-              : tHook("toolApprovalDialog.exactDecisionSaveFailed"));
+            setRecordError(record.rule ? ruleSaveErrorText(result, tHook(failureKey)) : tHook(failureKey));
           }
           return;
         }
       } catch {
-        if (activeRequestIdRef.current === request.id) {
-          setRecordError(tHook(shellRule ? "toolApprovalDialog.ruleDecisionSaveFailed" : "toolApprovalDialog.exactDecisionSaveFailed"));
-        }
+        if (activeRequestIdRef.current === request.id) setRecordError(tHook(failureKey));
         return;
       } finally {
         if (recordingRequestIdRef.current === request.id) {
@@ -920,33 +929,66 @@ export function ToolApprovalContent({
         }
       }
     }
-    // The parent decision callback addresses the current FIFO head. An async exact-record completion from a request that was cancelled/replaced must never resolve the next request.
+    // The parent decision callback addresses the current FIFO head. An async record completion from a request that was cancelled/replaced must never resolve the next request.
     if (activeRequestIdRef.current !== requestIdAtStart) return;
-    // A saved rule covers later calls; this call is answered as allow-once.
-    const responseChoice = shellAction !== undefined ? "allow-once" : choice;
-    if (extras === undefined) {
-      onDecide(responseChoice, pattern);
-    } else {
-      onDecide(responseChoice, pattern, extras);
-    }
-  }, [
-    request,
-    finalVerdict,
-    onDecide,
-    alwaysAllowUnavailable,
-    isOutOfDir,
-    interactionLocked,
-    rememberIsSessionOnly,
-    shellRule,
-    shellExactRule,
-    tHook,
-  ]);
+    respond();
+  }, [request, finalVerdict, interactionLocked, tHook]);
   const approvalExtras = useMemo<ApprovalDecisionExtras | undefined>(
     () => hasElicitationSchema && elicitationParse.supported
       ? { elicitationContent }
       : undefined,
     [hasElicitationSchema, elicitationParse.supported, elicitationContent],
   );
+
+  // What each choice of the row means for this card's approval type. A shell card saves a `Bash(...)`/`PowerShell(...)` rule and answers once;
+  // an exact tool approval is saved for the conversation or the project; a folder card allows its parent folder for good. Always deny never reaches
+  // the gate's tool-wide deny-always: it is saved as a rule or an exact deny, and the request is denied once.
+  const handleCardChoice = useCallback((choice: ApprovalCardChoice, editedRule?: string) => {
+    if (recordingRequestIdRef.current !== null) return;
+    if (choice === "deny-once") {
+      onDecide("deny-once");
+      return;
+    }
+    if (choice === "allow-once") {
+      void recordThenRespond(null, () => {
+        if (approvalExtras === undefined) onDecide("allow-once", undefined);
+        else onDecide("allow-once", undefined, approvalExtras);
+      });
+      return;
+    }
+    if (!decisionModel.options[choice].offered) return;
+    switch (decisionModel.variant) {
+      case "shell": {
+        const rule = ruleSaveFor(choice, editedRule);
+        void recordThenRespond(
+          { decision: rule.action, scope: rule.scope === "session" ? "session" : "persistent", rule },
+          () => (rule.action === "deny" ? onDecide("deny-once") : onDecide("allow-once", undefined)),
+        );
+        return;
+      }
+      case "exact":
+      case "path-grant": {
+        if (choice === "deny-always") {
+          void recordThenRespond({ decision: "deny", scope: "persistent" }, () => onDecide("deny-once"));
+          return;
+        }
+        if (decisionModel.variant === "path-grant") {
+          // The folder grant itself is the host's to save, from the parent path the scope authority resolved.
+          const parent = outOfDirScopes?.always?.path;
+          if (choice === "allow-everywhere" && parent !== undefined) void recordThenRespond(null, () => onDecide("allow-always", parent));
+          return;
+        }
+        // The gate answer matches the record: a conversation approval answers allow-session (so a host-held descriptor grant lasts the
+        // conversation too), a project or user-global one allow-always.
+        const scope: UserApprovalScope = choice === "allow-session" ? "session" : choice === "allow-project" ? "persistent" : "global";
+        void recordThenRespond({ decision: "allow", scope }, () => onDecide(scope === "session" ? "allow-session" : "allow-always", undefined));
+        return;
+      }
+      case "one-shot":
+      case "network":
+        return;
+    }
+  }, [onDecide, recordThenRespond, approvalExtras, decisionModel, outOfDirScopes]);
 
   const approveDisabledDescriptionId = rationaleDisplayInvalid
     ? "rationale-approval-invalid"
@@ -967,6 +1009,8 @@ export function ToolApprovalContent({
   const handlePanelKeyDown = useCallback((e: ReactKeyboardEvent<HTMLDivElement>) => {
     if (e.nativeEvent.isComposing) return;
     if (isTextEntryShortcutTarget(e.target)) return;
+    // An open decision dropdown is portalled, but its keys still bubble here: Escape closes the menu and letters move within it; none of them decides.
+    if (isMenuTarget(e.target)) return;
     const decisionNavigationTarget = e.target === e.currentTarget || (
       e.target instanceof Element &&
       e.target.closest('[data-testid="approval-decision-actions"]') !== null
@@ -1002,7 +1046,7 @@ export function ToolApprovalContent({
       e.preventDefault();
       e.stopPropagation();
       if (!approveDisabled && !isOutOfDirRequest) {
-        void handleApprove("allow-once", undefined, approvalExtras);
+        handleCardChoice("allow-once");
       }
     } else if (e.key.toLowerCase() === "d" && !e.metaKey && !e.ctrlKey) {
       e.preventDefault();
@@ -1014,8 +1058,7 @@ export function ToolApprovalContent({
     request?.kind,
     onDecide,
     approveDisabled,
-    handleApprove,
-    approvalExtras,
+    handleCardChoice,
     interactionLocked,
     moveDecisionFocus,
   ]);
@@ -1285,7 +1328,7 @@ export function ToolApprovalContent({
                       <code className="break-all font-mono">{outOfDirCandidatePath}</code>
                     </ReviewRow>
                     {outOfDirSuggestedParent ? (
-                      <ReviewRow label={tHook("toolApprovalDialog.allowAlways")}>
+                      <ReviewRow label={tHook(FOLDER_ALLOW_LABEL_KEY)}>
                         <code className="break-all font-mono">{outOfDirSuggestedParent}</code>
                       </ReviewRow>
                     ) : null}
@@ -1469,146 +1512,78 @@ export function ToolApprovalContent({
         </section>
           <footer className="min-w-0 shrink-0 space-y-1.5 border-t bg-card px-3 py-2 sm:px-4">
             {shellRule ? (
-              <div className="space-y-2" data-testid="approval-shell-rule-editor">
+              <div className="space-y-1" data-testid="approval-shell-rule-context">
                 <p className="text-[11px] text-muted-foreground" data-testid="approval-shell-outside-sandbox">{tHook("toolApprovalDialog.shellOutsideSandbox")}</p>
-                {shellExactRule !== null ? (
-                  <p className="text-[11px] text-muted-foreground">
-                    {tHook("toolApprovalDialog.shellExactRuleLabel")}{" "}
-                    <code className="break-all font-mono text-xs text-foreground" data-testid="approval-shell-rule-pattern">{shellExactRule}</code>
-                  </p>
-                ) : null}
                 <p className="break-all text-[10px] text-muted-foreground" data-testid="approval-shell-rule-scope-target">
                   {tHook("toolApprovalDialog.shellScopeProjectTarget", { root: shellRule.projectRoot })}
                 </p>
-                <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" size="sm" data-testid="approval-allow-session"
-                    disabled={!shellRule.sessionAllowed || shellExactRule === null || approveDisabled || recordingDecision || interactionLocked}
-                    onClick={() => void handleApprove("allow-once", undefined, undefined, "session")}>
-                    {tHook("toolApprovalDialog.allowForSession")}
-                  </Button>
-                  <Button type="button" variant="outline" size="sm" data-testid="approval-allow-project"
-                    disabled={alwaysAllowUnavailable || approveDisabled || recordingDecision || interactionLocked}
-                    onClick={() => void handleApprove("allow-once", undefined, undefined, "project")}>
-                    {tHook("toolApprovalDialog.allowForProject")}
-                  </Button>
-                </div>
+                {/* An -EncodedCommand payload is shown as the script it runs; the host checked that text, and no rule covers it. */}
+                {shellRule.decodedCommands?.map((decoded, index) => (
+                  <div key={index} className="min-w-0 space-y-0.5" data-testid="approval-shell-decoded-command">
+                    <p className="text-[10px] font-medium text-warning">{tHook("toolApprovalDialog.shellDecodedCommand")}</p>
+                    <code className="block whitespace-pre-wrap break-all rounded bg-muted px-1.5 py-1 font-mono text-[11px]">{decoded}</code>
+                  </div>
+                ))}
               </div>
-            ) : (
-            <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
-              <span>{tHook("toolApprovalDialog.permanentDenyInSettings")}</span>
-              <Button
-                type="button"
-                size="sm"
-                variant="link"
-                className="h-auto min-w-0 max-w-full shrink p-0 text-right text-[11px] whitespace-normal break-words"
-                disabled={recordingDecision || approvalIsOneShot || !onOpenPermanentDeny}
-                title={approvalIsOneShot ? tHook("toolApprovalDialog.persistentUnavailableOneShot") : undefined}
-                onClick={() => {
-                  if (recordingRequestIdRef.current === null) {
-                    onOpenPermanentDeny?.(request, finalVerdict as UserApprovalVerdict);
+            ) : null}
+            {/* Fail-closed: a sealed display that cannot be parsed strips the allow options entirely — offering approval for an action whose
+                identity evidence is broken is not an option this card may present. Deny remains: it unblocks the turn and lets the model
+                regenerate the rationale. */}
+            <ApprovalDecisionBar
+              model={decisionModel}
+              state={decision}
+              disabled={slotsDisabled}
+              onCommit={handleCardChoice}
+              onEditInSettings={onOpenPermanentDeny
+                ? () => {
+                    if (recordingRequestIdRef.current === null) onOpenPermanentDeny(request, finalVerdict as UserApprovalVerdict);
                   }
-                }}
-                data-testid={TEST_IDS.openPermanentDenySettings}
-              >
-                {tHook("toolApprovalDialog.openPermissionSettings")}
-              </Button>
-            </div>
-            )}
-            {/* `anywhere`, not `break-word`: a button is an inline-flex box whose
-                text item keeps a whole word as its min-content under
-                `break-word`, so one long translated word spills past the
-                button edge. `anywhere` lets that word wrap inside the cell. */}
-            <div
-              className={`grid min-w-0 grid-cols-3 gap-2 [&>button]:min-w-0 [&>button]:h-auto [&>button]:whitespace-normal [&>button]:[overflow-wrap:anywhere] [&>button]:px-1 [&>button]:py-2 [&>button]:text-[11px] [&>button]:leading-tight ${narrowLaneScroll ? "@max-[14rem]:grid-cols-1" : ""}`}
-              data-testid="approval-decision-actions"
-            >
-              <Button
-                ref={(element) => {
-                  decisionButtonRefs.current[0] = element;
-                }}
-                size="sm"
-                variant="outline"
-                className="border-destructive text-destructive hover:bg-destructive/(--opacity-soft)"
-                onClick={() => {
-                  if (recordingRequestIdRef.current === null) onDecide("deny-once");
-                }}
-                title={decisionShortcutsActive ? tHook("toolApprovalDialog.shortcutD") : undefined}
-                disabled={denyDecisionDisabled}
-                tabIndex={decisionIndex === 0 && !denyDecisionDisabled ? 0 : -1}
-                onFocus={() => setDecisionIndex(0)}
-                aria-describedby={interactionLocked ? "approval-decision-locked" : undefined}
-                data-proposed={proposedDecisionIndex === 0 && !denyDecisionDisabled ? "true" : undefined}
-                data-testid={TEST_IDS.denyButton}
-              >
-                {tHook("toolApprovalDialog.denyOnce")}
-              </Button>
-{/* Fail-closed: a sealed display that cannot be parsed strips the
-                  allow options entirely — a button that can never be legitimately
-                  pressed teaches users to distrust the panel, and offering approval
-                  for an action whose identity evidence is broken is not an option
-                  this card may present. Deny remains: it unblocks the turn and
-                  lets the model regenerate the rationale. */}
-              {!rationaleDisplayInvalid && (
-              <Button
-                ref={(element) => {
-                  decisionButtonRefs.current[1] = element;
-                }}
-                size="sm"
-                variant="outline"
-                onClick={() => void (shellRule
-                  ? handleApprove("allow-once", undefined, undefined, "always")
-                  : handleApprove("allow-always", outOfDirScopes?.always?.path))}
-                disabled={alwaysAllowDecisionDisabled}
-                tabIndex={decisionIndex === 1 && !alwaysAllowDecisionDisabled ? 0 : -1}
-                onFocus={() => setDecisionIndex(1)}
-                title={
-                  alwaysAllowUnavailable
-                    ? persistentUnavailableReason ?? undefined
-                    : approveDisabled ? tHook("toolApprovalDialog.completeRequiredChoices") : undefined
+                : undefined}
+              editInSettingsDisabled={recordingDecision}
+              hideAllows={rationaleDisplayInvalid}
+              stackWhenNarrow={narrowLaneScroll}
+              slotProps={(slot) => {
+                const slotDisabled = slotsDisabled[slot];
+                const common = {
+                  ref: (element: HTMLButtonElement | null) => {
+                    decisionButtonRefs.current[slot] = element;
+                  },
+                  tabIndex: decisionIndex === slot && !slotDisabled ? 0 : -1,
+                  onFocus: () => setDecisionIndex(slot),
+                  "data-proposed": proposedDecisionIndex === slot && !slotDisabled ? "true" : undefined,
+                };
+                if (slot === 0) {
+                  return {
+                    ...common,
+                    title: decisionShortcutsActive ? tHook("toolApprovalDialog.shortcutD") : undefined,
+                    "aria-describedby": interactionLocked ? "approval-decision-locked" : undefined,
+                  };
                 }
-                data-proposed={proposedDecisionIndex === 1 && !alwaysAllowDecisionDisabled ? "true" : undefined}
-                aria-describedby={
-                  interactionLocked
-                    ? "approval-decision-locked"
-                    : persistentUnavailableReason
-                      ? "allow-always-unavailable-reason"
-                      : approveDisabled
-                        ? approveDisabledDescriptionId
-                        : undefined
+                if (slot === 1) {
+                  return {
+                    ...common,
+                    title: persistentUnavailableReason
+                      ?? (approveDisabled ? tHook("toolApprovalDialog.completeRequiredChoices") : undefined),
+                    "aria-describedby": interactionLocked
+                      ? "approval-decision-locked"
+                      : persistentUnavailableReason
+                        ? "allow-always-unavailable-reason"
+                        : approveDisabled
+                          ? approveDisabledDescriptionId
+                          : undefined,
+                  };
                 }
-                data-testid={TEST_IDS.allowAlwaysButton}
-              >
-                {rememberIsSessionOnly
-                  ? tHook("toolApprovalDialog.allowForSession")
-                  : tHook("toolApprovalDialog.allowAlways")}
-              </Button>
-              )}
-{!rationaleDisplayInvalid && (
-              <Button
-                ref={(element) => {
-                  decisionButtonRefs.current[2] = element;
-                }}
-                size="sm"
-                variant="default"
-                onClick={() => void handleApprove("allow-once", undefined, approvalExtras)}
-                disabled={allowOnceDecisionDisabled}
-                tabIndex={decisionIndex === 2 && !allowOnceDecisionDisabled ? 0 : -1}
-                onFocus={() => setDecisionIndex(2)}
-                title={approveButtonTitle}
-                data-proposed={proposedDecisionIndex === 2 && !allowOnceDecisionDisabled ? "true" : undefined}
-                aria-describedby={
-                  interactionLocked
+                return {
+                  ...common,
+                  title: approveButtonTitle,
+                  "aria-describedby": interactionLocked
                     ? "approval-decision-locked"
                     : approveDisabled
                       ? approveDisabledDescriptionId
-                      : undefined
-                }
-                data-testid={TEST_IDS.approveButton}
-              >
-                {tHook("toolApprovalDialog.allowOnce")}
-              </Button>
-              )}
-            </div>
+                      : undefined,
+                };
+              }}
+            />
             {persistentUnavailableReason ? (
               <p
                 id="allow-always-unavailable-reason"
@@ -1633,19 +1608,36 @@ export function ToolApprovalContent({
                 {note}
               </p>
             ))}
-            {!shellRule && !alwaysAllowUnavailable && !isOutOfDir && request.persistentApprovalCwd ? (
+            {decisionModel.variant === "exact" && allowRefusal === null && request.persistentApprovalCwd ? (
               <p className="text-[10px] text-muted-foreground" data-testid="allow-always-exact-scope">
-                {rememberScopeText(tHook, request, request.persistentApprovalCwd)}
+                {decision.selected === "allow-everywhere"
+                  ? tHook("toolApprovalDialog.exactScopeEverywhere")
+                  : rememberScopeText(tHook, request, request.persistentApprovalCwd)}
               </p>
             ) : null}
             {interactionLocked ? (
-              <p
-                id="approval-decision-locked"
-                className="text-[10px] text-muted-foreground"
-                data-testid="approval-decision-locked"
-              >
-                {tHook("toolApprovalDialog.decisionPendingInSettings")}
-              </p>
+              <div className="flex min-w-0 flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                <p
+                  id="approval-decision-locked"
+                  className="text-[10px] text-muted-foreground"
+                  data-testid="approval-decision-locked"
+                >
+                  {tHook("toolApprovalDialog.decisionPendingInSettings")}
+                </p>
+                {/* Settings holds this request's exact-deny draft; the way back to it stays open while every decision is locked. */}
+                {onOpenPermanentDeny && decision.selected !== "deny-always" ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="link"
+                    className="h-auto min-w-0 max-w-full shrink p-0 text-right text-[11px] whitespace-normal break-words"
+                    data-testid={TEST_IDS.openPermanentDenySettings}
+                    onClick={() => onOpenPermanentDeny(request, finalVerdict as UserApprovalVerdict)}
+                  >
+                    {tHook("toolApprovalDialog.openPermissionSettings")}
+                  </Button>
+                ) : null}
+              </div>
             ) : null}
             {recordError ? (
               <p className="text-[11px] text-destructive" role="alert" data-testid="exact-decision-save-error">
@@ -1656,6 +1648,10 @@ export function ToolApprovalContent({
       </div>
     </div>
   );
+}
+
+function isMenuTarget(target: EventTarget | null): boolean {
+  return target instanceof Element && target.closest('[role="menu"]') !== null;
 }
 
 function isTextEntryShortcutTarget(target: EventTarget | null): boolean {

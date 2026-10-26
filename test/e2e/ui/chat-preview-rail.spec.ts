@@ -246,15 +246,15 @@ test.describe("chat preview rail", () => {
       await expect(ctx.page.getByTestId("chat-preview-rail")).toHaveCount(0);
       await expect(ctx.page.getByTestId("pane-header")).not.toContainText("도구 활동");
       // Work-panel controls belong to the pane header below the window band.
-      const modeToggleBox = await ctx.page.getByTestId("app-mode-toggle").boundingBox();
+      const toolbarBox = await ctx.page.getByTestId("main-toolbar").boundingBox();
       const paneHeader = ctx.page.getByTestId("pane-header");
       const paneHeaderBox = await paneHeader.boundingBox();
       const sidePanelButtonBox = await openButton.boundingBox();
       const paneHeaderPaddingRight = await paneHeader.evaluate((element: Element) => Number.parseFloat(getComputedStyle(element).paddingRight));
-      expect(modeToggleBox).not.toBeNull();
+      expect(toolbarBox).not.toBeNull();
       expect(paneHeaderBox).not.toBeNull();
       expect(sidePanelButtonBox).not.toBeNull();
-      expect(sidePanelButtonBox!.y).toBeGreaterThanOrEqual(modeToggleBox!.y + modeToggleBox!.height);
+      expect(sidePanelButtonBox!.y).toBeGreaterThanOrEqual(toolbarBox!.y + toolbarBox!.height);
       expect(sidePanelButtonBox!.y).toBeGreaterThanOrEqual(paneHeaderBox!.y);
       expect(sidePanelButtonBox!.y + sidePanelButtonBox!.height).toBeLessThanOrEqual(paneHeaderBox!.y + paneHeaderBox!.height);
       expect(Math.abs((paneHeaderBox!.x + paneHeaderBox!.width - paneHeaderPaddingRight) - (sidePanelButtonBox!.x + sidePanelButtonBox!.width))).toBeLessThanOrEqual(1);
@@ -307,7 +307,7 @@ test.describe("chat preview rail", () => {
       await expect(directBrowserWebview).toBeVisible();
       await expect(directBrowserWebview).toHaveAttribute("src", sideBrowser.url);
 
-      // Keep this spec docked; the workspace-rail spec covers narrow drawers.
+      // Keep this spec docked; the workspace-rail spec covers narrow overlays.
       const browserWebview = ctx.page.getByTestId("chat-side-panel-browser-webview");
       await expect(browserWebview).toBeVisible();
       await expect(browserWebview).toHaveAttribute("src", sideBrowser.url);

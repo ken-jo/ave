@@ -9,8 +9,6 @@ function defaultProps(overrides: Partial<Parameters<typeof MainToolbar>[0]> = {}
   return {
     streaming: false,
     hasApiKey: true as boolean | null,
-    appMode: "work" as const,
-    onToggleAppMode: vi.fn(),
     viewNav: {
       segments: [{ key: "home", label: "대화" }],
       canGoBack: false,
@@ -37,12 +35,10 @@ const TRACKED_TOOLBAR_IDS = [
   "marketplace-update-action",
   "bootstrap-status-pill",
   "dev-tools-toggle",
-  "app-mode-toggle",
 ];
 
 describe("MainToolbar", () => {
-  // The band now hosts ONLY the right-aligned controls (app-update badge, Dev
-  // badge, Chat/Work mode toggle). The search / star / export controls + the
+  // The band hosts right-aligned lifecycle and development controls. The search / star / export controls + the
   // collapse toggle moved into the floating sidebar's cluster strip next to the
   // traffic lights (see Sidebar.tsx / Sidebar tests).
   it("no longer renders a hamburger / more-menu trigger", () => {
@@ -78,18 +74,7 @@ describe("MainToolbar", () => {
     expect(screen.queryByTestId("sidebar-collapse-toggle")).toBeNull();
   });
 
-  // The Chat/Work mode toggle stays on the band, wired to appMode.
-  it("renders the Chat/Work mode toggle and fires onToggleAppMode", () => {
-    const onToggleAppMode = vi.fn();
-    renderWithProvider(defaultProps({ appMode: "work", onToggleAppMode }));
-    expect(screen.getByTestId("app-mode-toggle")).toBeTruthy();
-    expect(screen.getByText("업무")).toBeTruthy();
-    expect(screen.queryByText("액션")).toBeNull();
-    fireEvent.click(screen.getByTestId("app-mode-chat"));
-    expect(onToggleAppMode).toHaveBeenCalledWith("chat");
-  });
-
-  it("lines the lifecycle pills up in one row, app update first, before the mode toggle", () => {
+  it("lines the lifecycle pills up in one row, app update first", () => {
     renderWithProvider(defaultProps({
       appUpdateState: { kind: "available", version: "9.9.9" },
       pluginUpdates: {
@@ -113,7 +98,6 @@ describe("MainToolbar", () => {
       "app-update-badge-available",
       "marketplace-update-action",
       "bootstrap-status-pill",
-      "app-mode-toggle",
     ]);
   });
 

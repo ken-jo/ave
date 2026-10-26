@@ -1,5 +1,7 @@
 // Public chat actions share gesture tokens; mutating permission and policy operations remain internal.
 import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
+import type { TurnReviewResult } from "../shared/turn-change-review.js";
+import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { ipcRenderer } from "electron";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import {
@@ -121,6 +123,8 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     ipcRenderer.invoke(CHANNELS.chat.editResend, messageId, newText, chatGroupId),
   chatRewindTo: async (messageId: string, mode: RewindMode = "conversation") =>
     ipcRenderer.invoke(CHANNELS.chat.rewindTo, messageId, chatGroupId, mode) as Promise<RewindResult>,
+  chatGetTurnReview: async (expectedSessionId: string) =>
+    ipcRenderer.invoke(CHANNELS.chat.getTurnReview, expectedSessionId, chatGroupId) as Promise<TurnReviewResult>,
   chatFork: async (messageId?: string) => ipcRenderer.invoke(CHANNELS.chat.fork, messageId, chatGroupId),
   chatContinueLastUser: async (sessionId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.continueLastUser, { sessionId }, chatGroupId) as Promise<{ ok: boolean; error?: string }>,
@@ -164,6 +168,9 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
       } | { error: string }
     >,
   chatAbort: async () => ipcRenderer.invoke(CHANNELS.chat.abort, chatGroupId) as Promise<{ ok: boolean }>,
+  chatListShellTasks: async (expectedSessionId: string) => ipcRenderer.invoke(CHANNELS.chat.listShellTasks, chatGroupId, expectedSessionId) as Promise<ShellTask[]>,
+  chatControlShellTask: async (expectedSessionId: string, action: ShellTaskAction, shellId?: string) =>
+    ipcRenderer.invoke(CHANNELS.chat.controlShellTask, chatGroupId, expectedSessionId, action, shellId) as Promise<ShellTaskActionResult>,
   chatGetVerbatimToolResult: async (sessionId: string, toolUseId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.getVerbatimToolResult, { sessionId, toolUseId }, chatGroupId) as Promise<
       { content: string; lineCount: number } | null

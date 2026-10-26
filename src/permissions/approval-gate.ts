@@ -178,6 +178,8 @@ export interface ApprovalRequest {
   allowedChoices?: readonly ApprovalChoice[];
   // Host-derived permission to remember an exact allow for this request.
   persistentAllowAllowed?: boolean;
+  // Host-derived: the exact-approval store may record a decision for this request at all (an Always deny included). False for a one-shot request, which the record handler refuses with `one-shot-not-recordable`; the card then offers no remembered choice of that store.
+  exactRecordAllowed?: boolean;
   // Canonical scope captured by the host before a remembered decision is shown.
   persistentApprovalCwd?: string;
   // Host-derived command-rule editor context.
@@ -280,7 +282,7 @@ export function signApprovalRequest(
 // Input accepted by ApprovalGate.requestAndWait before the host seals nonce/HMAC and derives the renderer-facing `requireExplicit` field. `forceExplicit` is deliberately one-way: callers can only make a prompt stricter than the current policy, never relax it. It is used by execution routes whose substrate requires per-invocation, affirmative consent.
 export type ApprovalRequestInput = Omit<
   ApprovalRequest,
-  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "persistentApprovalCwd" | "shellRule"
+  "requireExplicit" | "executionPlan" | "persistentAllowAllowed" | "exactRecordAllowed" | "persistentApprovalCwd" | "shellRule"
 > & {
   // Host-owned assessment provenance; never inferred from the displayed reason.
   readonly reviewerOutcome?: ReviewerDispatchOutcome;
@@ -1669,6 +1671,7 @@ export class ApprovalGate {
           ? ["allow-once", "deny-once"]
           : req.allowedChoices,
       persistentAllowAllowed,
+      exactRecordAllowed: durableApprovalRecordAllowed,
       ...(shellRule === undefined ? {} : { shellRule }),
       persistentApprovalCwd: persistentAllowAllowed ? workingDirectory?.path : undefined,
       requireExplicit:

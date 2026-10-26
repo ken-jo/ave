@@ -360,7 +360,7 @@ export const test = base.extend<ScreenshotFixtures & ScreenshotOptions>({
 
     const aveHomeForTest = aveHome;
 
-    // Omit app mode to exercise the work-mode default.
+    // Use the default responsive shell without a saved layout preference.
     fs.writeFileSync(
       path.join(userDataDir, 'ave-settings.json'),
       `${JSON.stringify(

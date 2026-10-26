@@ -85,7 +85,7 @@ const ko: Pages = {
         {
           title: "새 탭을 여는 것도 확인",
           body: "browser_tab_new는 네트워크 동작으로 분류되어, 어느 주소를 열려는지 보여 주고 승인을 받습니다.",
-          pic: { k: "browser-tab-approval", alt: "browser_tab_new 승인 창. 네트워크 범주, 열려는 페이지 주소, 거절과 허용 버튼" },
+          pic: { k: "browser-tab-approval", alt: "browser_tab_new 승인 창. 네트워크 범주, 열려는 페이지 주소, 거부·이번 세션 동안 허용·한 번만 허용 버튼" },
           w: 3,
           inset: true,
         },
@@ -254,7 +254,7 @@ const ko: Pages = {
         {
           title: "칸마다 따로 도는 대화",
           body: "칸마다 자기 대화 루프가 있어서, 여러 대화가 동시에 답을 받습니다.",
-          pic: { k: "app-subagents", alt: "작업 모드의 세 칸에 각각 다른 대화가 열려 있는 화면" },
+          pic: { k: "app-subagents", alt: "세 칸에 각각 다른 대화가 열려 있는 화면" },
           w: 3,
         },
         {
@@ -275,7 +275,7 @@ const ko: Pages = {
         ["긴 대화는 자동으로 정리됩니다.", "언제 정리할지는 모델 카탈로그가 알려 주는 그 모델의 컨텍스트 창을 기준으로 합니다."],
         ["사용량은 모델별로.", "사용량 탭에서 모델별 토큰과 비용을 보고 CSV로 내보냅니다."],
       ],
-      pic: { k: "app-conversation", alt: "작업 모드에서 local-model이 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화" },
+      pic: { k: "app-conversation", alt: "local-model이 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화" },
       flip: true,
     },
     providers: {
@@ -403,7 +403,7 @@ const ko: Pages = {
       eyebrow: "보안",
       title: "무엇이 바뀌는지 보고 나서 허용합니다",
       lead: "도구 호출은 읽기, 쓰기, 셸, 네트워크, 메타로 나뉘고 위험도는 낮음, 중간, 높음입니다. 기본 모드는 읽기만 허용하고, 바꾸는 작업은 대화를 가리지 않는 승인 독에서 묻습니다.",
-      pic: { k: "approval-shell", alt: "builtin:bash 승인 창. 중간 위험, OS 격리 활성, 명령마다 임시 HOME, 거절·항상 허용·한 번 허용 버튼" },
+      pic: { k: "approval-shell", alt: "builtin:bash 승인 창. 중간 위험, OS 격리 활성, 명령마다 임시 HOME, 거부·이번 세션 동안 허용·한 번만 허용 버튼" },
     },
     first: {
       eyebrow: "권한 모드",
@@ -530,7 +530,7 @@ const en: Pages = {
         {
           title: "Opening a tab asks too",
           body: "browser_tab_new counts as a network action, so it shows the address it will open and waits for approval.",
-          pic: { k: "browser-tab-approval", alt: "An approval card for browser_tab_new in the network category, with the address it will open and Reject and Allow buttons" },
+          pic: { k: "browser-tab-approval", alt: "An approval card for browser_tab_new in the network category, with the address it will open and Deny, Allow for session and Allow once buttons" },
           w: 3,
           inset: true,
         },
@@ -699,7 +699,7 @@ const en: Pages = {
         {
           title: "Each tile on its own loop",
           body: "Every tile runs its own conversation loop, so several conversations get answers at once.",
-          pic: { k: "app-subagents", alt: "Work mode with three tiles, each holding a different conversation" },
+          pic: { k: "app-subagents", alt: "Three tiles, each holding a different conversation" },
           w: 3,
         },
         {
@@ -720,7 +720,7 @@ const en: Pages = {
         ["Long conversations are compacted automatically.", "When to compact follows the model’s context window from the model catalog."],
         ["Usage per model.", "The Usage tab shows tokens and cost per model and exports them as CSV."],
       ],
-      pic: { k: "app-conversation", alt: "Work mode where local-model added a --json flag to the export command and reports that all six tests pass" },
+      pic: { k: "app-conversation", alt: "A conversation where local-model added a --json flag to the export command and reports that all six tests pass" },
       flip: true,
     },
     providers: {
@@ -848,7 +848,7 @@ const en: Pages = {
       eyebrow: "Security",
       title: "See what will change, then allow it",
       lead: "Tool calls fall into read, write, shell, network and meta, and risk is low, medium or high. The default mode allows reads only; anything that changes something asks in an approval dock that does not cover the conversation.",
-      pic: { k: "approval-shell", alt: "An approval card for builtin:bash: medium risk, OS isolation active, a temporary HOME for each command, and Reject, Always allow and Allow once" },
+      pic: { k: "approval-shell", alt: "An approval card for builtin:bash: medium risk, OS isolation active, a temporary HOME for each command, and Deny, Allow for session and Allow once" },
     },
     first: {
       eyebrow: "Permission modes",
