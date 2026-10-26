@@ -19,6 +19,7 @@ import {
 const UPSTREAM_PROXY_DIAGNOSTIC_URL = "https://example.com/";
 import { errorMessage } from "../../shared/error-message.js";
 import { approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, getAveHomePrivacyFailure } from "../../shared/ave-home.js";
+import { getWindowsProfileReadDenyWarnings } from "../../permissions/asrt-sandbox.js";
 import {
   RECENT_EGRESS_DENIALS_LIMIT,
   RECENT_EGRESS_DENIALS_WINDOW_HOURS,
@@ -332,6 +333,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
       potentialReason,
       runtime,
       workerRuntime,
+      ...(platform === "win32" ? { profileReadDenyWarnings: getWindowsProfileReadDenyWarnings() } : {}),
       workerRestartPending: boot !== null && resolveEnvBackedBoolean(
         "features.pluginWorkerConfinement",
         deps.settingsService.get("features")?.pluginWorkerConfinement ?? false,

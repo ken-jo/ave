@@ -1660,6 +1660,8 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
   covers only the `srt-win` Rust sources.
 
+On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
+
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
 stdio server — refuses the plugin roots (`<AVE_HOME>/plugins`,

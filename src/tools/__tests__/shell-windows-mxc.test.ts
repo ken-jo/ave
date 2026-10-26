@@ -1,5 +1,8 @@
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({
@@ -139,7 +142,10 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it("runs a PowerShell command through wxc-exec with this invocation's token and closes its listener after", async () => {
     bootMxcShells();
-    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-1"));
+    const cwd = realpathSync(mkdtempSync(join(tmpdir(), "ave-mxc-workspace-")));
+    const result = await new PowerShellTool().execute(
+      { command: "Write-Output hi", timeoutSeconds: 7 }, { ...context("ps-mxc-1"), cwd },
+    ).finally(() => rmSync(cwd, { recursive: true, force: true }));
 
     expect(result).toMatchObject({ isError: false, metadata: { returncode: 0, sandboxed: true } });
     expect(result.output).toContain(CONTAINER_OUTPUT);
@@ -147,7 +153,7 @@ describe("builtin shell — Windows MXC containers", () => {
     const [launch] = mxcLaunchMock.prepare.mock.calls[0] as [Record<string, unknown>];
     expect(launch["egressToken"]).toEqual(expect.any(String));
     expect(launch["commandLine"]).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe.* -EncodedCommand /);
-    expect(launch["cwd"]).toBe(process.cwd());
+    expect(launch["cwd"]).toBe(cwd);
     expect(launch["timeoutMs"]).toBe(7000);
     const filesystem = launch["filesystem"] as { allowWrite: string[]; denyWrite: string[] };
     expect(filesystem.allowWrite.length).toBeGreaterThanOrEqual(2);
