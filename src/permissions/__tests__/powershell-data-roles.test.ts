@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 
@@ -10,17 +11,13 @@ const PACKAGE_TASKS = [
   "bun run check", "bun run ./payload.ts", "bun test", "npx helper",
 ] as const;
 const UNPROVEN_LITERAL_COMMANDS = new Set([
+  "npm run build -- --watch", "python -m pytest", "python -m pytest -c pytest.ini",
+  "python script.py -c data", "node script.js --eval data", "python3 -m pytest",
   "git log --oneline", "git log --oneline -5", "git commit -m 'msg'", "git diff --stat", "git --version",
   "npm install --save-dev x", "npm --version",
   "node --test", "node -v", "node --version", "python --version", "node.exe --test", "nodejs -v",
   "dotnet test --no-build", "dotnet build App.csproj --configuration Release",
 ]);
-const UNPROVEN_PACKAGE_TASKS = new Set([
-  "npm start", "npm exec helper", "npm --prefix app test", "npm install --save-dev x",
-  "pnpm check", "pnpm exec helper", "yarn check", "yarn exec helper", "npx helper",
-  "bun run check", "bun run ./payload.ts", "bun test",
-]);
-
 describe("static PowerShell argument roles", () => {
   it.each([
     "git log --oneline", "git log --oneline -5", "git commit -m 'msg'", "git diff --stat", "git --version",
@@ -98,10 +95,8 @@ describe("static PowerShell argument roles", () => {
     });
   });
 
-  it.each(PACKAGE_TASKS)("uses the fixed package task grammar boundary: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toMatchObject(UNPROVEN_PACKAGE_TASKS.has(command)
-      ? { outcome: "unproven", sensitive: null, exfiltration: null }
-      : { outcome: "static-complete", sensitive: null, exfiltration: null });
+  it.each(PACKAGE_TASKS)("refuses package tasks with unpinned implicit configuration: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it.each(PACKAGE_TASKS.flatMap((runner) => [

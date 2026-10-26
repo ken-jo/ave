@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -106,14 +107,15 @@ describe.each(["bash", "powershell"] as const)("conservative launcher argument e
     requireUnproven(`${first} ${separator} ${second}`, [first, second]);
   });
 
-  it("retains literal non-e arguments without decoding visible program text", () => {
+  it("separates non-encoded option detection from nested startup proof", () => {
     const command = "pwsh -Command 'Write-Output ready'";
-    expect((dialect === "bash" ? proveLiteralShell(command) : proveLiteralPowerShell(command)).proven).toBe(true);
+    expect(encodedPowerShellExecutionReason(["pwsh", "-Command", "Write-Output ready"])).toBeNull();
+    expect((dialect === "bash" ? proveLiteralShell(command) : proveLiteralPowerShell(command)).proven).toBe(false);
     const pattern = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }).exactRule;
-    expect(pattern).not.toBeNull();
-    manager.setRules([withCurrentShellRuleVersion({ pattern: pattern!, action: "allow" as const })]);
+    expect(pattern).toBeNull();
+    manager.setRules([withCurrentShellRuleVersion({ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`, action: "allow" as const })]);
     const context = { ruleSubject: { kind: "shell" as const, dialect, command, cwd }, shellExecution: { runsSandboxed: false }, headless: true };
-    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed(dialect, "builtin", "shell", null, context)).toMatchObject({ decision: "deny", layer: 2 });
     expect(encodedPowerShellExecutionReason(["sh", "-c", "pwsh -enc literal"])).not.toBeNull();
     expect(encodedPowerShellExecutionReason(["printf", "data", "pwsh", "-enc", PAYLOAD])).not.toBeNull();
     expect(encodedPowerShellExecutionReason(["pwsh-custom", "-enc", PAYLOAD])).toBeNull();

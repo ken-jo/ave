@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { inspectShellCommand } from "../rules/shell-exfiltration.js";
@@ -15,10 +16,10 @@ const TASK_ARGUMENTS = {
   uvx: "ruff check .", pipx: "run black --check .", corepack: "pnpm install",
   yarnpkg: "test", deno: "task test", npm: "test", pnpm: "test", yarn: "test", bun: "test",
 } as const satisfies Readonly<Record<string, string>>;
-const TASK_EXPECTATIONS: Readonly<Record<keyof typeof TASK_ARGUMENTS, "static-complete" | "unproven">> = {
+const TASK_EXPECTATIONS: Readonly<Record<keyof typeof TASK_ARGUMENTS, "unproven">> = {
   npx: "unproven", bunx: "unproven", pnpx: "unproven", uvx: "unproven", pipx: "unproven",
-  corepack: "unproven", yarnpkg: "static-complete", deno: "unproven", npm: "static-complete",
-  pnpm: "static-complete", yarn: "static-complete", bun: "unproven",
+  corepack: "unproven", yarnpkg: "unproven", deno: "unproven", npm: "unproven",
+  pnpm: "unproven", yarn: "unproven", bun: "unproven",
 };
 const RUNNER_CODE = [
   ...["npx", "pnpx", "bunx", "pnpm dlx", "yarn dlx"].flatMap((runner) => [
@@ -66,10 +67,10 @@ describe("static package runner boundaries", () => {
     },
   );
 
-  it.each(LITERAL_EVALUATION)("marks a literal evaluator payload exact-only: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
-      outcome: "unproven", exactLiteralEvaluation: true,
-    });
+  it.each(LITERAL_EVALUATION)("refuses a literal evaluator with unpinned startup: %s", (command) => {
+    const result = inspectPowerShellCommand(command, CWD);
+    expect(result).toMatchObject({ outcome: "unproven" });
+    expect(result.exactLiteralEvaluation).toBeUndefined();
   });
 
   it.each(AMBIGUOUS_RUNNER_SYNTAX)("declines ambiguous runner syntax: %s", (command) => {
@@ -164,7 +165,7 @@ describe("static package runner boundaries", () => {
 
   it.each(RUNNERS)("refuses a directly named runner shim outside the closed grammar: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
-      outcome: command === "yarnpkg test" ? "static-complete" : "unproven", sensitive: null, exfiltration: null,
+      outcome: "unproven", sensitive: null, exfiltration: null,
     });
   });
 

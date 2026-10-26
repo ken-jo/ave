@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, describe, expect, it } from "vitest";
 import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";

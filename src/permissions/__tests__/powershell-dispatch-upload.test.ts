@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { POWERSHELL_COMMAND_POLICIES } from "../rules/powershell-command-policy.js";
 import { _inspectPowerShellForTest, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
@@ -43,9 +44,7 @@ describe("static dispatch and remote-write boundaries", () => {
   ])("declines runtime dispatch without inspecting its payload: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     if (command.includes("~/.ssh/config")) expect(result).toMatchObject({ outcome: "visible-floor" });
-    else if (command === "bash script.sh") {
-      expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
-    } else expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
+    else expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -116,7 +115,7 @@ describe("static dispatch and remote-write boundaries", () => {
     if (command === String.raw`Copy-Item '\\host\share\notes.txt' notes.txt`) {
       expect(result).toMatchObject({ outcome: "visible-floor", sensitive: expect.stringMatching(/UNC/i) });
     } else if (command.includes("$_") || command.includes("$env:") || command.includes("(('a','b')")
-      || command.startsWith("'hello' |") || ["git status", "dotnet build", "cargo test", "Unknown-Helper", "robocopy . backup notes.txt", "xcopy notes.txt backup.txt"].includes(command)) expect(result.outcome).toBe("unproven");
+      || command.startsWith("'hello' |") || ["npm test", "python script.py", "git status", "dotnet build", "cargo test", "Unknown-Helper", "robocopy . backup notes.txt", "xcopy notes.txt backup.txt"].includes(command)) expect(result.outcome).toBe("unproven");
     else expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
   });
 

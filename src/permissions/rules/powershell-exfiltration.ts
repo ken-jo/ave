@@ -789,8 +789,9 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined)
 }
 
 function applyStartupPolicy(signals: ShellFloorSignals): ShellFloorSignals {
-  if (isPowerShellStartupPinned() || signals.outcome === "visible-floor" || signals.analysisLimited
+  if (signals.outcome === "visible-floor" || signals.analysisLimited
     || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return signals;
+  if (isPowerShellStartupPinned()) return signals;
   return { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
 }
 

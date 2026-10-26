@@ -1,5 +1,4 @@
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
-import { isPowerShellLauncher } from "./shell-prefix-values.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 
 export type StaticArgvProof =
@@ -68,9 +67,24 @@ const POWERSHELL_GRAMMARS: Readonly<Record<string, CmdletGrammar>> = Object.free
   "invoke-webrequest": { flags: ["usebasicparsing"], values: ["uri", "method", "infile", "body", "outfile", "contenttype", "timeoutsec"], numeric: ["timeoutsec"], maximum: 1, required: [["uri", "#0"]] },
   "invoke-restmethod": { flags: ["usebasicparsing"], values: ["uri", "method", "infile", "body", "outfile", "contenttype", "timeoutsec"], numeric: ["timeoutsec"], maximum: 1, required: [["uri", "#0"]] },
 });
-const SHELL_PROGRAMS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
-const PYTHON_PROGRAM = /^python(?:[23](?:\.\d+)?)?$/;
-const NODE_PROGRAMS = new Set(["node", "bun", "ruby", "perl"]);
+interface LauncherGrammar {
+  requiredFlags: readonly (readonly string[])[];
+  codeOptions: readonly string[];
+  scriptFile: RegExp;
+  codeArguments: boolean;
+}
+const BASH_LAUNCHER: LauncherGrammar = Object.freeze({
+  requiredFlags: [["--noprofile"], ["--norc"], ["-p"]],
+  codeOptions: ["-c"], scriptFile: /\.(?:sh|bash)$/, codeArguments: true,
+});
+const FISH_LAUNCHER: LauncherGrammar = Object.freeze({
+  requiredFlags: [["-N", "--no-config"]],
+  codeOptions: ["-c", "--command"], scriptFile: /\.fish$/, codeArguments: false,
+});
+const PYTHON_LAUNCHER: LauncherGrammar = Object.freeze({
+  requiredFlags: [["-I"], ["-S"]],
+  codeOptions: ["-c"], scriptFile: /\.py$/, codeArguments: true,
+});
 const BASH_BUILTINS = new Set([":", "true", "false", "pwd", "cd", "printf", "echo", "eval"]);
 
 function matchArgumentGrammar(argv: readonly (string | undefined)[], from: number, grammar: ArgumentGrammar, powershell: boolean, raw?: readonly string[], work?: StaticArgvWork): boolean {
@@ -133,11 +147,8 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
   const complete = (changesState = false): StaticArgvProof => ({ kind: "static-complete", changesState });
   const evaluation = (indexes: readonly number[]): StaticArgvProof => ({ kind: "literal-evaluation", payloadIndexes: indexes, changesState: false });
   if (argv.length === 0) return UNPROVEN;
-  const optionSuffix = new Uint8Array(argv.length + 1);
-  for (let index = argv.length - 1; index >= 0; index -= 1) {
-    const value = read(index);
-    if (value === undefined) return UNPROVEN;
-    optionSuffix[index] = value.startsWith("-") || optionSuffix[index + 1] === 1 ? 1 : 0;
+  for (let index = 0; index < argv.length; index += 1) {
+    if (read(index) === undefined) return UNPROVEN;
   }
   if (encodedPowerShellExecutionReason(argv, raw) !== null) return UNPROVEN;
   const isQuoted = (index: number): boolean => /^["']/.test(raw?.[index] ?? "");
@@ -194,40 +205,6 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
       if (name === "env" || name === "exec") resolution = "native-executable";
       continue;
     }
-    if (name === "npx") {
-      at += 1;
-      let boundary = false;
-      while (at < argv.length) {
-        const option = read(at)!;
-        if (option === "--") { at += 1; boundary = true; break; }
-        if (["-y", "--yes", "--no-install", "--quiet"].includes(option)) { at += 1; continue; }
-        if (option.startsWith("-")) return UNPROVEN;
-        break;
-      }
-      if (!boundary && optionSuffix[at + 1] === 1) return UNPROVEN;
-      resolution = "native-executable";
-      continue;
-    }
-    if (name === "npm" || name === "pnpm" || name === "yarn" || name === "yarnpkg") {
-      const verb = read(at + 1);
-      if (verb === "exec") {
-        at += 2;
-        const option = read(at);
-        if (option === "--call" || option === "-c") return at + 2 === argv.length ? evaluation([at + 1]) : UNPROVEN;
-        if (option?.startsWith("--call=")) return at + 1 === argv.length && option.length > 7 ? evaluation([at]) : UNPROVEN;
-        if (option === "--") at += 1;
-        else if (optionSuffix[at + 1] === 1) return UNPROVEN;
-        resolution = "native-executable";
-        continue;
-      }
-      if (verb === "run" || verb === "run-script") {
-        const task = read(at + 2);
-        if (!task || task.startsWith("-")) return UNPROVEN;
-        return at + 3 === argv.length || read(at + 3) === "--" ? complete(true) : UNPROVEN;
-      }
-      if (["test", "build", "install", "ci"].includes(verb ?? "")) return matchesOptions(at + 2, { flags: ["--no-audit", "--ignore-scripts", "--frozen-lockfile"] }) ? complete(true) : UNPROVEN;
-      return UNPROVEN;
-    }
     if (name === "printf") {
       let format = at + 1;
       if (read(format) === "--") format += 1;
@@ -257,36 +234,33 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
       if (at + 1 >= argv.length || read(at + 1)!.startsWith("-")) return UNPROVEN;
       return evaluation(Array.from({ length: argv.length - at - 1 }, (_, index) => at + 1 + index));
     }
-    if (SHELL_PROGRAMS.has(name) || PYTHON_PROGRAM.test(name) || NODE_PROGRAMS.has(name) || name === "deno" || isPowerShellLauncher(name)) {
-      const option = read(at + 1);
-      const powershell = isPowerShellLauncher(name);
-      if (option === undefined) return SHELL_PROGRAMS.has(name) || PYTHON_PROGRAM.test(name) ? complete(true) : UNPROVEN;
-      const optionKey = powershell ? option.toLowerCase() : option;
-      const codeOptions = powershell ? ["-c", "-command"] : SHELL_PROGRAMS.has(name) ? name === "fish" ? ["-c", "--command"] : ["-c"]
-        : PYTHON_PROGRAM.test(name) ? ["-c"] : name === "deno" ? ["eval"] : name === "ruby" || name === "perl" ? ["-e"] : ["-e", "-p", "--eval", "--print"];
-      if (PYTHON_PROGRAM.test(name) && option === "-m") return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(read(at + 2) ?? "") ? complete(true) : UNPROVEN;
-      if (codeOptions.includes(optionKey)) {
-        const payload = read(at + 2);
-        const shellArguments = (SHELL_PROGRAMS.has(name) && name !== "fish") || PYTHON_PROGRAM.test(name);
-        return payload !== undefined && payload !== "-" && (shellArguments || at + 3 === argv.length) ? evaluation([at + 2]) : UNPROVEN;
+    // A child runtime inherits its own startup files and environment. Only a
+    // complete suppressor grammar can make its outer argv provable.
+    const launcher = name === "bash" ? BASH_LAUNCHER : name === "fish" ? FISH_LAUNCHER
+      : /^python3(?:\.\d+)?$/.test(name) ? PYTHON_LAUNCHER : undefined;
+    if (launcher !== undefined) {
+      const flags = new Set(launcher.requiredFlags.flat());
+      const present = new Set<string>();
+      let cursor = at + 1;
+      while (cursor < argv.length) {
+        const option = read(cursor)!;
+        if (!flags.has(option)) break;
+        present.add(option);
+        cursor += 1;
       }
-      const equal = optionKey.indexOf("=");
-      if (equal > 0 && codeOptions.includes(optionKey.slice(0, equal))) return at + 2 === argv.length && equal + 1 < option.length ? evaluation([at + 1]) : UNPROVEN;
-      if (powershell && optionKey === "-file") {
-        const file = read(at + 2);
-        return file !== undefined && !/^[-–—― ]/.test(file) && /\.ps1$/i.test(file) ? complete(true) : UNPROVEN;
+      if (!launcher.requiredFlags.every((group) => group.some((flag) => present.has(flag)))) return UNPROVEN;
+      const token = read(cursor);
+      if (token === undefined) return UNPROVEN;
+      if (launcher.codeOptions.includes(token)) {
+        const payload = read(cursor + 1);
+        return payload !== undefined && payload !== "-" && (launcher.codeArguments || cursor + 2 === argv.length)
+          ? evaluation([cursor + 1]) : UNPROVEN;
       }
-      if (name === "deno" && option === "run") return at + 2 < argv.length && !read(at + 2)!.startsWith("-") ? complete(true) : UNPROVEN;
-      if (name === "deno") return UNPROVEN;
-      if (powershell) return UNPROVEN;
-      if (option === "-") return complete(true);
-      const filePattern = PYTHON_PROGRAM.test(name) ? /\.py$/ : name === "ruby" ? /\.rb$/ : name === "perl" ? /\.(?:pl|pm)$/
-        : SHELL_PROGRAMS.has(name) ? /\.(?:sh|bash|zsh|ksh|fish)$/ : /\.(?:[cm]?js|jsx|tsx?)$/;
-      if (!/^[-–—― ]/.test(option) && filePattern.test(option)) {
-        if (name === "bun" && at + 2 < argv.length && read(at + 2) !== "--") return UNPROVEN;
-        return complete(true);
+      const equal = token.indexOf("=");
+      if (equal > 0 && token.startsWith("--") && launcher.codeOptions.includes(token.slice(0, equal))) {
+        return cursor + 1 === argv.length && equal + 1 < token.length ? evaluation([cursor]) : UNPROVEN;
       }
-      return UNPROVEN;
+      return !token.startsWith("-") && launcher.scriptFile.test(token) ? complete(true) : UNPROVEN;
     }
     const grammar = Object.hasOwn(NATIVE_GRAMMARS, name) ? NATIVE_GRAMMARS[name] : undefined;
     if (grammar === undefined || !matchesOptions(at + 1, grammar)) return UNPROVEN;

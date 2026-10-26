@@ -9,6 +9,8 @@ const childProcessMock = vi.hoisted(() => ({
   spawn: vi.fn(),
   execFileSync: vi.fn(),
 }));
+const installationMock = vi.hoisted(() => ({ resolve: vi.fn() }));
+vi.mock("../../shared/powershell-executable.js", () => ({ resolveTrustedPowerShellExecutable: installationMock.resolve }));
 const mxcLaunchMock = vi.hoisted(() => ({
   prepare: vi.fn(),
   release: vi.fn(async () => undefined),
@@ -39,6 +41,7 @@ vi.mock("../../permissions/sandbox-process-home.js", async (importOriginal) => {
 });
 
 import { BashTool, PowerShellTool } from "../shell-tools.js";
+import { MAX_POWERSHELL_PARSER_RESPONSE_BYTES } from "../powershell-parser-response.js";
 import type { ToolExecutionContext } from "../types.js";
 import { MXC_BASH_UNAVAILABLE_MESSAGE, rankMxcFilesystem } from "../../permissions/mxc-windows.js";
 import { permissionsFilePath } from "../../permissions/permissions-store.js";
@@ -122,6 +125,7 @@ function context(toolUseId: string): ToolExecutionContext {
 describe("builtin shell — Windows MXC containers", () => {
   beforeEach(() => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
+    installationMock.resolve.mockReturnValue({ executable: String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`, kind: "windows-powershell" });
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
       args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
@@ -147,6 +151,7 @@ describe("builtin shell — Windows MXC containers", () => {
     childProcessMock.execFileSync.mockReset();
     mxcLaunchMock.prepare.mockReset();
     mxcLaunchMock.release.mockClear();
+    installationMock.resolve.mockReset();
   });
 
   it("runs a PowerShell command through wxc-exec with this invocation's token and closes its listener after", async () => {
@@ -189,6 +194,44 @@ describe("builtin shell — Windows MXC containers", () => {
     // The launcher runs from its own directory; the container cwd is in the request.
     expect((containerSpawn[2] as { cwd?: string }).cwd).toBe(String.raw`C:\Program Files\Ave\resources\mxc\x64`);
     expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a large parser protocol response independent of the display preview", async () => {
+    bootMxcShells();
+    const command = "Write-Output a;".repeat(100);
+    const parsedCommand = {
+      name: "Write-Output", text: "Write-Output a",
+      arguments: [{ kind: "literal", text: "Write-Output", value: "Write-Output" }, { kind: "literal", text: "a", value: "a" }],
+    };
+    const response = JSON.stringify({ commands: Array.from({ length: 100 }, () => parsedCommand), errors: [], redirections: [], unsupported: [] });
+    expect(response.length).toBe(16_861);
+    childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[]) =>
+      fakeChild(args.includes(PARSER_REQUEST) ? response : CONTAINER_OUTPUT, 0));
+    const result = await new PowerShellTool().execute({ command, timeoutSeconds: 7 }, context("large-parser-response"));
+    expect(result, result.output).toMatchObject({ isError: false, metadata: { returncode: 0, sandboxed: true } });
+    expect(result.output).toBe(CONTAINER_OUTPUT);
+    expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses an oversized internal response before launching caller text", async () => {
+    bootMxcShells();
+    childProcessMock.spawn.mockImplementation(() => fakeChild(" ".repeat(MAX_POWERSHELL_PARSER_RESPONSE_BYTES + 1), 0));
+    const result = await new PowerShellTool().execute({ command: "Write-Output a;".repeat(100), timeoutSeconds: 7 }, context("oversized-parser-response"));
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("PowerShell parser response exceeds the internal byte limit");
+    expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(1);
+    expect(childProcessMock.spawn).toHaveBeenCalledTimes(1);
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an untrusted image before preparing either parser or caller container", async () => {
+    bootMxcShells();
+    installationMock.resolve.mockReturnValue(null);
+    const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("missing-trusted-image"));
+    expect(result.isError).toBe(true);
+    expect(result.output).toContain("trusted system installation is unavailable");
+    expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+    expect(childProcessMock.spawn).not.toHaveBeenCalled();
   });
 
   it("gives the container the mandatory write floor: workspace control files and Ave's stores stay unwritable", async () => {

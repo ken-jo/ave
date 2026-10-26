@@ -87,13 +87,14 @@ describe.each(DIALECTS)("positive launcher argument character proof (%s)", (dial
     }
     const literalCommand = "pwsh -Command 'Write-Output 한글 문장'";
     const proof = dialect === "bash" ? proveLiteralShell(literalCommand) : proveLiteralPowerShell(literalCommand);
-    expect(proof.proven).toBe(true);
-    const pattern = buildShellRuleApproval(dialect, literalCommand, cwd, { allow: true, deny: true }).exactRule;
-    expect(pattern).not.toBeNull();
-    manager.setRules([withCurrentShellRuleVersion({ pattern: pattern!, action: "allow" as const })]);
+    // Korean remains in the positive character class; the child startup lacks
+    // its independent proof and cannot acquire an exact allow.
+    expect(proof.proven).toBe(false);
+    expect(buildShellRuleApproval(dialect, literalCommand, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+    manager.setRules([withCurrentShellRuleVersion({ pattern: `${dialect === "bash" ? "Bash" : "PowerShell"}(${literalCommand})`, action: "allow" as const })]);
     expect(manager.checkDetailed(dialect, "builtin", "shell", null, {
       ruleSubject: { kind: "shell", dialect, command: literalCommand, cwd }, shellExecution: { runsSandboxed: false }, headless: true,
-    }).decision).toBe("allow");
+    }).decision).toBe("deny");
     expect(encodedPowerShellExecutionReason(["pwsh", "한글 문장"])).toBeNull();
     expect(encodedPowerShellExecutionReason(["pwsh", " -Command ", "한글"])).toBeNull();
     for (const position of POSITIONS) expect(checkCommand(dialect, optionWith(0x20, position))).toBeNull();

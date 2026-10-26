@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 // Credential-store paths match case-insensitively even when scanned on a POSIX host; both host and sandbox projections must deny them.
 import { describe, expect, it } from "vitest";
 import { homedir } from "node:os";

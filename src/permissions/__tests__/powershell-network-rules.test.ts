@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 // Unsandboxed shell rules compare complete raw literal words; network card saves remain destination host rules.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -261,7 +262,7 @@ describe("PowerShell encoded code and literal rule proof", () => {
     }
   });
 
-  it.each(["python3 -c 'print(1)'", "sh -c 'printf ready'", "pwsh -Command 'Get-Date'", "deno run main.ts"])("remembers literal visible code and accepted file indirection: %s", (command) => {
+  it.each(["python3 -I -S -c 'print(1)'", "bash --noprofile --norc -p -c 'printf ready'", "fish --no-config -c 'printf ready'", "python3 -I -S main.py"])("remembers literal visible code and accepted file indirection: %s", (command) => {
     for (const dialect of ["bash", "powershell"] as const) {
       const approval = buildShellRuleApproval(dialect, command, dir, { allow: true, deny: true });
       expect(approval.exactRule).toEqual(expect.any(String));

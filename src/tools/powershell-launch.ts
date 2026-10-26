@@ -50,8 +50,9 @@ export function preparePowerShellLaunch(
   };
   try {
     if (process.platform === "win32") {
-      // This pins ordinary lower execution-policy scopes only. User startup
-      // configuration is not isolated on this path, so it cannot prove a run.
+      // The verified system edition has no user JSON endpoint selection.
+      // Process policy overrides ordinary lower scopes; installation admission
+      // supplies the separate proof of image and module integrity.
       args.push("-ExecutionPolicy", "RemoteSigned");
       env.PSModulePath = "";
     } else {

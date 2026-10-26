@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { _inspectPowerShellForTest, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 
@@ -121,11 +122,8 @@ describe("file execution static boundary", () => {
   it.each([
     "build.ps1", "./build.ps1", "python script.py", "node script.js",
     "payload.bat", "payload.exe", "Invoke-Item p.hta", "Invoke-Item report.pdf",
-  ])("accepts known interpreter file indirection and declines unsupported execution: %s", (command) => {
-    const knownInterpreter = command.startsWith("python ") || command.startsWith("node ");
-    expect(inspectPowerShellCommand(command, CWD)).toMatchObject(knownInterpreter
-      ? { outcome: "static-complete", sensitive: null, exfiltration: null }
-      : { outcome: "unproven", sensitive: null, exfiltration: null });
+  ])("declines file execution with unpinned interpreter startup: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it("does not execute command-looking text in an unknown runner argument", () => {

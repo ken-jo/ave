@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -113,7 +114,7 @@ function shellRule(prefix: string) {
 
 const RULE_CASES: { argv: string[]; prefix: string; incomplete: string; proof: "unproven" | "static-complete" | "literal-evaluation" }[] = [
   { argv: ["npx", "helper", "--future"], prefix: "npx helper", incomplete: "npx", proof: "unproven" },
-  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx", proof: "static-complete" },
+  { argv: ["npx", "node", "script.js"], prefix: "npx node", incomplete: "npx", proof: "unproven" },
   { argv: ["bunx", "helper", "--future"], prefix: "bunx helper", incomplete: "bunx", proof: "unproven" },
   { argv: ["pnpx", "helper", "--future"], prefix: "pnpx helper", incomplete: "pnpx", proof: "unproven" },
   { argv: ["uvx", "helper", "--future"], prefix: "uvx helper", incomplete: "uvx", proof: "unproven" },
@@ -128,8 +129,8 @@ const RULE_CASES: { argv: string[]; prefix: string; incomplete: string; proof: "
   { argv: ["bun", "x", "helper", "--future"], prefix: "bun x helper", incomplete: "bun x", proof: "unproven" },
   { argv: ["bun", "exec", "helper", "--future"], prefix: "bun exec helper", incomplete: "bun exec", proof: "unproven" },
   { argv: ["corepack", "pnpm", "dlx", "helper", "--future"], prefix: "corepack pnpm dlx helper", incomplete: "corepack pnpm dlx", proof: "unproven" },
-  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run", proof: "static-complete" },
-  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval", proof: "literal-evaluation" },
+  { argv: ["deno", "run", "main.ts", "--future"], prefix: "deno run main.ts", incomplete: "deno run", proof: "unproven" },
+  { argv: ["deno", "eval", "x"], prefix: "deno eval x", incomplete: "deno eval", proof: "unproven" },
 ];
 
 const ORDINARY_CONTROLS = [
@@ -146,6 +147,8 @@ const ORDINARY_CONTROLS = [
 ];
 
 const UNPROVEN_CONTROL_KEYS = new Set([
+  "bash\0npm test", "powershell\0npm test",
+  "bash\0deno run https://e/x.ts", "powershell\0deno run https://e/x.ts",
   "bash\0su --future-wrapper value git status",
   "bash\0script --future-wrapper value git status",
   "bash\0systemd-run --future-wrapper value git status",

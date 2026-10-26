@@ -152,15 +152,29 @@ the prelude. The single lexer marks every outer line/block comment without a
 directive-name allowlist and still inspects visible floors. Quoted `#` data is
 unaffected.
 
-The Windows 5.1 registry and PowerShell 7 CurrentUser JSON paths cannot be
-certified by `-NoProfile`, a Process execution policy or a module-path prelude.
-Every managed Windows PowerShell input is therefore unproven, with no exact
-offer or stored-rule upgrade, per-call L2 consent and headless denial. This
-includes a native leaf or literal evaluator because its host starts first.
-The raw-key grammar is unchanged; the literal-evaluation exact exception stays
-available on a pinned POSIX host. An unpinned host parser requires verified
-one-shot authority; MXC's parser runs inside confinement, and structural/path
-admission still precedes the execution invocation.
+Startup proof follows the selected protected executable and installation, not
+an OS name. Parser and execution never resolve PowerShell through PATH or a
+user/agent-writable tree. Missing admission refuses native parsing. Candidate proof and refusal are
+cached for the process lifetime; newly installed or repaired paths require
+an application restart. On Windows,
+a protected System32 Windows PowerShell 5.1 path with suppressed profiles,
+disabled autoload, absolute protected module imports and Process policy can
+retain exact rules. Ordinary CurrentUser execution policy alone is not an
+execution surface. Administrative policy is host trust. Windows PowerShell 7
+with uncontrolled CurrentUser JSON remains unproven because it can select an
+endpoint before the prelude. Unverified or elevated host paths offer no exact
+allow, require foreground consent and deny headless; executable admission still
+precedes any parser spawn. MXC parses inside confinement and receives internal
+AST bytes under a separate bound, without the display-output truncation.
+
+Every nested launcher must independently suppress its implicit startup. The
+current registered forms require Bash `--noprofile --norc -p`, fish
+`--no-config`/`-N`, or Python 3 `-I -S`. Other forms and package runners
+remain unproven with no exact upgrade. A guarded literal evaluation payload
+keeps the full-original-text exact exception. A guarded script-file form keeps
+the documented indirection limit. System files are host trust only when users
+and the agent cannot mutate them; an unavoidable unverified startup file,
+including the one read by `zsh -f`, supplies no positive proof.
 
 Local transcription is an accepted host-trust residual and does not itself
 disable cmdlet automatic allowance. It is separate from executable settings;
@@ -599,7 +613,7 @@ proven stage does not retain an independently reusable allow result.
 claim that this invocation was observed writing. Families that can write through
 implicit or alternate modes mark all admitted forms possible-write. This covers
 every positively parsed native `curl`, `sort` and `uniq` form, plus
-package-task and script/module interpreter forms,
+guarded script-file interpreter forms,
 including read-looking forms.
 Their presence in a multi-command input refuses the whole input. The single source is
 [shell-argument-grammar.ts](../../src/permissions/rules/shell-argument-grammar.ts);
@@ -694,27 +708,18 @@ whose registered grammar consumed every argument.
 
 ### Runner identities
 
-Package and command runners remain part of the raw rule identity. A registered
-runner grammar must consume every outer option and operand, and any delegated
-command range must satisfy another registered grammar. Unknown runner forms are
-unproven. A proven outer argv may use a broad rule only on the sandboxed lane;
-unsandboxed execution requires a current-format exact rule, and unsandboxed
-headless denies without one. Sandboxed `static-complete` requests follow the
-normal route. Literal downstream sender candidates still receive direct
-visible-floor checks. For example, a catalogued runner that directly names a
-sender retains its upload floor, while the host does not inspect package task or
-external script contents to predict their effects.
+Wrapper and interpreter tokens remain in the complete raw rule identity; an
+inner-only key cannot authorize the outer input. Package task/exec/runner forms
+have no positive-proof grammar because implicit configuration can add startup
+code or execution options. No suffix summary or unknown-option fallback proves
+them. Known native wrappers retain index-range delegation; both outer grammar
+and delegated argv must be proven.
 
-`npx` and package `exec` forms delegate only across an explicit `--` argv
-boundary when any later word looks like an option. Without that immediate
-boundary the ownership of the option is ambiguous and the request is unproven.
-One precomputed suffix summary performs this check; no suffix is reparsed.
-
-Interpreter pathname and module forms are positive grammars with closed file
-extensions or module names. Bun script arguments require an explicit `--`;
-bare Bun and Deno invocations and unsupported mode words are unproven.
-PowerShell script execution requires explicit `-File` and a literal `.ps1`
-operand. Bare launchers and implicit positional files or commands are unproven.
+The only registered interpreter forms are the startup-guarded Bash, fish and
+Python 3 forms above. Their literal code payloads remain opaque and exact-only;
+explicit supported script files retain the documented indirection limit.
+Module, stdin, interactive and other runtime forms remain unproven. Visible
+outer paths and upload sinks retain their floors regardless of a rule.
 
 ### Dialect-scoped rules and grants
 

@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -84,7 +85,7 @@ const TIMING_CASES: readonly TimingCase[] = [
   ...[false, true].flatMap((runsSandboxed) => [
     { name: "commit-short-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: COMMIT_COMMAND, rules: [COMMIT_COMMAND], expected: "ask" as const },
     { name: "quoted-literal-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: LITERAL_COMMAND, rules: [LITERAL_COMMAND], expected: "allow" as const },
-    { name: "npm-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: NPM_COMMAND, rules: [NPM_COMMAND], expected: "allow" as const },
+    { name: "npm-1500", dialect: "bash" as const, runsSandboxed, length: 1_500, command: NPM_COMMAND, rules: [NPM_COMMAND], expected: "ask" as const },
     { name: "pipeline-1800", dialect: "powershell" as const, runsSandboxed, length: 1_800, ...SHORT_PIPELINE, expected: "allow" as const },
   ]),
   { name: "heredoc-quoted-6500", dialect: "bash", runsSandboxed: true, length: 6_500, command: heredocCommand(6_500, true), rules: [], expected: "allow" },

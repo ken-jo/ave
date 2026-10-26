@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 // Risk composition cannot downgrade rule verdicts; provider input is DLP-redacted, errors follow the configured fallback, and missing model configuration fails boot.
 import { describe, it, expect, vi } from "vitest";
 import {

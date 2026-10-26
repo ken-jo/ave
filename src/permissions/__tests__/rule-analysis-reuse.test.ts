@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ruleSpecifier from "../rules/rule-specifier.js";
 import { analyzeShellForRules, proveLiteralShell } from "../rules/shell-rule-matcher.js";

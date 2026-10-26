@@ -1817,7 +1817,7 @@ export async function runToolInvocation(
           const resolvedCwd = resolveHostShellWorkingDirectory(executionCwd, typeof finalInput.cwd === "string" ? finalInput.cwd : undefined);
           // Unpinned startup cannot run a native host preflight. The tool repeats
           // this gate after host consent or parses inside the selected container.
-          for (const command of isPowerShellStartupPinned() ? extractShellCommands(finalInput) : []) {
+          for (const command of isPowerShellStartupPinned() && hostShellExecutionPlan?.substrate !== "mxc" ? extractShellCommands(finalInput) : []) {
             shellPathViolation = await findPowerShellCommandPathViolation(command, resolvedCwd, executionCwd, invocationRuntimeAllowedDirectories, blockReadsOutsideWorkingDirectories);
             if (shellPathViolation) break;
           }

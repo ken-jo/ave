@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { canonicalRuleSpecifier, parseRuleSpecifier } from "../rules/rule-specifier.js";

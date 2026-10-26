@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 /** Credential and exfiltration floors apply to every host command-string shell, even in allow mode and for ordinary project-file uploads.
  * Mock the unavailable platform parser and execution so these tests isolate permission decisions without spawning shells. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -98,7 +99,8 @@ describe("shell floors cover powershell in allow mode", () => {
     ["Test-Path src", true],
     ["Get-Content notes.txt | Select-String TODO", true],
     ["Set-Clipboard 'hello'", false],
-    ["python script.py", true],
+    ["python script.py", false],
+    ["python3 -I -S script.py", true],
     ["Invoke-Item p.txt", false], ["ii p.md", false], ["Invoke-Item p.png", false], ["Invoke-Item ./docs/", false],
   ] as const)("classifies benign powershell %s by the known grammar", async (command, knownGrammar) => {
     const { decision, execute, requestAndWait } = await run("powershell", command, undefined, true);
@@ -197,18 +199,17 @@ describe("shell floors cover powershell in allow mode", () => {
     "npm test", "npx helper", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
   ])("a saved grant does not run an unsandboxed command; it asks again: %s", async (command) => {
-    // A dock approval-cache entry is not a current raw shell exact rule. Static commands therefore remain
-    // ordinary asks, while runtime-dependent commands remain forced modal asks.
+    // Neither cache entries nor broad grants prove implicit startup or runtime state.
     const pending = await run("powershell", command);
-    const layer = command === "npm test" ? 6 : 2;
+    const layer = 2;
     expect(pending.decision).toMatchObject({ decision: "ask", layer });
-    expect(pending.decision.forceModal).toBe(layer === 2 ? true : undefined);
+    expect(pending.decision.forceModal).toBe(true);
     expect(pending.execute).not.toHaveBeenCalled();
     expect(pending.requestAndWait).toHaveBeenCalledTimes(1);
     expect(pending.context?.approvalCacheKey).toEqual(expect.any(String));
     const remembered = await run("powershell", command, pending.context?.approvalCacheKey);
     expect(remembered.decision).toMatchObject({ decision: "ask", layer });
-    expect(remembered.decision.forceModal).toBe(layer === 2 ? true : undefined);
+    expect(remembered.decision.forceModal).toBe(true);
     expect(remembered.requestAndWait).toHaveBeenCalledTimes(1);
     expect(remembered.execute).not.toHaveBeenCalled();
   });
@@ -216,15 +217,12 @@ describe("shell floors cover powershell in allow mode", () => {
   it.each([
     "npm test", "npx helper", "iex $code",
     "Set-Content build.ps1 Get-Date; build.ps1",
-  ])("keeps static commands sandboxed and runtime-dependent commands modal: %s", async (command) => {
+  ])("keeps implicit startup and runtime-dependent commands modal: %s", async (command) => {
     for (const savedGrant of [undefined, "powershell"]) {
       const sandboxed = await run("powershell", command, savedGrant, true);
-      const staticComplete = command === "npm test";
-      expect(sandboxed.decision).toMatchObject(staticComplete
-        ? { decision: "allow", layer: 3 }
-        : { decision: "ask", layer: 2, forceModal: true });
-      expect(sandboxed.requestAndWait).toHaveBeenCalledTimes(staticComplete ? 0 : 1);
-      expect(sandboxed.execute).toHaveBeenCalledTimes(staticComplete ? 1 : 0);
+      expect(sandboxed.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(sandboxed.requestAndWait).toHaveBeenCalledTimes(1);
+      expect(sandboxed.execute).not.toHaveBeenCalled();
     }
   });
 

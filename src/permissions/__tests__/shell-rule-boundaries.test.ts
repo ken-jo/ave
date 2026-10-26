@@ -54,8 +54,7 @@ describe("stored broad wildcard compatibility", () => {
     expect(manager.getRulesLoadError()).toBeUndefined();
     expect(check("printf ready")).toMatchObject({ decision: "allow", layer: 3 });
     expect(check("git status")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(check("npm run build")).toMatchObject({ decision: "ask", layer: 6 });
-    expect(check("npm run build").forceModal).toBeUndefined();
+    expect(check("npm run build")).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     const listed = await manager.listScopedRules();
     expect(listed.errors).toEqual([]);
     const row = listed.rules.find((rule) => rule.pattern === inert.pattern)!;

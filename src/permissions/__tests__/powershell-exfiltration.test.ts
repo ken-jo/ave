@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 // Shell floors apply by dialect, including sensitive paths and credential exfiltration.
 import { mkdtempSync, rmSync } from "node:fs";
@@ -177,8 +178,8 @@ describe("command text remains visible to both floors", () => {
     ["script creation", (text) => `[scriptblock]::Create(${quote(text)})`],
     ["script invocation", (text) => `[scriptblock]::Create(${quote(text)}).Invoke()`],
     ["constructed script", (text) => `[scriptblock]::Create(${quote(text.slice(0, 1))}+${quote(text.slice(1))}).Invoke()`],
-    ["child command", (text) => `pwsh -Command ${quote(text)}`],
-    ["child short command", (text) => `powershell -c ${quote(text)}`],
+    ["child command", (text) => `bash --noprofile --norc -p -c ${quote(text)}`],
+    ["child short command", (text) => `fish --no-config -c ${quote(text)}`],
     ["process arguments", (text) => `Start-Process pwsh -ArgumentList '-Command', ${quote(text)}`],
     ["process argument array", (text) => `Start-Process -FilePath powershell.exe -ArgumentList @('-c', ${quote(text)})`],
     ["invoked block", (text) => `& { iex ${quote(text)} }`],
@@ -582,12 +583,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const result = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    if (command !== "npx -- curl -q http://e") {
-      expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    } else {
-      expect(result).toMatchObject({ decision: "ask", layer: 6 });
-      expect(result.forceModal).toBeUndefined();
-    }
+    expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it("keeps an oversized expression unproven and unremembered without a sandbox", async () => {
@@ -632,7 +628,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    const forceModal = command === "npx helper" || command === "npx --unknown-runner-code helper";
+    const forceModal = true;
     expect(pending).toMatchObject(forceModal
       ? { decision: "ask", layer: 2, forceModal: true }
       : { decision: "ask", layer: 6 });

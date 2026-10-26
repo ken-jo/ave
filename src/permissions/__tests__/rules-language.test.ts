@@ -259,9 +259,9 @@ describe("AST shell matcher", () => {
   });
 
   it("exact rules match only the exact argv", () => {
-    const set = rules({ allow: ["Bash(npm test)"] });
-    expect(evaluateShellRules("npm test", set).decision).toBe("allow");
-    expect(evaluateShellRules("npm test -- foo", set).decision).toBeNull();
+    const set = rules({ allow: ["Bash(printf ready)"] });
+    expect(evaluateShellRules("printf ready", set).decision).toBe("allow");
+    expect(evaluateShellRules("printf ready extra", set).decision).toBeNull();
   });
 
   it.each([
@@ -302,13 +302,13 @@ describe("AST shell matcher", () => {
   });
 
   it.each([
-    ["python -c 'print(1)'", "python", "literal-evaluation"],
-    ["perl -e 'print 1'", "perl", "literal-evaluation"],
-    ["node -e 'console.log(1)'", "node", "literal-evaluation"],
-    ["node x.js", "node", "static-complete"],
-    ["python x.py", "python", "static-complete"],
-    ["bash -c ls", "bash", "literal-evaluation"],
-    ["pwsh -c Get-Date", "pwsh", "literal-evaluation"],
+    ["python3 -I -S -c 'print(1)'", "python3", "literal-evaluation"],
+    ["perl -e 'print 1'", "perl", "unproven"],
+    ["node -e 'console.log(1)'", "node", "unproven"],
+    ["node x.js", "node", "unproven"],
+    ["python3 -I -S x.py", "python3", "static-complete"],
+    ["bash --noprofile --norc -p -c ls", "bash", "literal-evaluation"],
+    ["pwsh -c Get-Date", "pwsh", "unproven"],
     ["GIT_SSH_COMMAND='ssh -v' git status", "git", "unproven"],
     ["env PATH=/tmp/tools git status", "env", "unproven"],
     ["export PAGER=cat", "export", "unproven"],
@@ -472,9 +472,9 @@ describe("AST shell matcher", () => {
   });
 
   it("permits literal interpreter files without reading their contents", () => {
-    const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(node scripts/build.mjs)"] });
-    expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "allow" });
-    expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBe("allow");
+    const set = rules({ deny: ["Bash(rm *)"], allow: ["Bash(python3 -I -S scripts/build.py)"] });
+    expect(evaluateShellRules("python3 -I -S scripts/build.py", set)).toMatchObject({ decision: "allow" });
+    expect(evaluateShellRules("python3 -I -S scripts/build.py", rules({ allow: ["Bash(python3 -I -S scripts/build.py)"] })).decision).toBe("allow");
     expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
     expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBeNull();
     expect(evaluateShellRules("bun run build", rules({ ask: ["Bash(bun run build)"] })).decision).toBe("ask");

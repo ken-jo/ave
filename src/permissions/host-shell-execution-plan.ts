@@ -5,6 +5,7 @@ import type { SandboxCapability } from "./sandbox-capability.js";
 import type { SandboxConfinement } from "../shared/sandbox-capability-info.js";
 import { isRecord } from "../shared/is-record.js";
 import { sha256Hex } from "../lib/hex-digest-equal.js";
+import { isPowerShellStartupPinned } from "../shared/powershell-startup-policy.js";
 
 export const HOST_SHELL_EXECUTION_PLAN_VERSION = "host-shell-execution-plan/v4" as const;
 
@@ -321,10 +322,10 @@ export function buildHostShellExecutionPlan(input: {
   });
 }
 
-// Plain Windows PowerShell also needs one-shot authority before its unpinned
-// native parser starts. Existing explicit-host and partial-sandbox gates remain.
+// An unpinned native parser needs one-shot authority before startup. Existing
+// explicit-host and partial-sandbox gates remain independent of startup proof.
 export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan, toolName?: string): boolean {
-  return (plan.mode === "plain" && plan.platform === "win32" && toolName === "powershell") || (plan.mode === "plain" &&
+  return (plan.mode === "plain" && toolName === "powershell" && !isPowerShellStartupPinned(plan.platform)) || (plan.mode === "plain" &&
     (plan.executionRequest === "host" || plan.requestedSandbox === true) &&
     plan.capability.kind === "none" &&
     plan.requiresExplicitUserApproval === true);

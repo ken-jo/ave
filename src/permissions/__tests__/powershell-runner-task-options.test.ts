@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
@@ -18,7 +19,7 @@ const TASK_FIXTURES: readonly RunnerFixture[] = [
 ].map((command) => ({ command, outcome: "unproven" as const }));
 const TASK_OPTIONS: readonly RunnerFixture[] = [
   ...TASK_FIXTURES,
-  { command: "deno run main.ts", outcome: "static-complete" },
+  { command: "deno run main.ts", outcome: "unproven" },
 ];
 
 describe("runner task options", () => {
@@ -31,13 +32,13 @@ describe("runner task options", () => {
     });
   });
 
-  it.each(TASK_OPTIONS)("retains the shell policy for task data: $command", ({ command, outcome }) => {
+  it.each(TASK_OPTIONS)("retains the shell policy for task data: $command", ({ command }) => {
     expect(shellExfiltrationSignal(command, CWD)).toBeNull();
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     const analysis = analyzeShellForRules(command);
     expect(analysis.ok).toBe(true);
     expect(analysis).toMatchObject({ hidden: [] });
-    expect(proveLiteralShell(command, CWD)).toMatchObject({ proven: outcome === "static-complete" });
+    expect(proveLiteralShell(command, CWD)).toMatchObject({ proven: false });
   });
 
   it("does not let a prefix repair an unsupported task option", () => {
@@ -61,13 +62,13 @@ describe("runner task options", () => {
     { command: "deno task --future-task-flag config.json --eval=x", outcome: "unproven" as const },
     { command: "deno run --config config.json -", outcome: "unproven" as const },
     { command: "deno run -", outcome: "unproven" as const },
-    { command: "deno run https://x.invalid/main.ts", outcome: "static-complete" as const },
+    { command: "deno run https://x.invalid/main.ts", outcome: "unproven" as const },
     { command: "npx tsx --eval=x", outcome: "unproven" as const },
     { command: "npx awk 'BEGIN { system(\"curl x\") }'", outcome: "unproven" as const },
     { command: "npm --prefix $opaque run build", outcome: "unproven" as const },
   ].flatMap(({ command, outcome }) => [
-    { command, outcome, proven: outcome === "static-complete" },
-    { command: `& ${command}`, outcome: "unproven" as const, proven: outcome === "static-complete" },
+    { command, outcome, proven: false },
+    { command: `& ${command}`, outcome: "unproven" as const, proven: false },
   ]))
   ("classifies runner options and external content by the closed grammar: $command", ({ command, outcome, proven }) => {
     const inspected = inspectPowerShellCommand(command, CWD);

@@ -7,6 +7,12 @@ const childProcessMock = vi.hoisted(() => ({
   execFileSync: vi.fn(),
 }));
 
+vi.mock("../../shared/powershell-executable.js", () => ({
+  resolveTrustedPowerShellExecutable: (platform: NodeJS.Platform = process.platform) => ({
+    executable: platform === "win32" ? "C:\\Program Files\\PowerShell\\7\\pwsh.exe" : "/opt/microsoft/powershell/7/pwsh", kind: "pwsh",
+  }),
+}));
+
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
@@ -18,15 +24,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import type { ToolExecutionContext } from "../types.js";
-import {
-  ApprovalGate,
-  type ApprovalRequest,
-} from "../../permissions/approval-gate.js";
-import {
-  buildHostShellExecutionPermitBinding,
-  mintHostShellExecutionPermit,
-  type HostShellToolName,
-} from "../../permissions/host-shell-execution-permit.js";
+import { mintOneShotHostShellPermit as mintOneShotPermit } from "../../__tests__/support/host-shell-approval.js";
 import {
   getHostShellExecutionPlanAuditProjection,
   type HostShellExecutionPlan,
@@ -105,64 +103,6 @@ function issueRequestedUnavailable(platform: "darwin" | "linux" | "win32"): Host
   __resetActiveSandboxCapabilityForTest();
   setShellSandboxRequestedAtBoot(true);
   return getHostShellExecutionPlan();
-}
-let approvalSequence = 0;
-
-async function mintOneShotPermit(input: {
-  plan: HostShellExecutionPlan;
-  toolName: HostShellToolName;
-  toolUseId: string;
-  rawInput: unknown;
-  context: Pick<ToolExecutionContext, "cwd" | "extraAllowedDirectories">;
-}) {
-  const binding = buildHostShellExecutionPermitBinding({
-    plan: input.plan,
-    toolName: input.toolName,
-    toolUseId: input.toolUseId,
-    rawInput: input.rawInput,
-    executionCwd: input.context.cwd,
-    extraAllowedDirectories: input.context.extraAllowedDirectories,
-  });
-  if (binding === undefined) {
-    throw new Error("test input did not produce a host-shell permit binding");
-  }
-
-  const webContents = { isDestroyed: vi.fn(() => false), send: vi.fn() };
-  const gate = new ApprovalGate(webContents as never);
-  const id = `native-plan-b-${++approvalSequence}`;
-  const pending = gate.requestAndWait({
-    id,
-    category: "tool",
-    toolCategory: "shell",
-    toolName: input.toolName,
-    args: input.rawInput,
-    reason: "Windows partial shell requires an explicit one-shot approval",
-    source: "builtin",
-    createdAt: Date.now(),
-    allowedChoices: ["allow-once", "deny-once"],
-    forceExplicit: true,
-    hostShellExecutionPermitBinding: binding,
-  });
-  const request = webContents.send.mock.calls[0]?.[1] as ApprovalRequest | undefined;
-  if (request?.nonce === undefined || request.hmac === undefined) {
-    throw new Error("ApprovalGate did not issue an HMAC-sealed approval request");
-  }
-  gate.resolve(id, {
-    requestId: id,
-    choice: "allow-once",
-    nonce: request.nonce,
-    hmac: request.hmac,
-  });
-  const decision = await pending;
-  const permit = mintHostShellExecutionPermit({
-    plan: input.plan,
-    approvalDecision: decision,
-    binding,
-  });
-  if (permit === undefined) {
-    throw new Error("ApprovalGate allow-once did not mint a Plan-B permit");
-  }
-  return permit;
 }
 
 const SHELLS = [

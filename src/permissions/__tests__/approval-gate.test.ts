@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { randomUUID } from "node:crypto";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";

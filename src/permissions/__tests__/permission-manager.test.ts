@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   PermissionManager,

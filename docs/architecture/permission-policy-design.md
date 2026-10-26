@@ -280,7 +280,7 @@ remains unproven instead of becoming an optional value.
 
 Command resolution is a finite grammar context, separate from the input quoting
 dialect. A direct shell command may use its registered builtin or cmdlet grammar.
-External delegation through `env`, a package runner or Bash `exec` permanently
+External delegation through `env` or Bash `exec` permanently
 switches the child range to native-executable grammar: a native program does not
 inherit the parent's builtin, cmdlet or alias grammar. Bash `command` preserves
 its shell context, and `builtin` accepts only the registered Bash builtin subset.
@@ -290,7 +290,7 @@ The grammar's `changesState` flag is a conservative command-family property,
 not an inference about this invocation's effects. For families that can write
 through implicit or alternate modes, every admitted form is possible-write. The
 current family-level set covers all positively parsed native `curl`,
-`sort` and `uniq` forms, plus package-task and script/module interpreter forms,
+`sort` and `uniq` forms, plus startup-guarded script-file interpreter forms,
 including read-looking forms with no write option. Therefore any such form in a
 multi-command input makes the whole input unproven. The authoritative flags and
 closed argv grammars live in
@@ -424,6 +424,21 @@ Managed PowerShell execution and parsing require a separate startup proof.
 JSON file only, and an inherited `PSModulePath` can be augmented at startup.
 Neither is a proof that user configuration cannot select execution.
 
+Parser and execution resolve the same protected absolute installation. PATH,
+portable copies, per-user package roots and agent-writable installation entries
+never qualify. Admission verifies the installation and its ancestors before any
+native parser can run. Missing or unverifiable installations are unproven and
+cannot start a parser, even when a rule was stored. Installation proof and refusal are cached per candidate for the process
+lifetime. A new or repaired installation requires an application restart;
+stale refusal cannot grant authority. Successful proof trusts only changes
+excluded by the host-trust boundary.
+POSIX admission requires root ownership, no group/other write or current write
+access on every ancestor and installation entry, and no extended ACL on macOS.
+Windows admission requires non-reparse native ACL snapshots with only trusted
+system-principal ownership and mutation rights. Symlinks, elevated agents,
+special entries or incomplete evidence refuse. The fixed installation walk has
+65,536-entry and 64-level bounds; trusted administrator updates are host trust.
+
 On macOS and Linux each native parser and execution child receives a fresh
 host-owned `XDG_CONFIG_HOME` and settings file before startup. Host execution
 preserves the caller's HOME. The first command disables module autoload,
@@ -439,50 +454,55 @@ records their presence and retains its full visible-floor pass; it does not
 enumerate directive names or treat an unknown directive as inert. Quoted `#`
 text remains literal argument data.
 
-Windows PowerShell 5.1 uses registry policy, while PowerShell 7 also reads
-CurrentUser JSON under the user's Documents directory. No supported startup
-pin is established for either Windows path: current-user policy can outrank
-a Process policy, and a configured session can be selected before a command
-prelude. All managed Windows PowerShell inputs are therefore unproven,
-including native leaf commands and literal evaluators. They offer no exact
-allow rule, cannot replay stored or broad allows, require per-call L2 consent,
-and deny headless. Raw rule identity and syntax proofs remain unchanged. A
-pinned POSIX launch retains the full-text literal-evaluation exact exception.
+The Windows path is selected by installation proof, not by OS name. A protected
+System32 Windows PowerShell 5.1 installation can retain static command and
+exact-rule eligibility: the host suppresses profiles, disables module discovery,
+imports only protected absolute installation manifests and sets Process
+execution policy. Ordinary CurrentUser execution policy does not itself load
+code and does not revoke this proof. Administrative Group Policy remains host
+trust. A Windows PowerShell 7 path with uncontrolled CurrentUser JSON remains
+unproven because it can select a session endpoint before the prelude; no exact
+rule, saved grant or broad allow upgrades that path. A failed installation,
+ACL or startup proof also offers no exact rule and denies headless. Elevated
+processes cannot prove an installation immutable to themselves.
 
 An unpinned host AST parser starts only after genuine one-shot host authority
-is verified and consumed. MXC performs its AST inspection inside a separate
-confined invocation, then applies the existing structural/path gates before
-the execution invocation. A native host preflight is deferred on unpinned
-paths; the tool performs the same admission check on its execution route.
-Defensive module imports and Process policy flags on a Windows child do not
-make its startup eligible for automatic allowance.
+is verified and consumed, and only if executable admission independently
+succeeds. MXC performs its AST inspection inside a separate confined invocation,
+then applies existing structural/path gates before execution. Its internal
+parser response has a separate 1 MiB byte limit; truncation or an
+oversized response is a parser failure, never a partial proof. Native preflight
+is deferred on unpinned paths. A pinned path retains the original full-text
+literal-evaluation exact exception.
+
+Nested launchers need their own startup proof; the outer host's prelude does
+not configure a child. The registered subset requires all of Bash's
+`--noprofile --norc -p`, fish's `--no-config`/`-N`, or Python 3's `-I -S`
+before the supported literal script or command operand. Unknown options and
+other launchers remain unproven, including an unguarded `bash -c`, `zsh -f`,
+`pwsh -NoProfile`, Node and package runners with implicit configuration.
+An unproven startup cannot acquire the opaque-payload exact exception. For a
+proven child startup, a literal evaluation payload remains opaque and requires
+an exact rule over the entire original command. Static script-file forms retain
+the documented file-indirection limit; no script is read or simulated.
+
+System-scope startup files count as host-trusted only when their installation
+and permissions exclude user and agent mutation. A location called system-wide
+is not sufficient. The nested grammar does not attempt such filesystem proof
+for an unavoidable startup file: for example, `zsh -f` still reads
+`/etc/zshenv`, so it remains unproven. Local configuration that can choose
+code, modules or additional arguments is not an accepted residual.
 
 Local transcript-file writes are an accepted host-trust residual. They do
 not, by themselves, revoke cmdlet automatic allowance. This residual grants
 no exception for configuration that selects modules, code or execution policy.
 
-Catalogued package-runner forms remain rule-eligible only when the runner grammar
-consumes its complete outer argv and the delegated command range also satisfies
-a registered grammar. The runner stays in the exact identity; an inner-only rule
-cannot authorize it. Unknown runner options or targets are unproven. File-input
-operands retain their direct sensitive-path checks. Classifying a local argument
-as data neither proves read-only effects nor certifies package or script
-contents.
-
-Runner delegation has an explicit argv boundary. For `npx` and package `exec`
-forms, `--` immediately before the inner argv enables normal inner-grammar
-checking. Without that boundary, any option-looking word after the proposed
-target makes the request unproven, because its owner is ambiguous. One
-precomputed option-suffix summary supplies this check; the pass never rescans
-each suffix.
-
-Interpreter pathname and module modes are positive grammars, not general file
-indirection. A script path must match that interpreter's closed extension set,
-and a module must match its closed name grammar. Bun also requires `--` before
-script arguments. Bare Bun and Deno invocations and unsupported mode words are
-unproven. PowerShell launchers accept a script only through explicit `-File`
-with a literal `.ps1` operand; a bare launcher or implicit positional file or
-command is unproven.
+Package task, exec and runner forms have no positive-proof grammar because
+their implicit configuration can choose startup code and execution options.
+They remain in raw rule identity for detection and narrowing rules, but never
+supply an allow rule. No runner-option suffix heuristic supplies proof.
+Guarded interpreter file forms are limited to the startup grammars above;
+module, stdin, interactive and other runtime modes remain unproven.
 
 Shell rules are dialect-scoped: `Bash(...)` rules match bash and
 `PowerShell(...)` rules match PowerShell (owner decision 2026-10-25), each at

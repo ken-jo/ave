@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { describe, expect, it } from "vitest";
 import { _inspectPowerShellForTest, inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 
@@ -28,7 +29,7 @@ function expectLinearGrowth(values: readonly number[], sizes: readonly number[])
 describe("linear literal argv inspection", () => {
   it.each([
     { leaf: "Write-Output ready", expected: "unproven" },
-    { leaf: "printf ready", expected: "static-complete" },
+    { leaf: "printf ready", expected: "unproven" },
   ])("does constant work per token for a wide runner-shaped command ending in $leaf", ({ leaf, expected }) => {
     const sizes = [128, 256, 398] as const;
     const results = sizes.map((size) => _inspectPowerShellForTest(
