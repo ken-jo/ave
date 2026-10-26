@@ -6,6 +6,7 @@ import { PLUGIN_ASSET_CUSTOM_SCHEME } from "./plugin-asset-protocol.js";
 import { MCP_APP_CUSTOM_SCHEME } from "./mcp-app-protocol.js";
 import { CONTENT_ASSET_CUSTOM_SCHEME } from "./content-asset-protocol.js";
 import { scrubPackagedProcessEnv } from "./packaged-env-scrub.js";
+import { applyAppUserAgentFallback } from "./browser-user-agent.js";
 import { resolveAppIconPath } from "./app-icon.js";
 import {
   readPersistedHardwareAccelerationSync,
@@ -41,6 +42,8 @@ export function runEarlyBootEnv(): void {
   }
   // Set the app name before any userData read, including GPU preferences, so settings resolve to the correct profile.
   app.setName("Ave");
+  // Before any session or net.request exists, so the default session never carries the Electron token.
+  applyAppUserAgentFallback();
 
   // Apply acceleration before readiness; software rendering still has a compositor child and requires packaged graphics libraries.
   if (

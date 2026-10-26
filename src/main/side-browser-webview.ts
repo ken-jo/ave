@@ -9,7 +9,7 @@ import {
 import { AVE_SIDE_BROWSER_PARTITION } from "../shared/side-browser.js";
 import { validateExternalUrl } from "../shared/external-url.js";
 import { markAsLinkOwned } from "./link-window-registry.js";
-import { buildPersistentBrowserUserAgent } from "./browser-user-agent.js";
+import { applyBrowserSessionIdentity } from "./browser-user-agent.js";
 import { createLogger } from "../lib/logger.js";
 import { browserWorkspaceOrigin, browserWorkspaceUrl } from "../shared/browser-workspace.js";
 import type { BrowserPermissionDetails } from "./browser/browser-site-permissions.js";
@@ -50,9 +50,7 @@ function permissionDetails(contents: WebContents | null, permission: string, det
 
 export function installSideBrowserPartitionPolicy(): void {
   const sideBrowserSession = session.fromPartition(AVE_SIDE_BROWSER_PARTITION);
-  // Sign-in pages (Google, Microsoft) refuse UAs that carry `Electron/` as an embedded browser; present the same vanilla Chromium/Edge UA as the link
-  // viewer so logins in the in-app browser work and persist.
-  sideBrowserSession.setUserAgent(buildPersistentBrowserUserAgent());
+  applyBrowserSessionIdentity(sideBrowserSession);
   sideBrowserSession.setPermissionRequestHandler((contents, permission, callback, details) => {
     const verified = permissionDetails(contents, permission, details);
     if (verified === null) { callback(false); return; }

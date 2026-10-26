@@ -1,12 +1,15 @@
+import { configureHostResources } from "../../main/host-resources.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import { describe, expect, it } from "vitest";
+import { beforeAll, describe, expect, it } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { ensureAveHomePrivate } from "../ave-home.js";
+
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
 const paths = useTempPaths("host-ownership-", ".ave");
 const require = createRequire(import.meta.url);
@@ -20,6 +23,8 @@ function fixture(): { home: string; script: string } {
   expect(ensureAveHomePrivate(home).enforcement).not.toBe("none");
   const script = join(dirname(home), "owner.cjs");
   buildSync({ stdin: { contents: `
+    import { configureHostResources } from ${JSON.stringify(fileURLToPath(new URL("../../main/host-resources.ts", import.meta.url)))};
+    configureHostResources({ resourcePath: ${JSON.stringify(resolve("resources"))}, isPackaged: false });
     import { acquireHostInstanceLock } from ${JSON.stringify(lockSource)};
     import { isAveHomeConfigurationOwner, withAveHomeConfigurationWrite } from ${JSON.stringify(accessSource)};
     import { migrateAveHomeConfiguration } from ${JSON.stringify(migrationSource)};

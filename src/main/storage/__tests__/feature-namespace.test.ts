@@ -3,7 +3,7 @@ import { canCreateSymlinks } from "../../../__tests__/support/symlink-capability
  * POSIX mode assertions do not apply on Windows. */
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, statSync, writeFileSync, readdirSync, existsSync, symlinkSync, readFileSync, lstatSync, mkdirSync, promises as fs, renameSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   openFeatureNamespace,
@@ -15,6 +15,7 @@ import {
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
 import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
+import { configureHostResources } from "../../host-resources.js";
 
 const POSIX = process.platform !== "win32";
 
@@ -23,6 +24,7 @@ describe("feature-namespace", () => {
   let tempDir: string;
 
   beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     prevAveHome = process.env.AVE_HOME;
     tempDir = mkdtempSync(join(tmpdir(), "ave-feature-ns-"));
     setFixtureOwner(tempDir);

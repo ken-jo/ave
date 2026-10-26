@@ -132,16 +132,6 @@ cancellation, cgroup-v2 OOM evidence and terminal cleanup receipts. The
 [permission policy](permission-policy-design.md#host-native-workload-broker)
 defines the full route and lifecycle contract.
 
-The [Linux workload resource controller](linux-workload-resource-controller.md)
-is an unwired cgroup-v2 foundation for keeping the host controller outside
-per-invocation memory/PID bounds and explicit swap/CPU settings. It is not a
-security sandbox and does not itself advertise the disposable-container route.
-It remains distinct from both implemented routes: strict operator attestation
-for a controller already inside the disposable guest, and the host-native
-Docker workload broker. Runtime integration of this controller remains blocked
-until the workload cannot see or write a parent cgroup hierarchy and the
-resource capability and limits are bound into the execution grant.
-
 Each foreground capture artifact is limited to 5,000,000 bytes. Retained captures
 plus active reservations are limited to 20,000,000 bytes per session. Capture
 reserves the full artifact allowance before it starts and releases unused
@@ -1685,6 +1675,21 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   covers only the `srt-win` Rust sources.
 
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
+On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; machine-root rows retained by the policy filter remain eligible for stamping regardless of absence. Before adding a worker write grant, raw session and earlier-wrap denies plus the pending policy identify every overlapping obligation, including machine read rows and targets created after omission. An overlapping deny glob refuses the grant because a DACL cannot protect future matches. Native target DACLs determine existing deny strength; stamping unions that strength with the obligations so reusing the session holder cannot downgrade its earlier read protection. After stamping, even if it throws, native DACLs must show the sandbox SID's expected deny mask, subtree inheritance for directories, and parent delete-child protection. A missing or unverifiable target refuses the grant, as does any stamp failure; successful stamping alone proves nothing. Grant failures revoke only the grant holder. Worker release leaves session denies until teardown; placeholders remain. These are point-in-time checks: concurrent path or DACL changes and protected descendant DACLs remain limitations. An omitted target created outside write grants while a command is running is not denied until the next wrap or worker/session re-initialization.
+
+Grant proof uses the shipped path helper's synchronous handle-based DACL mode.
+It pins non-reparse path components and reads target and parent descriptors
+from those handles. Only leading explicit deny ACEs count; inherited denies or
+denies after an allow supply no proof. Obligation capture through native grant
+and publication contains no await. An obligation revision and session/seal
+check guard the effect boundary; asynchronous wraps recheck their captured
+session and seal immediately before entering the native wrapper. Reset
+invalidates admission before its first await.
+
+A failed native deny verification seals the session against further wraps and
+worker grants until reset. Confinement stays marked active so callers cannot
+fall back to host execution. Previously issued commands are not revoked by this
+check.
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
@@ -2172,15 +2177,27 @@ with its own owner rule:
 - **The Windows sandbox helper copy is created with its final security
   descriptor.** `prepareSrtWinExecutable` in
   `src/permissions/srt-win-integrity.ts` picks a random, unpublished
-  `ave-srt-win-` name, and one PowerShell step creates the directory there with
-  the token user as owner and a protected DACL: full control for the user,
+  `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
+  both directories with the token user as owner and a protected DACL: full control for the user,
   read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at that path, a link included, refuses creation. The empty image and
-  the owner marker are then created new inside it, each with its own
+  already at either directory path, a link included, refuses creation. The empty image and
+  the owner marker are then created new inside `bin`, each with its own
   descriptor, and each owner is read on the handle that created the file. No
   step changes the owner or DACL of an object that already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
+  The write-deny target is `bin`, so its parent's inheritable delete-child deny
+  lands on the private outer directory, never `%TEMP%`. Grants inside or writable
+  grants covering that outer directory are refused. Session reset or holder
+  release removes the deny when its final hold ends. A dead holder leaves its
+  ACE until a later native ACL operation prunes its tracked hold.
+  The stale-copy sweep checks both directory owners and DACLs for the new layout,
+  and also accepts the old single-level layout with its original marker checks.
+  It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
+  without recursion. A sandbox-account ACE found on the temporary root emits
+  `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
+  Any remaining legacy ACE requires owner-approved inspection and repair of the
+  exact explicit ACE or its inheritance source, with active holders accounted for.
 - **Private storage boundaries are protected at creation.**
   On Windows, boot creates `AVE_HOME` and the `secrets`,
   `subscription-runtimes`, `keys`, `certs` and `config` boundaries with

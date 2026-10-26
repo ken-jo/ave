@@ -1,9 +1,12 @@
 // Chromium resolver overrides bypass the Node DNS checks used by the SSRF guard and must stay disabled.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
+
+useChromiumRuntime();
 
 const appended: Array<{ name: string; value?: string }> = [];
 
@@ -15,6 +18,8 @@ const mockedElectron = vi.hoisted(() => ({
     },
     disableHardwareAcceleration: vi.fn(),
     setName: vi.fn(),
+    getVersion: () => "0.14.1",
+    userAgentFallback: "",
     setAppUserModelId: vi.fn(),
     setToastActivatorCLSID: vi.fn(),
     getPath: vi.fn(() => ""),
@@ -34,6 +39,7 @@ vi.mock("../ensure-workspace-cwd.js", () => ({
 }));
 
 import { runEarlyBootEnv } from "../early-boot-env.js";
+import { buildPersistentBrowserUserAgent } from "../browser-user-agent.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { writeSettingsFile as writeSettings } from "./support/settings-file.js";
 
@@ -80,6 +86,9 @@ describe("runEarlyBootEnv", () => {
       .toEqual(["ave-plugin", "ave-mcp-app", "ave-content"]);
     expect(mockedElectron.app.setName).toHaveBeenCalledWith("Ave");
     expect(mockedElectron.app.setAppUserModelId).toHaveBeenCalledWith("ai.agent-connector.ave");
+    // net.request and hostFetch use the default session, which takes this fallback.
+    expect(mockedElectron.app.userAgentFallback).toBe(buildPersistentBrowserUserAgent());
+    expect(mockedElectron.app.userAgentFallback).toMatch(/Safari\/537\.36 Ave\/0\.14\.1$/);
   });
 
   it("honors a persisted hardware-acceleration ON over the Windows/Linux default", () => {

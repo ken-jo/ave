@@ -1,7 +1,7 @@
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi, type TestContext } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import {
@@ -23,6 +23,7 @@ import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { readWindowsDirectoryDacls } from "../../shared/ave-home.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
+import { configureHostResources } from "../host-resources.js";
 
 // Mocked access rules answer at the request level. The real case empties the seam, so the product's own ACL host runs.
 const fakeRequest = vi.fn(async (request: WindowsAclRequest): Promise<string> => {
@@ -36,6 +37,7 @@ const fakeRequest = vi.fn(async (request: WindowsAclRequest): Promise<string> =>
 });
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   _resetDesktopPackageCacheForTest();
   _resetWindowsAclHostForTest();
   _setWindowsAclTransportForTest({ request: fakeRequest, discard: () => {} });

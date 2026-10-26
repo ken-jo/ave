@@ -1,3 +1,4 @@
+import { configureHostResources } from "../../main/host-resources.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
@@ -5,8 +6,8 @@ useConfigurationOwner();
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { dirname, join, resolve } from "node:path";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { ensureAveHomePrivate, readWindowsDirectoryDacls, win32SystemBinary, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest } from "../ave-home.js";
@@ -20,9 +21,19 @@ import { loadPolicy, userPolicyPath } from "../../permissions/policy-store.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
 
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
+
 describe.runIf(process.platform === "win32")("protected home boundaries", () => {
   afterEach(() => { _resetAveHomePrivacyForTest(); vi.unstubAllEnvs(); });
   const home = useTempPaths("ave-boundaries-", ".ave");
+  it("migrates a valid source above the descriptor content snapshot limit", () => {
+    const dir = fixture();
+    const bytes = JSON.stringify({ padding: "x".repeat(1024 * 1024 + 1) });
+    writeFileSync(join(dir, "settings.json"), bytes);
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(readFileSync(join(dir, "config", "settings.json"), "utf8")).toBe(bytes);
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(true);
+  });
   function fixture(): string {
     const dir = home();
     setFixtureOwner(dirname(dir));

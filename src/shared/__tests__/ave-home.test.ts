@@ -1,13 +1,19 @@
-import { afterEach, describe, expect, it, vi, type TestContext } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
 import { permissionSettingsPath } from "../../permissions/permission-settings-store.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import * as windowsPathFacts from "../windows-path-facts.js";
+import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
+
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
 
 const OWNER_SID = "S-1-5-21-1004336348-11-77-1417";
 const OWNER_RULE: WindowsAccessRule = { sid: OWNER_SID, accessControlType: 0, fileSystemRights: 2032127,
@@ -16,19 +22,30 @@ function descriptor(path: string): WindowsDirectoryDacl {
   return { path, currentUserSid: OWNER_SID, ownerSid: OWNER_SID, elevated: false, protected: true, rules: [{ ...OWNER_RULE }] };
 }
 
+
+function nativeDescriptor(path: string, owner = OWNER_SID): windowsPathFacts.WindowsDaclFacts {
+  const identity = { volumeSerial: "0x0000000000000001", fileId: "0x00000000000000000000000000000001" };
+  return { exists: true, canonical: resolve(path), ...identity, volumeSerialNumber: "0x0000000000000001",
+    fileIndex: "0x0000000000000001", attributes: 16, reparseTag: 0, reparseTarget: null, directory: true, ancestors: [],
+    currentUserSid: OWNER_SID, elevated: false, principals: {},
+    dacl: { identity, owner, group: OWNER_SID, protected: true, nullDacl: false,
+      aces: [{ type: 0, flags: 3, mask: 0x1f01ff, sid: OWNER_SID }] } };
+}
+
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
 });
 vi.mock("node:os", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:os")>();
-  return { ...actual, homedir: () => join(actual.tmpdir(), "synthetic-profile") };
+  return { ...actual, homedir: () => join(actual.tmpdir(), "example") };
 });
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, mkdirSync: vi.fn(actual.mkdirSync) };
 });
 afterEach(async () => {
+  vi.restoreAllMocks();
   _resetAveHomePrivacyForTest();
   vi.unstubAllEnvs();
   const actual = await vi.importActual<typeof import("node:child_process")>("node:child_process");
@@ -45,7 +62,7 @@ describe("aveHome", () => {
   });
   it("resolves the default home without writing it", () => {
     vi.stubEnv("AVE_HOME", undefined);
-    expect(aveHome()).toBe(resolve(tmpdir(), "synthetic-profile", ".ave"));
+    expect(aveHome()).toBe(resolve(tmpdir(), "example", ".ave"));
   });
   it("resolves a relative override", () => {
     vi.stubEnv("AVE_HOME", join("relative-state", "..", "ave-state"));
@@ -57,10 +74,10 @@ describe("aveHome", () => {
   });
 });
 describe("win32SystemBinary", () => {
-  it("pins the binary to System32 without changing other callers' fallback", () => {
-    expect(win32SystemBinary("icacls", { SystemRoot: "C:\\Windows" })).toBe(join("C:\\Windows", "System32", "icacls.exe"));
-    expect(win32SystemBinary("icacls", { windir: "D:\\Win" })).toBe(join("D:\\Win", "System32", "icacls.exe"));
-    expect(win32SystemBinary("icacls", {})).toBe("icacls");
+  it("pins the binary to System32 and refuses missing system roots", () => {
+    expect(win32SystemBinary("icacls", { SystemRoot: "C:\\Windows" })).toBe("C:\\Windows\\System32\\icacls.exe");
+    expect(win32SystemBinary("icacls", { windir: "D:\\Win" })).toBe(win32.join("D:\\Win", "System32", "icacls.exe"));
+    expect(() => win32SystemBinary("icacls", {})).toThrow(/system root/i);
   });
 });
 /** A refused result with the DACL it was refused for: owner, entries and inheritance flags. */
@@ -85,7 +102,7 @@ describe("ensureAveHomePrivate", () => {
     expect(aveHomeConfigurationDirectory(dir)).toBe(join(dir, "config"));
     expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
     expect(aveHomeConfigurationDirectory(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "config"));
-    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
+    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(2);
   });
   function check(change: (entry: WindowsDirectoryDacl, index: number) => WindowsDirectoryDacl = (entry) => entry) {
     const dir = home();
@@ -103,7 +120,7 @@ describe("ensureAveHomePrivate", () => {
     const original = mkdir.getMockImplementation()!;
     mkdir.mockImplementation(() => undefined);
     try {
-      const dir = resolve(tmpdir(), "synthetic-profile", ".ave");
+      const dir = resolve(tmpdir(), "example", ".ave");
       expect(ensureAveHomePrivate(undefined, { platform: "win32", readDacls: (paths) => paths.map(descriptor) }))
         .toEqual({ enforcement: "win32-dacl", home: dir, sid: OWNER_SID });
     } finally {
@@ -119,6 +136,20 @@ describe("ensureAveHomePrivate", () => {
   it("refuses a foreign owner on the subscription runtime root", () => {
     const { result, dir } = check((entry, index) => index === 2 ? { ...entry, ownerSid: "S-1-5-18" } : entry);
     expect(result).toMatchObject({ enforcement: "none", category: "invalid-owner-grant", failedPath: join(dir, "subscription-runtimes") });
+  });
+  it("reports a failed runtime root ownership claim without downgrading protection", () => {
+    const dir = home();
+    const runtimeRoot = join(dir, "subscription-runtimes");
+    const reason = "Directory ownership claim failed";
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(paths => paths.map(path =>
+      nativeDescriptor(path, path === runtimeRoot ? "S-1-5-32-544" : OWNER_SID)));
+    vi.mocked(execFileSync).mockImplementation((_file, _args, options) => {
+      const request = JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_REQUEST!);
+      return JSON.stringify(request.paths.map((path: string) => path === runtimeRoot
+        ? { path, category: "owner-claim-failed", error: reason } : { path }));
+    });
+    expect(ensureAveHomePrivate(dir, { platform: "win32", readDacls: (paths, protect) => readWindowsDirectoryDacls(paths, protect, runtimeRoot) }))
+      .toEqual({ enforcement: "none", home: dir, failedPath: runtimeRoot, category: "owner-claim-failed", reason });
   });
   it.each(["S-1-5-18", "S-1-5-32-544", "S-1-1-0"])("rejects an extra well-known principal %s", (sid) => {
     const { result, dir } = check((entry) => ({ ...entry, rules: [OWNER_RULE, { ...OWNER_RULE, sid }] }));
@@ -286,37 +317,35 @@ describe("ensureAveHomePrivate", () => {
     ensureAveHomePrivate(dir, { platform: "darwin", readDacls: () => [] });
     expect(statSync(dir).mode & 0o777).toBe(0o700);
   });
-  it("passes untrusted paths and the icacls path only through one JSON environment value", () => {
-    vi.stubEnv("SystemRoot", "C:\\Windows");
+  it("passes untrusted paths only through one JSON environment value", () => {
     const paths = ["odd’; Write-Output x; 'path", "secret"];
-    const results = paths.map(descriptor);
-    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify(results));
-    expect(readWindowsDirectoryDacls(paths)).toEqual(results);
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(targets => targets.map(path => nativeDescriptor(path)));
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify(paths.map(path => ({ path }))));
+    expect(readWindowsDirectoryDacls(paths, true)).toEqual(paths.map(descriptor));
     const [, args, options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
     expect(args!.join(" ")).not.toContain(paths[0]);
     const env = (options as { env: NodeJS.ProcessEnv }).env;
-    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, protect: false, readOnlyRights: 0x1200a9 });
+    expect(JSON.parse(env.AVE_DACL_REQUEST!)).toEqual({ paths, readOnlyRights: 0x1200a9 });
     // The system root reaches the child only inside the request, never as a second variable.
     expect(Object.keys(env).filter((name) => name.startsWith("AVE_DACL_"))).toEqual(["AVE_DACL_REQUEST"]);
   });
   it("lets Windows PowerShell rebuild its own module path", () => {
-    vi.stubEnv("SystemRoot", "C:\\Windows");
-    // A module path inherited from PowerShell 7 names that edition's modules, not 5.1's.
     vi.stubEnv("PSModulePath", "C:\\Program Files\\PowerShell\\7\\Modules");
-    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor("C:\\home")]));
-    readWindowsDirectoryDacls(["C:\\home"]);
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(paths => paths.map(path => nativeDescriptor(path)));
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify([{ path: home() }]));
+    readWindowsDirectoryDacls([home()], true);
     const env = (vi.mocked(execFileSync).mock.calls.at(-1)![2] as { env: NodeJS.ProcessEnv }).env;
-    expect(Object.keys(env).filter((name) => name.toLowerCase() === "psmodulepath")).toEqual([]);
+    expect(Object.keys(env).filter(name => name.toLowerCase() === "psmodulepath")).toEqual([]);
   });
-  it("retains a per-path read error in one process", () => {
-    vi.stubEnv("SystemRoot", "C:\\Windows");
+  it("retains a per-path read error without losing another descriptor", () => {
     const dir = home();
     const paths = [dir, join(dir, "secrets")];
-    const results = [descriptor(dir), { path: paths[1], error: "read failed" }];
-    const before = vi.mocked(execFileSync).mock.calls.length;
-    vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify(results));
-    expect(readWindowsDirectoryDacls(paths)).toEqual(results);
-    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(targets => {
+      if (targets[0] === resolve(paths[1]!)) throw new Error("read failed");
+      return targets.map(path => nativeDescriptor(path));
+    });
+    expect(readWindowsDirectoryDacls(paths)).toEqual([descriptor(dir),
+      { path: paths[1], category: "read-back-failed", error: "read failed" }]);
   });
   it("reports a directory the protecting step could not create", () => {
     const dir = home();
@@ -325,10 +354,10 @@ describe("ensureAveHomePrivate", () => {
     ] });
     expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "directory-failed", reason: "Access is denied" });
   });
-  it("rejects a malformed read-back result set", () => {
-    vi.stubEnv("SystemRoot", "C:\\Windows");
+  it("rejects a malformed native read-back result set", () => {
+    vi.spyOn(pathKindLauncher, "resolveWindowsPathKindHelper").mockReturnValue(process.execPath);
     vi.mocked(execFileSync).mockReturnValueOnce("{}");
-    expect(() => readWindowsDirectoryDacls([home()])).toThrow("invalid result set");
+    expect(readWindowsDirectoryDacls([home()])[0]).toMatchObject({ category: "read-back-failed", error: "Invalid Windows path facts response" });
   });
   it.runIf(process.platform === "win32")("blocks later home grants from reaching subscription runtimes and new children", () => {
     const dir = home();
@@ -354,6 +383,7 @@ describe("ensureAveHomePrivate", () => {
   });
   it("uses a stdin bootstrap and pinned creation without child verification", () => {
     vi.stubEnv("SystemRoot", "C:\\Windows");
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(paths => paths.map(path => nativeDescriptor(path)));
     vi.mocked(execFileSync).mockReturnValueOnce(JSON.stringify([descriptor("C:\\home")]));
     readWindowsDirectoryDacls(["C:\\home"], true);
     const [, args, options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
@@ -367,6 +397,33 @@ describe("ensureAveHomePrivate", () => {
     expect(script).not.toContain("Reapply");
     expect(script).not.toContain("MAX_CHILD");
     expect(script).not.toContain("WindowsOwnerClaim.Restore");
+  });
+  it("refuses a link and an unaccepted owner before the permission command writes", () => {
+    const dir = home();
+    for (const row of [{ ...nativeDescriptor(dir), reparseTag: 0x80000042, attributes: 0x410 }, nativeDescriptor(dir, "S-1-5-18")]) {
+      const spy = vi.spyOn(windowsPathFacts, "readWindowsDacls").mockReturnValue([row]);
+      const before = vi.mocked(execFileSync).mock.calls.length;
+      expect(readWindowsDirectoryDacls([dir, join(dir, "secrets")], true)[0]!.category).toMatch(/reparse-point|invalid-owner-grant/);
+      expect(vi.mocked(execFileSync).mock.calls).toHaveLength(before);
+      spy.mockRestore();
+    }
+  });
+  it("claims only the requested runtime root before writing its DACL", () => {
+    const dir = home();
+    const runtimeRoot = join(dir, "subscription-runtimes");
+    vi.spyOn(windowsPathFacts, "readWindowsDacls").mockImplementation(paths => paths.map(path =>
+      nativeDescriptor(path, path === runtimeRoot ? "S-1-5-32-544" : OWNER_SID)));
+    const paths = [dir, join(dir, "secrets"), runtimeRoot];
+    vi.mocked(execFileSync).mockReturnValue(JSON.stringify(paths.map(path => ({ path }))));
+    readWindowsDirectoryDacls(paths, true, runtimeRoot);
+    const [, , options] = vi.mocked(execFileSync).mock.calls.at(-1)!;
+    const request = JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_REQUEST!);
+    const script = (options as { input: string }).input;
+    expect(request).toEqual({ paths, claimableRuntimeRoot: runtimeRoot, readOnlyRights: 0x1200a9 });
+    expect(script).toContain('$path -eq $request.claimableRuntimeRoot');
+    expect(script.indexOf("[HomeDirectoryDacl]::ClaimRuntimeRoot")).toBeLessThan(script.indexOf("[HomeDirectoryDacl]::Repair"));
+    expect(script).toContain('string owner = Read(handle).GetOwner(typeof(SecurityIdentifier)).Value');
+    expect(script.indexOf('owner != "S-1-5-32-544"')).toBeLessThan(script.indexOf("SetSecurityInfo(handle, 1, 0x80000005u"));
   });
   it("reports the first refused path and touches none inside it", () => {
     const dir = home();
@@ -455,7 +512,8 @@ describe("ensureAveHomePrivate", () => {
     const before = vi.mocked(execFileSync).mock.calls.length;
     const result = ensureAveHomePrivate(dir);
     expect(result, refusal(result)).toMatchObject({ enforcement: "win32-dacl" });
-    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
+    expect(vi.mocked(execFileSync).mock.calls.slice(before).filter(([, , options]) =>
+      (options as { env?: NodeJS.ProcessEnv } | undefined)?.env?.AVE_DACL_REQUEST !== undefined)).toHaveLength(1);
     const descriptors = readWindowsDirectoryDacls([dir, join(dir, "secrets"), join(dir, "subscription-runtimes"), join(dir, "keys"), join(dir, "certs")]);
     console.info(`Verified relocated private directory DACL JSON: ${JSON.stringify(descriptors)}`);
     for (const entry of descriptors) {

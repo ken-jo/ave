@@ -1,11 +1,12 @@
+import { configureHostResources } from "../../main/host-resources.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
 
 useConfigurationOwner();
 
 import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
-import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { dirname, join, resolve } from "node:path";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { ensureAveHomePrivate, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
@@ -15,6 +16,8 @@ import { loadPolicy, savePolicy, userPolicyPath } from "../../permissions/policy
 import { buildMandatorySandboxWritePolicy } from "../../permissions/sandbox-write-policy.js";
 import { canonicalizePathForMatch, caseFoldForMatch, isSensitivePath, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../../permissions/sensitive-paths.js";
 import { getDefaultSensitiveWriteDenyPaths } from "../../permissions/asrt-sandbox.js";
+
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
 const home = useTempPaths("ave-config-", ".ave");
 vi.mock("node:child_process", async (importOriginal) => {

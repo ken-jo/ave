@@ -29,6 +29,7 @@ import { bundledCredentialKey } from "../../mcp/bundled-credential.js";
 import type { ParsedContent } from "../../marketplace/content/kinds.js";
 import type { LedgerEntry } from "../../marketplace/content/ledger.js";
 import { installedFontStack } from "../../shared/installed-content.js";
+import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
@@ -143,48 +144,40 @@ describe("createContentActivation", () => {
     expect(settingsService.get("appearance").language).toBe("ko");
   });
 
-  it("unlocks a built-in vendor with its default model and base URL, and locks it again on removal", async () => {
+  it("preserves bundled vendor settings and credentials during package activation and replacement", async () => {
     const activation = createContentActivation(deps);
+    await settingsService.patch({ llm: { vendors: { "azure-foundry": { model: "saved-model", baseUrl: "https://saved.example/v1", enableThinking: false } } } });
+    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
+    const before = settingsService.get("llm");
     const vendor = { providerId: "azure-foundry" as const, defaultModel: "gpt-5", baseUrl: "https://gateway.corp.example/foundry" };
     await activation.activate({ kind: "provider", vendor }, entry("provider", "azure-foundry"), null, false);
-    expect(settingsService.get("marketplace").installedProviderIds).toContain("azure-foundry");
-    expect(settingsService.get("llm").vendors["azure-foundry"]).toMatchObject({ model: "gpt-5", baseUrl: "https://gateway.corp.example/foundry" });
-    expect(sent).toContain("ave:settings:updated");
-
+    await activation.activate({ kind: "provider", vendor }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"), false);
     await activation.deactivate(entry("provider", "azure-foundry"), null);
-    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
-  });
-
-  it("drops a saved vendor key when the package moves the vendor's base URL, and keeps it otherwise", async () => {
-    const activation = createContentActivation(deps);
-    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
-    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", defaultModel: "gpt-5" } }, entry("provider", "azure-foundry"), null, false);
+    expect(settingsService.get("llm")).toEqual(before);
     expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
-
-    const moved = { providerId: "azure-foundry" as const, baseUrl: "https://gateway.corp.example/foundry" };
-    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"), false);
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
-
-    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-corp");
-    await activation.activate({ kind: "provider", vendor: moved }, entry("provider", "azure-foundry"), entry("provider", "azure-foundry"), false);
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-corp");
-
-    await activation.deactivate(entry("provider", "azure-foundry"), null);
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
-    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
   });
 
-  it("removes a vendor package whose saved key can no longer be decrypted", async () => {
+  it("uninstalls an old bundled vendor package without changing its key or settings", async () => {
     const activation = createContentActivation(deps);
-    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false);
+    await settingsService.patch({ marketplace: { installedProviderIds: ["groq"] }, llm: { vendors: { groq: { model: "saved-model", baseUrl: "https://saved.example/v1", enableThinking: false } } } });
+    await settingsService.setSecret("llm.apiKey.groq", "sk-user");
+    const before = settingsService.get("llm");
+    await activation.deactivate(entry("provider", "groq"), null);
+    expect(settingsService.getSecret("llm.apiKey.groq")).toBe("sk-user");
+    expect(settingsService.get("llm")).toEqual(before);
+    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("groq");
+  });
+
+  it("does not read a bundled vendor secret while removing its legacy package", async () => {
+    const activation = createContentActivation(deps);
     await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
     const read = vi.spyOn(settingsService, "getSecret").mockImplementation(() => {
       throw new Error("keychain changed");
     });
     await expect(activation.deactivate(entry("provider", "azure-foundry"), null)).resolves.toBeUndefined();
+    expect(read).not.toHaveBeenCalled();
     read.mockRestore();
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBeNull();
-    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
+    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
   });
 
   it("preserves a saved key and its provider when the configuration boundary is untrusted", async () => {
@@ -205,18 +198,18 @@ describe("createContentActivation", () => {
     }
   });
 
-  it("puts the vendor key back, next to the old address, when saving the move fails", async () => {
+  it("keeps a third-party preset key and address when saving a move fails", async () => {
     const activation = createContentActivation(deps);
-    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
-    const before = settingsService.get("llm").vendors["azure-foundry"]?.baseUrl;
+    await activation.activate({ kind: "provider", preset }, entry("provider", preset.providerId), null, false);
+    const key = marketplaceProviderPresetSecretKey(preset.providerId);
+    await settingsService.setSecret(key, "sk-user");
     const save = vi.spyOn(settingsService as unknown as { saveSettings(): Promise<void> }, "saveSettings").mockRejectedValueOnce(new Error("disk full"));
     await expect(
-      activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry", baseUrl: "https://gateway.corp.example/foundry" } }, entry("provider", "azure-foundry"), null, false),
+      activation.activate({ kind: "provider", preset: { ...preset, baseUrl: "https://moved.example/v1" } }, entry("provider", preset.providerId), entry("provider", preset.providerId), false),
     ).rejects.toThrow("disk full");
     save.mockRestore();
-    expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
-    expect(settingsService.get("llm").vendors["azure-foundry"]?.baseUrl).toBe(before);
-    expect(settingsService.get("marketplace").installedProviderIds).not.toContain("azure-foundry");
+    expect(settingsService.getSecret(key)).toBe("sk-user");
+    expect(settingsService.get("marketplace").installedProviderPresets).toEqual([preset]);
   });
 
   it("refuses a first install whose id the settings already hold from another path", async () => {

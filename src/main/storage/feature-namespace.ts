@@ -1,9 +1,10 @@
 /** Private feature storage; Windows boundary creation belongs to boot. */
 import { randomBytes } from "node:crypto";
-import { chmodSync, constants, promises as fs, linkSync, mkdirSync, lstatSync, rmSync } from "node:fs";
+import { chmodSync, constants, promises as fs, linkSync, mkdirSync, rmSync } from "node:fs";
 import { join, dirname, relative, resolve, sep } from "node:path";
 import { platform } from "node:process";
 import { aveHome, AVE_HOME_PROTECTED_DIRECTORIES } from "../../shared/ave-home.js";
+import { admitWindowsReparse, pinWindowsPaths } from "../../shared/windows-path-facts.js";
 import { createLogger } from "../../lib/logger.js";
 import {
   RENAME_FILE_LOCK_CODES,
@@ -23,8 +24,8 @@ function assertProtectedBoundary(dir: string): string | undefined {
   if (!boundaryName) return undefined;
   const boundary = join(home, boundaryName);
   try {
-    const entry = lstatSync(boundary);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error("Invalid boundary");
+    const entry = pinWindowsPaths([resolve(boundary)])[0]!;
+    if (!entry.exists || !entry.directory || !admitWindowsReparse(entry, "evidence")) throw new Error("Invalid boundary");
   } catch {
     throw new Error(`Protected boundary directory "${boundary}" is missing or invalid; boot must create it`);
   }

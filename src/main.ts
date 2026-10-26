@@ -654,9 +654,17 @@ if (!gotSingleInstanceLock) {
     applyRuntimeAppIcon();
     installHtmlPreviewPartitionBlock();
     installSideBrowserPartitionPolicy();
-    void main().catch((error) => {
+    void main().catch(async (error) => {
       log.error({ err: error }, "bootstrap failed");
-      if (execRequest === null) showConfigurationBootError(error);
+      if (bootLaunch !== "headless" && execRequest === null) {
+        showConfigurationBootError(error);
+        try {
+          const { showProviderSettingsStartupError } = await import("./main/provider-settings-startup-error.js");
+          await showProviderSettingsStartupError(error, app.getPath("userData"), app.getLocale());
+        } catch (displayError) {
+          log.error({ err: displayError }, "startup error display failed");
+        }
+      }
       // Preserve any code already chosen by the run. A failed interactive
       // launch also needs a code that survives app.quit().
       if (execRequest === null) guiBootstrapFailed = true;

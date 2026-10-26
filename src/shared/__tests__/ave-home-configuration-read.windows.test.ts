@@ -1,7 +1,8 @@
+import { configureHostResources } from "../../main/host-resources.js";
 import * as childProcess from "node:child_process";
 import { existsSync, lstatSync, mkdirSync, renameSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { dirname, join, resolve } from "node:path";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
@@ -12,6 +13,8 @@ import { AveHomeConfigurationUntrustedError, ensureAveHomePrivate, isAveHomeConf
 import { windowsPowerShellEnv } from "../windows-powershell-env.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
 import { readJudgeStoredModels, writePermissionSettings } from "../../permissions/permission-settings-store.js";
+
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();

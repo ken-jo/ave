@@ -1,6 +1,7 @@
 // Prepare invocation-scoped container launch resources; release the proxy only after the launcher and its job have exited.
 // This prevents surviving processes from reaching a port reused by another invocation.
 import { win32 as winPath } from "node:path";
+import { windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { getProtectedReadDenyFloor } from "../permissions/asrt-sandbox.js";
 import {
@@ -54,7 +55,7 @@ export async function prepareMxcShellLaunch(input: PrepareMxcShellLaunchInput): 
       onRefused: relay.recordRefusal,
     });
     relay.registerPort(listener.port);
-    const systemRoot = process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows";
+    const systemRoot = windowsSystemRoot();
     const env: Record<string, string> = { ...input.env };
     if (!Object.keys(env).some((key) => key.toUpperCase() === "SYSTEMROOT")) env["SYSTEMROOT"] = systemRoot;
     const request = buildMxcShellRequest({

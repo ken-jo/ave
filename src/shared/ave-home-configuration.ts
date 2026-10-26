@@ -1,13 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { closeSync, constants, fchmodSync, fstatSync, fsyncSync, lstatSync, openSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { replaceStagedFile } from "../lib/atomic-file.js";
 import { validateSecretDocument } from "../data/secret-document-store.js";
 import { parseConfigurationObject, parsePolicyDocument } from "./configuration-document.js";
 import { aveHomeConfigurationDirectory, AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_CONFIGURATION_MARKER, AVE_HOME_CONFIGURATION_MARKER_CONTENT, AveHomeConfigurationUntrustedError, isAveHomeConfigurationRefused, setAveHomeConfigurationRefusedAtBoot, verifyAveHomeConfiguration, win32SystemBinary, type AveHomePrivacy } from "./ave-home.js";
 import { withAveHomeConfigurationMigration } from "./ave-home-configuration-access.js";
-import { WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
+import { isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
+import { admitWindowsReparse, pinWindowsPaths, readWindowsDacls, windowsObjectKey } from "./windows-path-facts.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
 const CONFIGURATION_FILES = ["settings.json", "policy.json", "ave-secrets.json"] as const;
@@ -232,18 +233,45 @@ function windowsConfigurationRequest(home: string, hashes?: Array<string | null>
 ${WINDOWS_HOME_BOUNDARY_SOURCE}
 '@;
     if ($request.cleanup) { $result = [HomeDirectoryDacl]::CleanupConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated) }
-    elseif ($request.inspect) { $result = [HomeDirectoryDacl]::ReadConfigurationSources($request.home, [string[]]$request.names, $identity.User, $elevated) }
     else { $result = [HomeDirectoryDacl]::MigrateConfiguration($request.home, $request.directory, [string[]]$request.names, $identity.User, $elevated, [string[]]$request.hashes) }
     ConvertTo-Json -InputObject @($result) -Compress`;
   const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64"),
   ], { input: script, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
-    AVE_DACL_REQUEST: JSON.stringify({ home, directory: AVE_HOME_CONFIGURATION_DIRECTORY, names: CONFIGURATION_FILES, inspect: hashes === undefined, hashes, cleanup }) }) });
+    AVE_DACL_REQUEST: JSON.stringify({ home, directory: AVE_HOME_CONFIGURATION_DIRECTORY, names: CONFIGURATION_FILES, hashes, cleanup }) }) });
   return JSON.parse(output);
 }
 
 function migrateWindowsConfiguration(home: string): string[] {
-  const sources = windowsConfigurationRequest(home);
+  const root = readWindowsDacls([resolve(home)])[0]!;
+  if (!admitWindowsReparse(root, "evidence") || !isWindowsHomeRootSafe(root)) {
+    throw new AveHomeConfigurationUntrustedError(home, "Configuration home protection is unverified");
+  }
+  const sources = CONFIGURATION_FILES.map(name => {
+    try {
+      const path = resolve(home, name);
+      const row = readWindowsDacls([path])[0]!;
+      if (!admitWindowsReparse(row, "evidence")) return "!Source is a link, reparse point or non-regular file";
+      if (row.exists === false) return null;
+      if (row.directory || row.volumeSerialNumber === null || row.fileIndex === null) return "!Source could not be read safely";
+      const descriptor = openSync(path, constants.O_RDONLY);
+      try {
+        const opened = fstatSync(descriptor, { bigint: true });
+        if (!opened.isFile() || opened.dev !== BigInt(row.volumeSerialNumber) || opened.ino !== BigInt(row.fileIndex)
+          || opened.size > 4n * 1024n * 1024n) return "!Source could not be read safely";
+        const bytes = readFileSync(descriptor);
+        const after = fstatSync(descriptor, { bigint: true });
+        const current = pinWindowsPaths([path])[0]!;
+        if (!admitWindowsReparse(current, "evidence") || !current.exists || current.directory
+          || windowsObjectKey(current) !== windowsObjectKey(row) || after.dev !== opened.dev || after.ino !== opened.ino
+          || after.size !== opened.size || after.mtimeNs !== opened.mtimeNs || after.ctimeNs !== opened.ctimeNs
+          || BigInt(bytes.length) !== opened.size) return "!Source could not be read safely";
+        return bytes.toString("base64");
+      } finally { closeSync(descriptor); }
+    } catch {
+      return "!Source could not be read safely";
+    }
+  });
   if (!Array.isArray(sources) || sources.length !== CONFIGURATION_FILES.length || sources.some((value) => value !== null && typeof value !== "string")) {
     throw new Error("Configuration migration returned invalid sources");
   }

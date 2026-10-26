@@ -1,15 +1,18 @@
+import { configureHostResources } from "../../main/host-resources.js";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { addAllowedDirectoryPersist, readPermissionSettings, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 import { setAveHomeConfigurationOwner } from "../ave-home-configuration-access.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { ensureAveHomePrivate, _resetAveHomePrivacyForTest } from "../ave-home.js";
+
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
 const paths = useTempPaths("configuration-authority-", "config");
 const ordinaryPaths = useTempPaths("configuration-authority-", ".ave");
@@ -29,7 +32,9 @@ function fixture(home = ordinaryPaths()): string {
 
 function child(home: string, contents: string): string {
   const script = join(dirname(home), "reader.cjs");
-  buildSync({ stdin: { contents, resolveDir: dirname(settingsSource) }, bundle: true, platform: "node", format: "cjs", outfile: script, external: ["electron"] });
+  const initialized = `import { configureHostResources } from ${JSON.stringify(fileURLToPath(new URL("../../main/host-resources.ts", import.meta.url)))};
+    configureHostResources({ resourcePath: ${JSON.stringify(resolve("resources"))}, isPackaged: false });\n${contents}`;
+  buildSync({ stdin: { contents: initialized, resolveDir: dirname(settingsSource) }, bundle: true, platform: "node", format: "cjs", outfile: script, external: ["electron"] });
   return execFileSync(process.env.AVE_TEST_NODE_EXEC_PATH ?? process.execPath, [script, home], {
     encoding: "utf8", windowsHide: true, env: { ...process.env, AVE_HOME: home },
   }).trim();

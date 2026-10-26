@@ -1,7 +1,7 @@
 # Windows folder classification
 
-`path-kind.cpp` builds `ave-path-kind.exe`, which prints the current MS-DOS
-device mapping of one drive letter and does nothing else:
+`path-kind.cpp` builds `ave-path-kind.exe`. Its drive mode prints the current
+MS-DOS device mapping of one drive letter:
 
 ```text
 ave-path-kind.exe C:   →  \Device\HarddiskVolume3
@@ -41,3 +41,89 @@ missing asset, a helper that cannot start, times out, or exits with anything
 but `0` or `1`, or output that is not one line fails the folder input with
 that cause: a broken install is reported, never guessed as a network folder.
 The Windows CI job runs the test.
+
+## Path and descriptor facts
+
+`pin.h` owns normalization, component opens and handle lifetime for all path
+modes. `dacl.h` owns the one handle-based security-descriptor read, shared
+by facts serialization and the compatibility deny scan. Each component is
+opened with `BACKUP_SEMANTICS | OPEN_REPARSE_POINT`,
+read-attributes/read-control access and read sharing only. Handles remain open
+through descriptor and optional content capture. No mode changes descriptors
+or manages accounts.
+
+`ave-path-kind.exe --pin <absolute-path>...` prints one JSON array row per
+input, in input order. Each row has `exists`, `canonical`, `volumeSerial`,
+`fileId`, `volumeSerialNumber`, `fileIndex`, `attributes`, `reparseTag`,
+`directory`, and `ancestors` (root first, excluding the target). Ancestors
+have the same component fields. Canonical paths use
+`GetFinalPathNameByHandleW(FILE_NAME_NORMALIZED | VOLUME_NAME_DOS)` and retain
+the extended DOS prefix (`\\?\` or `\\?\UNC\`). They are case-preserving OS
+names, not case-folded strings. Identity numbers are hexadecimal strings:
+the full 64-bit `FileIdInfo` volume serial and 128-bit little-endian file ID,
+plus the legacy 32-bit volume serial and 64-bit file index. On the tested
+host Node bigint `dev` equals `volumeSerialNumber`, and `ino` equals
+`fileIndex`; the full volume serial is different. The native tests compare
+both `lstat` and `fstat` rather than assuming those aliases.
+
+An opened reparse object is reported, including unfamiliar tags. The walk
+never opens anything below it. Such unopened descendants have `exists:null`;
+a missing component and its descendants have `exists:false`. Unopened and
+missing components have null identity/canonical fields and zero attributes
+and tag. Only `exists:true` carries observed metadata. Policy belongs to
+`admitWindowsReparse` in `src/shared/windows-path-facts.ts`.
+
+`ave-path-kind.exe --dacl [--parent] [--content] <absolute-path>...` adds
+descriptor fields directly to each row (or `identity:null` for an
+unopened/missing target), token context
+`currentUserSid`, `elevated`, and a SID-keyed `principals` table for the two
+local sandbox identities when installed. A descriptor contains
+`{identity:{volumeSerial,fileId}, owner, group, protected, nullDacl,
+aces:[{type,flags,mask,sid,account?}]}`. Resolved account labels are optional
+display metadata. ACE order, flags and unsigned raw masks are
+preserved; unknown ACE forms have a null SID so evaluators can fail closed.
+Ordinary and object allow/deny forms expose their SID. Generic mapping and
+trust decisions belong to the caller. The typed wrapper groups those wire
+descriptor fields under `dacl` and validates that their identity matches the
+pin before returning them.
+
+`--parent` adds the immediate parent's descriptor, captured while both
+objects are pinned. `--content` adds `contentHex`, read from the same target
+handle with a one-MiB limit; this preserves the policy reader's protection
+against concurrent replacement and writes. It reads files only and leaves
+content null for reparse/unopened/missing objects. No link is followed.
+Invalid options or an empty request return 2. Open/read failures return 4
+without partial output; output failures return 3. Missing objects are data.
+Relative paths, device namespace paths and alternate streams are refused.
+
+Build both facts modes with `scripts/build-windows-job.ps1 -Helper path-kind`
+and run `scripts/test-windows-path-kind.mjs` and the shared facts Vitest suite.
+
+## Compatibility deny evidence
+
+`ave-path-kind.exe --deny-acls <SID> <absolute-path>...` returns a JSON array
+of `{denyMask, inheritableMask, parentMask, directory}` rows. This compatibility
+mode retains its original contract. The permission layer now evaluates the
+same leading-deny rules over synchronous `--dacl` facts, so obligation capture,
+read, stamp, verification, grant and publication cannot interleave with another
+event-loop task.
+
+The helper opens every path component with `OPEN_REPARSE_POINT` and
+`BACKUP_SEMANTICS`, refuses reparse points, and holds the handles without write or delete
+sharing while reading the target and parent security descriptors using
+`GetSecurityInfo`. It never writes descriptors or manages accounts. Missing
+targets return zero masks; any other open/read failure returns exit `4` and no
+partial response. Invalid SID/request is exit `2`; output failure is exit `3`.
+
+Only leading explicit ordinary deny ACEs count. The scan stops at the first
+allow, inherited or unsupported ACE. Inherit-only ACEs do not protect the
+object. Directory proof requires both object/container inheritance without
+no-propagate. Parent proof uses the parent's own explicit leading deny mask.
+Inherited denies after explicit allows cannot prove that access is denied.
+Unsupported ACE forms conservatively supply no proof. Concurrent external DACL
+changes and protected descendants remain point-in-time limitations.
+
+The existing helper resource resolver, architecture build, installer packaging
+and Windows CI build also cover this mode. Run
+`src/permissions/__tests__/windows-deny-acl.test.ts` after building the helper;
+the tests change DACLs only under per-test containers, with a synthetic SID.

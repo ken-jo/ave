@@ -21,6 +21,7 @@ import { unusedNetworkFetch } from "../../../__tests__/support/network-fetch-stu
 function makeSettingsService(overrides: {
   provider?: string;
   baseUrl?: string;
+  wire?: import("../../../shared/custom-provider.js").CustomProviderWire;
   secret?: string | null;
 } = {}) {
   const provider = overrides.provider ?? "openrouter";
@@ -35,6 +36,7 @@ function makeSettingsService(overrides: {
           [provider]: {
             model: "openrouter/free",
             baseUrl,
+            ...(overrides.wire ? { wire: overrides.wire } : {}),
             enableThinking: true,
             thinkingBudgetTokens: 10_000,
           },
@@ -60,6 +62,60 @@ function guardedFetchOptions(fetchImpl: typeof fetch) {
 }
 
 describe("LLM model list sync", () => {
+  it.each(["openai-chat", "openai-responses", "anthropic-messages", "google-gemini"] as const)("withholds saved credentials from a draft %s endpoint", async (wire) => {
+    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl: "https://saved.example/v1", wire });
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: "fixture" }] }));
+    await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible", baseUrl: "http://draft.example/v1", wire }, guardedFetchOptions(fetchImpl));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const headers = new Headers(fetchImpl.mock.calls[0]![1]?.headers);
+    for (const header of ["authorization", "x-api-key", "x-goog-api-key"]) expect(headers.has(header)).toBe(false);
+    expect(settings.getSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["openai-responses", "http://10.10.2.100:30000/v1", "Authorization", { data: [{ id: "native-model" }] }],
+    ["anthropic-messages", "http://192.168.1.20/v1", "x-api-key", { data: [{ id: "native-model" }] }],
+    ["google-gemini", "http://gpu-box.lan/v1", "x-goog-api-key", { models: [{ name: "models/native-model", supportedGenerationMethods: ["generateContent"] }] }],
+  ] as const)("lists saved private %s models with exact-origin access", async (wire, baseUrl, header, payload) => {
+    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl, wire });
+    const options = guardedFetchOptions(vi.fn<typeof fetch>(async () => Response.json(payload)));
+    const access = vi.fn<typeof import("../../../core/network-guard.js").ensurePublicHttpUrl>(async (url, policy) => {
+      expect(typeof policy?.allowPrivateNetworks === "function" && policy.allowPrivateNetworks(new URL(url))).toBe(true);
+      expect(typeof policy?.allowPrivateNetworks === "function" && policy.allowPrivateNetworks(new URL("http://other.lan/v1"))).toBe(false);
+      return new URL(url);
+    });
+    const result = await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible" }, { ...options, ensurePublicUrl: access });
+    expect(result).toMatchObject({ ok: true, models: ["native-model"] });
+    expect(new Headers((options.fetchImpl as ReturnType<typeof vi.fn<typeof fetch>>).mock.calls[0]![1]?.headers).get(header)).toContain("sk-or-test");
+  });
+
+  it.each([
+    ["anthropic-messages", "limit", { data: [{ id: "draft-model" }] }],
+    ["google-gemini", "pageSize", { models: [{ name: "models/draft-model", supportedGenerationMethods: ["generateContent"] }] }],
+  ] as const)("uses the draft %s wire instead of the stored wire", async (wire, pageKey, payload) => {
+    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl: "https://saved.example/v1", wire: "openai-chat" });
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json(payload));
+    const result = await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible", baseUrl: "https://draft.example/v1", wire }, guardedFetchOptions(fetchImpl));
+    expect(result).toMatchObject({ ok: true, models: ["draft-model"] });
+    expect(new URL(String(fetchImpl.mock.calls[0]![0])).searchParams.has(pageKey)).toBe(true);
+    expect(settings.getSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["anthropic-messages", "x-api-key", "limit", { data: [{ id: "native-model" }], has_more: false }],
+    ["google-gemini", "x-goog-api-key", "pageSize", { models: [{ name: "models/native-model", supportedGenerationMethods: ["generateContent"] }] }],
+  ] as const)("lists custom %s models using native authentication and response parsing", async (wire, header, pageKey, payload) => {
+    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl: "https://custom.example/v1", wire });
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json(payload));
+    const result = await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible" }, guardedFetchOptions(fetchImpl));
+    expect(result).toMatchObject({ ok: true, models: ["native-model"] });
+    const [url, init] = fetchImpl.mock.calls[0]!;
+    expect(new URL(String(url)).pathname).toBe("/v1/models");
+    expect(new URL(String(url)).searchParams.has(pageKey)).toBe(true);
+    expect(new Headers(init?.headers).get(header)).toBe("sk-or-test");
+    expect(new Headers(init?.headers).has("authorization")).toBe(false);
+  });
+
   it("normalizes baseUrl to the standard /models endpoint", () => {
     expect(modelListEndpointFromBaseUrl("https://openrouter.ai/api/v1")).toBe(
       "https://openrouter.ai/api/v1/models",

@@ -1390,6 +1390,8 @@ describe("HostApi emitEvent/onEvent round-trip", () => {
     expect(networkInit.auth).toBeUndefined();
     expect(headers.get("authorization")).toBe(lease ? "Bearer synthetic-secret" : null);
     expect(headers.get("cookie")).toBe(partition ? "SID=host-cookie" : callerCookie ? "caller-cookie" : null);
+    // The vaulted cookie replays under the same identity it was minted with: net.request takes app.userAgentFallback (set at boot).
+    expect(headers.has("user-agent")).toBe(false);
   });
 
   it("audits a lease revoked after response headers but before body consumption", async () => {

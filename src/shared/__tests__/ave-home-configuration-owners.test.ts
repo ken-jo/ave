@@ -1,9 +1,10 @@
+import { configureHostResources } from "../../main/host-resources.js";
 import { execFileSync } from "node:child_process";
 import { chmodSync, existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildSync } from "esbuild";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { readPermissionSettings, writePermissionSettings } from "../../permissions/permission-settings-store.js";
@@ -15,6 +16,8 @@ import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { withAveHomeConfigurationWrite, setAveHomeConfigurationOwner } from "../ave-home-configuration-access.js";
 
 import { useConfigurationOwner } from "../../__tests__/support/configuration-owner.js";
+
+beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
 useConfigurationOwner();
 
@@ -39,7 +42,9 @@ function migrateOtherProcess(home: string): string[] {
   const bundle = join(dirname(home), "migration.cjs");
   buildSync({
     stdin: {
-      contents: `import { setAveHomeConfigurationOwner } from ${JSON.stringify(accessSource)}; setAveHomeConfigurationOwner({hasSingleInstanceLock: () => true}); import { migrateAveHomeConfiguration } from ${JSON.stringify(migrationSource)}; console.log(JSON.stringify(migrateAveHomeConfiguration(process.argv[2])));`,
+      contents: `
+    import { configureHostResources } from ${JSON.stringify(fileURLToPath(new URL("../../main/host-resources.ts", import.meta.url)))};
+    configureHostResources({ resourcePath: ${JSON.stringify(resolve("resources"))}, isPackaged: false });import { setAveHomeConfigurationOwner } from ${JSON.stringify(accessSource)}; setAveHomeConfigurationOwner({hasSingleInstanceLock: () => true}); import { migrateAveHomeConfiguration } from ${JSON.stringify(migrationSource)}; console.log(JSON.stringify(migrateAveHomeConfiguration(process.argv[2])));`,
       resolveDir: resolve(dirname(migrationSource)),
     },
     bundle: true,

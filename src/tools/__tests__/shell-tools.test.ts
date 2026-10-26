@@ -5,7 +5,7 @@ import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { delimiter, join } from "node:path";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -16,13 +16,13 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { __resetManagedChildProcessesForTest } from "../../main/managed-child-processes.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { win32SystemBinary } from "../../shared/windows-system-path.js";
 import type { ToolExecutionContext } from "../base.js";
 import { ToolRegistry } from "../registry.js";
 import {
   backgroundShellManager,
   BashTool,
   BashToolInputSchema,
-  binShellForExecutable,
   createBashKillTool,
   createBashOutputTool,
   MAX_OUTPUT_CHARS,
@@ -822,20 +822,7 @@ describe("powershell binShell resolution", () => {
     if (ORIGINAL_PATHEXT === undefined) delete process.env["PATHEXT"];
     else process.env["PATHEXT"] = ORIGINAL_PATHEXT;
     vi.restoreAllMocks();
-  });
-
-  describe("binShellForExecutable", () => {
-    it("maps pwsh.exe / pwsh → 'pwsh'", () => {
-      expect(binShellForExecutable("pwsh.exe")).toBe("pwsh");
-      expect(binShellForExecutable("pwsh")).toBe("pwsh");
-      expect(binShellForExecutable("PWSH.EXE")).toBe("pwsh");
-    });
-
-    it("maps powershell.exe / powershell → 'powershell'", () => {
-      expect(binShellForExecutable("powershell.exe")).toBe("powershell");
-      expect(binShellForExecutable("powershell")).toBe("powershell");
-      expect(binShellForExecutable("POWERSHELL.EXE")).toBe("powershell");
-    });
+    vi.unstubAllEnvs();
   });
 
   describe("resolvePowerShellExecutable off-win32", () => {
@@ -849,46 +836,72 @@ describe("powershell binShell resolution", () => {
   });
 
   describe("resolvePowerShellExecutable on win32", () => {
-    it("prefers pwsh.exe when it is on PATH (sandboxed flavor == unsandboxed)", () => {
+    it("ignores planted PATH shells and returns an absolute system executable", () => {
       setProcessPlatform("win32");
-      const dir = createTestDir("ave-pwsh-");
-      const pwshPath = join(dir, "pwsh.exe");
-      writeFileSync(pwshPath, "");
-      chmodSync(pwshPath, 0o755);
-      process.env["PATH"] = dir;
-      process.env["PATHEXT"] = ".COM;.EXE;.BAT;.CMD";
-
-      const resolved = resolvePowerShellExecutable();
-      expect(resolved).toBe("pwsh.exe");
-      expect(binShellForExecutable(resolved)).toBe("pwsh");
+      const dir = createTestDir("ave-planted-shell-");
+      writeFileSync(join(dir, "powershell.exe"), "planted");
+      writeFileSync(join(dir, "pwsh.exe"), "planted");
+      vi.stubEnv("PATH", dir);
+      vi.stubEnv("ProgramFiles", undefined);
+      vi.stubEnv("SystemRoot", "C:\\Windows");
+      try {
+        expect(resolvePowerShellExecutable()).toBe("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe");
+      } finally { vi.unstubAllEnvs(); }
     });
 
-    it("falls back to powershell.exe when pwsh.exe is absent from PATH", () => {
+    it("refuses all shell launches without a local absolute system root even with a planted PATH", () => {
+      setProcessPlatform("win32");
+      const dir = createTestDir("ave-planted-shell-");
+      writeFileSync(join(dir, "powershell.exe"), "planted");
+      vi.stubEnv("PATH", dir);
+      for (const name of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(name, undefined);
+      try { expect(() => resolvePowerShellExecutable()).toThrow(/system root/i); }
+      finally { vi.unstubAllEnvs(); }
+    });
+
+    it.runIf(ORIGINAL_PLATFORM === "win32")("prefers the absolute standard shell installation", () => {
+      setProcessPlatform("win32");
+      const dir = createTestDir("ave-pwsh-");
+      const pwshPath = join(dir, "PowerShell", "7", "pwsh.exe");
+      mkdirSync(join(dir, "PowerShell", "7"), { recursive: true });
+      writeFileSync(pwshPath, "");
+      chmodSync(pwshPath, 0o755);
+      vi.stubEnv("ProgramFiles", dir);
+      vi.stubEnv("SystemRoot", "C:\\Windows");
+
+      const resolved = resolvePowerShellExecutable();
+      expect(resolved).toBe(pwshPath);
+    });
+
+    it("uses the absolute system shell when no standard installation is configured", () => {
       setProcessPlatform("win32");
       const dir = createTestDir("ave-nopwsh-");
       process.env["PATH"] = dir;
-      process.env["PATHEXT"] = ".COM;.EXE;.BAT;.CMD";
+      vi.stubEnv("ProgramFiles", undefined);
+      vi.stubEnv("SystemRoot", "C:\\Windows");
 
       const resolved = resolvePowerShellExecutable();
-      expect(resolved).toBe("powershell.exe");
-      expect(binShellForExecutable(resolved)).toBe("powershell");
+      expect(resolved).toBe(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"));
     });
 
-    it("finds pwsh via a bare PATHEXT suffix entry (pwsh + .EXE)", () => {
+    it("does not interpret PATHEXT scripts as an installed shell", () => {
       setProcessPlatform("win32");
       const dir = createTestDir("ave-pwshext-");
-      // Cover executable suffix resolution from PATH.
-      writeFileSync(join(dir, "pwsh.exe"), "");
-      process.env["PATH"] = ["/nonexistent", dir].join(delimiter);
-      process.env["PATHEXT"] = ".EXE";
+      writeFileSync(join(dir, "pwsh.cmd"), "");
+      vi.stubEnv("ProgramFiles", undefined);
+      vi.stubEnv("SystemRoot", "C:\\Windows");
+      process.env["PATH"] = dir;
+      process.env["PATHEXT"] = ".CMD";
 
-      expect(resolvePowerShellExecutable()).toBe("pwsh.exe");
+      expect(resolvePowerShellExecutable()).toBe(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"));
     });
 
     it("returns powershell.exe when PATH is empty", () => {
       setProcessPlatform("win32");
       process.env["PATH"] = "";
-      expect(resolvePowerShellExecutable()).toBe("powershell.exe");
+      vi.stubEnv("ProgramFiles", undefined);
+      vi.stubEnv("SystemRoot", "C:\\Windows");
+      expect(resolvePowerShellExecutable()).toBe(win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"));
     });
   });
 });

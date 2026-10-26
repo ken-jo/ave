@@ -1,9 +1,7 @@
 import { releases, type ChangeBlock, type Inline, type ListItem, type Release } from "@/lib/changelog";
 import { englishRelease, staleEnglishNotes } from "@/lib/changelog-en";
-import { href, type Locale } from "@/lib/i18n";
-import { page } from "@/lib/nav";
+import type { Locale } from "@/lib/i18n";
 import { pagesCopy } from "@/lib/pages";
-import { SecHead } from "./blocks";
 
 function Text({ parts }: { parts: Inline[] }) {
   return (
@@ -103,48 +101,5 @@ export function ChangelogPage({ locale }: { locale: Locale }) {
         ))}
       </div>
     </main>
-  );
-}
-
-/** The home page's teaser: the newest release's headline items. */
-export function ChangelogTeaser({ locale, eyebrow, title, body }: { locale: Locale; eyebrow: string; title: string; body: string }) {
-  const w = pagesCopy(locale).ui;
-  const latest = releases()[0]!;
-  const list = latest.blocks.find((b): b is Extract<ChangeBlock, { kind: "list" }> => b.kind === "list");
-  if (!list) throw new Error(`${latest.name} has no list of changes`);
-  const heads =
-    locale === "en"
-      ? englishRelease(latest).items.slice(0, 4).map((it) => it.title)
-      : list.items.slice(0, 4).map((it) => {
-          const first = it.text[0];
-          if (!first || first.t !== "strong") throw new Error(`${latest.name}: an item does not start with a bold headline`);
-          return first.c;
-        });
-  return (
-    <>
-      <SecHead id="changes" eyebrow={eyebrow} title={title} body={body} />
-      <article className="release">
-        <p className="release-meta">
-          {w.latest} · {latest.name} · {latest.date}
-        </p>
-        <ul>
-          {heads.map((h, i) => (
-            <li key={i}>
-              <Text parts={h} />
-            </li>
-          ))}
-        </ul>
-        <p>
-          <a className="more" href={`${href(locale, "/changelog/")}#${latest.id}`}>
-            {w.readRelease(latest.name)}
-          </a>
-        </p>
-      </article>
-      <p className="sec-foot">
-        <a className="more" href={page(locale, "changelog").href}>
-          {page(locale, "changelog").label}
-        </a>
-      </p>
-    </>
   );
 }

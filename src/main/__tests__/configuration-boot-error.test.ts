@@ -51,10 +51,11 @@ describe("configuration boot refusal", () => {
 
   it("surfaces the native error before the bootstrap catch quits", () => {
     const source = readFileSync(join(import.meta.dirname, "..", "..", "main.ts"), "utf8");
-    const start = source.indexOf("void main().catch((error) => {");
+    const start = source.indexOf("void main().catch(async (error) => {");
     expect(start).toBeGreaterThanOrEqual(0);
     const handler = source.slice(start, source.indexOf("\n    });", start));
-    expect(handler).toContain('if (execRequest === null) showConfigurationBootError(error);');
+    expect(handler).toContain('if (bootLaunch !== "headless" && execRequest === null) {');
+    expect(handler).toContain("showConfigurationBootError(error);");
     expect(handler.indexOf("showConfigurationBootError(error)")).toBeLessThan(handler.indexOf("app.quit()"));
   });
 });

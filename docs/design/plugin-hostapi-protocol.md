@@ -327,8 +327,8 @@ host (`worker-spawn.ts:12-29`), and that stays a `spawnWorker` concern, not a pr
 transport.
 
 Framing: before the wire step the host↔child channel is LSP-style `Content-Length` framing
-(`stdio-framing.ts:1-17` on `d036d87c6`), shared with the experimental stdio arm
-(`src/mcp/experimental/stdio-child-transport.ts`, `stdio-server-loop.ts`). The host's
+(`stdio-framing.ts:1-17` on `d036d87c6`), shared with
+`src/mcp/experimental/stdio-server-loop.ts`. The host's
 external MCP client speaks the MCP `2026-07-28` stdio binding, "newline-delimited
 JSON-RPC over a byte stream" (`mcp-client.ts:2365-2368`, `:2453-2458`;
 [MCP transports](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports)).
@@ -1823,7 +1823,7 @@ the cutoff is not softened by an id exception, a method heuristic or a retained 
 | Risk | Control |
 |---|---|
 | RPC surface abuse: a plugin hammers `ave/host/*` (log flood, storage churn, `triggerConversation` spam, subscription leak) | per-(plugin, method) token bucket in the dispatcher with a refusal code `rate-limited` (new, added to the closed set); cap on open subscriptions per plugin; the numbers are §7.4. `WIRE_BYTES_MAX` 16 MiB per decoded payload (`host-api-wire.ts:709`, `:810-815` at `f1a8d191e`), and a per-line cap in the frame decoder derived from it, whose overrun terminates the child (added with the newline framing, §9.4 item 1), so a child that never writes a newline cannot grow the host's buffer without bound. Plain-JSON values (tool results, `storage.readText`/`readJson` replies, arguments) have no payload cap of their own, so each side checks the frame against the same cap before it writes: an oversized reply becomes a `payload-too-large` error for the same id, and an oversized request rejects its caller with `payload-too-large`. The receiver's kill is reserved for a peer that skipped that check; `logEvent` key/prefix caps already exist for `getSecret` (`host-api-factory.ts:790-798`) and are generalised. At `f1a8d191e` every accepted request allocates an in-flight entry before its handler runs (`host-api-dispatcher.ts:2004-2032`), `adopt` checks ended and duplicate state but no ceiling (`subscription-ledger.ts:108-115`), and log notifications go straight to the sink (`host-api-dispatcher.ts:2044-2050`); no limit constant exists in the dispatcher. |
-| Resource exhaustion: a plugin process consumes memory/CPU | Linux: a per-plugin cgroup from the workload resource controller once it is wired to the spawn path (`linux-workload-resource-controller.md:1-15` says it is not yet). macOS: `RLIMIT` in the wrapper is deferred (decision 7); Windows: Job Objects are not available through srt-win today. Until then the control is crash containment: the host survives, the plugin is marked degraded. |
+| Resource exhaustion: a plugin process consumes memory/CPU | Linux: per-plugin cgroup limits are not wired to the spawn path. macOS: `RLIMIT` in the wrapper is deferred (decision 7); Windows: Job Objects are not available through srt-win today. Until then the control is crash containment: the host survives, the plugin is marked degraded. |
 | A plugin process outlives the host | child exits on stdin end (`plugin-child-main.ts:319-326`); `managed-child-processes.ts` tracks and kills process groups on app quit; a `process`-entry plugin must pass the stdin-close conformance check (§10). Residual: a hard host crash on Windows leaves the child to notice a closed pipe on its next write. |
 | Arbitrary executable via `process` entry | a pinned release or archive artifact only (§2.1); a wrap whose published `confines` includes `process` (never srt-win); refused when the sandbox is off; the command must be inside the plugin root (Agent Plugins rule); no `PATH` search for a marketplace plugin. |
 | Envelope widening via the manifest `sandbox` block | closed `hostDirectory` allow-list; `userChosenDirectory` requires a user-set absolute path; deny-floor piercing requires install-time approval (§2.2). |
@@ -2120,10 +2120,9 @@ migrated.
    `payload-too-large` error, so only a peer that skipped the check is terminated), so a multi-byte character split across chunks decodes intact —
    the rule `mcp-client.ts` applies at `:2453-2458`. A line that is not a JSON object is
    dropped, never thrown on, as today. The Content-Length path is deleted in the same
-   change; its callers are `child-stream-multiplex.ts:23`, `plugin-child-main.ts:32`, the
-   experimental stdio arm (`src/mcp/experimental/stdio-child-transport.ts`,
-   `stdio-server-loop.ts`) and their tests. `mcp-client.ts` keeps its own line parser: it
-   is the external boundary and has its own tests.
+   change; its callers are `child-stream-multiplex.ts:23`, `plugin-child-main.ts:32`,
+   `src/mcp/experimental/stdio-server-loop.ts` and their tests. `mcp-client.ts` keeps
+   its own line parser: it is the external boundary and has its own tests.
 2. **Reverse channel.** In `host-api-wire.ts`, `HostApiEnvelope`, `HostApiRequest` and
    `HostApiReply` (`:49-83`) become JSON-RPC 2.0 request and response objects; the
    envelope's `wire` field goes with it, and `HOST_API_WIRE_VERSION` (`:46`) together with

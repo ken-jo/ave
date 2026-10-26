@@ -1,7 +1,30 @@
-import { WINDOWS_OWNER_CLAIM_SOURCE } from "./windows-owner-claim.js";
+import { isOwnerOnlyDacl, mapWindowsGenericRights, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 
-export const WINDOWS_HOME_BOUNDARY_SOURCE = `${WINDOWS_OWNER_CLAIM_SOURCE}
+export const WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS = 0x1200a9;
+
+/** Root traversal may be shared; all mutating rights remain exclusive to the owner. */
+export function isWindowsHomeRootSafe(facts: WindowsDaclFacts): boolean {
+  if (!facts.dacl?.protected) return false;
+  const rules = windowsOwnerRules(facts.dacl);
+  return isOwnerOnlyDacl({ ownerSid: facts.dacl.owner, elevated: facts.elevated,
+    rules: rules.filter(rule => rule.sid === facts.currentUserSid) }, facts.currentUserSid)
+    && rules.every(rule => rule.sid === facts.currentUserSid || (rule.accessControlType === 0
+      && (mapWindowsGenericRights(rule.fileSystemRights) & ~WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS) === 0));
+}
+
+export const WINDOWS_HOME_BOUNDARY_SOURCE = `using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
+using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
 public static class HomeDirectoryDacl {
+  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  [DllImport("advapi32.dll", SetLastError = true)]
+  private static extern uint GetSecurityInfo(SafeFileHandle handle, int type, uint info, out IntPtr owner, out IntPtr group, out IntPtr dacl, out IntPtr sacl, out IntPtr descriptor);
+  [DllImport("kernel32.dll")]
+  private static extern IntPtr LocalFree(IntPtr memory);
   private const string RepairMarker = ".ave-repair-created";
   private const string NoticeMarker = ".ave-repair-notice-pending";
   private const string ConfigurationMarker = ".ave-config-migrated";
@@ -14,13 +37,13 @@ public static class HomeDirectoryDacl {
   private static extern uint RtlNtStatusToDosError(int status);
   private static byte[] ReadDescriptor(SafeFileHandle handle) {
     IntPtr owner, group, dacl, sacl, descriptor;
-    uint result = WindowsOwnerClaim.GetSecurityInfo(handle, 1, 7, out owner, out group, out dacl, out sacl, out descriptor);
+    uint result = GetSecurityInfo(handle, 1, 7, out owner, out group, out dacl, out sacl, out descriptor);
     if (result != 0) throw new Win32Exception((int)result);
     try {
       byte[] bytes = new byte[GetSecurityDescriptorLength(descriptor)];
       Marshal.Copy(descriptor, bytes, 0, bytes.Length);
       return bytes;
-    } finally { WindowsOwnerClaim.LocalFree(descriptor); }
+    } finally { LocalFree(descriptor); }
   }
   private static byte[] Descriptor(SecurityIdentifier user) {
     var security = new RawSecurityDescriptor("O:" + user.Value + "D:P(A;OICI;FA;;;" + user.Value + ")");
@@ -48,7 +71,7 @@ public static class HomeDirectoryDacl {
     string parentPath = System.IO.Path.GetDirectoryName(fullPath);
     string leaf = System.IO.Path.GetFileName(fullPath);
     if (String.IsNullOrEmpty(parentPath) || String.IsNullOrEmpty(leaf)) throw new InvalidOperationException("Directory path is invalid");
-    using (SafeFileHandle parent = WindowsOwnerClaim.CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
+    using (SafeFileHandle parent = CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
       if (parent.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory parent handle could not be opened");
       return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly, readOnly ? 7u : 3u);
     }
@@ -197,7 +220,7 @@ public static class HomeDirectoryDacl {
     var identities = new System.Collections.Generic.List<string>();
     try {
       foreach (string ancestor in ancestors) {
-        var handle = WindowsOwnerClaim.CreateFile(ancestor, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
+        var handle = CreateFile(ancestor, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
         handles.Add(handle);
         if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
         identities.Add(ConfigurationDirectoryIdentity(handle, false));
@@ -215,29 +238,6 @@ public static class HomeDirectoryDacl {
       }
     }
     } finally { foreach (var handle in handles) handle.Dispose(); }
-  }
-  public static byte[] ReadConfigurationFile(string directory, string leaf, string homePath, bool protectedDirectory, string device, string inode, SecurityIdentifier user, bool elevated) {
-    using (var root = String.IsNullOrEmpty(homePath) ? null : OpenHome(homePath, user, false, true)) {
-    if (!String.IsNullOrEmpty(homePath) && (root == null || !RootSafe(Read(root), user, elevated, 0x1200a9))) throw new InvalidOperationException("Configuration home protection is unverified");
-    using (var parent = protectedDirectory ? OpenRelative(root, "config", user, 1, true, true, true, true, 7) : root ?? OpenHome(directory, user, false, true)) {
-      if (parent == null) return null;
-      if (protectedDirectory && !OwnerOnly(Read(parent), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
-      using (var handle = OpenRelative(parent, leaf, user, 1, false, true, false, true, 1)) {
-        if (handle == null) return null;
-        if ((Attributes(handle) & 0x410) != 0) throw new InvalidOperationException("Configuration is not a regular file");
-        ConfigurationIdentity identity;
-        if (!GetFileInformationByHandle(handle, out identity)) throw new Win32Exception(Marshal.GetLastWin32Error());
-        ulong index = ((ulong)identity.IndexHigh << 32) | identity.IndexLow;
-        if (identity.Volume.ToString() != device || index.ToString() != inode) throw new InvalidOperationException("Configuration identity changed before open");
-        using (var input = new System.IO.FileStream(handle, System.IO.FileAccess.Read))
-        using (var bytes = new System.IO.MemoryStream()) {
-          if (input.Length > 4 * 1024 * 1024) throw new InvalidOperationException("Configuration file exceeds the size limit");
-          input.CopyTo(bytes);
-          return bytes.ToArray();
-        }
-      }
-    }
-    }
   }
   private static bool Delete(SafeFileHandle handle, SecurityIdentifier user) {
     long attributes = Attributes(handle);
@@ -280,20 +280,18 @@ public static class HomeDirectoryDacl {
     }
     return skipped;
   }
-  public static bool ConfigurationCommitted(string path, SecurityIdentifier user, bool elevated, bool recover, bool boundaryOnly = false) {
+  public static bool RecoverConfigurationCommit(string path, SecurityIdentifier user, bool elevated) {
     using (var home = OpenHome(path, user, false, true)) {
       if (home == null) return false;
       if (!RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
-      using (var directory = OpenRelative(home, "config", user, 1, true, true, true, !recover, recover ? 3u : 7u)) {
+      using (var directory = OpenRelative(home, "config", user, 1, true, true, true, false, 3u)) {
         if (directory == null) return false;
         if (!OwnerOnly(Read(directory), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
-        if (boundaryOnly) return false;
-        using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false, !recover)) {
+        using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false, false)) {
           if (marker == null) return false;
           if ((Attributes(marker) & 0x410) != 0) throw new InvalidOperationException("Configuration marker is not a regular file");
           if (MarkerContentValid(marker)) return true;
         }
-        if (!recover) throw new InvalidOperationException("Configuration marker content is invalid");
         using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false)) {
           if (marker == null || !Delete(marker, user)) throw new InvalidOperationException("Configuration marker recovery failed");
         }
@@ -340,26 +338,6 @@ public static class HomeDirectoryDacl {
       }
     }
     return diagnostics.ToArray();
-  }
-  public static string[] ReadConfigurationSources(string path, string[] names, SecurityIdentifier user, bool elevated) {
-    var result = new string[names.Length];
-    using (var home = OpenHome(path, user, false, true)) {
-      if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
-      for (int index = 0; index < names.Length; index++) {
-        try {
-          using (var source = OpenRelative(home, names[index], user, 1, false, false, false, true, 1)) {
-            if (source == null) continue;
-            if ((Attributes(source) & 0x410) != 0) { result[index] = "!Source is a link, reparse point or non-regular file"; continue; }
-            using (var input = new System.IO.FileStream(source, System.IO.FileAccess.Read))
-            using (var bytes = new System.IO.MemoryStream()) {
-              input.CopyTo(bytes);
-              result[index] = Convert.ToBase64String(bytes.ToArray());
-            }
-          }
-        } catch (Exception) { result[index] = "!Source could not be read safely"; }
-      }
-    }
-    return result;
   }
   public static string[] MigrateConfiguration(string path, string directory, string[] names, SecurityIdentifier user, bool elevated, string[] expectedHashes) {
     var diagnostics = new System.Collections.Generic.List<string>();
@@ -463,6 +441,25 @@ public static class HomeDirectoryDacl {
       }
     }
     return diagnostics.ToArray();
+  }
+  [DllImport("advapi32.dll", SetLastError = true)]
+  private static extern uint SetSecurityInfo(SafeFileHandle handle, int type, uint info, byte[] owner, IntPtr group, byte[] dacl, IntPtr sacl);
+  public static void ClaimRuntimeRoot(SafeFileHandle home, string name, SecurityIdentifier user) {
+    if (name != "subscription-runtimes") throw new InvalidOperationException("Runtime ownership claim boundary is invalid");
+    using (var handle = OpenRelative(home, name, user, 1, true, true, true)) {
+      if (handle == null) return;
+      string owner = Read(handle).GetOwner(typeof(SecurityIdentifier)).Value;
+      if (owner == user.Value) return;
+      if (owner != "S-1-5-32-544") throw new InvalidOperationException("Directory is owned by another account");
+      byte[] sid = new byte[user.BinaryLength];
+      user.GetBinaryForm(sid, 0);
+      RawAcl acl = new RawSecurityDescriptor("D:P(A;OICI;FA;;;" + user.Value + ")").DiscretionaryAcl;
+      byte[] access = new byte[acl.BinaryLength];
+      acl.GetBinaryForm(access, 0);
+      uint result = SetSecurityInfo(handle, 1, 0x80000005u, sid, IntPtr.Zero, access, IntPtr.Zero);
+      if (result != 0) throw new Win32Exception((int)result);
+      if (!OwnerOnly(Read(handle), user, false)) throw new InvalidOperationException("Runtime ownership claim protection is unverified");
+    }
   }
   public static int Repair(SafeFileHandle home, string name, SecurityIdentifier user, bool elevated, string path = "") {
     CleanupWarnings.Clear();

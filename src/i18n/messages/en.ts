@@ -7,6 +7,8 @@ export const en = {
   "homePrivacy.configurationUntrusted": "Ave stopped because its configuration boundary could not be verified.\n\nPath: {path}\nCause: {reason}\n\nRestore this account's ownership of the home and config directories. Remove other accounts' write and delete access to the home and all access to config. Restore the migration marker from a trusted backup if it is missing or damaged, then restart Ave.",
   "homePrivacy.boundaryRepairedTitle": "Private storage repaired",
   "homePrivacy.boundaryRepaired": "Credentials may have been readable. Sign out and sign in again.",
+  "providerSettingsError.title": "Unable to load provider settings",
+  "providerSettingsError.detail": "The settings file contains an invalid field.\n\nFile: {path}\nField: {field}\n\nCorrect this field and restart Ave. The file has not been changed.",
   "mainToolbar.hideSidebar": "Hide sidebar",
   "mainToolbar.showSidebar": "Show sidebar",
   "sidebar.generalLabel": "General",
