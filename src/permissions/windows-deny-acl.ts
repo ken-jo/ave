@@ -1,9 +1,12 @@
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { win32SystemBinary } from "../shared/ave-home.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
+
+const execFileAsync = promisify(execFile);
 
 export const WINDOWS_READ_DENY_MASK = 0x1f01ff;
 export const WINDOWS_WRITE_DENY_MASK = 0x10116;
@@ -58,17 +61,20 @@ ConvertTo-Json -InputObject $rows -Compress
 `;
 
 // Read-only evidence is refreshed for every grant; a successful stamp is not proof.
-export function readWindowsDenyAcls(paths: readonly string[], sandboxUserSid: string): readonly WindowsDenyAcl[] {
+// Async: one PowerShell start costs about 2 s, too long to hold the host event loop.
+export async function readWindowsDenyAcls(paths: readonly string[], sandboxUserSid: string): Promise<readonly WindowsDenyAcl[]> {
   if (paths.length === 0) return [];
   const targets = paths.map(path => resolve(path));
   const identities = targets.map(path => lstatSync(path, { bigint: true, throwIfNoEntry: false }));
   try {
-    const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
+    const pending = execFileAsync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
       ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", READ_DENY_ACL_COMMAND], {
-        input: JSON.stringify({ paths: targets, sid: sandboxUserSid }), encoding: "utf8", windowsHide: true,
+        encoding: "utf8", windowsHide: true,
         timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 2 * 1024 * 1024,
         env: windowsPowerShellEnv(),
       });
+    pending.child.stdin?.end(JSON.stringify({ paths: targets, sid: sandboxUserSid }));
+    const { stdout: output } = await pending;
     const rows: unknown = JSON.parse(output);
     if (!Array.isArray(rows) || rows.length !== paths.length) throw new Error("Invalid deny DACL response");
     return rows.map((row: WindowsDenyAcl, index) => {

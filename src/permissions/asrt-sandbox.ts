@@ -22,6 +22,7 @@ import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
 import { createLogger } from "../lib/logger.js";
+import { createSerialQueue } from "../lib/with-file-lock.js";
 import { errorMessage } from "../shared/error-message.js";
 import { t } from "../i18n/index.js";
 import { hostDirectoryFloorPierces } from "../plugins/sandbox-authority.js";
@@ -2109,7 +2110,18 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
 }
 
 // Windows worker grants name a dedicated holder PID. Apply session denies before access, then publish the logical config; use one verified binary descriptor throughout.
-export async function grantWindowsWorkerFilesystemAccess(opts: {
+// Grants read native masks across awaits; overlapping read-stamp-verify turns could let a write-only restamp replace a read deny.
+const windowsGrantTurns = createSerialQueue();
+
+export function grantWindowsWorkerFilesystemAccess(opts: {
+  readonly holderPid: number;
+  readonly allowRead?: readonly string[];
+  readonly allowWrite?: readonly string[];
+}): Promise<WindowsWorkerFilesystemGrant> {
+  return windowsGrantTurns(() => grantWindowsWorkerFilesystemAccessInTurn(opts));
+}
+
+async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
   readonly holderPid: number;
   readonly allowRead?: readonly string[];
   readonly allowWrite?: readonly string[];
@@ -2185,7 +2197,8 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   }
   const rows = [...obligations.values()];
   const targets = rows.map(row => row.path);
-  const previous = readWindowsDenyAcls(targets, sandboxUserSid);
+  const previous = await readWindowsDenyAcls(targets, sandboxUserSid);
+  if (sandboxSession !== session || !active) throw new Error("Windows filesystem grant session was reset");
   const denyRead = rows.filter((row, index) => row.read || (previous[index]!.denyMask & ~WINDOWS_WRITE_DENY_MASK) !== 0).map(row => row.path);
   const denyWrite = targets;
   if (targets.length > 0) {
@@ -2198,7 +2211,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     }
     // Verify even after a partial stamp. Never release the session holder on failure.
     try {
-      const native = readWindowsDenyAcls(targets, sandboxUserSid);
+      const native = await readWindowsDenyAcls(targets, sandboxUserSid);
       const readTargets = new Set(denyRead);
       for (const [index, row] of rows.entries()) {
         const state = native[index]!;

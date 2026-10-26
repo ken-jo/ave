@@ -63,7 +63,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     vi.spyOn(runtime, "revokeWindowsAcl").mockReturnValue([]);
     vi.spyOn(runtime, "stampWindowsAcl").mockImplementation(() => {});
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);
-    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(async paths => paths.map(() => ({
       denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK,
       parentMask: 0x40, directory: false,
     })));
@@ -139,7 +139,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     mkdirSync(grant);
     const target = join(grant, "secret");
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
-    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => ({
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(async paths => paths.map(() => ({
       denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false,
     })));
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
@@ -167,6 +167,30 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     } finally { held.release(); }
   });
 
+  it("runs concurrent grants one read-stamp-verify turn at a time", async () => {
+    captureRuntime();
+    const grant = join(root, "concurrent");
+    mkdirSync(grant);
+    const target = join(grant, "secret");
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    const order: string[] = [];
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(async paths => {
+      order.push("read");
+      await new Promise(resolve => setTimeout(resolve, 5));
+      return paths.map(() => ({
+        denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+      }));
+    });
+    vi.mocked(runtime.stampWindowsAcl).mockImplementation(() => { order.push("stamp"); });
+    vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => { order.push("grant"); });
+    const held = await Promise.all([1, 2].map(offset =>
+      grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + offset, allowWrite: [grant] })));
+    try {
+      expect(order).toEqual(["read", "stamp", "read", "grant", "read", "stamp", "read", "grant"]);
+    } finally { for (const entry of held) entry.release(); }
+  });
+
   it("verifies a partial stamp failure before refusing access without releasing the session", async () => {
     captureRuntime();
     const grant = join(root, "partial-union");
@@ -189,9 +213,9 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     writeFileSync(target, "secret");
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
     vi.mocked(runtime.stampWindowsAcl).mockImplementation(() => { throw new Error("Fixture partial stamp"); });
-    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementationOnce(paths => paths.map(() => ({
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementationOnce(async paths => paths.map(() => ({
       denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false,
-    }))).mockImplementation(paths => paths.map(() => ({
+    }))).mockImplementation(async paths => paths.map(() => ({
       denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false,
     })));
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
@@ -208,7 +232,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     const target = join(grant, "secret");
     writeFileSync(target, "secret");
     await initializeAsrtSandbox({ denyWrite: [target] });
-    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => ({
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(async paths => paths.map(() => ({
       denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false,
     })));
     const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] });
@@ -228,7 +252,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     mkdirSync(grant);
     const target = join(grant, "secret");
     await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
-    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => native));
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(async paths => paths.map(() => native));
     await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
       .rejects.toThrow(/verification/);
     expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
