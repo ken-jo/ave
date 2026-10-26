@@ -15,6 +15,8 @@ import * as integrity from "../srt-win-integrity.js";
 import * as denyAcl from "../windows-deny-acl.js";
 import { permissionSettingsPath } from "../permission-settings-store.js";
 import * as defaultWorkspace from "../../main/default-workspace-root.js";
+import { ConversationLoop } from "../../engine/conversation-loop.js";
+import { makeBasicConversationLoopDeps } from "../../engine/__tests__/support/conversation-loop-fixtures.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { buildSandboxConfig, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 
@@ -156,6 +158,43 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(calls);
     await expect(wrapToolCommand("echo confined", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/cleanup failed/);
     revoke.mockReturnValue([]);
+  });
+
+  it.each(["session", "turn", "project"] as const)("refuses live %s root ancestors and equality directly and through junctions", async scope => {
+    const ancestor = join(fixture, scope, "team");
+    const root = join(ancestor, "repo");
+    mkdirSync(root, { recursive: true });
+    const loop = new ConversationLoop(makeBasicConversationLoopDeps());
+    await initializeAsrtSandbox({});
+    if (scope === "session") loop.addSessionAdditionalDirectory(root);
+    else if (scope === "turn") loop.addTurnAdditionalDirectory(root);
+    else loop.sessionProjectRoot = root;
+    const link = join(fixture, "ancestor-link");
+    symlinkSync(ancestor, link, "junction");
+    const equalLink = join(fixture, "root-link");
+    symlinkSync(root, equalLink, "junction");
+    for (const path of [ancestor, link, root, equalLink]) {
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [path] })).rejects.toThrow(/ancestor/);
+    }
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    // The guard must observe revocation from the same live source too.
+    loop.sessionAdditionalDirectories = [];
+    loop.turnAdditionalDirectories = [];
+    loop.sessionProjectRoot = null;
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [ancestor] });
+    grant.release();
+  });
+
+  it.each(["revoked", "stillHeld"] as const)("accepts native extended-path %s compensation without sealing a usable session", async status => {
+    await initializeAsrtSandbox({});
+    vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => {
+      renameSync(target, join(fixture, "original"));
+      mkdirSync(target);
+    });
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: `\\\\?\\${target.toUpperCase()}\\`, status }]);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] })).rejects.toThrow(/identity changed/);
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] });
+    grant.release();
   });
 
   it("resolves a junction ancestor before granting a descendant", async () => {

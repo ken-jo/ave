@@ -227,8 +227,9 @@ describe("builtin shell — Windows MXC containers", () => {
     const previous = roots.map(key => process.env[key]);
     try {
       for (const key of roots) vi.stubEnv(key, undefined);
-      await expect(new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("missing-system-root")))
-        .rejects.toThrow(/system root/i);
+      const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("missing-system-root"));
+      expect(result.isError).toBe(true);
+      expect(result.output).toMatch(/system root/i);
       expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
       expect(childProcessMock.spawn.mock.calls.some(call => call[0] === WXC_EXEC)).toBe(false);
     } finally {

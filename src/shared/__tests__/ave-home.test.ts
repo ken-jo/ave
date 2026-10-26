@@ -1,13 +1,14 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join, resolve, win32 } from "node:path";
 import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacls, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
+import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
@@ -66,7 +67,7 @@ describe("aveHome", () => {
 describe("win32SystemBinary", () => {
   it("pins the binary to System32 and refuses missing system roots", () => {
     expect(win32SystemBinary("icacls", { SystemRoot: "C:\\Windows" })).toBe("C:\\Windows\\System32\\icacls.exe");
-    expect(win32SystemBinary("icacls", { windir: "D:\\Win" })).toBe(join("D:\\Win", "System32", "icacls.exe"));
+    expect(win32SystemBinary("icacls", { windir: "D:\\Win" })).toBe(win32.join("D:\\Win", "System32", "icacls.exe"));
     expect(() => win32SystemBinary("icacls", {})).toThrow(/system root/i);
   });
 });
@@ -221,6 +222,7 @@ describe("ensureAveHomePrivate", () => {
     expect(result).toMatchObject({ enforcement: "none", failedPath: dir, category: "directory-failed", reason: "Access is denied" });
   });
   it("rejects a malformed native read-back result set", () => {
+    vi.spyOn(pathKindLauncher, "resolveWindowsPathKindHelper").mockReturnValue(process.execPath);
     vi.mocked(execFileSync).mockReturnValueOnce("{}");
     expect(readWindowsDirectoryDacls([home()])[0]).toMatchObject({ category: "read-back-failed", error: "Invalid Windows path facts response" });
   });

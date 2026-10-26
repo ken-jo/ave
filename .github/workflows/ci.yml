@@ -661,6 +661,7 @@ jobs:
           src/main/__tests__/windows-job-launcher.test.ts
           src/main/__tests__/codex-executable-location.test.ts
           src/main/__tests__/codex-executable-location.windows.test.ts
+          src/main/host-api/__tests__/mapped-drive-root.test.ts
           src/main/__tests__/codex-user-runtime.test.ts
           src/main/__tests__/claude-code-executable.test.ts
           src/main/__tests__/claude-code-runtime.test.ts

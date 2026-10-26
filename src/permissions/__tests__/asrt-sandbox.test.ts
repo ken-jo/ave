@@ -34,6 +34,21 @@ import { configureHostResources } from "../../main/host-resources.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
 
+it.each(["linux", "darwin"] as const)("never rechecks native Windows evidence on a captured %s host after platform simulation", async platform => {
+  const original = process.platform;
+  vi.resetModules();
+  setProcessPlatform(platform);
+  try {
+    const sandbox = await import("../asrt-sandbox.js");
+    const evidence = await import("../../shared/windows-read-deny-evidence.js");
+    const recheck = vi.spyOn(evidence, "recheckWindowsReadDenyEvidence");
+    setProcessPlatform("win32");
+    sandbox.buildSandboxConfig({ denyRead: [join(tmpdir(), "captured-host", ".ssh")] }, new Map());
+    expect(recheck).not.toHaveBeenCalled();
+    recheck.mockRestore();
+  } finally { setProcessPlatform(original); vi.resetModules(); }
+});
+
 vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
@@ -1547,23 +1562,6 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
-    }
-  });
-
-  it.each(["linux", "darwin"] as const)("does not request native Windows evidence on a %s host", platform => {
-    const previous = process.platform;
-    const host = vi.spyOn(os, "platform").mockReturnValue(platform);
-    const recheck = vi.spyOn(readDenyEvidenceModule, "recheckWindowsReadDenyEvidence").mockImplementation(() => {
-      throw new Error("native Windows evidence requested on another host");
-    });
-    setProcessPlatform("win32");
-    try {
-      buildSandboxConfig({}, new Map());
-      expect(recheck).not.toHaveBeenCalled();
-    } finally {
-      setProcessPlatform(previous);
-      recheck.mockRestore();
-      host.mockRestore();
     }
   });
 

@@ -7,6 +7,7 @@ import { endShellSession } from "../tools/shell-tools.js";
 import { disposeSessionFileReads } from "../tools/file-read-state.js";
 import { isActiveSandboxFilesystemContainedForPluginEffects } from "../permissions/sandbox-capability.js";
 import { baseAllowedDirectories } from "../permissions/base-allowed-directories.js";
+import { registerWorkspaceDirectorySource } from "../permissions/workspace-authorized-roots.js";
 import { getWorkspaceRootLifecycle } from "../permissions/workspace-root-lifecycle.js";
 import { HookRunner } from "../hooks/hook-runner.js";
 import type { LifecycleHookEvent } from "../hooks/script-hook-types.js";
@@ -203,6 +204,7 @@ export class ConversationLoop {
     );
     this.auditLogger = deps.auditLogger ?? new AuditLogger();
     this.refreshProvider();
+    registerWorkspaceDirectorySource(this);
   }
 
   get permissionManager(): import("../permissions/permission-manager.js").PermissionManager | undefined {

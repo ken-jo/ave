@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
-import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsOwnerRules, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
+import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 const SID = "S-1-5-21-100-200-300-1001";
 const ORDINARY: WindowsPathFacts = { exists: true, canonical: "\\\\?\\C:\\fixture", volumeSerial: "0x0000000000000001",
@@ -17,6 +17,16 @@ function descriptor(aces: WindowsDacl["aces"]): WindowsDacl {
 }
 
 describe("Windows path facts admission and evaluation", () => {
+  it.each([
+    ["\\\\?\\D:\\WORK\\allowed\\", "d:/work/allowed"],
+    ["\\\\?\\UNC\\SERVER\\Share\\Allowed\\", "\\\\server\\share\\allowed"],
+    ["\\\\?\\unc\\server\\Share\\", "//SERVER/share"],
+    ["D:\\work\\nested\\..\\allowed\\", "d:\\work\\allowed"],
+  ])("normalizes native and requested path spellings %s", (native, requested) => {
+    expect(windowsPathKey(native)).toBe(windowsPathKey(requested));
+    expect(windowsPathKey(native)).not.toBe(windowsPathKey(`${requested}-sibling`));
+  });
+
   it("admits ordinary grant tags and resolves only supported name surrogates", () => {
     expect(admitWindowsReparse(ORDINARY, "grant")).toBe(true);
     for (const reparseTag of [0x80000015, 0x9000001a, 0x80000042]) {

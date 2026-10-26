@@ -1,7 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { isAbsolute } from "node:path";
+import { isAbsolute, win32 } from "node:path";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
+
+/** Compare native and requested spellings without changing their admission rules. */
+export function windowsPathKey(path: string): string {
+  const ordinary = path.replace(/\//g, "\\").replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "");
+  return win32.normalize(ordinary).replace(/[\\/]+$/, "").toLowerCase();
+}
 
 interface WindowsPathComponentFacts {
   readonly exists: boolean | null;

@@ -5,11 +5,11 @@ import { containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPa
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
-import { listAuthorizedWorkspaceProjects } from "../main/project-root-authorization.js";
+import { listAuthorizedWorkspaceRoots } from "./workspace-authorized-roots.js";
 import { createRequire } from "node:module";
-import { homedir, platform as hostPlatform } from "node:os";
+import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
-import { admitWindowsReparse, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
+import { admitWindowsReparse, pinWindowsPaths, windowsPathKey, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
@@ -54,6 +54,8 @@ import type {
 } from "@anthropic-ai/sandbox-runtime";
 
 const log = createLogger("asrt-sandbox");
+// Platform simulation must not turn a non-native host into a native helper host.
+const HOST_PLATFORM = process.platform;
 
 // Install-time proxy permits and runtime bind ports must use this same range or all egress fails. Mirror the package constant to avoid static bundling that breaks binary resolution; a drift test pins equality.
 export const DEFAULT_WINDOWS_PROXY_PORT_RANGE: readonly [number, number] = [
@@ -1223,7 +1225,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     ...POSIX_ASRT_TEMP_DENIES,
   ]);
   const checkedReadEvidence = kind === "read" && readDenyEvidence !== undefined
-    ? hostPlatform() === "win32"
+    ? HOST_PLATFORM === "win32"
       ? recheckWindowsReadDenyEvidence([...expandedPaths.values()], readDenyEvidence)
       : readDenyEvidence
     : undefined;
@@ -2289,7 +2291,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
       catch (error) { cleanupError = error; }
       if (!Array.isArray(outcome) || outcome.some(row => row === null || typeof row !== "object"
         || typeof row.path !== "string" || !["revoked", "stillHeld"].includes(row.status))
-        || allowRead.some(path => !outcome.some(row => win32.normalize(row.path).toLowerCase() === win32.normalize(path).toLowerCase()))) {
+        || allowRead.some(path => !outcome.some(row => windowsPathKey(row.path) === windowsPathKey(path)))) {
         // Keep confinement active: disabling it would permit host execution fallback.
         session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? err });
         log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${opts.holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
@@ -2390,7 +2392,7 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
     if (windowsMachineRoots().some(root => win32.resolve(path).toLowerCase() === win32.resolve(root).toLowerCase())) {
       throw new Error(`Windows filesystem grant refuses a machine root: ${path}`);
     }
-    if ([...listAuthorizedWorkspaceProjects().map(project => project.projectRoot), aveHome()]
+    if ([...listAuthorizedWorkspaceRoots(), aveHome()]
       .some(root => isGrantPathWithin(path, root))) {
       throw new Error(`Windows filesystem grant refuses an ancestor of the workspace or Ave home: ${path}`);
     }
@@ -2406,19 +2408,19 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
 }
 
 function lexicalWindowsOverlap(left: string, right: string): boolean {
-  const a = win32.resolve(left).toLowerCase().replace(/[\\/]+$/, "");
-  const b = win32.resolve(right).toLowerCase().replace(/[\\/]+$/, "");
+  const a = windowsPathKey(win32.resolve(left));
+  const b = windowsPathKey(win32.resolve(right));
   return a === b || a.startsWith(`${b}\\`) || b.startsWith(`${a}\\`);
 }
 
 function assertWindowsGrantPins(paths: readonly string[], initial: readonly WindowsPathFacts[]): void {
-  const identities = new Map(initial.map(row => [stripExtendedPathPrefix(row.canonical!).toLowerCase(), row]));
+  const identities = new Map(initial.map(row => [windowsPathKey(row.canonical!), row]));
   let rows: readonly WindowsPathFacts[];
   try { rows = pinWindowsPaths(paths); }
   catch (cause) { throw new Error(`Windows filesystem grant identity check failed: ${paths.join(", ")}`, { cause }); }
   for (const [index, path] of paths.entries()) {
     const row = rows[index]!;
-    const expected = identities.get(path.toLowerCase())!;
+    const expected = identities.get(windowsPathKey(path))!;
     if (admitWindowsReparse(row, "grant") !== true || row.exists !== true
       || row.volumeSerial !== expected.volumeSerial || row.fileId !== expected.fileId) {
       throw new Error(`Windows filesystem grant target identity changed: ${path}`);
