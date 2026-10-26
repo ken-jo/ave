@@ -20,8 +20,9 @@ is empty; it reverts to send as soon as anything is typed. Stop runs the same
 action as `Escape` (see [Interrupt paths](#interrupt-paths)).
 
 `MessageQueuePanel` (`src/ui/renderer/components/MessageQueuePanel.tsx`) is a
-full-width band above the composer in `ChatComposerDock.tsx` (main chat) and
-`SideChatView.tsx` (side chat). It renders only when the queue is non-empty.
+card above the composer, aligned with its inset frame in `ChatComposerDock.tsx`
+(main chat) and `SideChatView.tsx` (side chat). It renders only when the queue is
+non-empty.
 
 ## Message queue semantics
 

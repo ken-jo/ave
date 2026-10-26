@@ -1,3 +1,4 @@
+import { chatSurface } from "./components/chat-surface.js";
 import type { RewindMode } from "../../shared/code-rewind.js";
 import { RewindDialog } from "./dialogs/RewindDialog.js";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -733,7 +734,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       {forkToast && (
         <div
           data-testid="fork-toast"
-          className="sticky top-0 z-30 mx-3 mt-2 rounded-md border border-[hsl(var(--action-branch)/0.4)] bg-[hsl(var(--action-branch)/0.1)] px-3 py-2 text-xs text-[hsl(var(--action-branch))]"
+          className={`${chatSurface()} sticky top-0 z-30 mx-3 mt-2 px-3 py-2 text-xs text-foreground`}
         >
           {forkToast}
         </div>
@@ -741,7 +742,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       {currentSessionKind === "routine" && (
         <div
           data-testid="current-session-kind-banner"
-          className="sticky top-0 z-20 mx-3 mt-2 rounded-md border border-action-view/(--opacity-muted) bg-action-view/(--opacity-subtle) px-3 py-2 text-xs text-action-view"
+          className={`${chatSurface()} sticky top-0 z-20 mx-3 mt-2 px-3 py-2 text-xs text-action-view`}
         >
           <span className="font-medium">{t("chatView.routineSessionLabel")}</span>
           {currentSessionTitle ? <span className="ml-2 text-muted-foreground">{currentSessionTitle}</span> : null}
@@ -781,13 +782,13 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       </div>
       </div>
       {contextOverflowPct >= 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-destructive/(--opacity-subtle) px-3 py-1.5 text-xs text-destructive">
+        <div className={`${chatSurface()} mx-3 mb-2 flex min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-xs text-destructive`}>
           <span className="font-semibold">{t("chatView.contextUsagePercent", { pct: Math.round(contextOverflowPct * 100) })}</span>
           <span>{t("chatView.contextOverflowWarning")}</span>
         </div>
       )}
       {contextOverflowPct >= 0.80 && contextOverflowPct < 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-warning/(--opacity-soft) px-3 py-1.5 text-xs text-warning">
+        <div className={`${chatSurface()} mx-3 mb-2 flex min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-xs text-warning`}>
           <span className="font-semibold">{t("chatView.contextUsagePercent", { pct: Math.round(contextOverflowPct * 100) })}</span>
           <span>{t("chatView.contextNearingWarning")}</span>
         </div>
@@ -800,13 +801,13 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         영상의 271K nano 사고 patterns 를 사전 경고.
       */}
       {typeof tpmPct === "number" && typeof tpmLimit === "number" && tpmPct >= 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-destructive/(--opacity-subtle) px-3 py-1.5 text-xs text-destructive">
+        <div className={`${chatSurface()} mx-3 mb-2 flex min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-xs text-destructive`}>
           <span className="font-semibold">{t("chatView.tpmUsagePercent", { pct: Math.round(tpmPct * 100), used: formatTokensExact(usedTokens), limit: formatTokensExact(tpmLimit) })}</span>
           <span>{t("chatView.tpmOverflowWarning")}</span>
         </div>
       )}
       {typeof tpmPct === "number" && typeof tpmLimit === "number" && tpmPct >= 0.80 && tpmPct < 0.95 && (
-        <div className="flex w-full max-w-full items-center gap-2 border-t bg-warning/(--opacity-soft) px-3 py-1.5 text-xs text-warning">
+        <div className={`${chatSurface()} mx-3 mb-2 flex min-w-0 flex-wrap items-center gap-2 px-3 py-2 text-xs text-warning`}>
           <span className="font-semibold">{t("chatView.tpmUsagePercent", { pct: Math.round(tpmPct * 100), used: formatTokensExact(usedTokens), limit: formatTokensExact(tpmLimit) })}</span>
           <span>{t("chatView.tpmNearingWarning")}</span>
         </div>

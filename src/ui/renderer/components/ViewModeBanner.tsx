@@ -1,3 +1,4 @@
+import { chatSurface } from "./chat-surface.js";
 import { useTranslation } from "../../../i18n/react.js";
 
 export interface ViewModeState {
@@ -21,7 +22,7 @@ export function ViewModeBanner({
   return (
     <div
       data-testid="view-mode-banner"
-      className="sticky top-0 z-10 flex items-center justify-between gap-3 border-b border-[hsl(var(--action-view)/0.3)] bg-[hsl(var(--action-view)/0.08)] px-4 py-2 backdrop-blur-[10px]"
+      className={`${chatSurface()} sticky top-0 z-10 mx-3 mt-2 flex min-w-0 items-center justify-between gap-3 px-3 py-2`}
     >
       <div className="flex min-w-0 flex-col gap-0.5">
         <span
