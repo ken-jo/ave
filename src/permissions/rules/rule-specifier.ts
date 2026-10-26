@@ -1,5 +1,4 @@
 // Settings, dock and persistence share strict Bash/PowerShell/Edit/WebFetch/Network/Mcp rule grammar; malformed rules throw rather than broaden. Legacy tool/path globs contain no parenthesis and retain their separate semantics.
-import { POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 
 export type RuleSpecifier =
   | {
@@ -11,7 +10,7 @@ export type RuleSpecifier =
     }
   | {
       kind: "powershell";
-      // Raw literal words with only the permitted command-head normalization. Never empty.
+      // Raw literal words, including the complete program token and quote spelling. Never empty.
       tokens: readonly string[];
       // True for `PowerShell(<prefix> *)`: the prefix plus any further arguments (or none).
       wildcard: boolean;
@@ -145,28 +144,10 @@ function parseBash(text: string, body: string): RuleSpecifier {
   return { kind: "bash", tokens: Object.freeze([...tokens]), wildcard };
 }
 
-// True for a built-in cmdlet (Verb-Noun) the command catalogue knows. Its name and parameter names bind case-insensitively on every edition.
-function isKnownCmdlet(name: string): boolean {
-  const lower = name.toLowerCase();
-  if (!/^[a-z]+-[a-z0-9]+$/.test(lower)) return false;
-  const policy = POWERSHELL_COMMAND_POLICIES[lower];
-  return policy !== undefined && policy.native === undefined;
-}
-
-// Normalize only an unquoted command head; every argument retains its original raw word text.
-export function canonicalPowerShellRuleTokens<T extends string | null>(tokens: readonly T[]): T[] {
-  const head = tokens[0];
-  if (typeof head !== "string" || literalRuleWord(head, "powershell") !== head) return [...tokens];
-  const moduleQualified = /^[A-Za-z_][\w.-]*\\([^\\/]+)$/.exec(head);
-  const name = moduleQualified?.[1] ?? head;
-  const canonicalHead = process.platform === "win32" || isKnownCmdlet(name) ? name.toLowerCase() : name;
-  return [canonicalHead as T, ...tokens.slice(1)];
-}
-
 function parsePowerShell(text: string, body: string): RuleSpecifier {
   const { tokens, wildcard } = shellRuleWords(text, body, "powershell");
   if (tokens[0] === ".") throw new RuleSpecifierError(text, "the dot-source operator is not a command");
-  return { kind: "powershell", tokens: Object.freeze(canonicalPowerShellRuleTokens(tokens)), wildcard };
+  return { kind: "powershell", tokens: Object.freeze([...tokens]), wildcard };
 }
 
 function parseEdit(text: string, body: string): RuleSpecifier {

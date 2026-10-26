@@ -221,9 +221,12 @@ lifecycle coverage are described in the architecture contract.
 
 Host-shell credential/sink classification is separate from exact raw-word
 identity. Unsandboxed input over 2,000 characters asks, or denies headless,
-before command-dependent work. Floor inspection has an independent
-8,000-character pre-inspection input limit; that limit or actual floor-analysis
-budget exhaustion forces per-call modal approval and cannot auto-allow. An
+before command-dependent work. Lane A retains an 8,000-character executable
+envelope limit, with verified quoted literal Bash heredoc bodies separately
+bounded at an aggregate 65,536 bytes. Shared work-budget exhaustion immediately
+stops all analysis: Lane B asks/L6 or denies headless; Lane A requires modal
+approval/L2. No fallback, later candidate, floor, rule, proof or reviewer work
+continues. Exceeding Lane A input/data bounds likewise requires modal approval. An
 identified floor takes precedence over an ordinary reason in the same input.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
@@ -231,7 +234,7 @@ requirements keep their own authority.
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
 | Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Work limit | Floor input over 8,000 characters or actual floor-analysis budget exhaustion | Forced modal at layer 2; exact rules, saved grants, reviewers and modes cannot auto-allow |
+| Work limit | Lane A envelope/data bounds or shared analysis-budget exhaustion | Immediate Lane B ask/L6 or headless deny, or Lane A modal/L2; no subsequent analysis or reusable allow |
 | Ordinary | Parser refusal, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No credential/sink floor by this label alone; unsandboxed execution still requires proven exact raw-word coverage; legacy shell grants remain inert |
 | Normal | Neither a floor nor an ordinary reason | Sandboxed execution follows its route after floor work completes; unsandboxed automatic allowance still requires proven exact raw-word coverage |
 
@@ -282,11 +285,12 @@ cannot be ruled out.
 An ordinary classifier reason does not establish reusable shell authority. A
 parser or lexer/analysis-budget failure cannot match an exact command rule;
 tool-wide allows and saved shell grants do not repair it. Identified credential
-and upload evidence retains its floor, while actual floor-analysis exhaustion
-itself forces per-call modal approval. No rule, reviewer or mode bypasses that
+and upload evidence retains its floor while analysis completes. Shared budget
+exhaustion instead stops all analysis immediately with the lane-specific closed
+result. No rule, reviewer or mode bypasses that
 work-limit gate.
 
-Visible literal interpreter code and file/stdin/network indirection remain eligible for exact rules; the host does not certify referenced code or future effects. A carrier classification alone does not make an unrelated restriction uncertain. Actual visible deny/ask matches and syntax uncertainty keep their precedence. Exact identity preserves raw argument text and quote style, normalizing only interword whitespace and the existing permitted command head; argument values and parameter casing are never normalized.
+Visible literal interpreter code and file/stdin/network indirection remain eligible for exact rules; the host does not certify referenced code or future effects. A carrier classification alone does not make an unrelated restriction uncertain. Actual visible deny/ask matches and syntax uncertainty keep their precedence. Exact identity preserves raw argument text and quote style, normalizing only interword whitespace. Program case, module qualifiers, paths and quotes stay raw, as do all arguments; detection and restriction normalization never changes the exact key.
 
 These are permission-classifier outcomes, not execution admission. A hard deny
 cannot be approved. A floor's forced ask requires per-call consent but cannot
@@ -326,16 +330,37 @@ The structural parser, sink vocabulary, Windows credential rows and general file
 PowerShell script blocks and `pwsh`/`powershell` inline command text use the PowerShell catalogue. Other interpreter code receives generic credential/sink inspection without inheriting PowerShell command meanings. Known catalogue effects remain floors through shared wrappers, process-launcher payloads, background execution and static or opaque transport splats. Sink-only wrapper inspection preserves the forwarded native command identity and grants no rule coverage.
 
 `Bash(...)` rules match Bash and `PowerShell(...)` rules match PowerShell,
-at user, project or session scope. Unsandboxed automatic allowance requires a matching
-exact command rule with literal raw-word identity; legacy shell
-grants remain inert. Visible literal code and file/stdin/network indirection
-are eligible subject to retained visible floors. Parser or lexer/analysis-budget
-failure and nonliteral words cannot match an exact allow. For a recognized
-PowerShell launcher, every following argv token is trimmed, stripped of leading
-hyphen/slash/U+2013/U+2014/U+2015, and lowercased; any result starting with `e`
-is unproven, including `ExecutionPolicy`, past `-File` or `--`, with no operand
-required. A command over the shared unsandboxed input limit asks
-or denies headless before further command processing.
+at user, project or session scope. Unsandboxed automatic allowance requires a
+current-format exact rule with literal raw-word identity. Fresh shell allows,
+including session rules, record `shellRuleVersion: 1`, owned by
+`SHELL_RULE_CANONICAL_VERSION` in `src/shared/shell-rule-version.ts`.
+Unversioned and wrong-version shell allows remain silently inert in all scopes;
+reads and unrelated writes preserve them without stamping a current version.
+No migration, new error or UI marker is introduced. Deny and ask rules retain
+their narrowing authority regardless of version.
+
+PowerShell launcher detection checks semantic values and raw words across the
+whole command in bounded linear scans, including lexical words inside quoted strings. Once a
+launcher word is seen, every later word is trimmed, stripped of leading
+hyphen/slash/U+2013/U+2014/U+2015 and lowercased; an e-leading result is unproven.
+The check crosses pipelines, sequences, `-File`, `--` and quoted separators,
+requires no operand, and uses no wrapper list or recursive dialect parser.
+Module/basename, executable-extension and case normalization are detection-only.
+Visible literal code and file/stdin/network indirection otherwise remain
+eligible subject to completed visible-floor inspection and exact raw identity.
+
+Only semantically verified quoted literal Bash heredocs with no known
+code-consuming receiver receive the separate Lane A data allowance. Existing
+floor classification, including retained wrapper/subshell/pipeline views,
+identifies those receivers without a new name list or Lane B carrier gate.
+Known consumers keep normal full-body floor analysis and the 8,000-character
+cap; unknown-program stdin remains an accepted indirection limit. Literal
+`cat`/`tee -a` data writes remain eligible. Aggregate body bytes stay within
+64 KiB and the executable envelope within 8,000 characters. Projected grammar
+and quote semantics are verified under the shared prepaid budget. Exempt bodies
+receive only a linear metered data pass, never general code/floor inspection.
+Unquoted heredocs keep the normal cap; unsafe or ambiguous syntax fails closed.
+Lane B always caps the complete original command at 2,000 characters.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS

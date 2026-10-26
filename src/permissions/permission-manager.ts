@@ -1,3 +1,4 @@
+import { isCurrentShellRule, withCurrentShellRuleVersion, type ShellRuleVersion } from "../shared/shell-rule-version.js";
 
 
 import { BuiltinLlmJudge, mapRiskVerdictToJudgeDecision, type TracingRiskClassifier } from "./judge/builtin-llm-judge.js";
@@ -16,12 +17,14 @@ import type { ScopedPermissionRule, ScopedPermissionRuleError, ShellRuleDialect 
 import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject } from "./rules/rule-scopes.js";
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
-import { inspectShellCommand } from "./rules/shell-exfiltration.js";
+import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, shellFloorInputExceeded } from "./rules/shell-floor-policy.js";
+import { ShellFloorWorkBudget, ShellFloorWorkBudgetError } from "./rules/shell-floor-work-budget.js";
+import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
 import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
-import { parseShellCommand } from "./rules/shell-prefix-policy.js";
+import type { ParsedShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
@@ -120,7 +123,7 @@ export interface PrunedGrant {
   path: string;
 }
 
-export interface PermissionRule {
+export interface PermissionRule extends ShellRuleVersion {
   // Either a legacy glob over the tool name / approval cache key (`web_fetch`, `write_file:path:/abs`) or a rules-language specifier (`Bash(git status *)`, see `rules/rule-specifier.ts`). Classified by shape.
   pattern: string;
 
@@ -835,7 +838,7 @@ export class PermissionManager {
     rule: { pattern: string; action: PermissionRule["action"] },
     scope: { kind: "user" } | { kind: "project"; projectCwd: string },
   ): Promise<void> {
-    const validated = validatePermissionRule({ pattern: rule.pattern, action: rule.action });
+    const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern: rule.pattern, action: rule.action }));
     if (!isRuleSpecifier(validated.pattern)) {
       throw new Error(`addRulePersist takes rules-language specifiers; got legacy pattern ${validated.pattern}`);
     }
@@ -843,12 +846,14 @@ export class PermissionManager {
       await this.projectRuleScopes.addRule(scope.projectCwd, validated);
     } else {
       await this.updateRulesFile((file) => {
-        if (!file.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source)) {
+        if (!file.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source && isCurrentShellRule(r))) {
+          file.rules = file.rules.filter((r) => !(r.pattern === validated.pattern && r.action === validated.action && !r.source));
           if (validated.action === "allow") file.rules.push(validated);
           else file.rules.unshift(validated);
         }
       });
-      if (!this.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source)) {
+      if (!this.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && !r.source && isCurrentShellRule(r))) {
+        this.rules = this.rules.filter((r) => !(r.pattern === validated.pattern && r.action === validated.action && !r.source));
         if (validated.action === "allow") this.rules.push(validated);
         else this.rules.unshift(validated);
       }
@@ -861,7 +866,7 @@ export class PermissionManager {
   // Add a "This session" allow rule for one conversation: a `Bash(...)` or `PowerShell(...)` rule, or a `Network(...)` host rule. A wildcard is accepted (owner 2026-10-25: an edited allow may be a wildcard) but, like every wildcard allow, never runs a shell that has no sandbox (`exactAllowOnly`). Other rule kinds are refused, not narrowed.
   addSessionRule(sessionId: string, pattern: string): void {
     if (sessionId.length === 0) throw new Error("A session rule requires its conversation session");
-    const validated = validatePermissionRule({ pattern, action: "allow" });
+    const validated = validatePermissionRule(withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const spec = isRuleSpecifier(validated.pattern) ? parseRuleSpecifier(validated.pattern) : undefined;
     if (spec?.kind !== "bash" && spec?.kind !== "powershell" && spec?.kind !== "network") {
       throw new Error(`A session rule must be a Bash(...), PowerShell(...) or Network(...) rule; got ${validated.pattern}`);
@@ -869,7 +874,11 @@ export class PermissionManager {
     // Keyed like a session approval: the root conversation and the sub-agents it spawned share it.
     const root = approvalConversationRoot(sessionId);
     const rules = this.sessionRules.get(root) ?? [];
-    if (!rules.some((rule) => rule.pattern === validated.pattern)) rules.push(validated);
+    if (!rules.some((rule) => rule.pattern === validated.pattern && isCurrentShellRule(rule))) {
+      const previous = rules.findIndex((rule) => rule.pattern === validated.pattern);
+      if (previous >= 0) rules.splice(previous, 1);
+      rules.push(validated);
+    }
     this.sessionRules.set(root, rules);
     this.policyGeneration += 1;
     this.broadcastConfigChanged?.();
@@ -1107,7 +1116,7 @@ export class PermissionManager {
     // Merge rules: add file rules after existing in-memory rules, deduplicated.
     for (const rule of file.rules) {
       const dup = this.rules.some(
-        (r) => r.pattern === rule.pattern && r.action === rule.action && r.source === rule.source,
+        (r) => r.pattern === rule.pattern && r.action === rule.action && r.source === rule.source && r.shellRuleVersion === rule.shellRuleVersion,
       );
       if (!dup) {
         if (rule.action === "deny") {
@@ -1215,8 +1224,7 @@ export class PermissionManager {
     // Length checks precede command analysis and project I/O in either execution lane.
     const shellInput = context.ruleSubject?.kind === "shell" ? context.ruleSubject.command : undefined;
     const unsandboxedShell = !context.shellExecution?.runsSandboxed;
-    if (shellInput !== undefined && (unsandboxedShell
-      ? shellInput.length > MAX_LITERAL_COMMAND_LENGTH : shellFloorInputExceeded(shellInput))) {
+    const closeShellAnalysis = (): PermissionCheckResult => {
       const deny = this.rules.find((rule) => rule.action === "deny" && (!rule.source || rule.source === source)
         && !isRuleSpecifier(rule.pattern) && globMatch(toolName, rule.pattern));
       if (deny) return { decision: "deny", reason: t("be_permissionManager.denyRuleReason", { pattern: deny.pattern }), layer: 1 };
@@ -1224,6 +1232,18 @@ export class PermissionManager {
       return context.headless === true
         ? { decision: "deny", reason: t("be_permissionManager.shellUnsandboxedHeadlessReason"), layer: 6 }
         : { decision: "ask", reason: t("be_permissionManager.shellUnsandboxedReason"), layer: 6 };
+    };
+    if (shellInput !== undefined && unsandboxedShell && shellInput.length > MAX_LITERAL_COMMAND_LENGTH) return closeShellAnalysis();
+    const floorBudget = new ShellFloorWorkBudget();
+    let floorInput: ShellFloorInput | null | undefined;
+    if (shellInput !== undefined && !unsandboxedShell) {
+      try {
+        floorInput = prepareShellFloorInput(shellInput, context.ruleSubject!.kind === "shell" ? context.ruleSubject!.dialect : "", floorBudget);
+      } catch (error) {
+        if (!(error instanceof ShellFloorWorkBudgetError)) throw error;
+        return closeShellAnalysis();
+      }
+      if (floorInput === null || shellFloorInputExceeded(floorInput.command)) return closeShellAnalysis();
     }
     const trust = this.resolveTrust(toolName, source);
     // Strict patterns, owned by `shared/staged-origins.ts` — the same table the send gate, the stream derivation, and the model-facing guidance read. Loose `startsWith` would accept malformed values like "overlay:Bad/Path" or "app:" that no upstream gate emits but a future hand-injected codepath might; fail-closed on malformed input. THIS is the one enforcement site — grep `isStagedTurnSource` to find it.
@@ -1245,8 +1265,11 @@ export class PermissionManager {
     const cwdIdentity = context.hostShellExecutionPlan?.executionRequest === "host" && requestedRuleSubject?.cwd !== undefined
       ? captureShellWorkingDirectoryIdentity(requestedRuleSubject.cwd)
       : undefined;
-    const ruleSubject = requestedRuleSubject !== undefined && cwdIdentity !== undefined
-      ? { ...requestedRuleSubject, cwd: cwdIdentity.realpath } : requestedRuleSubject;
+    const ruleSubject = requestedRuleSubject === undefined ? undefined : {
+      ...requestedRuleSubject,
+      command: floorInput?.command ?? requestedRuleSubject.command,
+      ...(cwdIdentity !== undefined ? { cwd: cwdIdentity.realpath } : {}),
+    };
     const projectRulesCwd = context.projectRulesCwd === requestedRuleSubject?.cwd && cwdIdentity !== undefined
       ? cwdIdentity.realpath : context.projectRulesCwd;
     const projectRuleState = projectRulesCwd === undefined
@@ -1273,16 +1296,21 @@ export class PermissionManager {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
     }
     const shellExecution = context.shellExecution ?? { runsSandboxed: false };
-    // Reject oversized proof inputs before either dialect parser. Visible floors still inspect the original text.
-    const commandOverLimit = ruleSubject !== undefined && ruleSubject.command.length > MAX_LITERAL_COMMAND_LENGTH;
-    const parsedSubject = ruleSubject?.dialect === "bash"
-      ? commandOverLimit
-        ? { command: ruleSubject.command, analysis: { ok: false as const, reason: "literal command length limit exceeded" }, facts: new Map<string, unknown>() }
-        : parseShellCommand(ruleSubject.command)
-      : undefined;
+    let parsedSubject: ParsedShellCommand | undefined;
+    if (ruleSubject?.dialect === "bash") {
+      try {
+        parsedSubject = parseShellFloorCommand(floorInput?.parsed ?? ruleSubject.command, floorBudget);
+      } catch (error) {
+        if (!(error instanceof ShellFloorWorkBudgetError)) throw error;
+        return closeShellAnalysis();
+      }
+    }
     const powerShellSignals = ruleSubject?.dialect === "powershell"
-      ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd)
+      ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd, floorBudget)
       : undefined;
+    const shellFloorSignals = parsedSubject !== undefined
+      ? inspectShellCommand(parsedSubject, ruleSubject?.cwd, floorBudget) : powerShellSignals;
+    if (shellFloorSignals?.analysisLimited || floorBudget.exhausted) return closeShellAnalysis();
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
       ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed }
@@ -1300,14 +1328,15 @@ export class PermissionManager {
             ?? (powerShellSignals!.analysisLimited ? "PowerShell analysis budget exceeded" : null),
         }, this.rules, projectRules, sessionRules)
         : undefined;
+    if (floorBudget.exhausted) return closeShellAnalysis();
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
+    if (floorBudget.exhausted) return closeShellAnalysis();
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
       isDestructiveShellText(ruleSubject.command) ||
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
-    const shellFloorSignals = shellSubject ? inspectShellCommand(shellSubject.command, shellSubject.cwd) : powerShellSignals;
     // Credential-exfiltration floor: never remembered, never auto-allowed, in any mode, for every host shell (rules/shell-exfiltration.ts, rules/powershell-exfiltration.ts).
     const shellExfiltration = shellFloorSignals?.exfiltration ?? null;
     // Sensitive-path floor for shell arguments (same normalization as the exfiltration scan): `cat ~/.ssh/id_rsa` is never auto-allowed.

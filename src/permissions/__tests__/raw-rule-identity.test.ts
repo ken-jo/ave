@@ -75,8 +75,34 @@ describe("raw exact rule identity", () => {
     expect(check(manager, dialect, "git commit -m 'two spaces'", cwd)).toBe("ask");
   });
 
+  it("keeps complete module program tokens distinct after save and replay", async () => {
+    const alpha = "Alpha\\Invoke-Probe ready";
+    const beta = "Beta\\Invoke-Probe ready";
+    const bare = "Invoke-Probe ready";
+    for (const [saved, other] of [[alpha, beta], [beta, alpha], [alpha, bare], [bare, alpha]]) {
+      expect(pattern("powershell", saved)).not.toBe(pattern("powershell", other));
+      await expectReplay("powershell", saved, other);
+    }
+  });
+
+  it.each(["bash", "powershell"] as const)("preserves program token case in %s", async (dialect) => {
+    const mixed = dialect === "bash" ? "Printf ready" : "Write-Output ready";
+    const lower = dialect === "bash" ? "printf ready" : "write-output ready";
+    expect(pattern(dialect, mixed)).not.toBe(pattern(dialect, lower));
+    await expectReplay(dialect, mixed, lower);
+    await expectReplay(dialect, lower, mixed);
+  });
+
+  it.each(["bash", "powershell"] as const)("preserves quoted program token text in %s rule keys", (dialect) => {
+    const head = dialect === "bash" ? "printf" : "Write-Output";
+    const variants = [head, `'${head}'`, `"${head}"`].map((rawHead) => pattern(dialect, `${rawHead} ready`));
+    expect(new Set(variants).size).toBe(3);
+    expect(variants[1]).toContain(`'${head}' ready`);
+    expect(variants[2]).toContain(`"${head}" ready`);
+  });
+
   it("does not fold PowerShell parameter word case", async () => {
-    expect(pattern("powershell", "Get-ChildItem -Force")).toBe("PowerShell(get-childitem -Force)");
+    expect(pattern("powershell", "Get-ChildItem -Force")).toBe("PowerShell(Get-ChildItem -Force)");
     await expectReplay("powershell", "Get-ChildItem -Force", "Get-ChildItem -force");
     await expectReplay("powershell", "Get-ChildItem -force", "Get-ChildItem -Force");
   });

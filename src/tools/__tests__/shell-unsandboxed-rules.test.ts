@@ -1,3 +1,4 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 /** Host shells without isolation (off or unavailable) run unasked only on an exact Bash(<command>) rule (owner 2026-10-25, unsandboxed shell exact-rule requirement); unavailable requests retain warning metadata.
  * Explicit host retries ask unless an exact allow rule matches; sensitive and exfiltration floors still force approval, and deny rules always win. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -65,7 +66,7 @@ async function run(input: {
   const pm = input.pm ?? new PermissionManager(join(dir, "permissions.json"));
   if (input.pm === undefined) {
     pm.setMode(input.mode ?? "default");
-    pm.setRules(input.rules);
+    pm.setRules(input.rules.map(withCurrentShellRuleVersion));
   }
   const check = vi.spyOn(pm, "checkDetailed");
   const tool = new BashTool();

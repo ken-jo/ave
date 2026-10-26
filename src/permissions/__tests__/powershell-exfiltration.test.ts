@@ -525,9 +525,12 @@ describe("opaque command text requires approval", () => {
       // Past the cap the analyzer refuses before reading anything, which would make the growth vacuous.
       expect(input.length).toBeLessThanOrEqual(POWERSHELL_INPUT_CAP);
       expect(input.length).toBeGreaterThan(LARGE - 64);
-      const smallSteps = powerShellFloorAnalysis._inspectPowerShellForTest(small[index]!, CWD).steps;
-      const largeSteps = powerShellFloorAnalysis._inspectPowerShellForTest(input, CWD).steps;
-      expect(largeSteps).toBeGreaterThanOrEqual(smallSteps);
+      const smallSteps = powerShellFloorAnalysis._inspectPowerShellForTest(small[index]!, CWD).workSteps;
+      const largeResult = powerShellFloorAnalysis._inspectPowerShellForTest(input, CWD);
+      const largeSteps = largeResult.workSteps;
+      expect(largeSteps).toBeGreaterThan(0);
+      // A prepaid source or nested work unit may refuse before accumulating as many small steps.
+      if (largeSteps < smallSteps) expect(largeResult.analysisLimited).toBe(true);
       const { smallMs, largeMs, growth } = measureCpuGrowth(
         () => powerShellFloorAnalysis._inspectPowerShellForTest(small[index]!, CWD),
         () => powerShellFloorAnalysis._inspectPowerShellForTest(input, CWD),
