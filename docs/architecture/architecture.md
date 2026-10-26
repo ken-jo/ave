@@ -432,9 +432,11 @@ and commits turn artifacts back to the session store.
 
 The return-here action can restore conversation, native file-tool edits, or
 both at a durable user-message boundary. The [code rewind design](../design/code-rewind.md)
-owns capture boundaries, conflict refusal, storage limits and untracked effects,
-and compares them with [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing)
-(accessed 2026-10-22).
+owns capture boundaries, restore conflict refusal, storage limits and untracked
+effects. Its [latest-turn review contract](../design/code-rewind.md#latest-turn-change-review)
+defines recorded change summaries above the composer, a unified Files tree
+with responsive side-by-side detail, and existing file-mention references with
+host-authorized, bounded context and clickable file previews.
 
 Important rules:
 

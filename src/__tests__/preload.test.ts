@@ -251,6 +251,15 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.chat.rewindTo, "user-row", chatGroupId, "both");
   });
 
+  it.each([MAIN_CHAT_GROUP_ID, "tile-2"])("binds readonly turn review to %s", async (chatGroupId) => {
+    const { buildPublicSurface } = await import("../preload/public-surface.js");
+    const api = buildPublicSurface();
+    const surface = chatGroupId === MAIN_CHAT_GROUP_ID ? api : api.chatGroup(chatGroupId);
+    mockInvoke.mockResolvedValue({ ok: false, error: "turn-review-stale" });
+    await expect(surface.chatGetTurnReview("expected-session")).resolves.toEqual({ ok: false, error: "turn-review-stale" });
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.chat.getTurnReview, "expected-session", chatGroupId);
+  });
+
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {
     const api = await loadAveApi();
     const url = api["pluginShellUrl"];

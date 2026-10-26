@@ -35,6 +35,9 @@ export function sidebarPushThreshold(sidebarWidth: number): number {
   return sidebarWidth + SHELL_GUTTER + MIN_DOCKED_TRANSCRIPT_WIDTH;
 }
 
+/** Files need readable tree and detail columns; narrower workspaces use tree-to-detail navigation. */
+export const FILE_WORKSPACE_COLUMNS_MIN_WIDTH = 520;
+
 /** Window controls sit flush on win/linux, so those bands must not add trailing padding. */
 export const BAND_EDGE_PAD = 12;
 

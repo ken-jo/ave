@@ -12,6 +12,7 @@ import { blockingSurfaceCovers } from "../components/permissions/ApprovalDock.js
 import type { ChatStreamEvent } from "../../../lib/chat-stream-state.js";
 import type { ComposerHandle, ComposerSurface } from "../components/Composer.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import { augmentFileReferenceMarkers } from "../utils/compose.js";
 
 /**
  * Mid-turn guidance: the brake-point hand-off (`tool_end` → engine round
@@ -315,7 +316,7 @@ export function useMessageQueue({
         // Busy: 큐에 추가. cap 초과 throw catch 해서 textarea 보존.
         if (text.trim().length > 0) {
           try {
-            messageQueueStore.add(text);
+            messageQueueStore.add(augmentFileReferenceMarkers(text, attachments));
           } catch (err) {
             console.warn("[message-queue] add rejected:", errorMessage(err));
             return;
@@ -332,7 +333,7 @@ export function useMessageQueue({
       }
     },
     [
-      question, attachments.length, streaming, messageQueueStore, onAsk,
+      question, attachments, streaming, messageQueueStore, onAsk,
       setQuestion, setAttachments, interceptSubmit, startQueueTurn,
     ],
   );
@@ -418,7 +419,7 @@ export function useMessageQueue({
       if (text.length === 0) return;
       e.preventDefault();
       void (async () => {
-        const result = await guide.inject(text);
+        const result = await guide.inject(augmentFileReferenceMarkers(text, attachments));
         if (result?.ok === true) {
           setQuestion("");
         } else if (result?.ok === false) {
@@ -433,7 +434,7 @@ export function useMessageQueue({
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [question, guide, setQuestion, t]);
+  }, [question, attachments, guide, setQuestion, t]);
 
   return {
     messageQueueStore,

@@ -32,6 +32,8 @@ import type { AgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt
 import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/preview-targets.js";
+import { useWorkspaceChanges } from "./hooks/use-workspace-changes.js";
+import type { FileWorkspaceReveal } from "./preview/workspace-changes.js";
 import { useAgentDocumentPanel } from "./preview/use-agent-document-panel.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
@@ -51,7 +53,7 @@ import { interruptedTurnOffer } from "./utils/history.js";
 import { InterruptedTurnBanner } from "./components/InterruptedTurnBanner.js";
 import { SuggestedTasksPanel } from "./components/SuggestedTasksPanel.js";
 import type { SuggestedTask } from "./suggested-tasks/provider.js";
-import { useContainerNarrow } from "./hooks/use-container-narrow.js";
+import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { CHAT_THUMBNAIL_WIDTH, chatColumnsLayout, type ChatColumnsVisibility } from "./preview/chat-columns-layout.js";
 import { ChatThumbnailColumn } from "./components/chat-thumbnail-column.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
@@ -199,9 +201,21 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const [openedDocuments, setOpenedDocuments] = useState<{ sessionId: string; targets: ChatPreviewTarget[] } | null>(null);
   const previewModel = useMemo(() => {
     const model = collectChatPreviewModel({ entries: visibleEntries, attachments });
-    if (openedDocuments?.sessionId === currentSessionId) model.targets.push(...openedDocuments.targets);
+    model.targets = model.targets.map((target) => target.kind === "file" && target.sourceTurnId !== undefined
+      ? { ...target, workspaceRoot: activeProject?.projectRoot }
+      : target);
+    if (openedDocuments?.sessionId === currentSessionId) {
+      const openedTargetIds = new Set(openedDocuments.targets.map((target) => target.id));
+      model.targets = model.targets.filter((target) => !openedTargetIds.has(target.id));
+      model.targets.push(...openedDocuments.targets);
+    }
     return model;
-  }, [attachments, visibleEntries, openedDocuments, currentSessionId]);
+  }, [attachments, visibleEntries, openedDocuments, currentSessionId, activeProject?.projectRoot]);
+  const reviewTurnKey = useMemo(() => visibleEntries.reduce((key, entry, index) =>
+    entry.kind === "user" && isTurnStartEntry(entry) ? entry.messageId ?? String(index) : key, ""), [visibleEntries]);
+  const workspaceChanges = useWorkspaceChanges({ api, sessionId: currentSessionId, streaming,
+    turnKey: reviewTurnKey, files: previewModel.files, targets: previewModel.targets, workspaceRoot: activeProject?.projectRoot });
+  const [fileReveal, setFileReveal] = useState<{ sessionId: string; request: FileWorkspaceReveal } | null>(null);
   const previewTargetIdKey = useMemo(
     () => previewModel.targets.map((target) => target.id).join("\u0001"),
     [previewModel.targets],
@@ -218,6 +232,11 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   // Keep workspace tabs in ChatView so closing the rail or navigating away does not destroy them.
   const workspaceTabs = useWorkspaceTabs();
+  const handleRevealChangedFile = useCallback((path: string) => {
+    workspaceTabs.ensureContainerTab("file-browser");
+    setFileReveal((previous) => ({ sessionId: currentSessionId, request: { path, token: (previous?.request.token ?? 0) + 1 } }));
+    onSidePanelOpenChange(true);
+  }, [workspaceTabs, currentSessionId, onSidePanelOpenChange]);
   const surfaceMoves = useSurfaceMoves();
   const { adoptTab, releaseTab, hasTab, setActiveTabId: selectWorkspaceTab } = workspaceTabs;
   const openSidePanelRef = useRef(onSidePanelOpenChange);
@@ -281,15 +300,19 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const tileElement = panelSlot?.tile ?? null;
   const { width: containerWidth, isNarrow } = useContainerNarrow(inFrame ? tileElement : chatViewRootElement);
   const columns = chatColumnsLayout(containerWidth, thumbnailOpen, sidePanelOpen, sidePanelWidth, isNarrow);
-  sidePanelVisibleRef.current = columns.panelVisible && !hidden;
+  // An explicitly revealed file remains reachable when the chat cannot spare a docked column.
+  const revealedPanelOverlay = sidePanelOpen && columns.panelHiddenForWidth && fileReveal?.sessionId === currentSessionId;
+  useEffect(() => {
+    onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth && !revealedPanelOverlay });
+  }, [onColumnsVisibilityChange, columns.thumbnailHiddenForWidth, columns.panelHiddenForWidth, revealedPanelOverlay]);
+  const panelLayout = revealedPanelOverlay ? sidePanelLayout(containerWidth, true) : columns.panelLayout;
+  const dockedPanelWidth = revealedPanelOverlay
+    ? Math.min(panelLayout.max, Math.max(panelLayout.min, sidePanelWidth)) : columns.panelWidth;
+  const dockedPanelShouldOpen = columns.panelVisible || revealedPanelOverlay;
+  sidePanelVisibleRef.current = dockedPanelShouldOpen && !hidden;
   useEffect(() => {
     emitMainLayoutChange();
-  }, [savedTabsKey, workspaceTabs.activeTabId, columns.panelVisible, hidden]);
-  useEffect(() => {
-    onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth });
-  }, [onColumnsVisibilityChange, columns.thumbnailHiddenForWidth, columns.panelHiddenForWidth]);
-  const { panelLayout, panelWidth: dockedPanelWidth } = columns;
-  const dockedPanelShouldOpen = columns.panelVisible;
+  }, [savedTabsKey, workspaceTabs.activeTabId, dockedPanelShouldOpen, hidden]);
   const [dockedPanelPresent, setDockedPanelPresent] = useState(dockedPanelShouldOpen);
   // Keep side-chat and agent-browser tabs mounted while hidden to preserve pending gates and working pages.
   const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) =>
@@ -300,7 +323,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const reduceMotion = usePrefersReducedMotion();
   useAgentDocumentPanel({
     api: window.ave?.preview, sessionId: currentSessionId ?? undefined, workspaceTabs,
-    panelVisible: dockedPanelShouldOpen && dockedPanelPresent && dockedPanelExpanded, panelHidden: columns.panelHiddenForWidth,
+    panelVisible: dockedPanelShouldOpen && dockedPanelPresent && dockedPanelExpanded, panelHidden: columns.panelHiddenForWidth && !revealedPanelOverlay,
     element: () => chatViewRootRef.current, targets: previewModel.targets,
     addTarget: (sessionId, target) => setOpenedDocuments((previous) => ({ sessionId, targets: [
       ...(previous?.sessionId === sessionId ? previous.targets.filter((existing) => existing.id !== target.id) : []), target,
@@ -399,6 +422,16 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     (target: string, web: boolean) => routeActivity(target, web, "ephemeral"),
     [routeActivity],
   );
+  const handlePreviewTarget = useCallback((target: ChatPreviewTarget) => {
+    const openedTarget = target.kind === "file" ? { ...target, workspaceRoot: activeProject?.projectRoot } : target;
+    setOpenedDocuments((previous) => ({ sessionId: currentSessionId, targets: [
+      ...(previous?.sessionId === currentSessionId ? previous.targets.filter((existing) => existing.id !== target.id) : []),
+      openedTarget,
+    ] }));
+    workspaceTabs.openInEphemeral({ source: "preview", targetId: target.id });
+    setSelectedPreviewId(target.id);
+    onSidePanelOpenChange(true);
+  }, [workspaceTabs, onSidePanelOpenChange, currentSessionId, activeProject?.projectRoot]);
   const routeActivityItemPinned = useCallback(
     (target: string, web: boolean) => routeActivity(target, web, "pinned"),
     [routeActivity],
@@ -725,6 +758,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       showTokenCostBadge={usageAvailable !== false}
       debugStreamEnabled={debugStreamEnabled}
       processingDisplayLevel={processingDisplayLevel}
+      onPreviewTarget={handlePreviewTarget}
     />
   );
 
@@ -823,6 +857,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         workflowApi={workflowApi}
         api={api}
         currentSessionId={currentSessionId}
+        workspaceChanges={workspaceChanges}
+        onRevealChangedFile={handleRevealChangedFile}
         messageQueueStore={messageQueueStore}
         onMessageQueueSendNow={handleMessageQueueSendNow}
         question={question}
@@ -939,7 +975,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           style={{
             order: 2,
             width: dockedPanelExpanded ? `${dockedPanelWidth}px` : "0px",
-            maxWidth: columns.panelVisible ? dockedPanelWidth : 0,
+            maxWidth: dockedPanelShouldOpen ? dockedPanelWidth : 0,
             // Closed and settled, but kept for the side chat it holds: out of the layout entirely, not a collapsed sliver of padding.
             ...(dockedPanelPresent ? {} : { display: "none" }),
           }}
@@ -970,11 +1006,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         >
           <ChatSidePanel
             api={api}
-            visible={columns.panelVisible && !hidden}
+            visible={dockedPanelShouldOpen && !hidden}
             {...(chatGroupId !== undefined ? { chatGroupId } : {})}
             sessionId={currentSessionId}
             targets={previewModel.targets}
             files={previewModel.files}
+            changes={workspaceChanges}
+            revealRequest={fileReveal?.sessionId === currentSessionId ? fileReveal.request : null}
+            onReference={(reference) => { composerRef.current?.insertFileReference(reference); }}
+            onFileReference={(path) => { composerRef.current?.insertFileMention(path); }}
             selectedId={selectedPreviewId}
             onSelect={setSelectedPreviewId}
             workspaceTabs={workspaceTabs}

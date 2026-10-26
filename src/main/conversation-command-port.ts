@@ -196,10 +196,10 @@ export function createConversationCommandPort(
     trackStreamTurn: (factory) => runtime.activity.trackTurn(factory),
   };
   // `submit` already owns the activity lease. Re-entering `trackStreamTurn` from handleChatSend would reject its own reservation as streaming-active.
-  const reservedContext: ChatSendContext = {
+  const reservedContext = (signal: AbortSignal): ChatSendContext => ({
     ...context,
-    trackStreamTurn: (factory) => factory(),
-  };
+    trackStreamTurn: (factory) => factory(signal),
+  });
 
   const executeCommand = (
     actor: ConversationCommandActor,
@@ -218,7 +218,9 @@ export function createConversationCommandPort(
         const publicTurn = publicTurnControlFor(actor, command);
         const abortableContext = publicTurn === undefined
           ? commandContext
-          : { ...commandContext, abortSignal: publicTurn.abortController.signal };
+          : { ...commandContext, abortSignal: commandContext.abortSignal
+              ? AbortSignal.any([commandContext.abortSignal, publicTurn.abortController.signal])
+              : publicTurn.abortController.signal };
         return handleChatSend(
           deps,
           bindMessageSendPayload(actor, command.payload),
@@ -254,7 +256,7 @@ export function createConversationCommandPort(
       if (publicTurn !== undefined && registration === null) return null;
 
       const completion = runtime.activity.tryTrackTurn(
-        () => executeCommand(actor, command, reservedContext),
+        (signal) => executeCommand(actor, command, reservedContext(signal)),
       );
       if (completion === null) {
         registration?.complete();

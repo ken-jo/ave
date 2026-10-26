@@ -1534,3 +1534,33 @@
   background-color: hsl(var(--muted));
   text-align: end;
 }
+
+/* File changes share legible state colors across the summary, tree and detail. */
+@layer base {
+  :root {
+    --file-change-add-fg: #166534;
+    --file-change-add-bg: #e7f6ec;
+    --file-change-delete-fg: #c0302b;
+    --file-change-delete-bg: #fdeceb;
+    --file-change-modify-fg: #8a5a00;
+    --file-change-modify-bg: #fbf0d6;
+    --file-change-session-fg: #6a3dc0;
+    --file-change-session-bg: #f0e9fd;
+    --file-reference-fg: #2f63d6;
+    --file-reference-bg: #e8effd;
+    --file-change-selection-bg: #e6edfb;
+  }
+  :root[data-shell="dark"] {
+    --file-change-add-fg: #5ed47a;
+    --file-change-add-bg: color-mix(in srgb, #2ea043 16%, hsl(var(--surface)));
+    --file-change-delete-fg: #ff8a80;
+    --file-change-delete-bg: color-mix(in srgb, #f85149 15%, hsl(var(--surface)));
+    --file-change-modify-fg: #e9bd55;
+    --file-change-modify-bg: color-mix(in srgb, #e9bd55 15%, hsl(var(--surface)));
+    --file-change-session-fg: #c4a1ff;
+    --file-change-session-bg: color-mix(in srgb, #bc8cff 16%, hsl(var(--surface)));
+    --file-reference-fg: #7aa7ff;
+    --file-reference-bg: color-mix(in srgb, #7aa7ff 14%, hsl(var(--surface)));
+    --file-change-selection-bg: color-mix(in srgb, #7aa7ff 16%, hsl(var(--surface)));
+  }
+}

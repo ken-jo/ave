@@ -215,8 +215,8 @@ export function buildAveNamespaceExtras() {
       return () => ipcRenderer.removeListener(CHANNELS.preview.documentOpenRequest, listener);
     },
     acknowledgeDocumentOpen: (ack: DocumentOpenAck) => ipcRenderer.invoke(CHANNELS.preview.documentOpenAck, ack),
-    readFile: (filePath: string) =>
-      ipcRenderer.invoke(CHANNELS.preview.readFile, filePath),
+    readFile: (filePath: string, window?: { offset?: number; limit?: number; workspaceRoot?: string }) =>
+      ipcRenderer.invoke(CHANNELS.preview.readFile, filePath, ...(window === undefined ? [] : [window])),
     readDocument: (filePath: string, sheetIndex: number) =>
       ipcRenderer.invoke(CHANNELS.preview.readDocument, filePath, sheetIndex),
   },
