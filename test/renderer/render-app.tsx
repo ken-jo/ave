@@ -1,6 +1,7 @@
 // Every harness consumer needs shared cleanup and DOM polyfills, even without another setup import.
 import "./setup.js";
-import { render, type RenderResult } from "@testing-library/react";
+import { setContainerWidths, type ContainerWidths } from "./setup.js";
+import { act, render, type RenderResult } from "@testing-library/react";
 import { vi } from "vitest";
 import {
   makeMockAveApi,
@@ -9,6 +10,8 @@ import {
 } from "./mock-ave-api.js";
 
 type RenderAppOpts = Parameters<typeof makeMockAveApi>[0] & {
+  shellWidth?: number;
+  canvasWidth?: number;
   aveEnv?: Partial<{
     isDev: boolean;
     isE2E: boolean;
@@ -21,6 +24,7 @@ type RenderAppOpts = Parameters<typeof makeMockAveApi>[0] & {
 };
 
 export type RenderAppReturn = {
+  resizeContainers: (widths: Partial<ContainerWidths>) => Promise<void>;
   container: RenderResult["container"];
   rerender: RenderResult["rerender"];
   unmount: RenderResult["unmount"];
@@ -46,16 +50,9 @@ export type RenderAppReturn = {
   emitNotificationClicked: (payload: unknown) => void;
 };
 
-// Seed the preload app-mode key before first paint and return an undo function.
-export function startInChatMode(): () => void {
-  (window as { __aveInitialAppMode?: string }).__aveInitialAppMode = "chat";
-  return () => {
-    delete (window as { __aveInitialAppMode?: string }).__aveInitialAppMode;
-  };
-}
-
 export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppReturn> {
-  const { aveEnv, pendingApprovals, workspaceRoots, nativeContextMenu, ...apiOpts } = opts;
+  const { shellWidth = 1600, canvasWidth = shellWidth, aveEnv, pendingApprovals, workspaceRoots, nativeContextMenu, ...apiOpts } = opts;
+  setContainerWidths({ shellWidth, canvasWidth });
   const {
     api,
     releasedGroupIds,
@@ -88,6 +85,7 @@ export async function renderApp(opts: RenderAppOpts = {}): Promise<RenderAppRetu
   const result = render(<App />);
 
   return {
+    resizeContainers: async (widths) => { await act(async () => setContainerWidths(widths)); },
     container: result.container,
     rerender: result.rerender,
     unmount: result.unmount,

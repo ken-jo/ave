@@ -1,18 +1,8 @@
 // Shared runtime accessors return live values, never snapshots.
 import type { BrowserWindow, Tray, WebContents } from "electron";
-import type { WindowManager } from "./window-manager.js";
 import type { AppServices } from "../boot.js";
 import { terminalOwnerWindowId } from "./terminal/pty-manager.js";
 import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
-
-// Main-window identity and mode-driven bounds manager. Created before createWindow() so it is ready when the main window is registered.
-let windowManager: WindowManager | null = null;
-export function getWindowManager(): WindowManager | null {
-  return windowManager;
-}
-export function setWindowManager(value: WindowManager | null): void {
-  windowManager = value;
-}
 
 // Broadcast only to live main windows, never all windows, which includes remote-content viewers.
 // Target the last-focused window for point sends; primary closure never re-roles existing secondary windows.

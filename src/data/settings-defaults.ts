@@ -15,7 +15,6 @@ import {
 } from "../shared/llm-vendor-defaults.js";
 import { DEFAULT_BUNDLE_ID } from "../shared/theme-bundles.js";
 import { DEFAULT_LOCALE } from "../i18n/index.js";
-import { DEFAULT_APP_MODE } from "../shared/initial-app-mode.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../shared/processing-display-level.js";
 import { DEFAULT_SIDEBAR_TAB } from "../shared/sidebar-tab.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
@@ -114,7 +113,6 @@ export const DEFAULT_SETTINGS: AppSettings = {
   system: {
     turnCompletionSoundEnabled: true,
     closeBehavior: "hide-to-tray",
-    appMode: DEFAULT_APP_MODE,
     // Opt-in loopback API server; OFF by default (also enabled by env AVE_LOCAL_API=1). #1409/#1436.
     localApiServer: false,
     // Staged by platform, matching the pre-setting behaviour exactly: the GPU process is what crashes on restricted Windows/Linux corp+VDI

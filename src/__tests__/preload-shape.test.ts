@@ -115,7 +115,6 @@ describe("preload contextBridge world shape lock", () => {
     expect([...exposed.keys()].sort()).toMatchInlineSnapshot(`
       [
         "__aveDevMode",
-        "__aveInitialAppMode",
         "__aveInitialTheme",
         "ave",
         "aveApi",
@@ -135,7 +134,6 @@ describe("preload contextBridge world shape lock", () => {
     expect(worlds).toMatchInlineSnapshot(`
       {
         "__aveDevMode": "boolean",
-        "__aveInitialAppMode": "null",
         "__aveInitialTheme": "null",
         "ave": {
           "approval": [
@@ -742,8 +740,6 @@ describe("preload contextBridge world shape lock", () => {
           ],
           "window": [
             "openHtmlPreview",
-            "resizeForMode",
-            "resizeForSidePanel",
           ],
         },
         "aveDrop": {

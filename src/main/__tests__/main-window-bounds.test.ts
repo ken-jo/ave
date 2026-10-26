@@ -1,52 +1,24 @@
 import { describe, expect, it } from "vitest";
-import { CHAT_SIDE_PANEL_WIDTH, computeChatModeSidePanelBounds, computeInitialMainWindowBounds } from "../main-window-bounds.js";
-import { MAIN_WINDOW_WIDTH } from "../../shared/shell-geometry.js";
+import { computeInitialMainWindowBounds } from "../main-window-bounds.js";
 
 describe("computeInitialMainWindowBounds", () => {
-  it("keeps the default macOS placement at the upper-right of the work area", () => {
-    const bounds = computeInitialMainWindowBounds(
-      { x: 0, y: 0, width: 1920, height: 1080 },
-      "darwin"
-    );
-
-    expect(bounds).toEqual({ x: 1450, y: 24, width: MAIN_WINDOW_WIDTH, height: 840 });
+  it("centers the default window in the primary work area", () => {
+    expect(computeInitialMainWindowBounds({ x: 0, y: 0, width: 1920, height: 1080 }))
+      .toEqual({ x: 339, y: 156, width: 1243, height: 768 });
   });
 
-  it("places the default Windows window at the lower-right of the work area", () => {
-    const bounds = computeInitialMainWindowBounds(
-      { x: 0, y: 0, width: 1920, height: 1080 },
-      "win32"
-    );
-
-    expect(bounds).toEqual({ x: 1450, y: 216, width: MAIN_WINDOW_WIDTH, height: 840 });
+  it("centers within an offset work area", () => {
+    expect(computeInitialMainWindowBounds({ x: -1600, y: 50, width: 1600, height: 900 }))
+      .toEqual({ x: -1421, y: 116, width: 1243, height: 768 });
   });
 
-  it("honors offset work areas when computing Windows lower-right placement", () => {
-    const bounds = computeInitialMainWindowBounds(
-      { x: 100, y: 50, width: 1600, height: 900 },
-      "win32"
-    );
-
-    expect(bounds).toEqual({ x: 1230, y: 86, width: MAIN_WINDOW_WIDTH, height: 840 });
+  it("clamps the preferred size to a smaller work area", () => {
+    expect(computeInitialMainWindowBounds({ x: 100, y: 50, width: 600, height: 650 }))
+      .toEqual({ x: 100, y: 50, width: 600, height: 650 });
   });
 
-  it("keeps the window on the top edge when the work area cannot fit the preferred bottom gap", () => {
-    const bounds = computeInitialMainWindowBounds(
-      { x: 0, y: 0, width: 500, height: 650 },
-      "win32"
-    );
-
-    expect(bounds).toEqual({ x: 30, y: 0, width: MAIN_WINDOW_WIDTH, height: 650 });
-  });
-
-  it("expands chat bounds by the side-panel width while keeping the right edge docked on Windows", () => {
-    const workArea = { x: 0, y: 0, width: 1920, height: 1080 };
-    const chat = computeInitialMainWindowBounds(workArea, "win32");
-    const expanded = computeChatModeSidePanelBounds(workArea, "win32");
-
-    expect(expanded.width).toBe(chat.width + CHAT_SIDE_PANEL_WIDTH);
-    expect(expanded.height).toBe(chat.height);
-    expect(expanded.y).toBe(chat.y);
-    expect(expanded.x + expanded.width).toBe(chat.x + chat.width);
+  it("allows a 360px work area without horizontal overflow", () => {
+    expect(computeInitialMainWindowBounds({ x: 0, y: 0, width: 360, height: 768 }))
+      .toEqual({ x: 0, y: 0, width: 360, height: 768 });
   });
 });

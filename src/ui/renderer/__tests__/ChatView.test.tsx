@@ -269,7 +269,7 @@ describe("ChatView", () => {
     });
   });
 
-  it("keeps the work-mode composer dock in the reading column", async () => {
+  it("keeps the empty composer dock in the reading column", async () => {
     const { container } = await renderApp({ hasApiKey: true });
 
     await waitFor(() => {
@@ -399,7 +399,7 @@ describe("ChatView", () => {
     expect(api.hasApiKey.mock.calls.length).toBe(apiKeyChecksBeforeSend);
   });
 
-  it("keeps an active conversation composer on the full-width chat-mode dock", async () => {
+  it("keeps an active conversation in the same reading-column layout", async () => {
     const { container } = await renderApp({
       hasApiKey: true,
       history: {
@@ -420,19 +420,11 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("활성 대화 답변");
     });
 
-    await act(async () => {
-      fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
-    });
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="app-mode-chat"]')?.getAttribute("aria-pressed")).toBe("true");
-      const dock = container.querySelector('[data-testid="composer-queue-dock"]');
-      expect(dock).not.toBeNull();
-      expect(dock).toHaveClass("w-full");
-      expect(dock).toHaveClass("max-w-full");
-      expect(dock).not.toHaveClass("mx-auto");
-      expect(dock).not.toHaveClass("max-w-(--reading-column-max)");
-    });
+    const dock = container.querySelector('[data-testid="composer-queue-dock"]');
+    const transcript = container.querySelector('[data-testid="chat-transcript-log"]');
+    expect(dock).not.toBeNull();
+    expect(dock).toHaveClass("w-full", "mx-auto", "max-w-(--reading-column-max)");
+    expect(transcript).toHaveClass("chat-reading-column", "max-w-(--reading-column-max)");
   });
 
   it("renders assistant text after stream text_delta event", async () => {
@@ -1022,10 +1014,11 @@ describe("ChatView", () => {
     });
   });
 
-  it("opens a saved file location directly in a workspace preview tab", async () => {
+  it.each([360, 1200])("opens a saved file location directly in a workspace preview tab at %s pixels", async (canvasWidth) => {
     const sessionId = "file-location-session";
     const reference = { path: "src/example.ts", startLine: 700, endLine: 701, turnId: "source-turn" };
     const { container } = await renderApp({
+      canvasWidth,
       workspaceRoots: [{ path: "/workspace/project", isDefault: true }],
       currentSession: sessionId,
       mainActiveState: { mainActiveSessionId: sessionId, mainActiveMode: "resume", updatedAt: new Date().toISOString() },
@@ -1040,6 +1033,11 @@ describe("ChatView", () => {
     });
     expect(container.querySelector(testIdSelector(TEST_IDS.chatSidePanel))).not.toBeNull();
     expect(container.querySelector('[data-testid="chat-side-panel-launcher"]')).toBeNull();
+    await waitFor(() => {
+      const panel = container.querySelector('[data-testid="chat-side-panel-motion"]');
+      expect(panel?.getAttribute("aria-hidden")).toBe("false");
+      expect(panel?.getAttribute("data-panel-mode")).toBe(canvasWidth === 360 ? "overlay" : "docked");
+    });
   });
 
   it("keeps the selected project for reloaded file locations opened from the sidebar", async () => {

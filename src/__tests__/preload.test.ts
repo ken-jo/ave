@@ -73,6 +73,19 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV_CONSOLE;
   });
 
+  it("limits the window surface to isolated previews and publishes the approved worlds", async () => {
+    const api = await loadAveApi();
+    const windowApi = api.window as Record<string, unknown>;
+    expect(Object.keys(windowApi)).toEqual(["openHtmlPreview"]);
+    expect(Object.keys(CHANNELS.window)).toEqual([
+      "minimize", "toggleMaximize", "close", "syncTitleBarTheme", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
+    ]);
+    expect([...exposed.keys()].sort()).toEqual([
+      "__aveDevMode", "__aveInitialTheme", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
+    ]);
+    expect(windowApi.openHtmlPreview).toBeTypeOf("function");
+  });
+
   afterEach(() => {
     if (originalDebugStreamEnv === undefined) {
       delete process.env.VITE_DEBUG_STREAM;

@@ -2,7 +2,7 @@
 import "./setup.js";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 import { act, cleanup, createEvent, fireEvent, waitFor } from "@testing-library/react";
-import { renderApp, startInChatMode } from "./render-app.js";
+import { renderApp } from "./render-app.js";
 import {
   approvalRequest,
   clickSidebarNavRow,
@@ -1519,7 +1519,7 @@ describe("opening a conversation while another is mid-turn", () => {
   const sessionRow = (container: HTMLElement, id: string) =>
     container.querySelector(`[data-testid="sidebar-session-${id}"]`) as HTMLButtonElement | null;
 
-  // Expand the collapsed chat-mode rail to exercise session navigation.
+  // Expand the collapsed sidebar rail to exercise session navigation.
   const expandSidebar = async (container: HTMLElement) => {
     const toggle = container.querySelector('[data-testid="sidebar-collapse-toggle"]') as HTMLButtonElement | null;
     if (!toggle || toggle.getAttribute("aria-pressed") === "true") return;
@@ -1533,41 +1533,36 @@ describe("opening a conversation while another is mid-turn", () => {
   });
 
 
-  it("chat mode: adopts the conversation without splitting the canvas", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const pendingSend = deferred<{ ok: true }>();
-      const { container, api, releasedGroupIds } = await renderApp(withOtherSession);
-      api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+  it("a narrow canvas adopts the conversation without splitting the canvas", async () => {
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, releasedGroupIds } = await renderApp({ ...withOtherSession, shellWidth: 600, canvasWidth: 600 });
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
 
-      await submitChatMessage(container, "아직 답하는 중");
-      await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
-      await expandSidebar(container);
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    await expandSidebar(container);
 
-      const row = await rowFor(container, OTHER_SESSION);
-      // One streaming tile must not disable other conversation rows.
-      expect(row.disabled).toBe(false);
-      await act(async () => { fireEvent.click(row); });
+    const row = await rowFor(container, OTHER_SESSION);
+    // One streaming tile must not disable other conversation rows.
+    expect(row.disabled).toBe(false);
+    await act(async () => { fireEvent.click(row); });
 
-      await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(OTHER_SESSION));
-      // In chat mode, adopting another group keeps a single focused tile without rearranging the canvas.
-      const tiles = collectTiles(container);
-      expect(tiles).toHaveLength(1);
-      expect(tiles[0]!.chatGroupId).not.toBe(MAIN_CHAT_GROUP_ID);
-      // Hide displaced conversations without unmounting so streams and running-state indicators survive.
-      expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
-      expect(releasedGroupIds()).toEqual([]);
+    await waitFor(() => expect(api.chatSessionResume).toHaveBeenCalledWith(OTHER_SESSION));
+    // On a narrow canvas, adopting another group keeps a single focused tile without rearranging the canvas.
+    const tiles = collectTiles(container);
+    expect(tiles).toHaveLength(1);
+    expect(tiles[0]!.chatGroupId).not.toBe(MAIN_CHAT_GROUP_ID);
+    // Hide displaced conversations without unmounting so streams and running-state indicators survive.
+    expect(mountedTileIds(container)).toContain(MAIN_CHAT_GROUP_ID);
+    expect(releasedGroupIds()).toEqual([]);
 
-      await act(async () => {
-        pendingSend.resolve({ ok: true });
-        await pendingSend.promise;
-      });
-    } finally {
-      restoreMode();
-    }
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
   });
 
-  it("work mode: the adopted conversation is a second tile, which is what that mode means", async () => {
+  it("a wide canvas opens the adopted conversation in a second tile", async () => {
     const pendingSend = deferred<{ ok: true }>();
     const { container, api } = await renderApp(withOtherSession);
     api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
@@ -1972,145 +1967,130 @@ describe("opening a conversation while another is mid-turn", () => {
   });
 
   it("keeps a hidden tile's card with it, undrawn, and marks its sidebar row", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const pendingSend = deferred<{ ok: true }>();
-      const { container, api, emitOverlayShow } = await renderApp(withOtherSession);
-      api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, emitOverlayShow } = await renderApp({ ...withOtherSession, shellWidth: 600, canvasWidth: 600 });
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
 
-      await submitChatMessage(container, "아직 답하는 중");
-      await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
-      await expandSidebar(container);
-      await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
-      await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    await expandSidebar(container);
+    await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
+    await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
 
-      // Hidden conversations cannot draw approval; retain a reachable route to the parked request.
-      await act(async () => {
-        emitOverlayShow({
-          id: "app:invoices:hidden",
-          source: { kind: "app", serverId: "invoices", eventId: "hidden" },
-          originSessionId: MOCK_DEFAULT_SESSION_ID,
-          title: "invoices",
-          summary: "숨은 타일의 카드",
-          running: false,
-          pendingPrompt: '<app-message source="app:invoices">\n숨은 타일의 카드\n</app-message>',
-          createdAt: new Date().toISOString(),
-        });
+    // Hidden conversations cannot draw approval; retain a reachable route to the parked request.
+    await act(async () => {
+      emitOverlayShow({
+        id: "app:invoices:hidden",
+        source: { kind: "app", serverId: "invoices", eventId: "hidden" },
+        originSessionId: MOCK_DEFAULT_SESSION_ID,
+        title: "invoices",
+        summary: "숨은 타일의 카드",
+        running: false,
+        pendingPrompt: '<app-message source="app:invoices">\n숨은 타일의 카드\n</app-message>',
+        createdAt: new Date().toISOString(),
       });
+    });
 
-      await waitFor(() => {
-        expect(container.querySelector(`[data-testid="sidebar-pending-answer-${MOCK_DEFAULT_SESSION_ID}"]`)).not.toBeNull();
-      });
-      expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
-      expect(container.textContent).not.toContain("숨은 타일의 카드");
-      const hiddenTile = container.querySelector<HTMLElement>(
-        `[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`,
-      );
-      expect(hiddenTile?.getAttribute("data-hidden")).toBe("true");
+    await waitFor(() => {
+      expect(container.querySelector(`[data-testid="sidebar-pending-answer-${MOCK_DEFAULT_SESSION_ID}"]`)).not.toBeNull();
+    });
+    expect(container.querySelector('[data-overlay-surface="window"]')).toBeNull();
+    expect(container.textContent).not.toContain("숨은 타일의 카드");
+    const hiddenTile = container.querySelector<HTMLElement>(
+      `[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`,
+    );
+    expect(hiddenTile?.getAttribute("data-hidden")).toBe("true");
 
-      await act(async () => {
-        pendingSend.resolve({ ok: true });
-        await pendingSend.promise;
-      });
-    } finally {
-      restoreMode();
-    }
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
   });
 
   it("keeps a hidden tile's question parked in it, and marks its sidebar row", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const pendingSend = deferred<{ ok: true }>();
-      const { container, api, emitAskUserQuestion } = await renderApp(withOtherSession);
-      api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, emitAskUserQuestion } = await renderApp({ ...withOtherSession, shellWidth: 600, canvasWidth: 600 });
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
 
-      await submitChatMessage(container, "아직 답하는 중");
-      await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
 
-      await act(async () => {
-        emitAskUserQuestion({
-          id: "ask-before-hide",
-          sessionId: MOCK_DEFAULT_SESSION_ID,
-          questions: [{ question: "어느 형식으로 정리할까요?", choices: ["표", "목록"] }],
-          createdAt: Date.now(),
-        });
+    await act(async () => {
+      emitAskUserQuestion({
+        id: "ask-before-hide",
+        sessionId: MOCK_DEFAULT_SESSION_ID,
+        questions: [{ question: "어느 형식으로 정리할까요?", choices: ["표", "목록"] }],
+        createdAt: Date.now(),
       });
-      await waitFor(() => {
-        expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1);
-      });
+    });
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(1);
+    });
 
-      await expandSidebar(container);
-      await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
-      await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
+    await expandSidebar(container);
+    await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
+    await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
 
-      const hiddenTile = container.querySelector<HTMLElement>(
-        `[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`,
-      )!;
-      expect(hiddenTile.getAttribute("data-hidden")).toBe("true");
-      // Hidden questions retain their origin and mark the navigation row that restores them.
-      await waitFor(() => {
-        expect(container.querySelector(`[data-testid="sidebar-pending-answer-${MOCK_DEFAULT_SESSION_ID}"]`)).not.toBeNull();
-      });
-      expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(0);
-      expect(hiddenTile.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(0);
-      expect(container.querySelector('[data-testid="window-approval-scope"]')).toBeNull();
+    const hiddenTile = container.querySelector<HTMLElement>(
+      `[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`,
+    )!;
+    expect(hiddenTile.getAttribute("data-hidden")).toBe("true");
+    // Hidden questions retain their origin and mark the navigation row that restores them.
+    await waitFor(() => {
+      expect(container.querySelector(`[data-testid="sidebar-pending-answer-${MOCK_DEFAULT_SESSION_ID}"]`)).not.toBeNull();
+    });
+    expect(container.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(0);
+    expect(hiddenTile.querySelectorAll('[data-testid="question-overlay"]')).toHaveLength(0);
+    expect(container.querySelector('[data-testid="window-approval-scope"]')).toBeNull();
 
-      await act(async () => {
-        pendingSend.resolve({ ok: true });
-        await pendingSend.promise;
-      });
-    } finally {
-      restoreMode();
-    }
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
   });
 
   it("keeps a hidden tile's approval parked in it, and marks its sidebar row", async () => {
-    const restoreMode = startInChatMode();
-    try {
-      const pendingSend = deferred<{ ok: true }>();
-      const { container, api, emitApproval } = await renderApp(withOtherSession);
-      api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
+    const pendingSend = deferred<{ ok: true }>();
+    const { container, api, emitApproval } = await renderApp({ ...withOtherSession, shellWidth: 600, canvasWidth: 600 });
+    api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
 
-      await submitChatMessage(container, "아직 답하는 중");
-      await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
-      await expandSidebar(container);
-      await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
-      await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
+    await submitChatMessage(container, "아직 답하는 중");
+    await waitFor(() => expect(api.chatSend).toHaveBeenCalled());
+    await expandSidebar(container);
+    await act(async () => { fireEvent.click(await rowFor(container, OTHER_SESSION)); });
+    await waitFor(() => expect(mountedTileIds(container).length).toBe(2));
 
-      // Keep parked approvals with hidden running turns and expose their waiting state in navigation.
-      await act(async () => {
-        emitApproval({
-          id: "req-hidden-tile",
-          category: "tool",
-          toolName: "read_file",
-          toolCategory: "read",
-          args: { path: "/tmp/notes.md" },
-          reason: "read the notes",
-          createdAt: Date.now(),
-          requireExplicit: false,
-          nonce: "nonce-hidden-tile",
-          hmac: "hmac-hidden-tile",
-          sessionId: MOCK_DEFAULT_SESSION_ID,
-        });
+    // Keep parked approvals with hidden running turns and expose their waiting state in navigation.
+    await act(async () => {
+      emitApproval({
+        id: "req-hidden-tile",
+        category: "tool",
+        toolName: "read_file",
+        toolCategory: "read",
+        args: { path: "/tmp/notes.md" },
+        reason: "read the notes",
+        createdAt: Date.now(),
+        requireExplicit: false,
+        nonce: "nonce-hidden-tile",
+        hmac: "hmac-hidden-tile",
+        sessionId: MOCK_DEFAULT_SESSION_ID,
       });
+    });
 
-      const hiddenTile = container.querySelector<HTMLElement>(
-        `[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`,
-      )!;
-      expect(hiddenTile.getAttribute("data-hidden")).toBe("true");
-      await waitFor(() => {
-        expect(container.querySelector(`[data-testid="sidebar-pending-answer-${MOCK_DEFAULT_SESSION_ID}"]`)).not.toBeNull();
-      });
-      expect(container.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(0);
-      expect(container.querySelectorAll('[data-testid="approval-lane-card"]')).toHaveLength(0);
+    const hiddenTile = container.querySelector<HTMLElement>(
+      `[data-testid="pane-cell:${MAIN_CHAT_GROUP_ID}"]`,
+    )!;
+    expect(hiddenTile.getAttribute("data-hidden")).toBe("true");
+    await waitFor(() => {
+      expect(container.querySelector(`[data-testid="sidebar-pending-answer-${MOCK_DEFAULT_SESSION_ID}"]`)).not.toBeNull();
+    });
+    expect(container.querySelectorAll('[data-testid="approval-dock"]')).toHaveLength(0);
+    expect(container.querySelectorAll('[data-testid="approval-lane-card"]')).toHaveLength(0);
 
-      await act(async () => {
-        pendingSend.resolve({ ok: true });
-        await pendingSend.promise;
-      });
-    } finally {
-      restoreMode();
-    }
+    await act(async () => {
+      pendingSend.resolve({ ok: true });
+      await pendingSend.promise;
+    });
   });
 
   it("a conversation dropped on a mid-turn tile's centre gets its own group", async () => {

@@ -1343,9 +1343,6 @@ export type AveApi = {
 
   // ─── Main-window management ─────────────────────────────────────────────
   window?: {
-    resizeForMode: (mode: "chat" | "work") => Promise<{ ok: true } | { ok: false; error: string }>;
-    /** Resize the chat-mode main window when the right-side work panel opens/closes. */
-    resizeForSidePanel: (open: boolean) => Promise<{ ok: true } | { ok: false; error: string }>;
     openHtmlPreview: (payload: OpenHtmlPreviewWindowPayload) => Promise<OpenHtmlPreviewWindowResult>;
   };
   /**

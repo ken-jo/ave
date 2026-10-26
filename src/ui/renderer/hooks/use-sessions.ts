@@ -98,7 +98,7 @@ export interface CurrentSessionDeps {
   /** Main refused the `chatNew` hydration asked for (e.g. the project left the workspace). The loop stays where it was and so
    * does the tile; this says why, so the refusal is not a silently blank tile. */
   onChatNewRefused?: (error: string) => void;
-  /** A session this tile asked for is held by another chat group — one that may be folded away by chat mode, so the
+  /** A session this tile asked for is held by another chat group — one that may be folded away on a narrow canvas, so the
    * renderer's mounted tiles cannot find it. Returns whether that group was brought forward. */
   focusSessionHolder?: (chatGroupId: string) => boolean;
 }

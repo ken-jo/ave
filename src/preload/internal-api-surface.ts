@@ -1305,17 +1305,6 @@ export function buildInternalApiSurface() {
     ipcRenderer.invoke(CHANNELS.notification.clicked, payload),
 
   window: {
-    /** Resize the main window to match the current workspace mode. "work" → centered work canvas on
-     * the primary work area; "chat" → the right-docked initial bounds (computeInitialMainWindowBounds). */
-    resizeForMode: async (mode: "chat" | "work") =>
-      ipcRenderer.invoke(CHANNELS.window.resizeForMode, mode) as Promise<
-        { ok: true } | { ok: false; error: string }
-      >,
-    /** Resize the chat-mode main window for the right-side work panel. Opening adds side-panel width; closing restores the normal chat bounds. */
-    resizeForSidePanel: async (open: boolean) =>
-      ipcRenderer.invoke(CHANNELS.window.resizeForSidePanel, open) as Promise<
-        { ok: true } | { ok: false; error: string }
-      >,
     /** Open a render_html result in an isolated BrowserWindow. */
     openHtmlPreview: async (payload: OpenHtmlPreviewWindowPayload) =>
       ipcRenderer.invoke(CHANNELS.window.openHtmlPreview, payload) as Promise<OpenHtmlPreviewWindowResult>,

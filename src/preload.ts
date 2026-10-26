@@ -16,7 +16,6 @@ import {
   buildAveNamespaceExtras,
   buildAvePlatformWorld,
   buildAveWindowWorld,
-  readInitialAppModeArg,
   readInitialThemeArg,
 } from "./preload/internal-surface.js";
 import { PRELOAD_BUNDLES } from "./shared/preload-bundles.js";
@@ -36,12 +35,11 @@ function safeResolveFileUrl(relative: string): string {
 const pluginPreloadUrl = safeResolveFileUrl(PRELOAD_BUNDLES.pluginPreload.file);
 const pluginShellUrl = safeResolveFileUrl("plugin-ui-shell.html");
 
-// ─── Race-window-zero primes (theme + app-mode) ─────────────────────────────
+// ─── Initial theme prime ───────────────────────────────────────────────────
 // Read the argv-injected primes and paint the theme onto documentElement before
 // React mounts (frame-0 correct paint). See internal-surface.ts for the SoT.
 const aveInitialTheme = readInitialThemeArg();
 applyInitialThemePrime(aveInitialTheme);
-const aveInitialAppMode = readInitialAppModeArg();
 
 // ─── Composed host API surface ──────────────────────────────────────────────
 // The public + internal builders partition the methods; the exposed
@@ -63,10 +61,6 @@ const api = {
 // synchronously on mount and skip its async settings.json hydrate. `null`
 // when main has nothing cached yet (cold-boot first window).
 contextBridge.exposeInMainWorld("__aveInitialTheme", aveInitialTheme);
-
-// Expose the persisted workspace mode so App.tsx can seed its `appMode` /
-// `sidebarCollapsed` state synchronously on mount (frame-0 correct layout).
-contextBridge.exposeInMainWorld("__aveInitialAppMode", aveInitialAppMode);
 
 contextBridge.exposeInMainWorld("aveApi", api);
 // Dev mode runtime flag — main process sets NODE_ENV=development in

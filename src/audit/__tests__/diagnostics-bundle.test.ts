@@ -46,7 +46,7 @@ function makeSettings(): AppSettings {
     diagnostics: { includeCrashDumps: false, logRetentionDays: 7 },
     appearance: { schemaVersion: 2, bundleId: "violet-dark", language: "en" },
     webView: { preferredFlow: "in-app" },
-    system: { closeBehavior: "hide-to-tray", appMode: "work", turnCompletionSoundEnabled: false, pinnedProjectRoots: ["/Users/secretuser/private"] } as unknown as AppSettings["system"],
+    system: { closeBehavior: "hide-to-tray", turnCompletionSoundEnabled: false, pinnedProjectRoots: ["/Users/secretuser/private"] } as unknown as AppSettings["system"],
     shortcuts: { toggleWindow: null, enabled: false } as unknown as AppSettings["shortcuts"],
     plugins: {},
     pluginConfigs: {},

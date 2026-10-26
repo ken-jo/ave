@@ -29,6 +29,19 @@ const DOC_SLUGS = JSON.parse(
   /export const DOC_SLUGS = (\[[^\]]*\]) as const;/u.exec(docsSource)?.[1] ?? "[]",
 ) as string[];
 
+describe("responsive app copy", () => {
+  it("describes the same width-driven window in both homepage locales and feature captions", () => {
+    const home = read(resolve(web, "lib/home.ts"));
+    const descriptions = [...home.matchAll(/^  work: \{\n[\s\S]*?body:\s*"([^"]+)"/gmu)].map((match) => match[1]);
+    expect(descriptions).toHaveLength(2);
+    expect(descriptions[0]).toMatch(/폭/u);
+    expect(descriptions[1]).toMatch(/width/u);
+    for (const source of [home, read(resolve(web, "lib/features.ts"))]) {
+      expect(source).not.toMatch(/\b(?:work|chat)[ -]mode\b|(?:업무|채팅|작업)\s*모드/iu);
+    }
+  });
+});
+
 /** Every route the static export produces, as slashed URL paths. */
 function sitePaths(): Set<string> {
   const paths = new Set<string>();

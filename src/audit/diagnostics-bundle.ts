@@ -120,7 +120,6 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
     const s = settings.system;
     out.system = {
       closeBehavior: s.closeBehavior,
-      appMode: s.appMode,
       localApiServer: s.localApiServer,
       launchAtStartup: s.launchAtStartup,
       launchMinimized: s.launchMinimized,
