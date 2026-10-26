@@ -6,6 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { useCallback, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
 import { SessionGoalPanel } from "./SessionGoalPanel.js";
+import { TurnChangeReview } from "./TurnChangeReview.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
 import { StatusBar, type StatusBarProps } from "./StatusBar.js";
 import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
@@ -512,6 +513,7 @@ export function ChatComposerDock({
               {t("app.visionNotSupported", { llmModel })} {imageInputRecoveryMessage(t)}
             </div>
           ) : null}
+          <TurnChangeReview api={api} sessionId={currentSessionId} streaming={streaming} />
           <ComposerStatusRow
             statusRow={inputStatusRow}
             ringSlot={ringSlot}

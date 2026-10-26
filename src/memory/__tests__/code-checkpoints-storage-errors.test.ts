@@ -49,7 +49,7 @@ vi.mock("node:fs", async (importOriginal) => ({
   promises: await import("node:fs/promises"),
 }));
 
-import { _pendingUnavailableCountForTest, deleteCodeCheckpoints, restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
+import { _pendingUnavailableCountForTest, checkpointFileMutation, decideTurnChangeHunk, deleteCodeCheckpoints, getTurnChangeReview, restoreCodeCheckpoint, withCodeCheckpoint } from "../code-checkpoints.js";
 import { CODE_CHECKPOINT_POLICY } from "../../shared/code-rewind.js";
 import { createCodeCheckpointEdit } from "../../__tests__/support/code-checkpoint-turn.js";
 
@@ -82,6 +82,60 @@ const edit = createCodeCheckpointEdit(() => file);
 const restore = (message: string) => restoreCodeCheckpoint(sessionId, message, { cwd: root, extraAllowedDirectories: [] });
 
 describe("checkpoint storage recovery", () => {
+  it("refuses review metadata failures before requesting a governed effect", async () => {
+    await turn("review", () => edit("agent"));
+    const context = () => ({ cwd: root, extraAllowedDirectories: [] });
+    faults.failIndex = true;
+    expect(await getTurnChangeReview(sessionId, "review", context)).toMatchObject({ ok: false, error: "turn-review-failed" });
+    faults.failIndex = false;
+    const result = await getTurnChangeReview(sessionId, "review", context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const execute = vi.fn(async () => ({ ok: true }));
+    faults.failIndex = true;
+    expect(await decideTurnChangeHunk({ sessionId, turnId: "review", version: result.review.version,
+      hunkId: result.review.files[0].hunks[0].id, decision: "reject" }, context, execute)).toMatchObject({ ok: false, error: "turn-review-failed" });
+    expect(execute).not.toHaveBeenCalled();
+    expect(await readFile(file, "utf8")).toBe("agent");
+  });
+
+  it("retains an applied rejection journal when its decision save fails", async () => {
+    await turn("review", () => edit("agent"));
+    const context = () => ({ cwd: root, extraAllowedDirectories: [] });
+    const result = await getTurnChangeReview(sessionId, "review", context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const execute = vi.fn(async (mutation: { path: string; content: string | null }) => {
+      await checkpointFileMutation([mutation], () => writeFile(mutation.path, mutation.content!));
+      faults.failIndex = true;
+      return { ok: true };
+    });
+    expect(await decideTurnChangeHunk({ sessionId, turnId: "review", version: result.review.version,
+      hunkId: result.review.files[0].hunks[0].id, decision: "reject" }, context, execute)).toMatchObject({ ok: false, error: "turn-review-failed" });
+    expect(await readFile(file, "utf8")).toBe("original");
+    expect(JSON.parse(await readFile(ledger, "utf8")).turns[0].review.pending).toBeDefined();
+    faults.failIndex = false;
+    const recovered = await getTurnChangeReview(sessionId, "review", context);
+    expect(recovered.ok && recovered.review.files[0].hunks[0].decision).toBe("rejected");
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it("does not report accepted bookkeeping when its ledger save fails", async () => {
+    await turn("review", () => edit("agent"));
+    const context = () => ({ cwd: root, extraAllowedDirectories: [] });
+    const result = await getTurnChangeReview(sessionId, "review", context);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    faults.failIndex = true;
+    const execute = vi.fn(async () => ({ ok: true }));
+    expect(await decideTurnChangeHunk({ sessionId, turnId: "review", version: result.review.version,
+      hunkId: result.review.files[0].hunks[0].id, decision: "accept" }, context, execute)).toMatchObject({ ok: false, error: "turn-review-failed" });
+    expect(execute).not.toHaveBeenCalled();
+    faults.failIndex = false;
+    const recovered = await getTurnChangeReview(sessionId, "review", context);
+    expect(recovered.ok && recovered.review.files[0].hunks[0].decision).toBe("pending");
+  });
+
   it("bounds deferred turns during persistent read errors and persists unavailable ranges on recovery", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const other = randomUUID();

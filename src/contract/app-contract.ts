@@ -101,6 +101,8 @@ export const CHANNELS = {
     // from that message onward in the SAME session so the user can retype the
     // input. INTERNAL (mutating; destructive by intent).
     rewindTo: "ave:chat:rewind-to",
+    getTurnReview: "ave:chat:get-turn-review",
+    decideTurnHunk: "ave:chat:decide-turn-hunk",
     fork: "ave:chat:fork",
     continueLastUser: "ave:chat:continue-last-user",
     retryEffort: "ave:chat:retry-effort",

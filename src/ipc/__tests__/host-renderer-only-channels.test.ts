@@ -180,6 +180,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.chat.sessions, []],
   ["chat", CHANNELS.chat.mainActiveState, []],
   ["chat", CHANNELS.chat.sessionHistory, ["s"]],
+  ["chat", CHANNELS.chat.getTurnReview, ["s", "main"]],
+  ["chat", CHANNELS.chat.decideTurnHunk, [{ sessionId: "s", turnId: "t", version: "v", hunkId: "h", decision: "reject" }, "main"]],
   ["chat", CHANNELS.memory.entriesList, [{}]],
   // Secret writes and the external-link opener.
   ["settings", CHANNELS.settings.update, [{}]],

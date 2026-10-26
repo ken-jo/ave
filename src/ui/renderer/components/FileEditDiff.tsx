@@ -1,10 +1,14 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useId } from "react";
 import { ChevronDown, ChevronRight, FilePlus2, FilePenLine } from "lucide-react";
 import type { FileEditDiffData, FileEditHunk } from "../utils/file-diff.js";
 import { countDiffLines } from "../utils/file-diff.js";
 import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import type { TurnHunkDecisionRequest, TurnReviewHunk } from "../../../shared/turn-change-review.js";
+
+const REVIEW_PREVIEW_MAX_LINES = 100;
+const REVIEW_PREVIEW_MAX_CHARACTERS = 8192;
 
 const VERB_KEY_BY_TOOL: Record<FileEditDiffData["tool"], string> = {
   edit_file: "fileEditDiff.verbEdit",
@@ -12,10 +16,18 @@ const VERB_KEY_BY_TOOL: Record<FileEditDiffData["tool"], string> = {
   write_file: "fileEditDiff.verbWrite",
 };
 
-export function FileEditDiff({ data }: { data: FileEditDiffData }) {
+export interface FileEditDiffReview {
+  hunks: TurnReviewHunk[];
+  hunkOffset?: number;
+  disabled: boolean;
+  onDecision: (hunkId: string, decision: TurnHunkDecisionRequest["decision"]) => void;
+}
+
+export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?: FileEditDiffReview }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
-  const totals = computeLineTotals(data.hunks);
+  const contentId = useId();
+  const totals = computeLineTotals(data.hunks, review !== undefined);
   const verb = t(data.isNewFile ? "fileEditDiff.verbCreate" : VERB_KEY_BY_TOOL[data.tool]);
   const Icon = data.isNewFile ? FilePlus2 : FilePenLine;
 
@@ -32,6 +44,7 @@ export function FileEditDiff({ data }: { data: FileEditDiffData }) {
         onClick={() => setOpen((o) => !o)}
         className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-[11px] text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
         aria-expanded={open}
+        aria-controls={contentId}
       >
         {open ? (
           <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
@@ -74,13 +87,17 @@ export function FileEditDiff({ data }: { data: FileEditDiffData }) {
         </span>
       </button>
       {open && (
-        <div className="font-mono text-xs leading-[1.55]">
+        <div id={contentId} className="font-mono text-xs leading-[1.55]">
           {data.hunks.map((hunk, i) => (
             <DiffHunk
-              key={i}
+              key={review?.hunks[i]?.id ?? i}
               hunk={hunk}
-              startLine={hunkStartLine(data.hunks, i)}
+              startLine={review?.hunks[i]?.oldStartLine ?? hunkStartLine(data.hunks, i)}
               separator={data.hunks.length > 1 && i > 0}
+              reviewHunk={review?.hunks[i]}
+              review={review}
+              path={data.path}
+              hunkNumber={(review?.hunkOffset ?? 0) + i + 1}
             />
           ))}
           {totals.added === 0 && totals.removed === 0 && (
@@ -98,15 +115,26 @@ function DiffHunk({
   hunk,
   startLine,
   separator,
+  reviewHunk,
+  review,
+  path,
+  hunkNumber,
 }: {
   hunk: FileEditHunk;
   startLine: number;
   separator: boolean;
+  reviewHunk?: TurnReviewHunk;
+  review?: FileEditDiffReview;
+  path: string;
+  hunkNumber: number;
 }) {
   const { t } = useTranslation();
-  const removed = hunk.oldText.length > 0 ? hunk.oldText.split("\n") : [];
-  const added = hunk.newText.length > 0 ? hunk.newText.split("\n") : [];
-  let line = startLine;
+  const oldPreview = reviewHunk ? reviewPreview(hunk.oldText) : undefined;
+  const newPreview = reviewHunk ? reviewPreview(hunk.newText) : undefined;
+  const removed = oldPreview?.lines ?? (hunk.oldText.length > 0 ? hunk.oldText.split("\n") : []);
+  const added = newPreview?.lines ?? (hunk.newText.length > 0 ? hunk.newText.split("\n") : []);
+  let oldLine = reviewHunk?.oldStartLine ?? startLine;
+  let newLine = reviewHunk?.newStartLine ?? startLine + removed.length;
   return (
     <>
       {separator && (
@@ -115,15 +143,62 @@ function DiffHunk({
         </div>
       )}
       {removed.map((text, i) => {
-        const n = line++;
+        const n = oldLine++;
         return <DiffLine key={`r-${i}`} kind="removed" lineNo={n} text={text} />;
       })}
       {added.map((text, i) => {
-        const n = line++;
+        const n = newLine++;
         return <DiffLine key={`a-${i}`} kind="added" lineNo={n} text={text} />;
       })}
+      {reviewHunk && review && (
+        <div
+          className="flex flex-wrap items-center gap-2 border-t border-border px-3 py-2 font-sans text-[11px]"
+          role="group"
+          aria-label={t("fileEditDiff.reviewHunkLabel", { number: hunkNumber, path })}
+          data-hunk-id={reviewHunk.id}
+          data-decision={reviewHunk.decision}
+        >
+          {(oldPreview?.truncated || newPreview?.truncated) && (
+            <p className="w-full text-warning">{t("fileEditDiff.reviewPreviewTruncated")}</p>
+          )}
+          <span className="mr-auto text-muted-foreground">
+            {t(reviewHunk.decision === "accepted"
+              ? "fileEditDiff.reviewAccepted"
+              : reviewHunk.decision === "rejected"
+                ? "fileEditDiff.reviewRejected"
+                : "fileEditDiff.reviewPending")}
+          </span>
+          <button
+            type="button"
+            className="rounded border border-border px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={review.disabled || reviewHunk.decision !== "pending"}
+            aria-label={t("fileEditDiff.reviewAcceptLabel", { number: hunkNumber, path })}
+            onClick={() => review.onDecision(reviewHunk.id, "accept")}
+          >
+            {t("fileEditDiff.reviewAccept")}
+          </button>
+          <button
+            type="button"
+            className="rounded border border-border px-2 py-1 hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={review.disabled || reviewHunk.decision !== "pending"}
+            aria-label={t("fileEditDiff.reviewRejectLabel", { number: hunkNumber, path })}
+            onClick={() => review.onDecision(reviewHunk.id, "reject")}
+          >
+            {t("fileEditDiff.reviewReject")}
+          </button>
+        </div>
+      )}
     </>
   );
+}
+
+function reviewPreview(text: string): { lines: string[]; truncated: boolean } {
+  const excerpt = text.slice(0, REVIEW_PREVIEW_MAX_CHARACTERS);
+  const lines = sidecarLines(excerpt);
+  return {
+    lines: lines.slice(0, REVIEW_PREVIEW_MAX_LINES),
+    truncated: excerpt.length < text.length || lines.length > REVIEW_PREVIEW_MAX_LINES,
+  };
 }
 
 function DiffLine({
@@ -162,11 +237,12 @@ function DiffLine({
   );
 }
 
-function computeLineTotals(hunks: FileEditHunk[]): { added: number; removed: number } {
+function computeLineTotals(hunks: FileEditHunk[], exactHunkText: boolean): { added: number; removed: number } {
+  const countLines = (text: string) => countDiffLines(text) - (exactHunkText && text.endsWith("\n") ? 1 : 0);
   return hunks.reduce(
     (acc, h) => ({
-      added: acc.added + countDiffLines(h.newText),
-      removed: acc.removed + countDiffLines(h.oldText),
+      added: acc.added + countLines(h.newText),
+      removed: acc.removed + countLines(h.oldText),
     }),
     { added: 0, removed: 0 },
   );

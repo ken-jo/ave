@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { TurnHunkDecisionRequest, TurnReviewResult } from "../../shared/turn-change-review.js";
 import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
@@ -812,6 +813,8 @@ export type AveApi = {
    * restore keeps the conversation intact.
    */
   chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
+  chatGetTurnReview: (expectedSessionId: string) => Promise<TurnReviewResult>;
+  chatDecideTurnHunk: (request: TurnHunkDecisionRequest) => Promise<TurnReviewResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
   chatContinueLastUser: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;

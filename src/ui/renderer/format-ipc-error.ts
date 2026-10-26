@@ -7,6 +7,11 @@ export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
   "code-restore-failed": "codeRewind.failed",
   "code-restore-conflict": "codeRewind.conflict",
   "invalid-rewind-mode": "codeRewind.invalidMode",
+  "turn-review-unavailable": "fileEditDiff.reviewUnavailable",
+  "turn-review-conflict": "fileEditDiff.reviewConflict",
+  "turn-review-stale": "fileEditDiff.reviewStale",
+  "turn-review-write-denied": "fileEditDiff.reviewWriteDenied",
+  "turn-review-failed": "fileEditDiff.reviewFailed",
   // ── Trust / intent gate ──
   "user-keyboard-required": "formatIpcError.userKeyboardRequired",
   "unauthorized": "formatIpcError.unauthorized",

@@ -1,8 +1,16 @@
-import { checkpointFileMutation, markCodeCheckpointUnavailable } from "../memory/code-checkpoints.js";
+import {
+  checkpointFileMutation,
+  getCodeReviewReplacementMode,
+  isCodeReviewMutationActive,
+  markCodeCheckpointUnavailable,
+  validateCodeReviewToolInvocation,
+  verifyCodeReviewMutation,
+} from "../memory/code-checkpoints.js";
 import { constants, type Stats } from "node:fs";
 import { randomUUID } from "node:crypto";
 import {
   copyFile,
+  chmod,
   mkdir,
   open,
   readdir,
@@ -153,6 +161,7 @@ async function resolveFileExecutionTransport(
   normalizedInput: unknown,
   ctx: ToolExecutionContext,
 ): Promise<FileExecutionTransport> {
+  validateCodeReviewToolInvocation(tool.name, normalizedInput);
   const runtime = await import("../workload/runtime.js");
   const requestedGrant = ctx.executionRouteGrant;
   const authority = consumeExecutionGrantForBuiltinToolInvocation({
@@ -163,6 +172,9 @@ async function resolveFileExecutionTransport(
   });
   if (requestedGrant !== undefined && authority === null) {
     return { kind: "failure", result: brokerFailureResult("broker-bound execution grant unavailable") };
+  }
+  if (isCodeReviewMutationActive() && (runtime.isWorkloadBrokerActive() || authority !== null)) {
+    return { kind: "failure", result: brokerFailureResult("local checkpoint review is unavailable on this execution route") };
   }
   if (!runtime.isWorkloadBrokerActive()) {
     if (authority !== null) {
@@ -985,6 +997,7 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     "disposable workload write_file cannot tell whether the file exists, so it does not require a read there.";
   readonly inputSchema = WriteFileInputSchema;
   override readonly category: ToolCategory = "write";
+  override readonly awaitCancellationSettlement = true as const;
 
   approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
     return `path:${this.resolveApprovalPath(this.requireStringField(input, "path"), ctx)}`;
@@ -1059,8 +1072,9 @@ export class WriteFileTool extends FileTool<typeof WriteFileInputSchema> {
     }
     const after = input.content;
 
+    ctx.abortSignal?.throwIfAborted();
     await mkdir(dirname(target), { recursive: true });
-    await atomicTextWrite(target, after);
+    await atomicTextWrite(target, after, ctx.abortSignal);
     if (readSession !== undefined) await recordOwnWrite(readSession, target, after);
 
     const sessionId =
@@ -1658,6 +1672,7 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
   readonly description = "Delete a regular file from the workspace.";
   readonly inputSchema = DeleteFileInputSchema;
   override readonly category: ToolCategory = "write";
+  override readonly awaitCancellationSettlement = true as const;
 
   approvalCacheKey(input: unknown, ctx?: Pick<ToolExecutionContext, "cwd">): string {
     return `path:${this.resolveApprovalPath(this.requireStringField(input, "path"), ctx)}`;
@@ -1694,7 +1709,10 @@ export class DeleteFileTool extends FileTool<typeof DeleteFileInputSchema> {
     if (!fileStat.value.isFile()) {
       return toolError(`delete_file requires a regular file: ${target}`);
     }
-    await checkpointFileMutation([{ path: target, content: null }], () => unlink(target));
+    await checkpointFileMutation([{ path: target, content: null }], () => {
+      ctx.abortSignal?.throwIfAborted();
+      return unlink(target);
+    });
     return {
       output: JSON.stringify({ path: target, deleted: true }),
       isError: false,
@@ -1927,15 +1945,17 @@ function temporaryWritePath(target: string): string {
   return `${target}.ave-tmp-${process.pid}-${randomUUID()}`;
 }
 
-async function atomicTextWrite(target: string, content: string): Promise<void> {
-  return checkpointFileMutation([{ path: target, content }], () => writeTextAtomically(target, content));
+async function atomicTextWrite(target: string, content: string, abortSignal?: AbortSignal): Promise<void> {
+  return checkpointFileMutation([{ path: target, content }], () => writeTextAtomically(target, content, abortSignal));
 }
 
-async function writeTextAtomically(target: string, content: string): Promise<void> {
+async function writeTextAtomically(target: string, content: string, abortSignal?: AbortSignal): Promise<void> {
   const temp = temporaryWritePath(target);
   try {
     await writeFile(temp, content, "utf8");
-    await renameWithTransientRetry(temp, target);
+    const mode = getCodeReviewReplacementMode(target);
+    if (mode !== undefined) await chmod(temp, mode);
+    await renameWithTransientRetry(temp, target, abortSignal);
   } catch (err) {
     try {
       await unlink(temp);
@@ -1949,9 +1969,11 @@ async function writeTextAtomically(target: string, content: string): Promise<voi
 // Tool writes use the shared asynchronous retry policy, distinct from synchronous and unattended budgets.
 const TOOL_WRITE_RENAME_ATTEMPTS = 6;
 
-async function renameWithTransientRetry(source: string, target: string): Promise<void> {
+async function renameWithTransientRetry(source: string, target: string, abortSignal?: AbortSignal): Promise<void> {
   for (let attempt = 1; ; attempt += 1) {
     try {
+      await verifyCodeReviewMutation(target);
+      abortSignal?.throwIfAborted();
       await rename(source, target);
       return;
     } catch (err) {

@@ -238,6 +238,18 @@ describe("preload — plugin webview asset URLs", () => {
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.chat.rewindTo, "user-row", chatGroupId, "both");
   });
 
+  it.each([MAIN_CHAT_GROUP_ID, "tile-2"])("binds hunk review requests and decisions to %s", async (chatGroupId) => {
+    const { buildPublicSurface } = await import("../preload/public-surface.js");
+    const api = buildPublicSurface();
+    const surface = chatGroupId === MAIN_CHAT_GROUP_ID ? api : api.chatGroup(chatGroupId);
+    mockInvoke.mockResolvedValue({ ok: false, error: "turn-review-stale" });
+    await expect(surface.chatGetTurnReview("expected-session")).resolves.toEqual({ ok: false, error: "turn-review-stale" });
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.chat.getTurnReview, "expected-session", chatGroupId);
+    const request = { sessionId: "expected-session", turnId: "turn", version: "version", hunkId: "hunk", decision: "reject" as const };
+    await surface.chatDecideTurnHunk(request);
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.chat.decideTurnHunk, request, chatGroupId);
+  });
+
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {
     const api = await loadAveApi();
     const url = api["pluginShellUrl"];

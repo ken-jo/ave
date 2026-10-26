@@ -11,6 +11,8 @@ import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
 import type { ToolExecutionContext } from "../tools/types.js";
 import { createLogger } from "../lib/logger.js";
+import type { TurnChangeReview, TurnHunkDecisionRequest, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
+import { applyTurnReviewHunks, createTurnReviewHunks } from "./turn-review-diff.js";
 
 const log = createLogger("code-checkpoints");
 const namespace = openFeatureNamespace("code-checkpoints");
@@ -39,7 +41,21 @@ const StoredChangeSchema = ChangeSchema.omit({ before: true }).extend({
   beforeHash: HashSchema,
   storageBytes: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxStorageBytes),
 });
-const StoredTurnSchema = TurnSchema.extend({ changes: z.array(StoredChangeSchema) });
+const ReviewHunkSchema = z.object({
+  id: z.string(), oldText: z.string(), newText: z.string(),
+  oldStartLine: z.number().int().positive(), newStartLine: z.number().int().positive(),
+  oldOffset: z.number().int().nonnegative(), oldEnd: z.number().int().nonnegative(),
+  decision: z.enum(["pending", "accepted", "rejected"]),
+});
+const ReviewFileSchema = z.object({
+  path: z.string().refine(isAbsolute), beforeHash: HashSchema, initialAfterHash: HashSchema,
+  hunks: z.array(ReviewHunkSchema),
+});
+const ReviewSchema = z.object({
+  version: z.string(), files: z.array(ReviewFileSchema),
+  pending: z.object({ hunkId: z.string(), path: z.string().refine(isAbsolute), preHash: HashSchema, afterHash: HashSchema }).optional(),
+});
+const StoredTurnSchema = TurnSchema.extend({ changes: z.array(StoredChangeSchema), review: ReviewSchema.optional() });
 const IndexSchema = z.object({ version: z.literal(2), turns: z.array(StoredTurnSchema) });
 type Change = z.infer<typeof ChangeSchema>;
 type StoredChange = z.infer<typeof StoredChangeSchema>;
@@ -52,6 +68,18 @@ interface DeferredSession {
   turns: Map<string, boolean>;
 }
 const turnContext = new AsyncLocalStorage<ActiveTurn>();
+interface ReviewMutation {
+  path: string;
+  content: string | null;
+  expectedHash: string | null;
+  mode: number;
+  context: () => RestoreContext;
+  refusal?: CodeReviewError;
+  settled?: boolean;
+  effectStarted?: boolean;
+}
+const reviewContext = new AsyncLocalStorage<ReviewMutation>();
+const reviewPins = new Set<Turn>();
 const inFlight = new Set<ActiveTurn>();
 const liveChildren = new Map<string, number>();
 const pendingUnavailable = new Map<string, DeferredSession>();
@@ -279,9 +307,12 @@ async function save(turns: Turn[], retained?: Turn): Promise<void> {
     if (!overfull && turns.length <= CODE_CHECKPOINT_POLICY.maxTurns && bytes <= CODE_CHECKPOINT_POLICY.maxStorageBytes) break;
     const oldest = turns.findIndex((turn, index) => (!overfull || turn.sessionId === overfull.sessionId)
       && turns.findIndex((other) => other.sessionId === turn.sessionId) === index
-      && ![...inFlight].some((active) => active.dir === namespace.dir
+      && !reviewPins.has(turn) && ![...inFlight].some((active) => active.dir === namespace.dir
         && active.sessionId === turn.sessionId && active.messageId === turn.messageId));
     if (oldest < 0) {
+      if (bytes > CODE_CHECKPOINT_POLICY.maxStorageBytes && retained && reviewPins.has(retained)) {
+        throw new CodeReviewError("turn-review-unavailable");
+      }
       if (bytes > CODE_CHECKPOINT_POLICY.maxStorageBytes && retained?.changes.length) {
         downgrade(retained, "storage limit");
         retained.changes = [];
@@ -433,12 +464,26 @@ export async function checkpointFileMutation<T>(
   effects: Array<{ path: string } & ({ content: Buffer | string | null } | { copyFrom: string })>,
   run: () => Promise<T>,
 ): Promise<T> {
+  const reviewMutation = reviewContext.getStore();
+  if (reviewMutation) {
+    if (effects.length !== 1 || effects[0].path !== reviewMutation.path || !("content" in effects[0])
+      || (Buffer.isBuffer(effects[0].content) ? !effects[0].content.equals(Buffer.from(reviewMutation.content ?? "")) || reviewMutation.content === null
+        : effects[0].content !== reviewMutation.content)) throw new CodeReviewError("turn-review-write-denied");
+    await verifyCodeReviewMutation(effects[0].path);
+    reviewMutation.effectStarted = true;
+    return run();
+  }
   const identity = turnContext.getStore();
   if (!identity || identity.deleted) return run();
   return exclusive(async () => {
     let turns: Turn[];
     try { turns = await load(); }
     catch (error) { deferUnavailable(identity, error); return run(); }
+    // A later authorized edit must capture the reconciled baseline, including an interrupted rejection.
+    const authorizedPaths = new Set(await Promise.all(effects.map((effect) => canonicalPath(resolve(effect.path)).catch(() => undefined))));
+    for (const previous of turns) {
+      if (previous.review?.pending && authorizedPaths.has(previous.review.pending.path)) await reconcileReview(turns, previous);
+    }
     const turn = turns.find((item) => item.sessionId === identity.sessionId && item.messageId === identity.messageId);
     if (!turn || turn.unavailable || identity.unavailable) {
       await makeUnavailable(turns, identity, "unsupported edits");
@@ -504,6 +549,235 @@ export async function checkpointFileMutation<T>(
 export type CodeRestoreResult = { ok: true } | { ok: false; error: string; conflictingFiles?: string[] };
 type RestoreContext = Pick<ToolExecutionContext, "cwd" | "extraAllowedDirectories">;
 
+class CodeReviewError extends Error {
+  constructor(readonly code: TurnReviewError, readonly conflictingFiles?: string[]) { super(code); }
+}
+
+export function isCodeReviewMutationActive(): boolean { return reviewContext.getStore() !== undefined; }
+
+export function getCodeReviewReplacementMode(path: string): number | undefined {
+  const mutation = reviewContext.getStore();
+  if (!mutation) return undefined;
+  if (mutation.settled || mutation.path !== path) throw new CodeReviewError("turn-review-write-denied");
+  return mutation.mode;
+}
+
+export function validateCodeReviewToolInvocation(name: string, input: unknown): void {
+  const mutation = reviewContext.getStore();
+  if (!mutation) return;
+  if (mutation.settled || !input || typeof input !== "object" || !("path" in input) || input.path !== mutation.path
+    || (name !== "read_file" && !(name === "delete_file" && mutation.content === null)
+      && !(name === "write_file" && mutation.content !== null && "content" in input && input.content === mutation.content))) {
+    mutation.refusal = new CodeReviewError("turn-review-write-denied");
+    throw mutation.refusal;
+  }
+}
+
+function checkReviewAccess(path: string, context: () => RestoreContext): void {
+  const current = { ...context(), metadata: {} };
+  if (ensureFileAccess(path, current, "read") || ensureFileAccess(path, current, "write")) {
+    throw new CodeReviewError("turn-review-write-denied");
+  }
+}
+
+async function reviewSnapshot(path: string): Promise<Awaited<ReturnType<typeof snapshot>>> {
+  try { return await snapshot(path); }
+  catch { throw new CodeReviewError("turn-review-conflict", [path]); }
+}
+
+export async function verifyCodeReviewMutation(path: string): Promise<void> {
+  const mutation = reviewContext.getStore();
+  if (!mutation) return;
+  try {
+    if (mutation.settled || path !== mutation.path) throw new CodeReviewError("turn-review-write-denied");
+    checkReviewAccess(path, mutation.context);
+    const current = await reviewSnapshot(path);
+    if (mutation.settled) throw new CodeReviewError("turn-review-write-denied");
+    checkReviewAccess(path, mutation.context);
+    if (hash(current.bytes) !== mutation.expectedHash) throw new CodeReviewError("turn-review-conflict", [path]);
+  } catch (error) {
+    if (error instanceof CodeReviewError) mutation.refusal = error;
+    throw error;
+  }
+}
+
+function reviewText(bytes: Buffer | null): string {
+  if (bytes === null) return "";
+  const text = bytes.toString("utf8");
+  if (text.includes("\0") || !Buffer.from(text).equals(bytes)) throw new CodeReviewError("turn-review-unavailable");
+  return text;
+}
+
+function reviewContent(file: z.infer<typeof ReviewFileSchema>, original: string): string | null {
+  const text = applyTurnReviewHunks(original, file.hunks);
+  if (file.beforeHash === null && file.hunks.every((hunk) => hunk.decision === "rejected")) return null;
+  if (file.initialAfterHash === null && file.hunks.every((hunk) => hunk.decision !== "rejected")) return null;
+  return text;
+}
+
+function publicReview(turn: Turn): TurnChangeReview {
+  return {
+    sessionId: turn.sessionId, turnId: turn.messageId, version: turn.review!.version,
+    files: turn.review!.files.map((file) => ({ path: file.path, hunks: file.hunks.map(({ oldOffset: _offset, oldEnd: _end, ...hunk }) => hunk) })),
+  };
+}
+
+async function saveReview(turns: Turn[], turn: Turn): Promise<void> {
+  reviewPins.add(turn);
+  try { await save(turns, turn); }
+  finally { reviewPins.delete(turn); }
+}
+
+async function reconcileReview(turns: Turn[], turn: Turn): Promise<void> {
+  const pending = turn.review?.pending;
+  if (!pending) return;
+  const file = turn.review!.files.find((item) => item.path === pending.path);
+  const hunk = file?.hunks.find((item) => item.id === pending.hunkId);
+  const last = turn.changes.filter((item) => item.path === pending.path).at(-1);
+  const first = turn.changes.find((item) => item.path === pending.path);
+  if (!file || !hunk || hunk.decision !== "pending" || !last || !first || file.beforeHash !== first.beforeHash || last.afterHash !== pending.preHash) {
+    throw new CodeReviewError("turn-review-unavailable");
+  }
+  const before = (await hydrate(first)).before;
+  const original = reviewText(before === null ? null : Buffer.from(before, "base64"));
+  const preContent = reviewContent(file, original);
+  const afterContent = reviewContent({ ...file, hunks: file.hunks.map((item) => item === hunk ? { ...item, decision: "rejected" } : item) }, original);
+  if (hash(preContent === null ? null : Buffer.from(preContent)) !== pending.preHash
+    || hash(afterContent === null ? null : Buffer.from(afterContent)) !== pending.afterHash) throw new CodeReviewError("turn-review-unavailable");
+  const currentHash = hash((await reviewSnapshot(pending.path)).bytes);
+  if (currentHash === pending.afterHash) {
+    hunk.decision = "rejected";
+    last.afterHash = pending.afterHash;
+    turn.review!.version = randomUUID();
+  } else if (currentHash !== pending.preHash) throw new CodeReviewError("turn-review-conflict", [pending.path]);
+  delete turn.review!.pending;
+  await saveReview(turns, turn);
+}
+
+async function prepareReview(sessionId: string, turnId: string, context: () => RestoreContext): Promise<{
+  turns: Turn[]; turn: Turn; originals: Map<string, string>; snapshots: Map<string, Awaited<ReturnType<typeof snapshot>>>;
+}> {
+  if (liveChildren.has(childKey(sessionId)) || [...inFlight].some((active) => active.dir === namespace.dir && active.sessionId === sessionId)) {
+    throw new CodeReviewError("turn-review-unavailable");
+  }
+  const turns = await load();
+  const turn = turns.filter((item) => item.sessionId === sessionId).at(-1);
+  if (!turn || turn.messageId !== turnId || turn.unavailable || turn.consumed) throw new CodeReviewError("turn-review-unavailable");
+  const plan = new Map<string, { first: StoredChange; last: StoredChange }>();
+  // Check policy before reading originals or returning any ledger-supplied path.
+  for (const path of new Set([...turn.changes.map((change) => change.path), ...(turn.review?.files.map((file) => file.path) ?? []),
+    ...(turn.review?.pending ? [turn.review.pending.path] : [])])) checkReviewAccess(path, context);
+  for (const change of turn.changes) {
+    const previous = plan.get(change.path);
+    if (previous && previous.last.afterHash !== change.beforeHash) throw new CodeReviewError("turn-review-conflict", [change.path]);
+    plan.set(change.path, { first: previous?.first ?? change, last: change });
+  }
+  await reconcileReview(turns, turn);
+  const originals = new Map<string, string>();
+  const snapshots = new Map<string, Awaited<ReturnType<typeof snapshot>>>();
+  for (const [path, { first, last }] of plan) {
+    const current = await reviewSnapshot(path);
+    if (hash(current.bytes) !== last.afterHash) throw new CodeReviewError("turn-review-conflict", [path]);
+    snapshots.set(path, current);
+    const before = (await hydrate(first)).before;
+    originals.set(path, reviewText(before === null ? null : Buffer.from(before, "base64")));
+    reviewText(current.bytes);
+  }
+  if (!turn.review) {
+    turn.review = { version: randomUUID(), files: [...plan].flatMap(([path, { first, last }]) => {
+      if (first.beforeHash === last.afterHash) return [];
+      return [{ path, beforeHash: first.beforeHash, initialAfterHash: last.afterHash,
+        hunks: createTurnReviewHunks(originals.get(path)!, reviewText(snapshots.get(path)!.bytes), first.beforeHash === null || last.afterHash === null) }];
+    }) };
+    await saveReview(turns, turn);
+  } else {
+    const seen = new Set<string>();
+    const hunkIds = new Set<string>();
+    for (const file of turn.review.files) {
+      const entry = plan.get(file.path);
+      if (!entry || seen.has(file.path) || file.beforeHash !== entry.first.beforeHash) throw new CodeReviewError("turn-review-unavailable");
+      seen.add(file.path);
+      for (const hunk of file.hunks) {
+        if (hunkIds.has(hunk.id)) throw new CodeReviewError("turn-review-unavailable");
+        hunkIds.add(hunk.id);
+      }
+      const original = originals.get(file.path)!;
+      const initial = { ...file, hunks: file.hunks.map((hunk) => ({ ...hunk, decision: "pending" as const })) };
+      const initialContent = reviewContent(initial, original);
+      if (hash(initialContent === null ? null : Buffer.from(initialContent)) !== file.initialAfterHash) throw new CodeReviewError("turn-review-unavailable");
+      const expected = reviewContent(file, original);
+      if (hash(expected === null ? null : Buffer.from(expected)) !== entry.last.afterHash) throw new CodeReviewError("turn-review-unavailable");
+    }
+    if ([...plan].some(([path, entry]) => entry.first.beforeHash !== entry.last.afterHash && !seen.has(path))) throw new CodeReviewError("turn-review-unavailable");
+  }
+  return { turns, turn, originals, snapshots };
+}
+
+function reviewFailure(error: unknown): TurnReviewResult {
+  return error instanceof CodeReviewError
+    ? { ok: false, error: error.code, ...(error.conflictingFiles ? { conflictingFiles: error.conflictingFiles } : {}) }
+    : { ok: false, error: "turn-review-failed" };
+}
+
+export async function getTurnChangeReview(sessionId: string, turnId: string, context: () => RestoreContext): Promise<TurnReviewResult> {
+  return exclusive(async () => {
+    try { return { ok: true, review: publicReview((await prepareReview(sessionId, turnId, context)).turn) }; }
+    catch (error) { return reviewFailure(error); }
+  });
+}
+
+export async function decideTurnChangeHunk(
+  request: TurnHunkDecisionRequest,
+  context: () => RestoreContext,
+  execute: (mutation: { path: string; content: string | null; expectedHash: string | null }) => Promise<{ ok: boolean }>,
+): Promise<TurnReviewResult> {
+  return exclusive(async () => {
+    try {
+      const { turns, turn, originals, snapshots } = await prepareReview(request.sessionId, request.turnId, context);
+      const review = turn.review!;
+      const file = review.files.find((item) => item.hunks.some((hunk) => hunk.id === request.hunkId));
+      const hunk = file?.hunks.find((item) => item.id === request.hunkId);
+      if (review.version !== request.version || !hunk || hunk.decision !== "pending") throw new CodeReviewError("turn-review-stale");
+      if (request.decision === "accept") {
+        hunk.decision = "accepted";
+        review.version = randomUUID();
+        await saveReview(turns, turn);
+      } else {
+        const target = file!;
+        const current = snapshots.get(target.path)!;
+        const content = reviewContent({ ...target, hunks: target.hunks.map((item) => item === hunk ? { ...item, decision: "rejected" } : item) }, originals.get(target.path)!);
+        const expectedHash = hash(current.bytes);
+        const afterHash = hash(content === null ? null : Buffer.from(content));
+        review.pending = { path: target.path, hunkId: hunk.id, preHash: expectedHash, afterHash };
+        await saveReview(turns, turn);
+        const first = turn.changes.find((change) => change.path === target.path)!;
+        const mutation: ReviewMutation = { path: target.path, content, expectedHash, context, mode: current.bytes === null ? first.mode : current.mode };
+        const result = await turnContext.exit(() => reviewContext.run(mutation, async () => {
+          try {
+            await verifyCodeReviewMutation(target.path);
+            return await execute({ path: target.path, content, expectedHash });
+          } finally { mutation.settled = true; }
+        }));
+        if (!result.ok) {
+          if (mutation.refusal) throw mutation.refusal;
+          if (mutation.effectStarted) throw new CodeReviewError("turn-review-failed");
+          checkReviewAccess(target.path, context);
+          const currentHash = hash((await reviewSnapshot(target.path)).bytes);
+          if (currentHash === afterHash) throw new CodeReviewError("turn-review-failed");
+          if (currentHash !== expectedHash) throw new CodeReviewError("turn-review-conflict", [target.path]);
+          throw new CodeReviewError("turn-review-write-denied");
+        }
+        try {
+          checkReviewAccess(target.path, context);
+          if (hash((await reviewSnapshot(target.path)).bytes) !== afterHash) throw new CodeReviewError("turn-review-failed");
+          await reconcileReview(turns, turn);
+        } catch { throw new CodeReviewError("turn-review-failed"); }
+      }
+      return { ok: true, review: publicReview(turn) };
+    } catch (error) { return reviewFailure(error); }
+  });
+}
+
 export async function restoreCodeCheckpoint(
   sessionId: string,
   messageId: string,
@@ -521,6 +795,12 @@ export async function restoreCodeCheckpoint(
       const suffix = turns.slice(index).filter((turn) => turn.sessionId === sessionId);
       if (suffix.some((turn) => turn.unavailable) || [...inFlight].some((active) => active.dir === namespace.dir
         && active.sessionId === sessionId)) return { ok: false, error: "code-checkpoint-unavailable" };
+      for (const turn of suffix) {
+        if (!turn.review?.pending) continue;
+        const path = turn.review.pending.path;
+        if (accessDenied(path)) return { ok: false, error: "code-checkpoint-unavailable" };
+        await reconcileReview(turns, turn);
+      }
       const plan = new Map<string, StoredChange>();
       const conflicts = new Set<string>();
       for (const change of suffix.flatMap((turn) => turn.changes)) {
@@ -571,6 +851,7 @@ export async function restoreCodeCheckpoint(
         // Guard the restored baseline on repeat calls; later points are not forward-restore authority.
         for (const turn of suffix) {
           turn.changes = [];
+          delete turn.review;
           turn.consumed = turn !== turns[index];
         }
         turns[index].changes = [...plan.values()].map((change) => ({
@@ -584,6 +865,11 @@ export async function restoreCodeCheckpoint(
           await unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
         }
       }
-    } catch { return { ok: false, error: "code-restore-failed" }; }
+    } catch (error) {
+      if (error instanceof CodeReviewError && error.code === "turn-review-conflict") {
+        return { ok: false, error: "code-restore-conflict", conflictingFiles: error.conflictingFiles };
+      }
+      return { ok: false, error: "code-restore-failed" };
+    }
   });
 }
