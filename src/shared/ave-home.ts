@@ -10,6 +10,7 @@ import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
 import { isWindowsHomeRootSafe, WINDOWS_HOME_BOUNDARY_SOURCE, WINDOWS_HOME_ROOT_READ_ONLY_RIGHTS } from "./windows-home-boundary.js";
 import { fileIdentityKey } from "../lib/file-identity.js";
+import { openWindowsConfigurationHandles, windowsConfigurationDirectoryEntries, type WindowsConfigurationHandleEntry } from "./windows-configuration-handles.js";
 
 export const AVE_HOME_CONFIGURATION_DIRECTORY = "config";
 export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
@@ -19,6 +20,11 @@ let refusedConfigurationHome: string | undefined;
 const verifiedConfigurationIdentities = new Map<string, string>();
 const configurationHomes = new Set<string>();
 const committedConfigurationHomes = new Set<string>();
+interface WindowsConfigurationLocation {
+  readonly entries: readonly WindowsConfigurationHandleEntry[];
+  readonly committed: boolean;
+}
+const windowsConfigurationLocations = new Map<string, WindowsConfigurationLocation>();
 
 export class AveHomeConfigurationUntrustedError extends Error {
   constructor(readonly path: string, readonly reason: string) {
@@ -87,12 +93,27 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
 }
 
 function windowsConfigurationDirectory(root: string, config: string, key: string): string {
-  const paths = [config, join(config, AVE_HOME_CONFIGURATION_MARKER)];
-  const [directory, marker] = pinWindowsPaths(paths);
+  const cached = windowsConfigurationLocations.get(key);
+  if (cached !== undefined) {
+    const handles = openWindowsConfigurationHandles(cached.entries);
+    if (handles !== undefined) {
+      try {
+        const marker = handles.descriptors.at(-1)!;
+        if ((!cached.committed || readFileSync(marker, "utf8") === AVE_HOME_CONFIGURATION_MARKER_CONTENT) && handles.matches()) return cached.committed ? config : root;
+      } finally { handles.close(); }
+    }
+    windowsConfigurationLocations.delete(key);
+    verifiedConfigurationIdentities.delete(key);
+  }
+  const paths = [config, join(config, AVE_HOME_CONFIGURATION_MARKER), root];
+  const [directory, marker, rootFacts] = pinWindowsPaths(paths);
   if (!admitWindowsReparse(directory!, "evidence")) throw new Error("Configuration directory is a link or is not a directory");
   if (directory!.exists === false) {
     if (committedConfigurationHomes.has(key)) throw new Error("Committed configuration directory is missing");
     verifiedConfigurationIdentities.delete(key);
+    if (rootFacts!.exists === true && rootFacts!.changeTime !== null && BigInt(rootFacts!.changeTime) !== 0n) {
+      windowsConfigurationLocations.set(key, { committed: false, entries: windowsConfigurationDirectoryEntries(root, rootFacts!) });
+    }
     return root;
   }
   if (!directory!.directory) throw new Error("Configuration directory is a link or is not a directory");
@@ -113,9 +134,19 @@ function windowsConfigurationDirectory(root: string, config: string, key: string
   }
   if (marker!.exists === false) {
     if (committedConfigurationHomes.has(key)) throw new Error("Configuration commit marker is missing");
+    if (directory!.changeTime !== null && BigInt(directory!.changeTime) !== 0n) {
+      windowsConfigurationLocations.set(key, { committed: false, entries: [
+        ...windowsConfigurationDirectoryEntries(root, rootFacts!),
+        ...windowsConfigurationDirectoryEntries(config, directory!),
+      ] });
+    }
     return root;
   }
   committedConfigurationHomes.add(key);
+  if (cacheable) windowsConfigurationLocations.set(key, { committed: true, entries: [
+    ...windowsConfigurationDirectoryEntries(config, directory!, false),
+    { path: paths[1]!, facts: marker!, changeTimeRequired: true },
+  ] });
   return config;
 }
 
@@ -493,6 +524,7 @@ export function _resetAveHomePrivacyForTest(): void {
   verifiedConfigurationIdentities.clear();
   configurationHomes.clear();
   committedConfigurationHomes.clear();
+  windowsConfigurationLocations.clear();
   bootHomePrivacy = undefined;
   extensionsWithoutIsolationApproved = false;
   reportPrivacyRefusal = undefined;

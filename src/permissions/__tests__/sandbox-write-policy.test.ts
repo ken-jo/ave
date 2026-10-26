@@ -1,7 +1,8 @@
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as filesystem from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join, sep } from "node:path";
+import { dirname, join, resolve, sep } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
 import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
@@ -32,6 +33,7 @@ function withPlatform<T>(platform: "darwin" | "linux", action: () => T): T {
 describe("mandatory sandbox control-file writes", () => {
   let root: string;
   beforeEach(async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
     vi.mocked(filesystem.opendirSync).mockImplementation(actual.opendirSync);
     vi.mocked(filesystem.readSync).mockImplementation(actual.readSync);

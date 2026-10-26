@@ -1,5 +1,6 @@
 import { configureHostResources } from "../../main/host-resources.js";
 import * as childProcess from "node:child_process";
+import * as fs from "node:fs";
 import { existsSync, lstatSync, mkdirSync, renameSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { beforeAll, afterEach, describe, expect, it, vi } from "vitest";
@@ -19,6 +20,11 @@ vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return { ...actual, exec: vi.fn(actual.exec), execSync: vi.fn(actual.execSync), execFile: vi.fn(actual.execFile),
     execFileSync: vi.fn(actual.execFileSync), spawn: vi.fn(actual.spawn), spawnSync: vi.fn(actual.spawnSync), fork: vi.fn(actual.fork) };
+});
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, fstatSync: vi.fn(actual.fstatSync) };
 });
 
 useConfigurationOwner();
@@ -42,6 +48,12 @@ function expectOnlyNativePins(): void {
   for (const [executable, args] of vi.mocked(childProcess.execFileSync).mock.calls) {
     expect(String(executable)).toMatch(/ave-path-kind\.exe$/);
     expect(args?.[0]).toBe("--pin");
+  }
+}
+
+function expectNoChildProcesses(): void {
+  for (const name of ["exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync", "fork"] as const) {
+    expect(childProcess[name], name).not.toHaveBeenCalled();
   }
 }
 
@@ -132,12 +144,37 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     }
   });
 
-  it("uses only shared native pins during steady state reads", () => {
+  it("starts no child process during steady state reads", () => {
     const { path } = fixture();
     expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
     vi.clearAllMocks();
     for (let i = 0; i < 20; i++) expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
-    expectOnlyNativePins();
+    expectNoChildProcesses();
+  });
+
+  it.each(["legacy", "uncommitted"])("starts no child process for warm %s configuration reads", (layout) => {
+    const home = paths();
+    setFixtureOwner(dirname(home));
+    vi.stubEnv("AVE_HOME", home);
+    expect(ensureAveHomePrivate(home).enforcement).toBe("win32-dacl");
+    if (layout === "legacy") rmdirSync(join(home, "config"));
+    const path = join(home, "settings.json");
+    writeFileSync(path, "{}");
+    expect(readAveHomeConfigurationFile(path)?.toString()).toBe("{}");
+    vi.clearAllMocks();
+    for (let i = 0; i < 20; i++) expect(readAveHomeConfigurationFile(path)?.toString()).toBe("{}");
+    expectNoChildProcesses();
+  });
+
+  it("keeps independent certificates warm when configuration files alternate", () => {
+    const { home, path } = fixture();
+    writeFileSync(join(home, "config", "policy.json"), "{}");
+    writeFileSync(join(home, "config", "ave-secrets.json"), "{}");
+    const files = [path, join(home, "policy.json"), join(home, "ave-secrets.json")];
+    for (const file of files) expect(readAveHomeConfigurationFile(file)).toBeDefined();
+    vi.clearAllMocks();
+    for (let i = 0; i < 20; i++) for (const file of files) expect(readAveHomeConfigurationFile(file)).toBeDefined();
+    expectNoChildProcesses();
   });
 
   it.each(["config", "home"])("invalidates a warm boundary after an in place %s DACL weakening", (target) => {
@@ -146,8 +183,51 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     vi.clearAllMocks();
     readAveHomeConfigurationFile(path);
     expectOnlyNativePins();
+    expectNoChildProcesses();
     weaken(target === "home" ? home : join(home, "config"));
     expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+  });
+
+  it.each(["acl", "rename", "rewrite"])("revalidates a warm file after an in place %s change", (mutation) => {
+    const { home, path } = fixture();
+    readAveHomeConfigurationFile(path);
+    const target = join(home, "config", "settings.json");
+    if (mutation === "acl") childProcess.execFileSync(win32SystemBinary("icacls"), [target, "/grant", "*S-1-1-0:(R)", "/q"], { windowsHide: true, stdio: "pipe" });
+    else if (mutation === "rename") {
+      const replacement = join(home, "config", "replacement.json");
+      writeFileSync(replacement, '{"permissions":{}}');
+      renameSync(target, `${target}.old`);
+      renameSync(replacement, target);
+    } else writeFileSync(target, '{"permissions":{}}');
+    vi.clearAllMocks();
+    expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
+    expect(vi.mocked(childProcess.execFileSync).mock.calls.some(([, args]) => args?.[0] === "--dacl")).toBe(true);
+    vi.clearAllMocks();
+    readAveHomeConfigurationFile(path);
+    expect(childProcess.execFileSync).not.toHaveBeenCalled();
+  });
+
+  it.each(["directory", "file"])("revalidates natively after a warm %s handle stat error", (kind) => {
+    const { home, path } = fixture();
+    readAveHomeConfigurationFile(path);
+    const inode = lstatSync(join(home, "config", "settings.json"), { bigint: true }).ino;
+    vi.clearAllMocks();
+    const stat = vi.mocked(fs.fstatSync);
+    const execute = stat.getMockImplementation()!;
+    let failed = false;
+    stat.mockImplementation((...args) => {
+      const result = Reflect.apply(execute, undefined, args);
+      if (!failed && (kind === "directory" ? result.isDirectory() : BigInt(result.ino) === inode)) {
+        failed = true;
+        throw new Error("Fixture stat failed");
+      }
+      return result;
+    });
+    try {
+      expect(readAveHomeConfigurationFile(path)).toBeDefined();
+      expect(failed).toBe(true);
+      expect(vi.mocked(childProcess.execFileSync).mock.calls.some(([, args]) => args?.[0] === "--dacl")).toBe(true);
+    } finally { stat.mockImplementation(execute); }
   });
 
   it.each(["junction", "directory"])("refuses an intermediate ancestor substituted with a %s", (kind) => {
@@ -176,6 +256,7 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     vi.clearAllMocks();
     expect(readAveHomeConfigurationFile(path)).toBeDefined();
     expectOnlyNativePins();
+    expectNoChildProcesses();
   });
 
   it("keeps reads immediately after owner settings writes warm and measures the sequence", async () => {
@@ -190,6 +271,7 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     vi.clearAllMocks();
     for (let i = 0; i < 20; i++) readAveHomeConfigurationFile(path);
     expectOnlyNativePins();
+    expectNoChildProcesses();
     for (let i = 0; i < 3; i++) {
       await writePermissionSettings({ additionalDirectories: [] }, path);
       readAveHomeConfigurationFile(path);
@@ -259,4 +341,22 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     }).sort((a, b) => a - b);
     process.stdout.write(`configuration read latency ms: cold=${cold.toFixed(3)} warm-median-20=${((samples[9]! + samples[10]!) / 2).toFixed(3)}\n`);
   });
+
+  it("reports cold and warm medians over twenty fixture reads", () => {
+    const cold: number[] = [], warm: number[] = [];
+    for (let index = 0; index < 20; index++) {
+      const { path } = fixture();
+      const start = performance.now();
+      readAveHomeConfigurationFile(path);
+      cold.push(performance.now() - start);
+      const warmed = performance.now();
+      readAveHomeConfigurationFile(path);
+      warm.push(performance.now() - warmed);
+    }
+    const median = (samples: number[]) => {
+      samples.sort((a, b) => a - b);
+      return (samples[9]! + samples[10]!) / 2;
+    };
+    process.stdout.write(`${JSON.stringify({ coldMedian20Ms: median(cold), warmMedian20Ms: median(warm), cold, warm })}\n`);
+  }, 120_000);
 });

@@ -1,6 +1,9 @@
 import net from "node:net";
-import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import { SandboxManager, type ParentProxyRouter, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import {
   closeAllEgressConnections,

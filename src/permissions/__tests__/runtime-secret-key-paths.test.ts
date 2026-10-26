@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFil
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ReadFileTool } from "../../tools/file-tools.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
@@ -23,6 +24,7 @@ describe("native host external key path protection", () => {
   let keyPath: string;
 
   beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-runtime-key-paths-")));
     keyPath = join(root, "payload.bin");
     // A synthetic fixture, never a user key; a generic name avoids a static deny.

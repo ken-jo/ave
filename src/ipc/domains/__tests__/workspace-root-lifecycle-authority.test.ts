@@ -6,7 +6,8 @@ useConfigurationOwner();
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 
 const { handlers } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -99,6 +100,7 @@ let grantRoot: string;
 let previousHome: string | undefined;
 
 beforeAll(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   previousHome = process.env.AVE_HOME;
   homeRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-home-"));
   setFixtureOwner(homeRoot);

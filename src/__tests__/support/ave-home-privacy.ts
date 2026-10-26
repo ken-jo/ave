@@ -11,6 +11,8 @@ export async function initializeAveHomeFixture(home: string): Promise<void> {
 
 export function useVerifiedAveHomePrivacy(): void {
   beforeEach(async () => {
+    const { configureHostResources } = await import("../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const { aveHome, setAveHomePrivacyAtBoot } = await import("../../shared/ave-home.js");
     setAveHomePrivacyAtBoot({ enforcement: "win32-dacl", home: aveHome(), sid: "S-1-5-21-100-200-300-1001" });
   });

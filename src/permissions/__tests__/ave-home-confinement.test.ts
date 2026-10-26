@@ -1,5 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { join } from "node:path";
+import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
+
+beforeAll(() => configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }));
 import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";

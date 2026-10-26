@@ -1,7 +1,6 @@
 /** Give each test file its own home within the per-run root, removed at teardown. */
 import { mkdtempSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { beforeEach } from "vitest";
+import { join } from "node:path";
 
 // Do not import the guard before suite mocks register. Module isolation is required for per-file homes.
 
@@ -12,8 +11,3 @@ if (runHome === undefined) {
   );
 }
 process.env.AVE_HOME = mkdtempSync(join(runHome, "f-"));
-
-beforeEach(async () => {
-  const { configureHostResources } = await import("../main/host-resources.js");
-  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
-});

@@ -3,6 +3,7 @@ import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import {
   wireReviewerAgent,
@@ -37,6 +38,7 @@ import {
 let tmpDir: string;
 
 beforeEach(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   tmpDir = mkdtempSync(join(tmpdir(), "permission-policy-p4-rw-"));
 });
 
