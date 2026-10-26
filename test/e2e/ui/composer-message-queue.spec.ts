@@ -1,8 +1,10 @@
 // Pin composer and queue structure from docs/blueprints/composer-redesign-message-queue.md.
-// Live-stream timing and interruption behavior belong to renderer unit coverage.
+// Queue delivery uses a loopback provider so both turns finish without live credentials.
 import { test, expect } from './fixtures';
 import { TEST_IDS, testIdSelector } from "../../../src/shared/test-ids.js";
-import { MAIN_CHAT_GROUP_ID } from "../../../src/contract/app-contract.js";
+import { createServer, type ServerResponse } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { buildLlmSettings } from './seeded-electron.js';
 
 // Scope locators to the main dock because the side chat renders the same controls and test ids.
 const MAIN = '[data-composer-surface="main"] ';
@@ -98,46 +100,102 @@ test('큐 항목 수정 (더블클릭) — input 진입 + Enter commit', async (
   await expect(mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]').first()).toContainText("edited text");
 });
 
-test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "↪ 큐에서" hint 로 표시', async ({ app, mainWindow, t }) => {
-  // A dummy active-provider key passes the initial send gate; the queue bubble must append before later failure.
-  const hasSeededKey = await mainWindow.evaluate(async () => {
-    const api = (window as unknown as {
-      aveApi: {
-        getSettings: () => Promise<unknown>;
-        hasApiKey: (provider: string) => Promise<boolean>;
-        setApiKey: (provider: string, key: string) => Promise<unknown>;
-      };
-    }).aveApi;
-    const settings = await api.getSettings();
-    const provider =
-      settings && typeof settings === 'object' &&
-      'llm' in settings &&
-      settings.llm &&
-      typeof settings.llm === 'object' &&
-      'provider' in settings.llm &&
-      typeof settings.llm.provider === 'string'
-        ? settings.llm.provider
-        : 'azure';
-    await api.setApiKey(provider, 'ave-e2e-dummy-key');
-    return api.hasApiKey(provider);
+test('queue-auto 자동 인입 — done event 시 큐 항목이 user bubble + "↪ 큐에서" hint 로 표시', async ({ mainWindow, t }, testInfo) => {
+  const initialText = "Start the first response";
+  const queuedText = "끝나면 요약";
+  type ModelRequest = {
+    model: string;
+    messages: Array<{ role: string; content: string | Array<{ type: string; text?: string }> }>;
+  };
+  const requests: ModelRequest[] = [];
+  const lastUserText = (request: ModelRequest) => {
+    const content = request.messages.findLast((message) => message.role === "user")?.content;
+    // The first text part is the input; later parts carry host-supplied context.
+    return Array.isArray(content)
+      ? content.find((part) => part.type === "text")?.text
+      : content;
+  };
+  let finishInitialTurn: (() => void) | undefined;
+  const complete = (response: ServerResponse, text: string) => {
+    const chunk = (delta: Record<string, string>, finishReason: string | null) =>
+      `data: ${JSON.stringify({
+        id: "queue-response", object: "chat.completion.chunk", created: 0, model: "queue-model",
+        choices: [{ index: 0, delta, finish_reason: finishReason }],
+      })}\n\n`;
+    response.write(chunk({ content: text }, null));
+    response.write(chunk({}, "stop"));
+    response.end("data: [DONE]\n\n");
+  };
+  const server = createServer(async (request, response) => {
+    if (request.method === "GET" && request.url === "/v1/models") {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify({ object: "list", data: [{ id: "queue-model", object: "model" }] }));
+      return;
+    }
+    if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+      response.writeHead(404).end();
+      return;
+    }
+    const chunks: Buffer[] = [];
+    for await (const chunk of request) chunks.push(Buffer.from(chunk));
+    const body = JSON.parse(Buffer.concat(chunks).toString("utf-8")) as ModelRequest;
+    requests.push(body);
+    response.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache" });
+    // Hold the real first turn until the second keyboard submission is visibly queued.
+    if (lastUserText(body) === initialText) {
+      finishInitialTurn = () => complete(response, "Initial response completed.");
+      response.flushHeaders();
+      return;
+    }
+    complete(response, lastUserText(body) === queuedText ? "Queued response delivered." : "PONG");
   });
-  expect(hasSeededKey).toBe(true);
-  await mainWindow.waitForFunction(
-    () => typeof (window as unknown as { __ave_message_queue_store__?: { add?: unknown } })
-      .__ave_message_queue_store__?.add === "function",
-  );
-  await mainWindow.evaluate(() => {
-    (window as unknown as { __ave_message_queue_store__: { add: (text: string) => void } })
-      .__ave_message_queue_store__.add("끝나면 요약");
-  });
-  const row = mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]').first();
-  await expect(row).toBeVisible();
-  // Address the main dock: preload routes stream frames only to their named chat group.
-  await app.evaluate(({ BrowserWindow }, chatGroupId) => {
-    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed());
-    if (!win) throw new Error("no live window to deliver the done frame to");
-    win.webContents.send("ave:chat:stream", { type: "done", streamId: 1, chatGroupId });
-  }, MAIN_CHAT_GROUP_ID);
-  await expect(mainWindow.locator(`text=${t('chatView.queueInjectLabel')}`).first()).toBeVisible({ timeout: 5_000 });
-  await expect(mainWindow.locator('text=끝나면 요약').first()).toBeVisible();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  try {
+    const settings = buildLlmSettings("openai-compatible", "queue-model");
+    const llm = settings.llm as { vendors: Record<string, { baseUrl?: string }> };
+    llm.vendors["openai-compatible"].baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const readiness = await mainWindow.evaluate(async (llm) => {
+      const api = (window as unknown as {
+        aveApi: {
+          getSettings: () => Promise<{ activeChatModel: unknown }>;
+          updateSettings: (settings: unknown) => Promise<unknown>;
+        };
+      }).aveApi;
+      const before = (await api.getSettings()).activeChatModel;
+      await api.updateSettings({ llm });
+      return { before, after: (await api.getSettings()).activeChatModel };
+    }, llm);
+    expect(readiness.after).toMatchObject({ kind: "api", vendor: "openai-compatible", model: "queue-model" });
+    await expect(mainWindow.locator(MAIN + '[data-testid="iab-status-model"]')).toContainText("queue-model");
+
+    const textarea = mainWindow.locator(MAIN + testIdSelector(TEST_IDS.composerTextarea));
+    await textarea.fill(initialText);
+    await textarea.press("Enter");
+    await expect.poll(() => typeof finishInitialTurn).toBe("function");
+    await expect(mainWindow.locator(MAIN + '[data-testid="composer-cancel-button"]')).toBeVisible();
+    await textarea.fill(queuedText);
+    await textarea.press("Enter");
+    await expect(mainWindow.locator(MAIN + '[data-testid="message-queue-row-text"]')).toHaveText(queuedText);
+    // Enqueuing must not send a second provider request before the first turn ends.
+    expect(requests.filter((body) => lastUserText(body) === initialText)).toHaveLength(1);
+    expect(requests.filter((body) => lastUserText(body) === queuedText)).toHaveLength(0);
+    finishInitialTurn!();
+
+    const transcript = mainWindow.getByTestId("chat-main-column");
+    await expect(transcript.getByText("Initial response completed.", { exact: true })).toBeVisible();
+    await expect(transcript.getByText(t("chatView.queueInjectLabel"), { exact: true })).toBeVisible();
+    await expect(transcript.getByText(queuedText, { exact: true })).toBeVisible();
+    await expect(transcript.getByText("Queued response delivered.", { exact: true })).toBeVisible();
+    await expect(mainWindow.locator(MAIN + '[data-testid="message-queue-panel"]')).toHaveCount(0);
+    expect(requests.filter((body) => lastUserText(body) === initialText)).toHaveLength(1);
+    expect(requests.filter((body) => lastUserText(body) === queuedText)).toHaveLength(1);
+    await testInfo.attach("queue-delivery", {
+      body: JSON.stringify({ readiness, requests }, null, 2),
+      contentType: "application/json",
+    });
+    await mainWindow.screenshot({ path: testInfo.outputPath("queue-delivered.png") });
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
 });

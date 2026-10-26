@@ -44,16 +44,14 @@ export function QuestionOverlay({ api, requests, onResolved }: QuestionOverlayPr
       className="pointer-events-auto absolute inset-x-0 bottom-0 z-40 flex justify-center"
       data-testid={TEST_IDS.questionOverlay}
     >
-      {/* Edge-to-edge horizontally so the chat surface behind the overlay
-         doesn't peek through the padding. Bottom edge is flush with the
-         status bar; StatusBar owns the only separator line. */}
-      <div className="max-h-[min(360px,calc(100%_+_20dvh))] w-full min-w-0 overflow-y-auto rounded-t-lg">
+      {/* Keep the decision card inside the same horizontal gutter as the composer. */}
+      <div className="mx-3 mb-2 max-h-[min(360px,calc(100%_+_20dvh))] w-full min-w-0 max-w-[calc(var(--reading-column-max)-1.5rem)]">
         <AskUserQuestionCard
           key={current.id}
           api={api}
           request={current}
           onResolved={onResolved}
-          className="rounded-none rounded-t-lg border-b-0"
+          className="max-h-[inherit] overflow-y-auto"
         />
       </div>
     </div>

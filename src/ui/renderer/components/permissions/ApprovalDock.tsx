@@ -1,3 +1,4 @@
+import { chatSurface } from "../chat-surface.js";
 import { useCallback, useEffect, useId, useLayoutEffect, useRef } from "react";
 import { canonicalStringify } from "../../../../shared/canonical-json.js";
 import { useTranslation } from "../../../../i18n/react.js";
@@ -259,7 +260,7 @@ export function ApprovalDock({
   return (
     <section
       ref={rootRef}
-      className="pointer-events-auto absolute z-40 mx-auto flex min-w-0 max-w-(--reading-column-max) flex-col overflow-hidden rounded-xl border bg-card text-card-foreground shadow-2xl"
+      className={`${chatSurface({ elevation: "floating" })} pointer-events-auto absolute z-40 mx-auto flex min-w-0 max-w-(--reading-column-max) flex-col overflow-hidden text-input-bar-foreground`}
       style={{
         left: "max(0.75rem, env(safe-area-inset-left, 0px))",
         right: "max(0.75rem, env(safe-area-inset-right, 0px))",
@@ -349,7 +350,7 @@ export function ApprovalLaneCard({
   const remaining = Math.max(0, queue.length - 1);
   return (
     <section
-      className={`pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(60dvh,28rem)] min-w-0 flex-col overflow-hidden @max-[14rem]:overflow-y-auto rounded-xl border bg-card text-card-foreground shadow-2xl`}
+      className={`${chatSurface({ elevation: "floating" })} pointer-events-auto flex ${FLOATING_LANE_ITEM_WIDTH} max-h-[min(60dvh,28rem)] min-w-0 flex-col overflow-hidden @max-[14rem]:overflow-y-auto text-input-bar-foreground`}
       data-testid="approval-lane-card"
       data-approval-request-id={isRationale ? undefined : request.id}
       data-approval-tool-name={isRationale ? undefined : request.toolName}

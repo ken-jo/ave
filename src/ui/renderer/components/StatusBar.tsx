@@ -1,3 +1,4 @@
+import { chatSurface } from "./chat-surface.js";
 import { useRef, useState, type AnimationEvent } from "react";
 import type { PersistentItem, StatusBarSeverity, ToastItem } from "../hooks/use-status-bar.js";
 import { Badge } from "../../../components/ui/badge.js";
@@ -36,13 +37,6 @@ const SEVERITY_TEXT: Record<StatusBarSeverity, string> = {
   success: "text-success",
   warning: "text-warning",
   error: "text-destructive",
-};
-
-const TOAST_TONE: Record<StatusBarSeverity, string> = {
-  info: "border-info/(--opacity-medium) bg-info/(--opacity-faint) text-foreground",
-  success: "border-success/(--opacity-medium) bg-success/(--opacity-faint) text-success",
-  warning: "border-warning/(--opacity-medium) bg-warning/(--opacity-faint) text-warning",
-  error: "border-destructive/(--opacity-medium) bg-destructive/(--opacity-faint) text-destructive",
 };
 
 export function StatusBar(props: StatusBarProps) {
@@ -127,13 +121,13 @@ export function StatusBar(props: StatusBarProps) {
                 type="button"
                 onClick={item.onClick}
                 title={item.tooltip}
-                className="flex items-center gap-1 truncate cursor-pointer hover:opacity-80 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className={`${chatSurface({ shape: "chip", elevation: "flat" })} flex items-center gap-1 truncate px-1.5 cursor-pointer hover:opacity-80 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring`}
               >
                 {inner}
               </button>
             ) : (
               <span
-                className="flex items-center gap-1 truncate"
+                className={`${chatSurface({ shape: "chip", elevation: "flat" })} flex items-center gap-1 truncate px-1.5`}
                 title={item.tooltip}
               >
                 {inner}
@@ -170,7 +164,7 @@ export function StatusBar(props: StatusBarProps) {
           const clickable = toast.notification !== undefined && typeof onToastClick === "function";
           const dismissible = typeof onToastDismiss === "function";
           const baseClass =
-            `flex min-w-0 w-full items-start gap-2 overflow-hidden rounded-md border px-3 py-2 text-[13px] ave-anim-slide-up ${TOAST_TONE[toast.severity]}`;
+            `${chatSurface()} flex min-w-0 w-full items-start gap-2 px-3 py-2 text-[13px] text-input-bar-foreground`;
           const dot = (
             <span
               className={`mt-1 h-2 w-2 shrink-0 rounded-full ${SEVERITY_DOT[toast.severity]}`}

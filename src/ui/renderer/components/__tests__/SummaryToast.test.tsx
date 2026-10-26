@@ -13,5 +13,7 @@ describe("SummaryToast", () => {
     expect(details).not.toHaveAttribute("open");
     expect((details as HTMLDetailsElement).open).toBe(false);
     expect(getByTestId("summary-toast-body")).toBeInTheDocument();
+    expect(details.querySelector("summary")).toHaveClass("focus-visible:ring-2", "normal-case", "tracking-normal");
+    expect(details.querySelector("summary")).not.toHaveClass("uppercase");
   });
 });

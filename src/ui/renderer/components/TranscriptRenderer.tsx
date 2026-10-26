@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type React from "react";
 import { useTranslation } from "../../../i18n/react.js";
+import { chatSurface } from "./chat-surface.js";
 import ReactMarkdown from "react-markdown";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { parseStagedEnvelope } from "../../../shared/staged-origins.js";
@@ -470,12 +471,7 @@ export function TranscriptRenderer({
       continue;
     }
 
-    // Structured compact checkpoint marker — auto-compact 및 manual compact 모두 CheckpointDivider 로 렌더.
-    // CheckpointDivider 의 trigger prop 이 auto/manual variant 를 구분.
-    // sessionId 불변이라 revert 액션 없음.
-    // SummaryToast 가 rendered preamble (12-section structured summary) 노출.
-    // onEnterView / onBranchFrom 은 checkpoint navigation 을 노출하는 소스에서만
-    // 전달된다 — 부재 시 divider 는 렌더하되 진입/분기 액션은 no-op.
+    // Keep the checkpoint label, available navigation and summary in one history unit.
     if (entry.kind === "checkpoint") {
       rendered.push(
         <CheckpointDivider
@@ -485,15 +481,11 @@ export function TranscriptRenderer({
           compactNum={entry.compactNum}
           compactStatus={entry.compactStatus}
           truncatedDir={entry.truncatedDir}
+          summary={entry.summary}
           {...(handleEnterView ? { onEnterView: handleEnterView } : {})}
           {...(handleBranchFrom ? { onBranchFrom: handleBranchFrom } : {})}
         />,
       );
-      if (entry.summary) {
-        rendered.push(
-          <SummaryToast key={`cp-${idx}-summary`} summary={entry.summary} />,
-        );
-      }
       i++;
       continue;
     }
@@ -893,14 +885,14 @@ export function SummaryToast({ summary }: { summary: string }) {
   return (
     <details
       data-testid="summary-toast"
-      className="group w-full min-w-0 max-w-full border-l-2 border-action-compact/(--opacity-medium) bg-action-compact/(--opacity-faint) px-4 py-2.5 mb-3 rounded-r"
+      className="group w-full min-w-0 max-w-full text-foreground"
     >
-      <summary className="cursor-pointer list-none text-[10px] uppercase tracking-wider text-action-compact/(--opacity-intense) font-medium marker:hidden">
-        <span className="mr-1 inline-block transition-transform group-open:rotate-90">▸</span>
-        {t("summaryToast.previousSummary")}
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 rounded-lg text-xs font-medium normal-case tracking-normal text-muted-foreground marker:hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform duration-(--motion-fast) ease-(--motion-ease-out) group-open:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
+        <span className="inline-block lowercase first-letter:uppercase">{t("summaryToast.previousSummary")}</span>
       </summary>
       <div
-        className="prose prose-sm ave-prose mt-2 max-w-none break-words text-sm text-muted-foreground [overflow-wrap:anywhere]"
+        className="prose prose-sm ave-prose mt-2 max-w-none break-words text-xs text-muted-foreground [overflow-wrap:anywhere]"
         data-testid="summary-toast-body"
       >
         <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>
@@ -1033,7 +1025,6 @@ type CompactStatus =
 
 interface Variant {
   label: string;
-  icon: string;
   lineCls: string;
   textCls: string;
 }
@@ -1041,25 +1032,21 @@ interface Variant {
 const STATUS_VARIANTS: Record<CompactStatus, Variant> = {
   summarized: {
     label: "checkpointDivider.statusSummarized",
-    icon: "📦",
-    lineCls: "bg-action-compact/(--opacity-muted)",
-    textCls: "text-action-compact/(--opacity-intense)",
+    lineCls: "bg-border-subtle",
+    textCls: "text-muted-foreground",
   },
   content_truncated: {
     label: "checkpointDivider.statusContentTruncated",
-    icon: "✂️",
     lineCls: "bg-warning/(--opacity-medium)",
     textCls: "text-warning/(--opacity-near)",
   },
   noop: {
     label: "checkpointDivider.statusNoop",
-    icon: "✓",
     lineCls: "bg-muted-foreground/25",
     textCls: "text-muted-foreground/(--opacity-stronger)",
   },
   reduced_insufficient_forced: {
     label: "checkpointDivider.statusReducedInsufficient",
-    icon: "⚠️",
     lineCls: "bg-destructive/(--opacity-medium)",
     textCls: "text-destructive/(--opacity-near)",
   },
@@ -1068,21 +1055,18 @@ const STATUS_VARIANTS: Record<CompactStatus, Variant> = {
 const TRIGGER_VARIANTS: Record<CheckpointTrigger | "default", Variant> = {
   "auto-compact": {
     label: "checkpointDivider.triggerAutoCompact",
-    icon: "📌",
-    lineCls: "bg-action-compact/(--opacity-muted)",
-    textCls: "text-action-compact/(--opacity-intense)",
+    lineCls: "bg-border-subtle",
+    textCls: "text-muted-foreground",
   },
   "manual": {
     label: "checkpointDivider.triggerManual",
-    icon: "✋",
-    lineCls: "bg-muted-foreground/35",
-    textCls: "text-muted-foreground/(--opacity-intense)",
+    lineCls: "bg-border-subtle",
+    textCls: "text-muted-foreground",
   },
   default: {
     label: "checkpointDivider.triggerAutoCompact",
-    icon: "📌",
-    lineCls: "bg-action-compact/(--opacity-muted)",
-    textCls: "text-action-compact/(--opacity-intense)",
+    lineCls: "bg-border-subtle",
+    textCls: "text-muted-foreground",
   },
 };
 
@@ -1092,6 +1076,7 @@ export function CheckpointDivider({
   compactNum,
   compactStatus,
   truncatedDir,
+  summary,
   onEnterView,
   onBranchFrom,
 }: {
@@ -1103,6 +1088,7 @@ export function CheckpointDivider({
   compactStatus?: CompactStatus;
 
   truncatedDir?: string;
+  summary?: string;
   /** Enter view-mode for this checkpoint. */
   onEnterView?: (compactNum: number) => void | Promise<void>;
   /** Fork a new session from this checkpoint. */
@@ -1125,49 +1111,52 @@ export function CheckpointDivider({
       data-trigger={trigger ?? "default"}
       data-compact-status={compactStatus ?? "summarized"}
       data-compact-num={compactNum}
-      className="my-2 flex flex-col gap-1.5 py-2"
+      className={`${chatSurface({ edge: "quiet", elevation: "flat" })} my-2 flex min-w-0 flex-col gap-2 px-3 py-2`}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <span className={`h-px flex-1 ${variant.lineCls}`} />
-        <span className={`text-[10px] ${variant.textCls} font-medium`}>
-          {"───"} {variant.icon} {t("checkpointDivider.checkpoint")}{compactNum !== undefined ? ` #${compactNum}` : ""} · {t(variant.label)} ({t("checkpointDivider.messageCount", { count: messageCount })}) {"───"}
+        <span className={`min-w-0 text-center text-xs ${variant.textCls} font-medium`}>
+          {t("checkpointDivider.checkpoint")}{compactNum !== undefined ? ` #${compactNum}` : ""} · {t(variant.label)} ({t("checkpointDivider.messageCount", { count: messageCount })})
         </span>
         <span className={`h-px flex-1 ${variant.lineCls}`} />
       </div>
       {truncatedDir !== undefined && (
-        <div className="px-4 text-center text-[9.5px] text-muted-foreground/(--opacity-stronger)">
+        <div className="break-words text-center text-xs text-muted-foreground [overflow-wrap:anywhere]">
           {t("checkpointDivider.originalPreserved", { dir: truncatedDir })}
         </div>
       )}
       {hasActions && (
         <div
           data-testid="checkpoint-actions"
-          className="flex items-center justify-center gap-2 px-4"
+          className="flex flex-wrap items-center justify-center gap-2"
         >
           {onEnterView !== undefined && compactNum !== undefined && (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               type="button"
               data-testid="ck-btn-view"
               onClick={() => { void onEnterView(compactNum); }}
-              className="rounded-md border border-[hsl(var(--action-view)/0.35)] bg-[hsl(var(--action-view)/0.08)] px-3 py-1 text-[10.5px] font-medium text-[hsl(var(--action-view))] transition-colors hover:bg-[hsl(var(--action-view)/0.18)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--action-view)/0.4)]"
               aria-label={t("checkpointDivider.viewAriaLabel", { num: compactNum })}
             >
-              📖 {t("checkpointDivider.viewButton")}
-            </button>
+              {t("checkpointDivider.viewButton")}
+            </Button>
           )}
           {onBranchFrom !== undefined && compactNum !== undefined && (
-            <button
+            <Button
+              variant="secondary"
+              size="sm"
               type="button"
               data-testid="ck-btn-fork"
               onClick={() => { void onBranchFrom(compactNum); }}
-              className="rounded-md border border-[hsl(var(--action-branch)/0.35)] bg-[hsl(var(--action-branch)/0.08)] px-3 py-1 text-[10.5px] font-medium text-[hsl(var(--action-branch))] transition-colors hover:bg-[hsl(var(--action-branch)/0.18)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[hsl(var(--action-branch)/0.4)]"
               aria-label={t("checkpointDivider.branchAriaLabel", { num: compactNum })}
             >
-              ↩ {t("checkpointDivider.branchButton")}
-            </button>
+              {t("checkpointDivider.branchButton")}
+            </Button>
           )}
         </div>
       )}
+      {summary && <SummaryToast summary={summary} />}
     </div>
   );
 }

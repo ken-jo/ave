@@ -1,3 +1,4 @@
+import { chatSurface } from "./chat-surface.js";
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { isComposingKeyEvent } from "../utils/ime-key-event.js";
 import { Button } from "../../../components/ui/button.js";
@@ -264,7 +265,7 @@ export function AskUserQuestionCard({
     <Card
       ref={cardRef}
       aria-label={t("askUserQuestionCard.cardAriaLabel")}
-      className={`w-full max-w-none border border-l-4 border-l-message-user bg-card shadow-none focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/(--opacity-medium) ${className ?? ""}`}
+      className={`${chatSurface({ elevation: "floating" })} w-full max-w-none text-input-bar-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/(--opacity-medium) ${className ?? ""}`}
       data-testid="ask-user-question-card"
       role="group"
       tabIndex={0}
