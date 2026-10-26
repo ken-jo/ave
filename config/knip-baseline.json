@@ -450,11 +450,6 @@
     {
       "type": "types",
       "file": "src/data/settings-store.ts",
-      "name": "SystemAppMode"
-    },
-    {
-      "type": "types",
-      "file": "src/data/settings-store.ts",
       "name": "UpdateSettings"
     },
     {
