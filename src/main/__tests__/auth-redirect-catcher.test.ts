@@ -1,6 +1,7 @@
 // Real sockets exercise interface binding, forged requests, and port ownership.
 import { describe, expect, it, afterEach, vi } from "vitest";
 import { request as httpRequest } from "node:http";
+import { Server } from "node:net";
 import { AuthRedirectCatchers } from "../auth-redirect-catcher.js";
 
 const OWNER = "samplemail";
@@ -64,6 +65,22 @@ function hit(
 }
 
 describe("the listener it binds", () => {
+  it("retries a blocked first port before publishing the redirect URI", async () => {
+    const address = vi.spyOn(Server.prototype, "address")
+      .mockReturnValueOnce({ address: "127.0.0.1", family: "IPv4", port: 6000 });
+    const close = vi.spyOn(Server.prototype, "close");
+    try {
+      const catchers = new AuthRedirectCatchers();
+      const { redirectUri } = await open(catchers);
+      expect(Number(new URL(redirectUri).port)).not.toBe(6000);
+      expect(close).toHaveBeenCalled();
+      await expect(hit(redirectUri, "/")).resolves.toMatchObject({ status: 200 });
+    } finally {
+      address.mockRestore();
+      close.mockRestore();
+    }
+  });
+
   it("binds loopback and reports the URI by HOST NAME, not by address", async () => {
     const catchers = new AuthRedirectCatchers();
     const { redirectUri } = await open(catchers);

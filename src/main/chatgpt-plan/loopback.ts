@@ -1,6 +1,7 @@
 import { timingSafeEqual } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
+import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import {
   CHATGPT_PLAN_CALLBACK_HOST,
   CHATGPT_PLAN_CALLBACK_PATH,
@@ -84,10 +85,14 @@ export async function startChatGptPlanCallbackListener(
     response.end(CALLBACK_PAGE);
     deliver(url);
   });
-  try {
-    port = await listen(server, preferredPort);
-  } catch {
-    port = await listen(server, 0);
+  if (preferredPort === 0) {
+    port = await listenFetchLoopback(server);
+  } else {
+    try {
+      port = await listen(server, preferredPort);
+    } catch {
+      port = await listenFetchLoopback(server);
+    }
   }
   return {
     redirectUri: `http://${CHATGPT_PLAN_CALLBACK_HOST}:${port}${CHATGPT_PLAN_CALLBACK_PATH}`,

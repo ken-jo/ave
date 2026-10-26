@@ -3,7 +3,7 @@
 // Plugins receive query parameters only and cannot choose the interface, port, response body, or accepted request shape.
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomUUID } from "node:crypto";
-import { AddressInfo } from "node:net";
+import { listenFetchLoopback } from "../shared/fetch-loopback-listener.js";
 
 // Bounds. Each is a refusal rather than a truncation: a request that exceeds one is not a well-formed redirect from an identity provider, and treating
 // it as one that merely needs trimming would be a guess about a credential path.
@@ -121,17 +121,7 @@ export class AuthRedirectCatchers {
     this.byOwner.set(ownerKey, handle);
     try {
       const server = createServer();
-      const port = await new Promise<number>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(0, "127.0.0.1", () => {
-          const address = server.address() as AddressInfo | string | null;
-          if (address === null || typeof address === "string") {
-            reject(new Error("authRedirect.open: loopback listener reported no port"));
-            return;
-          }
-          resolve(address.port);
-        });
-      });
+      const port = await listenFetchLoopback(server);
       const redirectUri = `http://${options.redirectHost ?? "localhost"}:${port}`;
       const catcher: LiveCatcher = {
         handle,
