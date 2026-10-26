@@ -65,13 +65,16 @@ describe.skipIf(process.platform === "win32")("foreground shell deadline settlem
     let result: ToolExecutionResult | undefined;
     void pending.then((value) => { result = value; });
     try {
-      await vi.waitFor(() => {
-        expect(existsSync(join(dir, "holder.pid"))).toBe(true);
+      // A PID file can exist before its content is written; both PIDs must parse inside the wait.
+      const holderPid = await vi.waitFor(() => {
+        const holder = Number(existsSync(join(dir, "holder.pid")) ? readFileSync(join(dir, "holder.pid"), "utf8") : "");
+        expect(Number.isInteger(holder) && holder > 0).toBe(true);
         const rootPid = Number(readFileSync(join(dir, "root.pid"), "utf8"));
+        expect(Number.isInteger(rootPid) && rootPid > 0).toBe(true);
         expect(() => process.kill(rootPid, 0)).toThrow();
         exitedPids.add(rootPid);
+        return holder;
       });
-      const holderPid = Number(readFileSync(join(dir, "holder.pid"), "utf8"));
       expect(process.kill(holderPid, 0)).toBe(true);
       expect(result).toBeUndefined();
       if (stop === "cancel") controller.abort();

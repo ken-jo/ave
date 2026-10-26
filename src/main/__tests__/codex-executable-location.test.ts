@@ -660,6 +660,8 @@ describe("native access-rule admission", () => {
     // Execute only the resolver from the encoded production probe. All registry and package commands are functions over fixture data; no host query runs.
     const mockedScript = [
       hostModulePreamble(script),
+      // The host's Appx module is never loaded: a cold import can take most of the timeout. Only the production path resolves; the absent case still fails.
+      "function Import-Module { param($Name, $ErrorAction); if ($Name -notlike '*\\Modules\\Appx\\Appx.psd1') { throw 'Fixture module unavailable' } }",
       "$fixture = ConvertFrom-Json -InputObject $env:AVE_DESKTOP_PACKAGE_FIXTURE",
       // The decoded request line, as the host reads it.
       "$request = ConvertFrom-Json -InputObject $env:AVE_ACL_REQUEST_FIXTURE",
