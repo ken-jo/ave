@@ -37,7 +37,8 @@ import { isToolResultStubContent } from "../shared/tool-result-stub.js";
 import { createDlpSafeUuid } from "../shared/dlp-safe-id.js";
 import { createTracer, type ConversationTracer } from "../observability/conversation-trace.js";
 import { t } from "../i18n/index.js";
-import { buildProvider, generateText, pingProvider, resolveVendorName, AI_PROVIDER_PING_TIMEOUT_MS } from "./turn/provider.js";
+import { selectedCompactionModel } from "../shared/compaction-model.js";
+import { buildProvider, cleanModelOverride, generateText, pingProvider, resolveVendorName, AI_PROVIDER_PING_TIMEOUT_MS } from "./turn/provider.js";
 import type { GenerateTextOptions } from "./turn/provider.js";
 import { fireLifecycleEvent, fireUserPromptSubmit } from "./turn/lifecycle-hooks.js";
 import {
@@ -315,6 +316,24 @@ export class ConversationLoop {
     options?: GenerateTextOptions,
   ): Promise<string> {
     return generateText(this.provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, options);
+  }
+
+  /** A recap may choose another model, while keeping the active authentication and endpoint boundary. */
+  async generateCompactionText(
+    prompt: string,
+    systemPrompt?: string,
+    abortSignal?: AbortSignal,
+    outputTokenLimit?: number,
+  ): Promise<string> {
+    const llm = this.deps.settingsService.get("llm");
+    const modelOverride = cleanModelOverride(selectedCompactionModel(llm, this.deps.settingsService.get("marketplace").installedProviderPresets));
+    const options = { ...(outputTokenLimit === undefined ? {} : { outputTokenLimit }) };
+    if (!modelOverride) {
+      return this.generateText(prompt, systemPrompt, abortSignal, { ...options, modelOverride: this.deps.modelOverride });
+    }
+    // Explicit recap selection permits retries, but never substitution by a chat fallback route.
+    const provider = buildProvider({ ...this.deps, modelOverride }, { fallbackEnabled: false });
+    return generateText(provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, { ...options, modelOverride });
   }
 
   /** Probe connectivity without adding a chat-history turn. */

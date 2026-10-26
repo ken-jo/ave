@@ -34,6 +34,8 @@ export interface MemoryReviewerCallOptions {
   maxTokens?: number;
   systemPrompt?: string;
   signal?: AbortSignal;
+  /** A trusted host recap keeps its originating chat route while using this service's queue and prompt contract. */
+  recapCaller?: ActiveChatOneShot;
 }
 
 // The injected generation type makes tools and storage authority unrepresentable.
@@ -99,7 +101,7 @@ export class MemoryReviewerService {
   private readonly backgroundQueue: QueuedReview[] = [];
   private active: QueuedReview | undefined;
   private outstanding = 0;
-  private readonly resolveActiveChatOneShot: () => ActiveChatOneShot | null | undefined;
+  private readonly resolveActiveChatOneShot: MemoryReviewerServiceOptions["resolveActiveChatOneShot"];
 
   constructor({ resolveActiveChatOneShot }: MemoryReviewerServiceOptions) {
     this.resolveActiveChatOneShot = resolveActiveChatOneShot;
@@ -152,7 +154,9 @@ export class MemoryReviewerService {
     try {
       throwIfAborted(entry.options.signal);
       // Resolve the current provider when executing, not when queued.
-      const oneShot = this.resolveActiveChatOneShot();
+      const oneShot = entry.task === "recap" && entry.options.recapCaller
+        ? entry.options.recapCaller
+        : this.resolveActiveChatOneShot();
       if (!oneShot) throw new MemoryReviewerUnavailableError();
 
       const result = await oneShot(entry.prompt, {

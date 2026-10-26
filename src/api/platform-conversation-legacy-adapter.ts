@@ -124,6 +124,8 @@ function projectPlatformConversationEventToLegacyChatFrame(
         estimatedBefore: event.estimatedBefore,
         preflight: event.preflight,
       }));
+    case "compaction.failed":
+      return streamFrame(streamChannel, withStreamId({ type: "compact_failed" }));
     case "compaction.recovery.exhausted":
       return streamFrame(streamChannel, withStreamId({ type: "recovery_exhausted" }));
     case "compaction.completed":

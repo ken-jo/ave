@@ -8,6 +8,7 @@ import { createDynamicTool } from "../../tools/base.js";
 import { getModelPreflightThreshold, estimateMessagesTokens } from "../auto-compact.js";
 import { estimateRequestInputProjection } from "../request-input-projection.js";
 import { t } from "../../i18n/index.js";
+import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
 import {
   makeConversationLoopDeps as makeDeps,
   makeConversationLoopMemoryManager as makeMemoryManager,
@@ -66,7 +67,7 @@ describe("runPreflightGuard — estimate-based trigger", () => {
     expect(estimated).toBeGreaterThanOrEqual(threshold);
 
     const mem = makeMemoryManager(history);
-    const memoryReviewer = makeMemoryReviewer();
+    const memoryReviewer = new MemoryReviewerService({ resolveActiveChatOneShot: () => null });
     const loop = new ConversationLoop(
       makeDeps({ settingsService: settings, memoryManager: mem, memoryReviewer }),
     );
@@ -88,10 +89,14 @@ describe("runPreflightGuard — estimate-based trigger", () => {
 
     expect(compactWithBoundary).toHaveBeenCalled();
     expect(compactWithBoundary).toHaveBeenCalledWith(expect.objectContaining({
-      memoryReviewer,
+      memoryReviewer: expect.objectContaining({ review: expect.any(Function) }),
       preflightTokens: threshold,
     }));
     const compactArgs = vi.mocked(compactWithBoundary).mock.calls[0]?.[0];
+    const generate = vi.spyOn(loop, "generateCompactionText").mockResolvedValue("originating summary");
+    await expect(compactArgs?.memoryReviewer.review("recap", "history", { systemPrompt: "recap contract" }))
+      .resolves.toBe("originating summary");
+    expect(generate).toHaveBeenCalledWith("history", expect.stringContaining("recap contract"), undefined, 1_200);
     expect(compactArgs).not.toHaveProperty("llm");
     expect(compactArgs).not.toHaveProperty("model");
     expect(compactOccurredCb).toHaveBeenCalled();

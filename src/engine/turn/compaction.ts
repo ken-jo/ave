@@ -1,4 +1,5 @@
 import type { ConversationLoop } from "../conversation-loop.js";
+import { selectedCompactionModel } from "../../shared/compaction-model.js";
 import type { GenericMessage, MessageMeta } from "../llm/types.js";
 import type {
   CompactTriggerSource,
@@ -6,7 +7,7 @@ import type {
   RequestProjectionContext,
   TurnCallbacks,
 } from "./types.js";
-import { compactWithBoundary, DEFAULT_PRESERVE_RECENT_TURNS, renderBoundaryAsPreamble } from "../structured-compact.js";
+import { compactWithBoundary, DEFAULT_PRESERVE_RECENT_TURNS, renderBoundaryAsPreamble, type CompactRecapReviewer } from "../structured-compact.js";
 import { CompressionStatus } from "../../shared/compact-status.js";
 import {
   estimateMessagesTokens,
@@ -243,6 +244,33 @@ export type ManualCompactOptions = Pick<TurnCallbacks, "onCompactOccurred" | "on
   focus?: string;
 };
 
+/** Keep the shared reviewer queue, but resolve the summarizer on the loop whose history is being compacted. */
+function compactionReviewer(self: ConversationLoop): CompactRecapReviewer | undefined {
+  const shared = self.deps.memoryReviewer;
+  if (!shared) return undefined;
+  return {
+    review: (task, prompt, options) => shared.review(task, prompt, {
+      ...options,
+      recapCaller: (text, generation) => self.generateCompactionText(
+        text, generation.systemPrompt, generation.signal, generation.maxTokens,
+      ),
+    }),
+  };
+}
+
+function compactionInputBudget(self: ConversationLoop, chatPreflight: number): number | undefined {
+  const llm = self.deps.settingsService.get("llm");
+  const presets = self.deps.settingsService.get("marketplace").installedProviderPresets;
+  const model = selectedCompactionModel(llm, presets);
+  if (!model) return undefined;
+  if (self.provider?.subscriptionRuntime) {
+    // Unverified subscription overrides retain a conservative ceiling until the runtime reports their capacity.
+    return Math.min(chatPreflight, SUBSCRIPTION_FALLBACK_PREFLIGHT, getModelPreflightThreshold(self.provider.vendor, model));
+  }
+  const route = resolveContextWindowForRoute(llm, presets, model);
+  return Math.min(chatPreflight, getModelPreflightThreshold(llm.provider, model, route.contextWindow, route.inputLimit));
+}
+
 export async function manualCompact(self: ConversationLoop, callbacks?: ManualCompactOptions): Promise<{
     compacted: boolean;
     compactedAt: string | null;
@@ -266,7 +294,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
       };
     }
 
-    const memoryReviewer = self.deps.memoryReviewer;
+    const memoryReviewer = compactionReviewer(self);
     if (!memoryReviewer) {
       log.warn("manualCompact skipped: common Memory Reviewer is unavailable");
       return {
@@ -309,6 +337,7 @@ export async function manualCompact(self: ConversationLoop, callbacks?: ManualCo
         compactNum: self.compactNum + 1,
         sessionId: self.sessionId,
         preflightTokens: preflight,
+        summaryInputTokens: compactionInputBudget(self, preflight),
         ...(callbacks?.focus !== undefined ? { focus: callbacks.focus } : {}),
       });
 
@@ -570,7 +599,7 @@ export async function runPreflightGuard(
       return false;
     }
 
-    const memoryReviewer = self.deps.memoryReviewer;
+    const memoryReviewer = compactionReviewer(self);
     if (!memoryReviewer) {
       log.warn("preflight: compact skipped because common Memory Reviewer is unavailable");
       tracePreflightGuard(self, "skipped", "memory-reviewer-unavailable");
@@ -654,6 +683,7 @@ export async function runPreflightGuard(
         compactNum: self.compactNum + 1,
         sessionId: self.sessionId,
         preflightTokens: preflight,
+        summaryInputTokens: compactionInputBudget(self, preflight),
         ...(abortSignal !== undefined && { abortSignal }),
       });
 
@@ -697,9 +727,10 @@ export async function runPreflightGuard(
       });
       return true;
     } catch (err) {
-      // Failed compaction leaves the turn running; context-error handling supplies user guidance.
+      // Failed compaction leaves history and the chat turn intact; report a nonterminal maintenance notice.
       log.warn(`preflight: LLM compact failed — ${(err as Error).message}. Delegating to context_error safety net.`);
       self.tracer.step("COMPACTION_RESULT", { status: "error", triggerSource, message: (err as Error).message });
+      if (!abortSignal?.aborted) callbacks?.onError?.("Automatic compaction failed", undefined, undefined, "compaction");
       return false;
     } finally {
       self.isCompacting = false;

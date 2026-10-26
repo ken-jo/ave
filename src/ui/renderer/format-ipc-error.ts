@@ -3,6 +3,10 @@
 import { t } from "../../i18n/runtime.js";
 
 export const COMMON_IPC_ERROR_MESSAGES: Readonly<Record<string, string>> = {
+  "invalid-shell-action": "formatIpcError.invalidRequest",
+  "session-changed": "shellTasks.sessionChanged",
+  "shell-not-found": "shellTasks.unavailable",
+  "background-unavailable": "shellTasks.unavailable",
   "code-checkpoint-unavailable": "codeRewind.unavailable",
   "code-restore-failed": "codeRewind.failed",
   "code-restore-conflict": "codeRewind.conflict",

@@ -9,6 +9,12 @@ import {
 } from "./conversation-loop-test-helpers.js";
 import { getModelPreflightThreshold } from "../auto-compact.js";
 import { getPreflightThreshold } from "../../shared/context-budget.js";
+import { MemoryReviewerService } from "../../memory/memory-reviewer-service.js";
+import { DEFAULT_SETTINGS } from "../../data/settings-defaults.js";
+import { compactionModelRouteKey } from "../../shared/compaction-model.js";
+import { getLlmVendorSettings } from "../../shared/llm-vendor-defaults.js";
+import { llmModelListCacheKey } from "../../shared/llm-model-list.js";
+import { llmRouteCatalogAddress } from "../../shared/context-budget.js";
 
 vi.mock("../structured-compact.js", () => ({
   DEFAULT_PRESERVE_RECENT_TURNS: 5,
@@ -25,6 +31,33 @@ beforeEach(() => {
 });
 
 describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
+  it("derives the separate summarizer input ceiling from its own endpoint capacity", async () => {
+    const history: GenericMessage[] = [{ role: "user", content: "question" }, { role: "assistant", content: "answer" }];
+    const llm = structuredClone(DEFAULT_SETTINGS.llm);
+    llm.provider = "claude";
+    llm.vendors.claude = { ...getLlmVendorSettings(llm.vendors, "claude"), model: "claude-sonnet-4-5" };
+    llm.compactionModel = "summary-small";
+    llm.compactionModelRoute = compactionModelRouteKey(llm);
+    const address = llmRouteCatalogAddress(llm);
+    llm.modelListCache[llmModelListCacheKey(address.vendor, address.baseUrl, address.credentialScope)] = {
+      vendor: "claude", ...(address.baseUrl ? { baseUrl: address.baseUrl } : {}), endpoint: "https://models.example.test",
+      fetchedAt: new Date().toISOString(), models: ["summary-small"], modelEntries: [{ id: "summary-small", contextLength: 8_000 }],
+    };
+    const deps = makeDeps({ memoryManager: makeMemoryManager(history) });
+    const get = deps.settingsService.get.bind(deps.settingsService);
+    const settingsService = { ...deps.settingsService, get: (key: string) => key === "llm" ? llm : get(key as never) } as typeof deps.settingsService;
+    const loop = new ConversationLoop({ ...deps, settingsService });
+    await loop.resetAndResume("abe633f3-a47a-4758-874e-abe9160daf36");
+    loop.provider = { vendor: "claude", async *streamTurn() { yield { type: "message_complete", stopReason: "end_turn" }; } };
+    vi.mocked(compactWithBoundary).mockResolvedValueOnce({ status: CompressionStatus.NOOP, boundary: null,
+      newHistory: history, removedCount: 0, estimatedAfter: 0, truncatedCount: 0 });
+    await loop.manualCompact();
+    expect(compactWithBoundary).toHaveBeenCalledWith(expect.objectContaining({
+      preflightTokens: getModelPreflightThreshold("claude", "claude-sonnet-4-5"),
+      summaryInputTokens: getModelPreflightThreshold("claude", "summary-small", 8_000),
+    }));
+  });
+
   it("M3-B: removedCount=0 returns generic 'not needed' message (both small-history and deadlock branches)", async () => {
     const small: GenericMessage[] = [
       { role: "user", content: "hi" },
@@ -92,7 +125,7 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
       { role: "user", content: "question" },
       { role: "assistant", content: "answer" },
     ];
-    const memoryReviewer = makeMemoryReviewer();
+    const memoryReviewer = new MemoryReviewerService({ resolveActiveChatOneShot: () => null });
     const loop = new ConversationLoop(
       makeDeps({ memoryManager: makeMemoryManager(history), memoryReviewer }),
     );
@@ -128,10 +161,14 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
 
     expect(result).toMatchObject({ compacted: true, removedMessageCount: 2 });
     expect(compactWithBoundary).toHaveBeenCalledWith(expect.objectContaining({
-      memoryReviewer,
+      memoryReviewer: expect.objectContaining({ review: expect.any(Function) }),
       preflightTokens: getModelPreflightThreshold("openai", "gpt-5.4-nano"),
     }));
     const compactArgs = vi.mocked(compactWithBoundary).mock.calls[0]?.[0];
+    const generate = vi.spyOn(loop, "generateCompactionText").mockResolvedValue("originating summary");
+    await expect(compactArgs?.memoryReviewer.review("recap", "history", { systemPrompt: "recap contract" }))
+      .resolves.toBe("originating summary");
+    expect(generate).toHaveBeenCalledWith("history", expect.stringContaining("recap contract"), undefined, 1_200);
     expect(compactArgs).not.toHaveProperty("llm");
     expect(compactArgs).not.toHaveProperty("model");
   });
@@ -169,7 +206,7 @@ describe("manualCompact — /compact deadlock guidance (M3 scenarios)", () => {
       preflight: expectedPreflight,
     }));
     expect(compactWithBoundary).toHaveBeenCalledWith(expect.objectContaining({
-      memoryReviewer,
+      memoryReviewer: expect.objectContaining({ review: expect.any(Function) }),
       preflightTokens: expectedPreflight,
     }));
     const compactArgs = vi.mocked(compactWithBoundary).mock.calls[0]?.[0];
