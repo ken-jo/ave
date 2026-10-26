@@ -359,13 +359,6 @@ were actually implementable once the open decisions were made autonomously:
   migrated plugins; typecheck + full build green). Only ACTIVATION (populating
   `OUT_OF_PROCESS_PLUGIN_IDS`) is gated — the installed in-house plugins ship
   `category:null` and would fail closed in both paths, so no valid pilot exists.
-- **M4 out-of-process spawner DONE (experimental-isolated)** — `StdioChildTransport` spawns a real
-  subprocess plugin server; a REAL `node`-subprocess test proves discover +
-  register + call round-trip + crash containment (mid-call exit → isError, not a
-  hang). Decision: the spawnable unit is the plugin entry under `node` (no new
-  signed format for the mechanism); OS sandbox is an additive `sandboxWrap`
-  command-prefix layer. The code lives under `src/mcp/experimental/` until a
-  production feature flag or plugin-runtime wiring promotes it.
 - **M8 Apps permission gate DONE** — the host honors `_meta.ui` only from a server
   that advertised `io.modelcontextprotocol/ui` at discovery (pinned to the
   2026-01-26 snapshot). The renderer ui:// iframe CSP is the second layer.
@@ -376,7 +369,7 @@ were actually implementable once the open decisions were made autonomously:
   separate #811 feature.
 
 **Truly-blocked remainder (external prerequisites, NOT effort).** M1/M2/M5
-complete; M3/M4/M6/M7/M8 have their sound cores complete + tested. What is left
+complete; M3/M6/M7/M8 have their sound cores complete + tested. What is left
 genuinely needs inputs unavailable in-session: **upstream draft schemas I cannot
 fetch** (M7 server-side task creation = `experimental-ext-tasks` exact result
 shape; M8 Skills = SEP-2640 `skill://` schema); **renderer + Playwright** (M8

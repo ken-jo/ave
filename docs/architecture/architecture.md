@@ -132,16 +132,6 @@ cancellation, cgroup-v2 OOM evidence and terminal cleanup receipts. The
 [permission policy](permission-policy-design.md#host-native-workload-broker)
 defines the full route and lifecycle contract.
 
-The [Linux workload resource controller](linux-workload-resource-controller.md)
-is an unwired cgroup-v2 foundation for keeping the host controller outside
-per-invocation memory/PID bounds and explicit swap/CPU settings. It is not a
-security sandbox and does not itself advertise the disposable-container route.
-It remains distinct from both implemented routes: strict operator attestation
-for a controller already inside the disposable guest, and the host-native
-Docker workload broker. Runtime integration of this controller remains blocked
-until the workload cannot see or write a parent cgroup hierarchy and the
-resource capability and limits are bound into the execution grant.
-
 Each foreground capture artifact is limited to 5,000,000 bytes. Retained captures
 plus active reservations are limited to 20,000,000 bytes per session. Capture
 reserves the full artifact allowance before it starts and releases unused

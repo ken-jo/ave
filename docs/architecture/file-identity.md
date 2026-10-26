@@ -17,9 +17,7 @@ folder-source state and audit checkpoint validators reject numeric identifiers.
 A legacy numeric record has unknown identity: it cannot establish sameness or
 restore authority. Re-verify the resource and issue a fresh record through its
 owning workflow; do not migrate a rounded number by stringifying it. No automatic
-legacy-record migration or authority restoration is added. The
-[delegated workload capability contract](linux-workload-resource-controller.md)
-defines its in-memory authority and fresh-issuance requirements.
+legacy-record migration or authority restoration is added.
 
 The source-wide identity review also covers the already exact bigint reads in
 `audit/hmac-chain.ts`, `audit/permission-audit-proof.ts`,
