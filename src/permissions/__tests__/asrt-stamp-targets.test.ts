@@ -1,5 +1,5 @@
 import { join, resolve } from "node:path";
-import { afterEach, describe, expect, inject, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import * as homeGuard from "../../shared/ave-home-test-guard.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { useScratchLinks, useTempDirs } from "../../__tests__/test-helpers.js";
@@ -27,6 +27,14 @@ async function initializeFixtureSandbox() {
 }
 
 describe.runIf(process.platform === "win32")("sandbox stamp target isolation", () => {
+  // A fixture profile keeps real-home rows profile-disjoint, so they reach the guard instead of the missing-row filter.
+  beforeEach(() => {
+    const profile = scratch("stamp-profile-");
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("HOME", profile);
+  });
+  afterEach(() => { vi.unstubAllEnvs(); });
+
   it("refuses account targets in another case and names the first target", () => {
     const target = join(inject("realAccountHome").toUpperCase(), ".curlrc");
     expect(() => homeGuard.checkSandboxStampTargets([target, join(scratch(), "allowed")])).toThrow(target);
@@ -53,6 +61,11 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(() => homeGuard.checkSandboxStampTargets([join(scratch(), "target")])).not.toThrow();
     expect(() => homeGuard.checkSandboxStampTargets([join(inject("realAccountHome"), ".ave", "test-tmp", "fixture")])).not.toThrow();
     expect(() => homeGuard.checkSandboxStampTargets([join(inject("realAccountHome"), "test-tmp", "fixture")])).toThrow(refusal);
+  });
+
+  it("allows the Windows run temp root but not its profile siblings", () => {
+    expect(() => homeGuard.checkSandboxStampTargets([join(inject("realAccountHome"), ".ave-test-tmp", "t-run", "fixture")])).not.toThrow();
+    expect(() => homeGuard.checkSandboxStampTargets([join(inject("realAccountHome"), ".ave-test-tmp-sibling", "fixture")])).toThrow(refusal);
   });
 
   it("refuses the default floor before native initialization", async () => {

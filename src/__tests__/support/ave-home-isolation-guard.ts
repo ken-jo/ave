@@ -45,7 +45,9 @@ export function checkSandboxStampTargets(paths: readonly string[]): void {
   }
   for (const path of paths) {
     const action = "stamp or grant sandbox target; constrain the test's deny/allow targets to fixtures:";
-    refuseUnder(path, action, [resolve(realAccountHome)], true, true, join(realAccountHome, ".ave", "test-tmp"));
+    // Windows runs keep TEMP under the profile (runTmpRoot in test-run-dirs.ts), so fixtures there are the run's own.
+    const sanctioned = [join(realAccountHome, ".ave", "test-tmp"), ...(process.platform === "win32" ? [join(realAccountHome, ".ave-test-tmp")] : [])];
+    refuseUnder(path, action, [resolve(realAccountHome)], true, true, sanctioned);
     if (realProgramData !== null) {
       refuseUnder(path, action, [resolve(realProgramData), resolve("C:\\ProgramData")], false, true);
     }
@@ -77,7 +79,7 @@ function accountAveHome(): string {
   return resolve(join(accountHome, ".ave"));
 }
 
-function refuseUnder(path: string, action: string, realHomes: readonly string[], allowTestTmp = true, caseInsensitive = process.platform !== "linux", testTmpRoot?: string): void {
+function refuseUnder(path: string, action: string, realHomes: readonly string[], allowTestTmp = true, caseInsensitive = process.platform !== "linux", testTmpRoots?: readonly string[]): void {
   // Check both named and resolved paths so links cannot hide real-home access.
   const homes = [...new Set(realHomes.flatMap((home) => [home, canonicalPath(home)]))];
   const paths = [resolve(path), canonicalPath(path)];
@@ -86,9 +88,9 @@ function refuseUnder(path: string, action: string, realHomes: readonly string[],
   const inside = (candidate: string, dir: string) =>
     fold(candidate) === fold(dir) || fold(candidate).startsWith(fold(dir).replace(/[\\/]+$/, "") + sep);
   for (const real of homes) {
-    const sanctioned = testTmpRoot ?? join(real, "test-tmp");
+    const sanctioned = testTmpRoots ?? [join(real, "test-tmp")];
     for (const candidate of paths) {
-      if (inside(candidate, real) && !(allowTestTmp && inside(candidate, sanctioned))) {
+      if (inside(candidate, real) && !(allowTestTmp && sanctioned.some((root) => inside(candidate, root)))) {
         throw new Error(`refusing to ${action} ${path} from a test process; it is under the real ${real}`);
       }
     }
