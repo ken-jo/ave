@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync, linkSync, mkdirSync, readFileSync, readdirSync, renameSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -85,13 +86,13 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     expect(permissionSettingsPath(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "settings.json"));
     expect(userPolicyPath(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "policy.json"));
   });
-  it("refuses an invalid migration marker without deleting root configuration", () => {
+  it("recovers an invalid marker only inside the protected configuration boundary", () => {
     const dir = fixture();
-    writeFileSync(join(dir, "settings.json"), "root");
+    writeFileSync(join(dir, "settings.json"), "{}");
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "invalid");
-    expect(() => migrateAveHomeConfiguration(dir)).toThrow();
-    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("root");
-    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("invalid");
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(existsSync(join(dir, "settings.json"))).toBe(false);
+    expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
   });
   it("discards a migration marker copied from an unprotected configuration boundary", () => {
     const dir = fixture();
@@ -105,33 +106,76 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
   });
   it("keeps every root file until the migration marker commits published copies", () => {
     const dir = fixture();
-    writeFileSync(join(dir, "settings.json"), "settings");
-    writeFileSync(join(dir, "policy.json"), "policy");
-    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("Rename(copy, destination, name);",
-      'Rename(copy, destination, name); if (name == "policy.json") throw new InvalidOperationException("migration interrupted");');
-    expect(native("try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json','policy.json'),$u,$false) } catch { 'interrupted' }", dir, source)).toBe("interrupted");
+    writeFileSync(join(dir, "settings.json"), "{}");
+    writeFileSync(join(dir, "policy.json"), '{"version":1}');
+    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("Rename(copy, destination, name, true);",
+      'Rename(copy, destination, name, true); if (name == "policy.json") throw new InvalidOperationException("migration interrupted");');
+    const settingsHash = createHash("sha256").update("{}").digest("base64");
+    const policyHash = createHash("sha256").update('{"version":1}').digest("base64");
+    expect(native(`try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json','policy.json'),$u,$false,@('${settingsHash}','${policyHash}')) } catch { 'interrupted' }`, dir, source)).toBe("interrupted");
     expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
-    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("settings");
-    expect(readFileSync(join(dir, "policy.json"), "utf8")).toBe("policy");
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("{}");
+    expect(readFileSync(join(dir, "policy.json"), "utf8")).toBe('{"version":1}');
     expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
     expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
-    expect(migrateAveHomeConfiguration(dir)).toHaveLength(2);
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
     expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
     expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
+  });
+  it("keeps the final marker absent when interrupted after flushing its stage", () => {
+    const dir = fixture();
+    writeFileSync(join(dir, "settings.json"), "{}");
+    const hash = createHash("sha256").update("{}").digest("base64");
+    const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace("Rename(marker, directory, name);",
+      'if (name == ConfigurationMarker) throw new InvalidOperationException("marker interrupted"); Rename(marker, directory, name);');
+    expect(native(`try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@('${hash}')) } catch { 'interrupted' }`, dir, source)).toBe("interrupted");
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("{}");
+    expect(readdirSync(join(dir, "config")).filter((name) => name.startsWith("..ave-config-migrated.migration-"))).toHaveLength(1);
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    expect(migrateAveHomeConfiguration(dir)).toEqual([]);
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
+  });
+
+  it("refuses an unreadable root source without committing or deleting it", () => {
+    const dir = fixture();
+    const source = join(dir, "settings.json");
+    writeFileSync(source, "{}");
+    execFileSync(win32SystemBinary("icacls"), [source, "/deny", "*S-1-1-0:R", "/q"], { windowsHide: true, stdio: "pipe" });
+    try {
+      expect(migrateAveHomeConfiguration(dir).join("\n")).toContain(source);
+      expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+      expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
+    } finally {
+      execFileSync(win32SystemBinary("icacls"), [source, "/remove:d", "*S-1-1-0", "/q"], { windowsHide: true, stdio: "pipe" });
+    }
+    expect(readFileSync(source, "utf8")).toBe("{}");
+  });
+  it("rejects root bytes changed after reader validation before publishing a marker", () => {
+    const dir = fixture();
+    const hash = createHash("sha256").update("{}").digest("base64");
+    const contents = '{"permissions":{"blockReadsOutsideWorkingDirectories":true}}';
+    writeFileSync(join(dir, "settings.json"), contents);
+    const diagnostics = native(`[HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@('${hash}'))`, dir);
+    expect(diagnostics).toContain("changed after validation");
+    expect(diagnostics).toContain("settings.json");
+    expect(existsSync(join(dir, "config", ".ave-config-migrated"))).toBe(false);
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe(contents);
+    expect(permissionSettingsPath(dir)).toBe(join(dir, "settings.json"));
   });
   it("migrates root configuration into fresh files without foreign read grants", () => {
     const dir = fixture();
     grant(dir, "(OI)(CI)RX");
     const source = join(dir, "settings.json");
-    writeFileSync(source, "private-settings");
+    writeFileSync(source, '{"private":true}');
     grant(source, "R");
     const oldIdentity = statSync(source).ino;
     const before = command("(Get-Acl -LiteralPath $env:AVE_TEST_TARGET).Access | ForEach-Object { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value }", source);
     expect(before).toContain("S-1-1-0");
     expect(migrateAveHomeConfiguration(dir)).toEqual([]);
     const target = join(dir, "config", "settings.json");
-    expect(readFileSync(target, "utf8")).toBe("private-settings");
+    expect(readFileSync(target, "utf8")).toBe('{"private":true}');
     expect(existsSync(source)).toBe(false);
     expect(statSync(target).ino).not.toBe(oldIdentity);
     const copy = JSON.parse(command("$a=Get-Acl -LiteralPath $env:AVE_TEST_TARGET; @($a.Access | ForEach-Object { @{ sid=$_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value; inherited=$_.IsInherited; rights=[int]$_.FileSystemRights } }) | ConvertTo-Json -Compress", target));
@@ -155,11 +199,11 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     const dir = fixture();
     const boundary = join(dir, "config");
     damage(boundary);
-    writeFileSync(join(dir, "policy.json"), "private-policy");
+    writeFileSync(join(dir, "policy.json"), '{"version":1,"requireExplicitApproval":true}');
     expect(ensureAveHomePrivate(dir)).toMatchObject({ enforcement: "win32-dacl", repairs: [boundary] });
     expect(migrateAveHomeConfiguration(dir)).toEqual([]);
     expectBoundary(boundary);
-    expect(readFileSync(join(boundary, "policy.json"), "utf8")).toBe("private-policy");
+    expect(readFileSync(join(boundary, "policy.json"), "utf8")).toBe('{"version":1,"requireExplicitApproval":true}');
     expect(existsSync(join(dir, "policy.json"))).toBe(false);
   });
   it("repairs a foreign boundary ACE through replacement and preserves protected copies", () => {
@@ -326,13 +370,14 @@ describe.runIf(process.platform === "win32")("protected home boundaries", () => 
     const dir = fixture();
     const outside = join(dirname(dir), "stage-collision");
     writeFileSync(outside, "untouched"); setFixtureOwner(outside);
-    writeFileSync(join(dir, "settings.json"), "legacy"); setFixtureOwner(join(dir, "settings.json"));
+    writeFileSync(join(dir, "settings.json"), "{}"); setFixtureOwner(join(dir, "settings.json"));
     const id = "11111111111111111111111111111111";
     linkSync(outside, join(dir, "config", `.settings.json.migration-${id}`));
     const source = WINDOWS_HOME_BOUNDARY_SOURCE.replace('Guid.NewGuid().ToString("N")', `"${id}"`);
-    expect(native("try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false); 'copied' } catch { 'refused' }", dir, source)).toBe("refused");
+    const hash = createHash("sha256").update("{}").digest("base64");
+    expect(native(`try { [HomeDirectoryDacl]::MigrateConfiguration($env:AVE_TEST_TARGET,'config',@('settings.json'),$u,$false,@('${hash}')); 'copied' } catch { 'refused' }`, dir, source)).toBe("refused");
     expect(readFileSync(outside, "utf8")).toBe("untouched");
-    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("legacy");
+    expect(readFileSync(join(dir, "settings.json"), "utf8")).toBe("{}");
     expect(existsSync(join(dir, "config", "settings.json"))).toBe(false);
   });
   it("keeps a notice pending when desktop delivery fails or is not ready", () => {

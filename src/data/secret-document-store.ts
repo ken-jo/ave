@@ -320,6 +320,13 @@ function validateLegacyDocument(value: unknown): Record<string, string> {
   return Object.fromEntries(entries) as Record<string, string>;
 }
 
+export function validateSecretDocument(raw: string): void {
+  if (Buffer.byteLength(raw, "utf8") > MAX_SECRET_DOCUMENT_BYTES) {
+    throw new SecretDocumentValidationError("Secret document exceeds the size limit");
+  }
+  parseStoredState(raw, true);
+}
+
 function parseStoredState(raw: string, allowLegacy: boolean): StoredState {
   let parsed: unknown;
   try {

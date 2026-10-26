@@ -6,6 +6,7 @@ import { withFileLock } from "../lib/with-file-lock.js";
 import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/atomic-file.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome, aveHomeConfigurationDirectory } from "../shared/ave-home.js";
+import { parseConfigurationObject } from "../shared/configuration-document.js";
 import {
   PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
   PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
@@ -222,12 +223,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
 // Read the settings document off disk, throwing when it cannot be interpreted. An empty file is not damage: `withFileLock` creates the target as a zero-byte placeholder so `proper-lockfile` can stat it, so every first write this store ever performs starts from one. A non-object root (`null`, an array, a bare number) IS damage — every reader below indexes the result as a record — so it is rejected here rather than in each of them.
 function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
   const raw = readFileSync(filePath, "utf-8");
-  if (allowEmpty && raw.trim().length === 0) return {};
-  const parsed = JSON.parse(raw) as unknown;
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error("settings root is not a JSON object");
-  }
-  return parsed as Record<string, unknown>;
+  return parseConfigurationObject(raw, allowEmpty);
 }
 
 // Read the settings object a write path is about to merge into. Refusing an unparseable file is the whole point: the previous `catch {}` here merged into an empty object, so the next successful write replaced the user's entire settings document — every unrelated top-level key included — with whatever that one mutation happened to hold.

@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome, aveHomeConfigurationDirectory } from "../shared/ave-home.js";
+import { parsePolicyDocument } from "../shared/configuration-document.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
@@ -119,21 +120,13 @@ async function readPolicyFile(filePath: string, administrative = false): Promise
     return invalid(err instanceof WindowsPolicyReadError ? err.message : `read failed (${typeof code === "string" ? code : "unknown error"})`, false);
   }
 
-  let parsed: unknown;
+  let parsed: Record<string, unknown>;
   try {
-    parsed = JSON.parse(raw);
-  } catch {
-    // Parser error messages can contain the file's contents.
-    return invalid(raw.trim() === "" ? "empty file; not valid JSON" : "not valid JSON");
+    parsed = parsePolicyDocument(raw);
+  } catch (error) {
+    return invalid((error as Error).message);
   }
-  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-    return invalid("not a JSON object");
-  }
-  const record = parsed as Record<string, unknown>;
-  if (record.version !== 1) {
-    return invalid("version mismatch: expected 1");
-  }
-  return { status: "valid", fields: statedPolicy(filePath, record) };
+  return { status: "valid", fields: statedPolicy(filePath, parsed) };
 }
 
 // Load policy. A valid admin file overrides only the fields it states. An invalid or unreadable admin file requires explicit approval and locks edits. Returned `source` field: - "defaults": no file exists, so defaults are used - "user": only the user file exists - "admin": only the admin file exists - "merged": both exist, with admin overriding user values @param userPath User policy file path (default: ~/.ave/config/policy.json) @param adminPath Admin policy file path (default: getAdminPolicyPath)

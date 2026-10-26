@@ -12,6 +12,7 @@ import { readWindowsDirectoryDacls, win32SystemBinary, type WindowsDirectoryDacl
 import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sensitivePaths from "../sensitive-paths.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 
 describe.skipIf(process.platform !== "win32")("Windows administrative policy trust", () => {
   let root: string;
@@ -38,12 +39,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
 
   async function writeUserPolicy(contents: string): Promise<void> {
     await writeFile(admin, contents);
-    const [file] = readWindowsDirectoryDacls([admin]);
-    expect(file.error).toBeUndefined();
-    if (file.ownerSid !== token.currentUserSid) {
-      execFileSync(win32SystemBinary("icacls"), [admin, "/setowner", `*${token.currentUserSid}`, "/q"], { windowsHide: true });
-    }
-    expect(readWindowsDirectoryDacls([admin])[0].ownerSid).toBe(token.currentUserSid);
+    setFixtureOwner(admin);
   }
 
   it("omits machine-owned roots from the Windows deny-write set", () => {

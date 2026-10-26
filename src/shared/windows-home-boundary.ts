@@ -43,17 +43,17 @@ public static class HomeDirectoryDacl {
   private static void Check(int status, string message) {
     if (status < 0) throw new Win32Exception((int)RtlNtStatusToDosError(status), message + " (" + status.ToString("X8") + ")");
   }
-  public static SafeFileHandle OpenHome(string path, SecurityIdentifier user, bool create) {
+  public static SafeFileHandle OpenHome(string path, SecurityIdentifier user, bool create, bool readOnly = false) {
     string fullPath = System.IO.Path.GetFullPath(path);
     string parentPath = System.IO.Path.GetDirectoryName(fullPath);
     string leaf = System.IO.Path.GetFileName(fullPath);
     if (String.IsNullOrEmpty(parentPath) || String.IsNullOrEmpty(leaf)) throw new InvalidOperationException("Directory path is invalid");
     using (SafeFileHandle parent = WindowsOwnerClaim.CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
       if (parent.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory parent handle could not be opened");
-      return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true);
+      return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly);
     }
   }
-  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary) {
+  public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u) {
     if (String.IsNullOrEmpty(leaf) || leaf == "." || leaf == ".." || leaf.IndexOfAny(new char[] { '\\\\', '/', ':' }) >= 0) throw new InvalidOperationException("Directory leaf is invalid");
     IntPtr buffer = Marshal.StringToHGlobalUni(leaf);
     IntPtr memory = IntPtr.Zero;
@@ -66,7 +66,7 @@ public static class HomeDirectoryDacl {
       var attributes = new ObjectAttributes { Length = (uint)Marshal.SizeOf(typeof(ObjectAttributes)), Root = parent.DangerousGetHandle(), Name = memory, Attributes = noReparse ? 0x1040u : 0x40u, Descriptor = security.AddrOfPinnedObject() };
       SafeFileHandle handle;
       IoStatus io;
-      int status = NtCreateFile(out handle, 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, 3u, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
+      int status = NtCreateFile(out handle, readOnly ? 0x00120089u : 0x02100000u, ref attributes, out io, IntPtr.Zero, directory ? 0x10u : 0u, share, disposition, 0x00204020u | (directory ? 1u : 0u), IntPtr.Zero, 0);
       if (status == unchecked((int)0xC0000034)) { if (handle != null) handle.Dispose(); return null; }
       if (status < 0) {
         if (handle != null) handle.Dispose();
@@ -151,7 +151,7 @@ public static class HomeDirectoryDacl {
       return entries.ToArray();
     } finally { Marshal.FreeHGlobal(buffer); }
   }
-  private static void Rename(SafeFileHandle handle, SafeFileHandle parent, string name) {
+  private static void Rename(SafeFileHandle handle, SafeFileHandle parent, string name, bool replace = false) {
     byte[] text = System.Text.Encoding.Unicode.GetBytes(name);
     int rootOffset = IntPtr.Size == 8 ? 8 : 4;
     int lengthOffset = rootOffset + IntPtr.Size;
@@ -160,6 +160,7 @@ public static class HomeDirectoryDacl {
     IntPtr memory = Marshal.AllocHGlobal(size);
     try {
       for (int i = 0; i < size; i++) Marshal.WriteByte(memory, i, 0);
+      if (replace) Marshal.WriteByte(memory, 0, 1);
       Marshal.WriteIntPtr(memory, rootOffset, parent.DangerousGetHandle());
       Marshal.WriteInt32(memory, lengthOffset, text.Length);
       Marshal.Copy(text, 0, IntPtr.Add(memory, textOffset), text.Length);
@@ -208,7 +209,43 @@ public static class HomeDirectoryDacl {
     }
     return skipped;
   }
-  public static string[] MigrateConfiguration(string path, string directory, string[] names, SecurityIdentifier user, bool elevated) {
+  public static bool ConfigurationCommitted(string path, SecurityIdentifier user, bool elevated, bool recover) {
+    using (var directory = OpenHome(path, user, false, !recover)) {
+      if (directory == null) return false;
+      using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false, !recover)) {
+        if (marker == null) return false;
+        if (!OwnerOnly(Read(directory), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
+        if ((Attributes(marker) & 0x410) != 0) throw new InvalidOperationException("Configuration marker is not a regular file");
+        if (MarkerContentValid(marker)) return true;
+      }
+      if (!recover) throw new InvalidOperationException("Configuration marker content is invalid");
+      using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false)) {
+        if (marker == null || !Delete(marker, user)) throw new InvalidOperationException("Configuration marker recovery failed");
+      }
+      return false;
+    }
+  }
+  public static string[] ReadConfigurationSources(string path, string[] names, SecurityIdentifier user, bool elevated) {
+    var result = new string[names.Length];
+    using (var home = OpenHome(path, user, false, true)) {
+      if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
+      for (int index = 0; index < names.Length; index++) {
+        try {
+          using (var source = OpenRelative(home, names[index], user, 1, false, false, false, true, 1)) {
+            if (source == null) continue;
+            if ((Attributes(source) & 0x410) != 0) { result[index] = "!Source is a link, reparse point or non-regular file"; continue; }
+            using (var input = new System.IO.FileStream(source, System.IO.FileAccess.Read))
+            using (var bytes = new System.IO.MemoryStream()) {
+              input.CopyTo(bytes);
+              result[index] = Convert.ToBase64String(bytes.ToArray());
+            }
+          }
+        } catch (Exception) { result[index] = "!Source could not be read safely"; }
+      }
+    }
+    return result;
+  }
+  public static string[] MigrateConfiguration(string path, string directory, string[] names, SecurityIdentifier user, bool elevated, string[] expectedHashes) {
     var diagnostics = new System.Collections.Generic.List<string>();
     using (var home = OpenHome(path, user, false)) {
       if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
@@ -216,36 +253,44 @@ public static class HomeDirectoryDacl {
         if (destination == null || !OwnerOnly(Read(destination), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
         var retained = new System.Collections.Generic.List<IDisposable>();
         var deletions = new System.Collections.Generic.Dictionary<SafeFileHandle, string>();
+        bool refused = false;
         try {
-          foreach (string name in names) {
+          for (int index = 0; index < names.Length; index++) {
+          string name = names[index];
           string oldPath = System.IO.Path.Combine(path, name);
           string newPath = System.IO.Path.Combine(path, directory, name);
           {
-            var source = OpenRelative(home, name, user, 1, false, false, false);
-            if (source == null) continue;
+            SafeFileHandle source;
+            try { source = OpenRelative(home, name, user, 1, false, false, false, false, 1); }
+            catch (Exception) { diagnostics.Add("Configuration source could not be read safely: " + oldPath); refused = true; continue; }
+            if (source == null) {
+              if (!String.IsNullOrEmpty(expectedHashes[index])) { diagnostics.Add("Configuration source disappeared: " + oldPath); refused = true; }
+              continue;
+            }
             retained.Add(source);
             if ((Attributes(source) & 0x410) != 0) {
               diagnostics.Add("Skipped non-regular configuration source \\"" + oldPath + "\\" for \\"" + newPath + "\\"");
+              refused = true;
               continue;
-            }
-            using (var existing = OpenRelative(destination, name, user, 1, false, false, false)) {
-              if (existing != null) {
-                diagnostics.Add("Configuration \\"" + newPath + "\\" already exists; retained legacy \\"" + oldPath + "\\" without merging");
-                continue;
-              }
             }
             string staged = "." + name + ".migration-" + Guid.NewGuid().ToString("N");
             var input = new System.IO.FileStream(source, System.IO.FileAccess.Read);
             retained.Add(input);
+            byte[] contents;
+            using (var bytes = new System.IO.MemoryStream()) { input.CopyTo(bytes); contents = bytes.ToArray(); }
+            string hash;
+            using (var digest = System.Security.Cryptography.SHA256.Create()) { hash = Convert.ToBase64String(digest.ComputeHash(contents)); }
+            if (hash != expectedHashes[index]) { diagnostics.Add("Configuration source changed after validation: " + oldPath); refused = true; continue; }
             using (var copy = OpenRelative(destination, staged, user, 2, false, true, false))
             using (var output = new System.IO.FileStream(copy, System.IO.FileAccess.Write)) {
-              input.CopyTo(output);
+              output.Write(contents, 0, contents.Length);
               output.Flush(true);
-              Rename(copy, destination, name);
+              Rename(copy, destination, name, true);
               deletions.Add(source, oldPath);
             }
           }
           }
+          if (refused) return diagnostics.ToArray();
           EnsureMarker(destination, ConfigurationMarker, user);
           if (!HasMarker(destination, ConfigurationMarker, user)) throw new InvalidOperationException("Configuration migration marker is invalid");
           foreach (var deletion in deletions) {
@@ -323,21 +368,26 @@ public static class HomeDirectoryDacl {
     using (var marker = OpenRelative(directory, name, user, 1, false, true, false)) {
       if (marker == null) return false;
       if ((Attributes(marker) & 0x410) != 0) return false;
+      return MarkerContentValid(marker);
+    }
+  }
+  private static bool MarkerContentValid(SafeFileHandle marker) {
       using (var stream = new System.IO.FileStream(marker, System.IO.FileAccess.Read)) {
         byte[] expected = System.Text.Encoding.UTF8.GetBytes("ave-home-boundary-v1");
         if (stream.Length != expected.Length) return false;
         foreach (byte value in expected) if (stream.ReadByte() != value) return false;
         return true;
       }
-    }
   }
   private static void EnsureMarker(SafeFileHandle directory, string name, SecurityIdentifier user) {
     if (HasMarker(directory, name, user)) return;
-    using (var marker = OpenRelative(directory, name, user, 2, false, true, false))
+    string staged = "." + name + ".migration-" + Guid.NewGuid().ToString("N");
+    using (var marker = OpenRelative(directory, staged, user, 2, false, true, false))
     using (var stream = new System.IO.FileStream(marker, System.IO.FileAccess.Write)) {
       byte[] bytes = System.Text.Encoding.UTF8.GetBytes("ave-home-boundary-v1");
       stream.Write(bytes, 0, bytes.Length);
       stream.Flush(true);
+      Rename(marker, directory, name);
     }
   }
   public static void AcknowledgeRepair(string path, string name, SecurityIdentifier user, bool elevated) {
