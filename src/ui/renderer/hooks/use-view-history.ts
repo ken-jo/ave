@@ -18,7 +18,7 @@ interface HistoryState {
 export interface UseViewHistoryResult {
   canGoBack: boolean;
   canGoForward: boolean;
-  /** Where each control would land, so a caller can NAME the destination. Matters most in chat mode, where the path itself
+  /** Where each control would land, so a caller can NAME the destination. Matters most on narrow windows, where the path itself
    * does not render. */
   backTo: ViewLocation | null;
   forwardTo: ViewLocation | null;

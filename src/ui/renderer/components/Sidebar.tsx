@@ -80,7 +80,7 @@ export interface SidebarProps {
   /** Called with the selected key — same contract as handleViewSelect, which also accepts the `plugin-doctor:<id>` pseudo-key
    * that is intercepted before it can become a location. Hence `string`, not `ViewKey`. */
   onSelect: (viewKey: string) => void;
-  /** Hide new-pane gestures in chat mode; report capacity refusals when invoked in work mode. */
+  /** Hide new-pane gestures on a narrow canvas; report capacity refusals when invoked. */
   onSelectInNewPane?: (viewKey: string) => void;
   /** Plugin views from usePluginMarketplace — same list passed to the main content region. */
   pluginViews: PluginUiExtension[];
@@ -123,16 +123,20 @@ export interface SidebarProps {
   collapsed: boolean;
   /**
    * The expanded card floats OVER the content instead of the shell reserving
-   * room for it (chat mode: a single tile has no width to give). The shell
-   * derives it from the mode verdict; the card then behaves as a transient
+   * room for it when the shell is too narrow to push content. The shell
+   * derives it from its measured width; the card then behaves as a transient
    * surface — it takes focus when it opens, collapses on Escape or a pointer
    * down on the content beside it, and hands focus back to the toggle.
    */
   overlay?: boolean;
   /** Toggle the rail — the leading cluster button next to the traffic lights. */
   onToggleCollapse: () => void;
+  /** Hide the entire sidebar; the shell retains a title-bar reopen control. */
+  onHide?: () => void;
   /** Expanded card width (px). Ignored while collapsed (fixed icon rail). */
   width?: number;
+  /** Available card width from the shell observer; caps rendering without changing the saved preference. */
+  maxWidth?: number;
   /** Per-move drag update of the sidebar width (state only). */
   onWidthChange?: (px: number) => void;
   /** Drag-end / keyboard commit of the sidebar width (persist). Also drives the resize bar's double-click reset (commits
@@ -1793,7 +1797,9 @@ export function Sidebar({
   collapsed,
   overlay = false,
   onToggleCollapse,
+  onHide,
   width = SIDEBAR_DEFAULT_WIDTH,
+  maxWidth,
   onWidthChange,
   onWidthCommit,
   onOpenUnifiedSearch,
@@ -1848,7 +1854,7 @@ export function Sidebar({
       else onSelect(viewKey);
       after?.();
     };
-    // Absent in chat mode, where there is no second pane to open into. The chord and the menu row go with it, together.
+    // Absent on a narrow canvas, where there is no second pane to open into. The chord and the menu row go with it, together.
     const openBeside = newPane && onSelectInNewPane
       ? () => {
         onSelectInNewPane(viewKey);
@@ -1911,6 +1917,7 @@ export function Sidebar({
   const onToggleCollapseRef = useRef(onToggleCollapse);
   onToggleCollapseRef.current = onToggleCollapse;
   const overlayOpen = overlay && !collapsed;
+  const renderedWidth = overlayOpen ? Math.min(width, maxWidth ?? width) : width;
   useEffect(() => {
     if (!overlayOpen) return;
     const aside = asideRef.current;
@@ -1918,7 +1925,36 @@ export function Sidebar({
     cardRef.current?.focus({ preventScroll: true });
     const collapse = () => onToggleCollapseRef.current();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (event.defaultPrevented) return;
+      const active = document.activeElement;
+      // A portaled menu or dialog manages its own keyboard scope above this navigation surface.
+      if (active instanceof HTMLElement && !aside.contains(active)
+        && active.closest('[role="dialog"], [role="menu"], [data-radix-popper-content-wrapper]')) return;
+      if (event.key === "Tab") {
+        const controls = [...aside.querySelectorAll<HTMLElement>('button, a[href], input, select, textarea, [tabindex], [contenteditable="true"]')]
+          .filter((element) => {
+            if (element.tabIndex < 0 || element.matches(':disabled, input[type="hidden"]')
+              || element.closest('[hidden], [inert], [aria-hidden="true"]')) return false;
+            for (let parent: HTMLElement | null = element; parent; parent = parent.parentElement) {
+              const style = getComputedStyle(parent);
+              if (style.display === "none" || style.visibility === "hidden") return false;
+              if (parent === aside) break;
+            }
+            return true;
+          });
+        const first = controls[0];
+        const last = controls.at(-1);
+        if (!first || !last) {
+          event.preventDefault();
+          cardRef.current?.focus({ preventScroll: true });
+        } else if (!aside.contains(active) || active === cardRef.current
+          || (event.shiftKey ? active === first : active === last)) {
+          event.preventDefault();
+          (event.shiftKey ? last : first).focus({ preventScroll: true });
+        }
+        return;
+      }
+      if (event.key !== "Escape") return;
       // An editor inside the card (rename, search) owns its own Escape.
       const target = event.target;
       if (target instanceof HTMLElement && aside.contains(target) && target.closest("input, textarea, [contenteditable=true]")) return;
@@ -2015,13 +2051,16 @@ export function Sidebar({
               // left-aligns the narrower icon-rail body under the cluster.
               // `flex-1 min-h-0` stretches the bare column to the aside's bottom
               // (matching the expanded card) so the collapsed icon-rail body below
-              // — itself `flex-1` — fills top-to-bottom in chat mode instead of
+              // — itself `flex-1` — fills top-to-bottom instead of
               // hugging content height.
               "w-auto items-start flex-1 min-h-0 pointer-events-none [&>*]:pointer-events-auto"
             : // Anchor the resize handle relatively and stretch the card to the aside bottom; persisted inline width owns sizing.
               "ave-surface-raised relative flex-1 min-h-0 overflow-hidden rounded-2xl bg-card",
         ].join(" ")}
-        style={collapsed ? undefined : { width: `${width}px` }}
+        style={collapsed ? undefined : {
+          width: `${renderedWidth}px`,
+          maxWidth: overlayOpen ? maxWidth ?? `calc(100vw - ${SHELL_GUTTER * 2}px)` : undefined,
+        }}
       >
         {/* ── Inner-edge drag-to-resize bar (expanded only) — the SAME shared
             EdgeResizeBar + useEdgeResize primitive the right ChatSidePanel uses,
@@ -2032,13 +2071,13 @@ export function Sidebar({
             SIDEBAR_MIN_WIDTH/MAX; double-click resets to the default. */}
         {resizable ? (
           <EdgeResizeBar
-            width={width}
+            width={renderedWidth}
             edge="end"
             variant="inset"
             onWidthChange={handleWidthChange}
             onWidthCommit={handleWidthCommit}
             min={SIDEBAR_MIN_WIDTH}
-            max={SIDEBAR_MAX_WIDTH}
+            max={overlayOpen ? Math.min(SIDEBAR_MAX_WIDTH, maxWidth ?? SIDEBAR_MAX_WIDTH) : SIDEBAR_MAX_WIDTH}
             resetWidth={SIDEBAR_DEFAULT_WIDTH}
             applyElementRef={cardRef}
             ariaLabel={t("sidebar.resizeHandleAriaLabel")}
@@ -2288,7 +2327,7 @@ export function Sidebar({
         )}
       </div>
 
-      {/* ── Footer — Settings ────────────────────────────────────────── */}
+      {/* ── Footer ───────────────────────────────────────────────────── */}
       {/* Bottom-pinned (`mt-auto`). The footer's `border-t` divider and its
           row share the SAME uniform spacing rhythm as the nav groups above
           (`py-2` + `space-y-0.5`) — no bespoke margin correction. */}
@@ -2302,7 +2341,7 @@ export function Sidebar({
           viewKey="settings"
           label={t(BUILTIN_LABEL_KEYS.settings)}
           icon={<SettingsIcon className={settingsNeedsApiKey || runtimeUnavailable ? "h-4 w-4 text-destructive" : "h-4 w-4"} />}
-          // Active when settings render inline (work mode).
+          // Active when settings render inline.
           isActive={activeView === "settings"}
           {...viewRowHandlers("settings", { open: onOpenSettings })}
           collapsed={compact}
@@ -2336,6 +2375,19 @@ export function Sidebar({
             ) : undefined
           }
         />
+        {onHide && (
+          <Button
+            data-testid="sidebar-hide"
+            variant="ghost"
+            className={compact ? `${RAIL_CONTROL_SIZE_CLASS} shrink-0 p-0` : "h-8 w-full justify-start gap-2 px-2 text-xs"}
+            title={t("mainToolbar.hideSidebar")}
+            aria-label={t("mainToolbar.hideSidebar")}
+            onClick={onHide}
+          >
+            <PanelLeftClose className="h-4 w-4 shrink-0" />
+            {!compact && <span>{t("mainToolbar.hideSidebar")}</span>}
+          </Button>
+        )}
       </div>
       </div>
       </div>

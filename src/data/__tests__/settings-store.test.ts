@@ -2448,7 +2448,7 @@ describe("SettingsService system preferences", () => {
 
   it("defaults closeBehavior to 'hide-to-tray' on a fresh install", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("applies default 'hide-to-tray' when system field is absent on disk (legacy settings.json)", () => {
@@ -2458,16 +2458,16 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   it("round-trips a 'quit' preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { closeBehavior: "quit" } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(reloaded.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic M1; schema-invalid value on disk falls back to default for THIS field only; other settings sections must remain intact.
@@ -2487,7 +2487,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
     expect(service.get("chat").systemPrompt).toBe("preserved-prompt");
     expect(service.get("chat").autoCompact).toBe(false);
     expect(service.get("marketplace").updateCheckEnabled).toBe(false);
@@ -2500,7 +2500,7 @@ describe("SettingsService system preferences", () => {
       "utf-8",
     );
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
   });
 
   // Critic N1; patch-merge must NOT clobber a valid prior preference when an invalid value
@@ -2559,11 +2559,11 @@ describe("SettingsService system — pinned project roots", () => {
   });
 });
 
-describe("SettingsService system — workspace appMode", () => {
+describe("SettingsService system — workspace preferences", () => {
   let userDataPath: string;
 
   beforeEach(() => {
-    userDataPath = mkdtempSync(join(tmpdir(), "settings-system-appmode-"));
+    userDataPath = mkdtempSync(join(tmpdir(), "settings-system-preferences-"));
     mockedElectron.safeStorage.isEncryptionAvailable.mockReturnValue(false);
   });
 
@@ -2572,67 +2572,10 @@ describe("SettingsService system — workspace appMode", () => {
     await cleanupTmpDir(userDataPath);
   });
 
-  it("defaults appMode to 'work' on a fresh install", () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system").appMode).toBe("work");
-  });
-
-  it("round-trips a 'chat' appMode across restart", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { appMode: "chat" } });
-    expect(service.get("system").appMode).toBe("chat");
-
-    const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(reloaded.get("system").appMode).toBe("chat");
-  });
-
-  it("normalizes appMode and closeBehavior independently (one invalid, one valid)", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      currentSettingsJson({ system: { closeBehavior: "quit", appMode: "not-a-mode" } }),
-      "utf-8",
-    );
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    // closeBehavior preserved; appMode falls back to default; neither clobbers the other.
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
-  });
-
-  it("normalizes legacy 'action' appMode on disk to 'work'", () => {
-    writeFileSync(
-      join(userDataPath, "ave-settings.json"),
-      JSON.stringify({ system: { closeBehavior: "quit", appMode: "action" } }),
-      "utf-8",
-    );
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "work", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
-  });
-
-  it("normalizes a legacy 'action' appMode patch to 'work'", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { appMode: "action" as never } });
-    expect(service.get("system").appMode).toBe("work");
-  });
-
-  it("ignores invalid appMode patch and preserves prior 'chat' preference", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { appMode: "chat" } });
-    expect(service.get("system").appMode).toBe("chat");
-
-    await service.patch({ system: { appMode: "garbage" as never } });
-    expect(service.get("system").appMode).toBe("chat");
-  });
-
-  it("patching appMode does not clobber a prior closeBehavior", async () => {
-    const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    await service.patch({ system: { closeBehavior: "quit" } });
-    await service.patch({ system: { appMode: "chat" } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "quit", appMode: "chat", localApiServer: false, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
-  });
-
   it("round-trips a localApiServer=true preference across restart", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     await service.patch({ system: { localApiServer: true } });
-    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", appMode: "work", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
+    expect(service.get("system")).toEqual({ turnCompletionSoundEnabled: true, closeBehavior: "hide-to-tray", localApiServer: true, hardwareAcceleration: DEFAULT_SETTINGS.system.hardwareAcceleration, corpCaEnabled: DEFAULT_SETTINGS.system.corpCaEnabled, corpCaCommonName: DEFAULT_SETTINGS.system.corpCaCommonName, corpCaDebugLog: DEFAULT_SETTINGS.system.corpCaDebugLog, sidePanelWidth: DEFAULT_SETTINGS.system.sidePanelWidth, sidebarWidth: 232, sidePanelFileTreeWidth: 300, sidePanelSplitPreviewPercent: 45, sidePanelSplitSubagentPercent: 45, sidebarActiveTab: "chats", activeView: "home", settingsTab: "llm", pinnedProjectRoots: [], archivedProjectRoots: [], projectLabels: {}, launchAtStartup: false, launchMinimized: false, shutdownCleanupTimeoutMs: DEFAULT_SETTINGS.system.shutdownCleanupTimeoutMs });
 
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("system").localApiServer).toBe(true);

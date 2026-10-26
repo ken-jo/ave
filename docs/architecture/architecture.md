@@ -474,11 +474,20 @@ Important rules:
   meant to take next.
 - Foreground turn-end notices stay out of the composer notification area; system
   notifications are reserved for background or non-focused app state.
-- The main window may show up to four conversations side by side (chat mode
-  shows one). Each tile is its own conversation loop in the main process,
+- The main window uses one responsive layout. A wide canvas may show up to
+  four conversations; a narrow canvas draws the focused tile while preserving
+  the tree, hidden conversations, and the saved maximized choice. Each tile is
+  its own conversation loop in the main process,
   addressed by `chatGroupId` on every per-conversation `ave:chat:*` channel;
   the loops share the memory manager and the window-wide idle services. A
-  closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
+  closed tile releases its loop. Width alone never releases a loop.
+  `src/shared/shell-geometry.ts` owns window bounds and layout thresholds;
+  `use-container-narrow.ts` applies them to independent shell and canvas
+  measurements. Panels dock or overlay inside their tile without changing OS
+  window bounds. The sidebar's expanded, rail, or hidden choice persists in
+  `system.sidebarState`; without a saved choice, the minimum-width window
+  starts hidden. Hidden navigation reserves no content width and reopens from
+  the title bar. See [responsive geometry](../design/tiled-chat-groups.md#responsive-shell-and-canvas).
 - Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
   tray). Only a packaged app on its real profile registers itself as the OS
   `ave://` handler; unpackaged, E2E, relocated-`AVE_HOME` and `--user-data-dir`

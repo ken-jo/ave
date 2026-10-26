@@ -127,6 +127,17 @@ describe("CustomTitleBar", () => {
       expect(queryByTestId("custom-titlebar")).toBeNull();
     });
 
+    it("keeps the sidebar reopen control available in fullscreen without native controls", async () => {
+      const { getByRole, queryByTestId } = render(
+        <CustomTitleBar keepVisibleInFullscreen><button>Show sidebar</button></CustomTitleBar>,
+      );
+      await act(async () => { fullscreenListener?.(true); });
+      expect(getByRole("button", { name: "Show sidebar" })).toBeVisible();
+      expect(queryByTestId("titlebar-minimize")).toBeNull();
+      expect(queryByTestId("titlebar-maximize")).toBeNull();
+      expect(queryByTestId("titlebar-close")).toBeNull();
+    });
+
     it("maximize icon toggles when maximized event fires", async () => {
       const { getByTestId } = render(<CustomTitleBar />);
       // Not maximized initially — Maximize2 icon (title = 최대화)

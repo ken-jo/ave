@@ -708,8 +708,6 @@ export const CHANNELS = {
     syncTitleBarTheme: "window:syncTitleBarTheme",
     maximizedChanged: "window:maximizedChanged",
     fullscreenChanged: "window:fullscreenChanged",
-    resizeForMode: "ave:window:resize-for-mode",
-    resizeForSidePanel: "ave:window:resize-for-side-panel",
     openHtmlPreview: "ave:window:open-html-preview",
   },
   dev: {

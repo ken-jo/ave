@@ -44,7 +44,7 @@ const ko: HomeCopy = {
     note: "Apple Silicon Mac, Windows 10 이상(x64), x86_64 Linux. 공개 빌드는 아직 코드 서명이 없습니다.",
     pic: {
       k: "app-conversation",
-      alt: "Ave 작업 모드. 프로젝트 trail-notes에서 에이전트가 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화",
+      alt: "Ave 대화 화면. 프로젝트 trail-notes에서 에이전트가 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화",
     },
   },
   tour: {
@@ -56,7 +56,7 @@ const ko: HomeCopy = {
   work: {
     eyebrow: "작업 화면",
     title: "대화 넷을 나란히, 각자 따로 굴러갑니다",
-    body: "작업 모드는 창을 최대 네 칸으로 나눕니다. 칸마다 대화와 루프가 따로 있어서, 한쪽이 승인을 기다리는 동안 다른 칸은 계속 답합니다.",
+    body: "창 폭에 맞춰 대화를 최대 네 칸까지 나란히 보여 줍니다. 좁은 창에서는 포커스된 대화 하나를 보여 주고 나머지는 유지합니다. 칸마다 루프가 따로 있어서, 한쪽이 승인을 기다리는 동안 다른 칸은 계속 답합니다.",
     points: [
       ["칸 나누기.", "나란히 또는 위아래로 나눕니다. 칸이 너무 작아지는 방향은 고를 수 없게 표시됩니다."],
       ["Enter는 대기열로.", "답하는 중에 보낸 메시지는 대기열에 들어가 다음 쉼표에서 이어집니다. ⌘/Ctrl+Enter는 지금 멈추고 바로 보냅니다."],
@@ -66,7 +66,7 @@ const ko: HomeCopy = {
     ],
     pic: {
       k: "app-subagents",
-      alt: "작업 모드에서 세 칸에 각각 다른 대화가 열려 있는 화면. 왼쪽은 --json 플래그를 넣고 테스트 6개가 통과한 대화, 오른쪽 위는 서브에이전트 탭에 두 리뷰가 완료로 표시된 대화, 오른쪽 아래는 1.2.0 릴리스 체크리스트",
+      alt: "세 칸에 각각 다른 대화가 열려 있는 화면. 왼쪽은 --json 플래그를 넣고 테스트 6개가 통과한 대화, 오른쪽 위는 서브에이전트 탭에 두 리뷰가 완료로 표시된 대화, 오른쪽 아래는 1.2.0 릴리스 체크리스트",
     },
   },
   surfaces: {
@@ -197,7 +197,7 @@ const en: HomeCopy = {
     note: "Apple Silicon Macs, Windows 10 or later (x64), x86_64 Linux. Public builds are not code-signed yet.",
     pic: {
       k: "app-conversation",
-      alt: "Ave in work mode: in the trail-notes project, the agent added a --json flag to the export command and reports that all six tests pass",
+      alt: "An Ave conversation in the trail-notes project: the agent added a --json flag to the export command and reports that all six tests pass",
     },
   },
   tour: {
@@ -209,7 +209,7 @@ const en: HomeCopy = {
   work: {
     eyebrow: "Workbench",
     title: "Four conversations side by side, each on its own loop",
-    body: "Work mode splits the window into up to four tiles. Each tile has its own conversation and loop, so one can wait for an approval while the others keep answering.",
+    body: "Window width determines how many of up to four tiles fit. A narrow window shows the focused conversation and keeps the others running. Each tile has its own conversation and loop, so one can wait for an approval while the others keep answering.",
     points: [
       ["Split either way.", "Side by side or top and bottom. A direction that would make a tile too small is shown as unavailable."],
       ["Enter queues.", "A message sent while a turn runs joins the queue and is picked up at the next brake point. ⌘/Ctrl+Enter stops the turn and sends now."],
@@ -219,7 +219,7 @@ const en: HomeCopy = {
     ],
     pic: {
       k: "app-subagents",
-      alt: "Work mode with three tiles, each holding a different conversation: the --json change with six passing tests on the left, a parser review with its two finished sub-agents at the top right, and a release checklist for 1.2.0 below it",
+      alt: "Three tiles, each holding a different conversation: the --json change with six passing tests on the left, a parser review with its two finished sub-agents at the top right, and a release checklist for 1.2.0 below it",
     },
   },
   surfaces: {

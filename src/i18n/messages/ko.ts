@@ -3,6 +3,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "mainToolbar.hideSidebar": "사이드바 숨기기",
+  "mainToolbar.showSidebar": "사이드바 표시",
   "sidebar.generalLabel": "일반",
   "shellTasks.title": "실행 명령",
   "shellTasks.shortcut": "Ctrl+B를 누르면 현재 실행 중인 명령을 백그라운드로 보냅니다.",

@@ -11,8 +11,26 @@ import {
   CONTENT_TITLE_INSET,
   RAIL_CONTROL_REM,
   SHELL_GUTTER,
+  DOCK_ENTER_WIDTH,
+  DOCK_EXIT_WIDTH,
+  MIN_DOCKED_TRANSCRIPT_WIDTH,
+  PANE_MIN_WIDTH,
+  SINGLE_TILE_ENTER_WIDTH,
+  SINGLE_TILE_EXIT_WIDTH,
   collapsedBandLeadClearance,
+  sidebarPushThreshold,
 } from "../shell-geometry.js";
+import { SIDE_PANEL_MIN_RESERVE } from "../side-panel.js";
+
+describe("responsive shell thresholds", () => {
+  it("leaves room for both surface floors and keeps a 60px return band", () => {
+    expect(SINGLE_TILE_ENTER_WIDTH).toBe(2 * PANE_MIN_WIDTH + SHELL_GUTTER);
+    expect(DOCK_ENTER_WIDTH).toBe(SIDE_PANEL_MIN_RESERVE + MIN_DOCKED_TRANSCRIPT_WIDTH);
+    expect(SINGLE_TILE_EXIT_WIDTH - SINGLE_TILE_ENTER_WIDTH).toBe(60);
+    expect(DOCK_EXIT_WIDTH - DOCK_ENTER_WIDTH).toBe(60);
+    expect(sidebarPushThreshold(232)).toBe(560);
+  });
+});
 
 /** Tie the source-readable rail reserve literal to title and band geometry. */
 describe("shell geometry: collapsed rail reserve", () => {
