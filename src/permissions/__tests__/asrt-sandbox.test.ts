@@ -1565,7 +1565,10 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
-  it("Windows: profile read denies retain exposed targets and evidence failures", () => {
+  it.each(["linux", "darwin", "win32"] as const)("Windows: profile read denies retain exposed targets and evidence failures on a captured %s host", async host => {
+    vi.resetModules();
+    setProcessPlatform(host);
+    const sandbox = await import("../asrt-sandbox.js");
     const previousHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-deny-evidence-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
@@ -1583,7 +1586,20 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         [missing.toLowerCase(), { status: "missing" } as const],
         [failed.toLowerCase(), { status: "error", reason: "Access denied" } as const],
       ]);
-      const config = buildSandboxConfig({ denyRead: [exposed, privateFile, missing, failed] }, evidence);
+      const facts = await import("../../shared/windows-path-facts.js");
+      const reader = await import("../../shared/windows-read-deny-evidence.js");
+      // A captured POSIX host consumes checked evidence without calling the native helper.
+      // Supply native-shaped pins locally so the identity-less snapshot is actually rejected first.
+      const pin = vi.spyOn(facts, "pinWindowsPaths").mockImplementation(paths => paths.map(path => ({
+        exists: true, canonical: path, volumeSerial: "0x0000000000000001", fileId: "0x00000000000000000000000000000001",
+        volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001",
+        attributes: 0, reparseTag: 0, directory: false, reparseTarget: null, ancestors: [],
+      })));
+      let checked: ReturnType<typeof reader.recheckWindowsReadDenyEvidence>;
+      try { checked = reader.recheckWindowsReadDenyEvidence([exposed, privateFile, missing, failed], evidence); }
+      finally { pin.mockRestore(); }
+      expect(checked.get(windowsReadDenyKey(privateFile))).toEqual({ status: "error", reason: "DACL snapshot target identity is unproven" });
+      const config = sandbox.buildSandboxConfig({ denyRead: [exposed, privateFile, missing, failed] }, checked);
       const denies = bare(config.filesystem.denyRead);
       expect(denies).toContain(exposed);
       // A private snapshot without an object identity is still unproven.
@@ -1595,6 +1611,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = previousHome;
       rmSync(profile, { recursive: true, force: true });
+      vi.resetModules();
     }
   });
 

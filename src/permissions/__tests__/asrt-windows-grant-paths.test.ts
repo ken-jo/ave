@@ -125,6 +125,109 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     } finally { granted.release(); }
   });
 
+  it.each([false, true])("grants and rechecks distinct case-only objects with correct compensation, replaced=%s", async replaced => {
+    await initializeAsrtSandbox({});
+    const nativePin = facts.pinWindowsPaths;
+    const template = nativePin([target])[0]!;
+    const paths = [join(fixture, "Foo"), join(fixture, "foo")];
+    const ids = ["0x00000000000000000000000000000001", "0x00000000000000000000000000000002"];
+    let swapped = false;
+    const pin = vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
+      const index = paths.indexOf(path);
+      return index < 0 ? nativePin([path])[0]! : { ...template, canonical: path,
+        fileId: swapped && index === 1 ? "0x00000000000000000000000000000003" : ids[index]! };
+    }));
+    const holderPid = process.pid + 1;
+    const held = new Map<string, string>();
+    const revokedIds: string[] = [];
+    vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(({ read }) => {
+      for (const path of read ?? []) held.set(ids[paths.indexOf(path)]!, path);
+      swapped = replaced;
+    });
+    vi.mocked(runtime.revokeWindowsAcl).mockImplementationOnce(({ holderPid: revokedHolder }) => {
+      expect(revokedHolder).toBe(holderPid);
+      const outcome = [...held].map(([id, path]) => {
+        revokedIds.push(id);
+        return { path, status: "revoked" as const };
+      });
+      held.clear();
+      return outcome;
+    });
+    const granting = grantWindowsWorkerFilesystemAccess({ holderPid, allowWrite: paths });
+    if (replaced) await expect(granting).rejects.toThrow(/identity changed/);
+    else {
+      const grant = await granting;
+      expect(grant.allowWrite).toEqual(paths);
+      grant.release();
+    }
+    expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ holderPid, read: paths, write: paths }));
+    expect(pin.mock.calls.filter(([requests]) => requests.some(path => paths.includes(path)))).toEqual([[paths], [paths], [paths]]);
+    expect(runtime.revokeWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ holderPid }));
+    expect(revokedIds).toEqual(ids);
+    expect(held.size).toBe(0);
+    // Successful compensation leaves confinement usable for a different holder.
+    const next = await grantWindowsWorkerFilesystemAccess({ holderPid: holderPid + 1, allowRead: [target] });
+    next.release();
+  });
+
+  it.each([false, true])("preserves ordered requests for one object through direct and junction spellings, compensate=%s", async compensate => {
+    const link = join(fixture, "alias");
+    symlinkSync(target, link, "junction");
+    await initializeAsrtSandbox({});
+    const pin = vi.spyOn(facts, "pinWindowsPaths");
+    const canonical = realpathSync.native(target);
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: canonical, status: "revoked" }]);
+    if (compensate) vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => { throw new Error("grant interrupted"); });
+    const granting = grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1,
+      allowRead: [link, target, link], allowWrite: [target] });
+    const ordered = [canonical, canonical, canonical, canonical];
+    if (compensate) {
+      await expect(granting).rejects.toThrow("grant interrupted");
+      expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ read: ordered, write: [canonical] }));
+      const next = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] });
+      next.release();
+    } else {
+      const grant = await granting;
+      try {
+        expect(grant.allowRead).toEqual(ordered);
+        expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ read: ordered, write: [canonical] }));
+        expect(pin.mock.calls.slice(-2)).toEqual([[ordered], [ordered]]);
+      } finally { grant.release(); }
+    }
+  });
+
+  it.each(["missing", "duplicate", "ambiguous"])("requires distinct cleanup evidence for case-only objects when a ledger row is %s", async kind => {
+    await initializeAsrtSandbox({});
+    const nativePin = facts.pinWindowsPaths;
+    const template = nativePin([target])[0]!;
+    const paths = [join(fixture, "Foo"), join(fixture, "foo")];
+    vi.spyOn(facts, "pinWindowsPaths").mockImplementation(requests => requests.map(path => {
+      const index = paths.indexOf(path);
+      return index < 0 ? nativePin([path])[0]! : { ...template, canonical: path,
+        fileId: index === 0 ? "0x00000000000000000000000000000001" : "0x00000000000000000000000000000002" };
+    }));
+    vi.mocked(runtime.grantWindowsAcl).mockImplementationOnce(() => { throw new Error("partial grant"); });
+    const row = { path: paths[0]!, status: "revoked" as const };
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue(kind === "missing" ? [row]
+      : [row, { ...row, path: kind === "duplicate" ? row.path : paths[1]!.toUpperCase() }]);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: paths })).rejects.toThrow(/cleanup failed/);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
+    expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(1);
+  });
+
+  it("retains both case-only deny obligations while preparing an overlapping write grant", async () => {
+    const paths = [join(target, "Foo"), join(target, "foo")];
+    await initializeAsrtSandbox({ denyRead: paths });
+    const read = vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(requests => requests.map(() => ({
+      denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK, parentMask: 0x40, directory: false,
+    })));
+    const grant = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] });
+    try {
+      expect(runtime.stampWindowsAcl).toHaveBeenLastCalledWith(expect.objectContaining({ denyRead: expect.arrayContaining(paths) }));
+      for (const [requests] of read.mock.calls) expect(requests).toEqual(expect.arrayContaining(paths));
+    } finally { grant.release(); }
+  });
+
   it.each(["project", "additional"])("refuses direct and junction ancestors and equality of an authorized %s root", async kind => {
     const ancestor = join(fixture, kind, "team");
     const root = join(ancestor, "repo");

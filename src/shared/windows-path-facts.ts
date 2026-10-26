@@ -3,7 +3,7 @@ import { isAbsolute, win32 } from "node:path";
 import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 
-/** Compare native and requested spellings without changing their admission rules. */
+/** Match native ledger output to requests; this spelling key is never object identity. */
 export function windowsPathKey(path: string): string {
   const ordinary = path.replace(/\//g, "\\").replace(/^\\\\\?\\UNC\\/i, "\\\\").replace(/^\\\\\?\\/, "");
   return win32.normalize(ordinary).replace(/[\\/]+$/, "").toLowerCase();
@@ -27,6 +27,12 @@ interface WindowsPathComponentFacts {
 
 export interface WindowsPathFacts extends WindowsPathComponentFacts {
   readonly ancestors: readonly WindowsPathComponentFacts[];
+}
+
+/** Native object identity is independent of path spelling, aliases and directory case mode. */
+export function windowsObjectKey(facts: Pick<WindowsPathFacts, "volumeSerial" | "fileId">): string {
+  if (facts.volumeSerial === null || facts.fileId === null) throw new Error("Windows object identity is missing");
+  return `${facts.volumeSerial}:${facts.fileId}`;
 }
 
 interface WindowsAce {

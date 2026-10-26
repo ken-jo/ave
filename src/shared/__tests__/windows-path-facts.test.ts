@@ -5,7 +5,7 @@ import { join, resolve } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
-import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
+import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
 const SID = "S-1-5-21-100-200-300-1001";
 const ORDINARY: WindowsPathFacts = { exists: true, canonical: "\\\\?\\C:\\fixture", volumeSerial: "0x0000000000000001",
@@ -17,6 +17,17 @@ function descriptor(aces: WindowsDacl["aces"]): WindowsDacl {
 }
 
 describe("Windows path facts admission and evaluation", () => {
+  it("keys objects by volume and file ID independently of aliases and case", () => {
+    for (const canonical of ["C:\\fixture\\Foo", "C:\\fixture\\foo", "C:\\alias\\FOO~1"]) {
+      const alias: WindowsPathFacts = { ...ORDINARY, canonical };
+      expect(windowsObjectKey(alias)).toBe(windowsObjectKey(ORDINARY));
+    }
+    expect(windowsObjectKey({ ...ORDINARY, fileId: "0x00000000000000000000000000000002" })).not.toBe(windowsObjectKey(ORDINARY));
+    expect(windowsObjectKey({ ...ORDINARY, volumeSerial: "0x0000000000000002" })).not.toBe(windowsObjectKey(ORDINARY));
+    expect(() => windowsObjectKey({ ...ORDINARY, fileId: null })).toThrow(/identity is missing/);
+    expect(() => windowsObjectKey({ ...ORDINARY, volumeSerial: null })).toThrow(/identity is missing/);
+  });
+
   it.each([
     ["\\\\?\\D:\\WORK\\allowed\\", "d:/work/allowed"],
     ["\\\\?\\UNC\\SERVER\\Share\\Allowed\\", "\\\\server\\share\\allowed"],

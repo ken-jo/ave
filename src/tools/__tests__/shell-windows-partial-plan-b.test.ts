@@ -185,6 +185,7 @@ const SHELLS = [
 
 describe("builtin shell - Windows partial Plan-B native execution", () => {
   beforeEach(() => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     __resetShellResolverCache();
     childProcessMock.spawn.mockReset();
     childProcessMock.execFileSync.mockReset();
@@ -203,6 +204,7 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
     __resetShellResolverCache();
