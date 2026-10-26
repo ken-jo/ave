@@ -72,3 +72,8 @@ scripts/hooks/*.mjs text eol=lf
 # and Go tab indentation. Keep their LF text/diffs and check other whitespace.
 # The parser build checks application to the pinned source and asset identity.
 tools/shell-parser/*.patch whitespace=-blank-at-eol,-space-before-tab
+
+# Vendored third-party license texts stay byte-for-byte as published (the
+# Pretendard OFL text has trailing spaces). Editing them to pass the whitespace
+# check would alter a legal text, so only end-of-line blanks are exempt.
+web/public/fonts/**/LICENSE.txt whitespace=-blank-at-eol
