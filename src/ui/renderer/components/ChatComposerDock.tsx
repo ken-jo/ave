@@ -6,7 +6,8 @@ import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/
 import { useCallback, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
 import { SessionGoalPanel } from "./SessionGoalPanel.js";
-import { TurnChangeReview } from "./TurnChangeReview.js";
+import { LatestTurnSummary } from "./LatestTurnSummary.js";
+import type { WorkspaceChanges } from "../preview/workspace-changes.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
 import { StatusBar, type StatusBarProps } from "./StatusBar.js";
 import { Composer, ComposerFrame, type ComposerHandle } from "./Composer.js";
@@ -43,6 +44,8 @@ export interface ChatComposerDockProps {
   workflowApi: AveApi;
   api: AveApi;
   currentSessionId: string;
+  workspaceChanges: WorkspaceChanges;
+  onRevealChangedFile: (path: string) => void;
   messageQueueStore: MessageQueueStore;
   onMessageQueueSendNow: (item: MessageQueueItem) => void;
   question: string;
@@ -305,6 +308,8 @@ export function ChatComposerDock({
   onProjectError,
   projectSelectorOpen,
   onProjectSelectorOpenChange,
+  workspaceChanges,
+  onRevealChangedFile,
 }: ChatComposerDockProps) {
   const { t } = useTranslation();
 
@@ -361,8 +366,7 @@ export function ChatComposerDock({
           heldByApproval={pendingApprovals.length > 0}
         />
         <div className="px-3">
-          <TurnChangeReview api={api} sessionId={currentSessionId} streaming={streaming}
-            onReference={(reference) => composerRef.current?.insertFileReference(reference)} />
+          <LatestTurnSummary changes={workspaceChanges} onReveal={onRevealChangedFile} />
         </div>
       </div>
       <div className={`${dockColumnClass} flex flex-col overflow-x-hidden pb-1`}>

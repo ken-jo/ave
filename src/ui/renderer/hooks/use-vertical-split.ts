@@ -8,7 +8,6 @@ import {
 /** The `SystemSettings` fields that persist a workspace-rail vertical split. One per tab kind whose body is a
  * list-over-viewer layout. */
 export type VerticalSplitStorageKey =
-  | "sidePanelSplitFilePercent"
   | "sidePanelSplitPreviewPercent"
   | "sidePanelSplitSubagentPercent";
 

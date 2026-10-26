@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useId } from "react";
+import { useState, useEffect, useMemo, useRef, useId } from "react";
 import { ChevronDown, ChevronRight, FilePlus2, FilePenLine } from "lucide-react";
 import type { FileEditDiffData, FileEditHunk } from "../utils/file-diff.js";
 import { countDiffLines } from "../utils/file-diff.js";
@@ -20,9 +20,7 @@ const VERB_KEY_BY_TOOL: Record<FileEditDiffData["tool"], string> = {
 export interface FileEditDiffReview {
   hunks: TurnReviewHunk[];
   hunkOffset?: number;
-  disabled: boolean;
   turnId: string;
-  lineCount: number;
   referenceable: boolean;
   onReference?: (reference: FileMentionReference) => void;
 }
@@ -31,7 +29,19 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
   const contentId = useId();
-  const totals = computeLineTotals(data.hunks, review !== undefined);
+  if (review) {
+    return (
+      <div className="min-w-0 space-y-2.5" data-testid="file-edit-diff" data-tool={data.tool}>
+        {data.hunks.map((hunk, index) => (
+          <DiffHunk key={review.hunks[index]?.id ?? index} hunk={hunk} startLine={review.hunks[index]?.oldStartLine ?? 1}
+            separator={false} reviewHunk={review.hunks[index]} review={review} path={data.path}
+            hunkNumber={(review.hunkOffset ?? 0) + index + 1} />
+        ))}
+        {data.hunks.length === 0 && <p className="text-xs text-muted-foreground">{t("fileEditDiff.noChanges")}</p>}
+      </div>
+    );
+  }
+  const totals = computeLineTotals(data.hunks);
   const verb = t(data.isNewFile ? "fileEditDiff.verbCreate" : VERB_KEY_BY_TOOL[data.tool]);
   const Icon = data.isNewFile ? FilePlus2 : FilePenLine;
   const headerContent = (
@@ -81,23 +91,6 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
       data-new-file={data.isNewFile ? "true" : "false"}
       data-truncated={data.truncated ? "true" : "false"}
     >
-      {review ? (
-        <div className="flex min-w-0 items-center border-b border-border bg-muted/(--opacity-muted)">
-          <button type="button" onClick={() => setOpen((value) => !value)}
-            aria-expanded={open} aria-controls={contentId}
-            aria-label={t(open ? "fileEditDiff.reviewCollapseFile" : "fileEditDiff.reviewExpandFile", { path: data.path })}
-            className="shrink-0 rounded px-2 py-2 hover:bg-muted">
-            {open ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
-          </button>
-          <button type="button"
-            disabled={review.disabled || !review.referenceable || !review.onReference}
-            aria-label={t("fileEditDiff.reviewReferenceFile", { path: data.path, end: review.lineCount })}
-            onClick={() => review.onReference?.({ path: data.path, startLine: 1, endLine: review.lineCount, turnId: review.turnId })}
-            className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-3 text-[11px] hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50">
-            {headerContent}
-          </button>
-        </div>
-      ) : (
       <button
         type="button"
         onClick={() => setOpen((o) => !o)}
@@ -112,19 +105,16 @@ export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?
         )}
             {headerContent}
       </button>
-      )}
       {open && (
         <div id={contentId} className="font-mono text-xs leading-[1.55]">
           {data.hunks.map((hunk, i) => (
             <DiffHunk
-              key={review?.hunks[i]?.id ?? i}
+              key={i}
               hunk={hunk}
-              startLine={review?.hunks[i]?.oldStartLine ?? hunkStartLine(data.hunks, i)}
+              startLine={hunkStartLine(data.hunks, i)}
               separator={data.hunks.length > 1 && i > 0}
-              reviewHunk={review?.hunks[i]}
-              review={review}
               path={data.path}
-              hunkNumber={(review?.hunkOffset ?? 0) + i + 1}
+              hunkNumber={i + 1}
             />
           ))}
           {totals.added === 0 && totals.removed === 0 && (
@@ -156,30 +146,43 @@ function DiffHunk({
   hunkNumber: number;
 }) {
   const { t } = useTranslation();
-  const oldPreview = reviewHunk ? reviewPreview(hunk.oldText) : undefined;
-  const newPreview = reviewHunk ? reviewPreview(hunk.newText) : undefined;
+  const hasReviewHunk = reviewHunk !== undefined;
+  const preview = useMemo(() => hasReviewHunk ? {
+    old: reviewPreview(hunk.oldText), next: reviewPreview(hunk.newText),
+    oldCount: countReviewLines(hunk.oldText), newCount: countReviewLines(hunk.newText),
+  } : undefined, [hasReviewHunk, hunk.oldText, hunk.newText]);
+  const oldPreview = preview?.old;
+  const newPreview = preview?.next;
   const removed = oldPreview?.lines ?? (hunk.oldText.length > 0 ? hunk.oldText.split("\n") : []);
   const added = newPreview?.lines ?? (hunk.newText.length > 0 ? hunk.newText.split("\n") : []);
   let oldLine = reviewHunk?.oldStartLine ?? startLine;
   let newLine = reviewHunk?.newStartLine ?? startLine + removed.length;
+  if (reviewHunk && review) {
+    const disabled = !review.referenceable || !review.onReference;
+    return (
+      <button type="button" disabled={disabled} data-hunk-id={reviewHunk.id}
+        aria-label={t("fileEditDiff.reviewReferenceHunk", { number: hunkNumber, path, start: reviewHunk.startLine, end: reviewHunk.endLine })}
+        onClick={() => review.onReference?.({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine,
+          turnId: review.turnId, hunkId: reviewHunk.id })}
+        className="group block w-full min-w-0 overflow-hidden rounded-[10px] border border-border bg-background text-left outline-none enabled:hover:border-(--file-reference-fg) focus-visible:border-(--file-reference-fg) focus-visible:ring-2 focus-visible:ring-(--file-reference-fg) disabled:cursor-default">
+        <span className="flex min-w-0 items-center gap-2 bg-muted/(--opacity-muted) px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">@@ -{reviewHunk.oldStartLine},{preview?.oldCount} +{reviewHunk.newStartLine},{preview?.newCount} @@</span>
+          {!disabled && <span className="shrink-0 font-sans font-medium text-(--file-reference-fg) opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
+            {t("fileEditDiff.hunkReferenceCue", { start: reviewHunk.startLine, end: reviewHunk.endLine })}
+          </span>}
+        </span>
+        <span className="block font-mono text-xs leading-5">
+          {removed.map((text, index) => <DiffLine key={`r-${index}`} kind="removed" lineNo={oldLine++} text={text} columns />)}
+          {added.map((text, index) => <DiffLine key={`a-${index}`} kind="added" lineNo={newLine++} text={text} columns />)}
+        </span>
+        {(oldPreview?.truncated || newPreview?.truncated) && (
+          <span className="block px-2.5 py-1 font-sans text-[11px] text-muted-foreground">{t("fileEditDiff.reviewPreviewTruncated")}</span>
+        )}
+      </button>
+    );
+  }
   return (
-    <div
-      role={reviewHunk && review ? "button" : undefined}
-      tabIndex={reviewHunk && review && !review.disabled && review.referenceable && review.onReference ? 0 : undefined}
-      aria-disabled={reviewHunk && review ? review.disabled || !review.referenceable || !review.onReference : undefined}
-      aria-label={reviewHunk && review ? t("fileEditDiff.reviewReferenceHunk", { number: hunkNumber, path, start: reviewHunk.startLine, end: reviewHunk.endLine }) : undefined}
-      data-hunk-id={reviewHunk?.id}
-      className={reviewHunk ? "outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring" : undefined}
-      onClick={() => {
-        if (reviewHunk && review && !review.disabled && review.referenceable) review.onReference?.({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine, turnId: review.turnId, hunkId: reviewHunk.id });
-      }}
-      onKeyDown={(event) => {
-        if (event.target === event.currentTarget && (event.key === "Enter" || event.key === " ") && reviewHunk && review && !review.disabled && review.referenceable && review.onReference) {
-          event.preventDefault();
-          review.onReference({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine, turnId: review.turnId, hunkId: reviewHunk.id });
-        }
-      }}
-    >
+    <div>
       {separator && (
         <div className="border-t border-dashed border-border/(--opacity-strong) bg-muted/(--opacity-light) px-3 py-0.5 text-[10px] text-muted-foreground">
           @@ {t("fileEditDiff.nextHunk")}
@@ -202,21 +205,29 @@ function DiffHunk({
 
 function reviewPreview(text: string): { lines: string[]; truncated: boolean } {
   const excerpt = text.slice(0, REVIEW_PREVIEW_MAX_CHARACTERS);
-  const lines = sidecarLines(excerpt);
+  const lines = [...excerpt.matchAll(/([^\r\n]*)(?:\r\n|\r|\n)|([^\r\n]+)$/g)].map((line) => line[1] ?? line[2] ?? "");
   return {
     lines: lines.slice(0, REVIEW_PREVIEW_MAX_LINES),
     truncated: excerpt.length < text.length || lines.length > REVIEW_PREVIEW_MAX_LINES,
   };
 }
 
+function countReviewLines(text: string): number {
+  let count = 0;
+  for (const _line of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g)) count++;
+  return count;
+}
+
 function DiffLine({
   kind,
   lineNo,
   text,
+  columns = false,
 }: {
   kind: "added" | "removed";
   lineNo: number;
   text: string;
+  columns?: boolean;
 }) {
   // Status foreground tokens are designed for solid buttons/badges. Reusing
   // them on a translucent diff wash can produce white-on-pastel text in light
@@ -226,6 +237,16 @@ function DiffLine({
     ? { background: "var(--diff-add)", accent: "var(--diff-add-fg)" }
     : { background: "var(--diff-remove)", accent: "var(--diff-remove-fg)" };
   const sigil = kind === "added" ? "+" : "−";
+  if (columns) {
+    return (
+      <span className="flex min-w-0 text-foreground" style={{ backgroundColor: colors.background }} data-diff-kind={kind}>
+        <span data-line-column="old" className="w-8 shrink-0 select-none pr-1.5 text-right text-[11px] text-foreground">{kind === "removed" ? lineNo : ""}</span>
+        <span data-line-column="new" className="w-8 shrink-0 select-none pr-1.5 text-right text-[11px] text-foreground">{kind === "added" ? lineNo : ""}</span>
+        <span aria-hidden="true" className="w-4 shrink-0 select-none font-semibold">{sigil}</span>
+        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-2.5 [overflow-wrap:anywhere]">{text || " "}</span>
+      </span>
+    );
+  }
   return (
     <div
       className="flex min-w-0 gap-2 border-l-[3px] px-3 text-foreground"
@@ -245,12 +266,11 @@ function DiffLine({
   );
 }
 
-function computeLineTotals(hunks: FileEditHunk[], exactHunkText: boolean): { added: number; removed: number } {
-  const countLines = (text: string) => countDiffLines(text) - (exactHunkText && text.endsWith("\n") ? 1 : 0);
+function computeLineTotals(hunks: FileEditHunk[]): { added: number; removed: number } {
   return hunks.reduce(
     (acc, h) => ({
-      added: acc.added + countLines(h.newText),
-      removed: acc.removed + countLines(h.oldText),
+      added: acc.added + countDiffLines(h.newText),
+      removed: acc.removed + countDiffLines(h.oldText),
     }),
     { added: 0, removed: 0 },
   );

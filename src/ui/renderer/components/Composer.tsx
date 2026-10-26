@@ -46,7 +46,7 @@ import {
   type SuggestedRepliesSnapshot,
 } from "../hooks/use-suggested-replies.js";
 import { TEST_IDS } from "../../../shared/test-ids.js";
-import { formatFileMentionReference, type FileMentionReference } from "../../../shared/file-mention-reference.js";
+import { FILE_MENTION_REFERENCE_POLICY, formatFileMentionReference, type FileMentionReference } from "../../../shared/file-mention-reference.js";
 
 export interface ComposerHandle {
   focus(): void;
@@ -55,6 +55,8 @@ export interface ComposerHandle {
   insertAtCursor(insertion: string): void;
   /** Insert a location marker and its existing file attachment together, honoring the current composer gates. */
   insertFileReference(reference: FileMentionReference): { inserted: boolean };
+  /** Insert an ordinary path mention through the existing attachment marker path. */
+  insertFileMention(path: string): { inserted: boolean };
   /**
    * The live textarea element. Window-level shortcuts (⌘⏎, Esc) are owned by
    * the composer's keyboard hook, and several composers can be mounted at once
@@ -286,8 +288,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [liveAttachments],
   );
   const chipStripCount = liveAttachments.length - resourceCount;
-  const referenceInputRef = useRef({ disabled, filesEnabled, chipStripCount });
-  referenceInputRef.current = { disabled, filesEnabled, chipStripCount };
+  const referenceInputRef = useRef({ disabled, filesEnabled, chipStripCount, attachments: liveAttachments });
+  referenceInputRef.current = { disabled, filesEnabled, chipStripCount, attachments: liveAttachments };
   const [dropActive, setDropActive] = useState(false);
 
   // Shared by resource and file mentions: replace the `@token` with the marker and add the attachment in one flushSync.
@@ -387,15 +389,18 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
     [text, onTextChange],
   );
 
-  const insertFileReference = useCallback((reference: FileMentionReference): { inserted: boolean } => {
+  const insertFileMentionAttachment = useCallback((path: string, location?: FileAttachment["location"]): { inserted: boolean } => {
     const input = referenceInputRef.current;
     if (input.disabled || !input.filesEnabled || isComposingRef.current || !taRef.current) return { inserted: false };
+    if (typeof path !== "string" || !path || path.length > FILE_MENTION_REFERENCE_POLICY.maxPathChars || /[\u0000-\u001f\u007f]/.test(path)) return { inserted: false };
+    if (input.attachments.some((attachment) => attachment.kind === "file" && attachment.reference
+      && attachment.path === path && attachment.location?.startLine === location?.startLine
+      && attachment.location?.endLine === location?.endLine && attachment.location?.turnId === location?.turnId
+      && attachment.location?.hunkId === location?.hunkId)) return { inserted: false };
     if (input.chipStripCount >= ATTACH_MAX_COUNT) {
       onWarning?.(t("composer.attachLimitPasteBlocked", { max: ATTACH_MAX_COUNT }));
       return { inserted: false };
     }
-    // Validation here protects draft state; the host independently verifies the selector and read authorization on send.
-    try { formatFileMentionReference(1, reference); } catch { return { inserted: false }; }
     const current = textRef.current;
     const ta = taRef.current;
     const saved = selectionRef.current;
@@ -403,14 +408,32 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       ? { start: ta.selectionStart, end: ta.selectionEnd }
       : saved?.text === current ? saved : { start: current.length, end: current.length };
     const n = allocateN();
-    const { path, ...location } = reference;
-    const name = path.slice(path.lastIndexOf("/") + 1);
+    const displayPath = path.replace(/\\/g, "/");
+    const name = displayPath.slice(displayPath.lastIndexOf("/") + 1);
     const extension = name.lastIndexOf(".");
     spliceMention({ id: crypto.randomUUID(), n, kind: "file", path, name,
-      ext: extension < 0 ? "" : name.slice(extension + 1), bytes: 0, reference: true, location },
+      ext: extension < 0 ? "" : name.slice(extension + 1), bytes: 0, reference: true, ...(location ? { location } : {}) },
     `[File #${n}]`, range, current.slice(range.start, range.end));
     return { inserted: true };
   }, [onWarning, t, allocateN, spliceMention]);
+
+  const insertFileReference = useCallback((reference: FileMentionReference): { inserted: boolean } => {
+    // The host independently verifies this selector and read authorization when the message is sent.
+    try { formatFileMentionReference(1, reference); } catch { return { inserted: false }; }
+    const { path, ...location } = reference;
+    return insertFileMentionAttachment(path, location);
+  }, [insertFileMentionAttachment]);
+
+  const insertFileMention = useCallback((path: string) => insertFileMentionAttachment(path), [insertFileMentionAttachment]);
+
+  const removeFileReference = useCallback((attachment: FileAttachment) => {
+    const next = textRef.current.split(`[File #${attachment.n}]`).join("");
+    flushSync(() => {
+      onAttachmentsChange((previous) => previous.filter((item) => item.id !== attachment.id));
+      onTextChange(next);
+    });
+    taRef.current?.focus();
+  }, [onAttachmentsChange, onTextChange]);
 
   // Expose imperative API to parents (focus + caret-aware insertion).
   // Deps include `insertAtCursor` (which itself depends on `text` /
@@ -422,9 +445,10 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
       focus() { taRef.current?.focus(); },
       insertAtCursor(insertion: string) { insertAtCursor(insertion); },
       insertFileReference,
+      insertFileMention,
       textarea() { return taRef.current; },
     }),
-    [insertAtCursor, insertFileReference],
+    [insertAtCursor, insertFileReference, insertFileMention],
   );
 
   const warnImageAttachmentUnavailable = useCallback(() => {
@@ -796,6 +820,8 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
   );
 
   const isFull = chipStripCount >= ATTACH_MAX_COUNT;
+  const referenceAttachments = liveAttachments.filter((attachment): attachment is FileAttachment => attachment.kind === "file" && attachment.reference === true);
+  const ordinaryAttachments = liveAttachments.filter((attachment) => attachment.kind !== "file" || !attachment.reference);
   const ghostText = suggestedReplies?.text ?? null;
   // Spec §3 line 42 + §8: ghost hidden when (a) user has typed any char, (b) IME composition active (preedit), (c) no
   // suggestion, or (d) dismissed.
@@ -838,6 +864,14 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
 
   return (
     <div data-testid={TEST_IDS.composer} className="min-w-0" {...dropHandlers}>
+      {referenceAttachments.length > 0 && (
+        <div data-testid="composer-reference-strip" className="flex min-w-0 flex-wrap gap-1.5 px-3 pt-2 pb-1">
+          {referenceAttachments.map((attachment) => (
+            <AttachmentChip key={attachment.id} attachment={attachment} total={liveAttachments.length}
+              onRemove={() => removeFileReference(attachment)} />
+          ))}
+        </div>
+      )}
       <div
         data-testid={TEST_IDS.composerInputBar}
         className="relative flex min-w-0 w-full items-stretch gap-0 overflow-hidden"
@@ -855,24 +889,24 @@ export const Composer = forwardRef<ComposerHandle, ComposerProps>(function Compo
         {/* Strip is rendered ONLY when there is at least one attachment so
             the empty state does not reserve horizontal space. Single chip
             inline; 2+ collapse into a stacked card with an overlay. */}
-        {liveAttachments.length === 1 ? (
+        {ordinaryAttachments.length === 1 ? (
           <div
             data-testid="composer-strip"
             className="flex min-w-0 shrink-0 items-center pl-3 pr-0"
           >
             <AttachmentChip
-              attachment={liveAttachments[0]}
+              attachment={ordinaryAttachments[0]}
               total={liveAttachments.length}
               onOpenExternal={openExternal}
             />
           </div>
-        ) : liveAttachments.length >= 2 ? (
+        ) : ordinaryAttachments.length >= 2 ? (
           <div
             data-testid="composer-strip"
             className="flex min-w-0 shrink-0 items-center pl-3 pr-0"
           >
             <AttachmentChipCollapsed
-              attachments={liveAttachments}
+              attachments={ordinaryAttachments}
               onOpenExternal={openExternal}
             />
           </div>

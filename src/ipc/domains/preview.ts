@@ -35,6 +35,7 @@ import { readPreviewDocumentInput } from "../../tools/preview-document-input.js"
 import { acquireParseSlot } from "../../tools/preview-document-process.js";
 import { DOCUMENT_PARSE_MESSAGES } from "../../tools/preview-document-protocol.js";
 import { previewPageFormatOf } from "../../shared/preview-page-document.js";
+import { sniffComposerImageFormat } from "../../shared/composer-image-input.js";
 import {
   PREVIEW_DOCUMENT_LIMITS,
   previewDocumentFormatOf,
@@ -55,6 +56,8 @@ export interface PreviewReadFileResult {
   /** Text was truncated by the line window. */
   truncated?: boolean;
   lineCount?: number;
+  /** Signature-verified passive image bytes; line-window requests remain text-only. */
+  image?: { dataUrl: string; mimeType: string };
   error?:
     | "unauthorized"
     | "path-not-allowed"
@@ -122,6 +125,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
       let offset = 0;
       let limit = PREVIEW_LINE_LIMIT;
       let workspaceRoot: string | undefined;
+      let hasLineWindow = false;
       if (rawWindow !== undefined) {
         if (!rawWindow || typeof rawWindow !== "object" || Array.isArray(rawWindow)
           || Object.keys(rawWindow).some((key) => !["offset", "limit", "workspaceRoot"].includes(key))) {
@@ -137,6 +141,7 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
         offset = window.offset as number | undefined ?? 0;
         limit = Math.min(window.limit as number | undefined ?? PREVIEW_LINE_LIMIT, PREVIEW_LINE_LIMIT);
         workspaceRoot = window.workspaceRoot as string | undefined;
+        hasLineWindow = window.offset !== undefined || window.limit !== undefined;
       }
 
       const { cwd, extraAllowed } = currentReadScope();
@@ -163,10 +168,18 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
             message: `file ${stat.size} bytes exceeds ${MAX_TEXT_FILE_BYTES}`,
           };
         }
-        if (await isBinaryFile(resolved)) {
+        const input = hasLineWindow ? undefined : await readPreviewDocumentInput(resolved, undefined, MAX_TEXT_FILE_BYTES);
+        const imageFormat = input ? sniffComposerImageFormat(input) : null;
+        if (!imageFormat && await isBinaryFile(resolved)) {
           return { ok: false, error: "binary-file", path: resolved, bytes: stat.size, message: "binary file" };
         }
-        const window = await readTextFileWindow(resolved, offset, limit);
+        const window = imageFormat ? undefined : await readTextFileWindow(resolved, offset, limit);
+        const liveScope = currentReadScope();
+        const currentVerdict = assertReadableFilePath(requestedPath, liveScope.cwd, liveScope.extraAllowed);
+        if (!currentVerdict.ok || currentVerdict.resolved !== resolved) {
+          return { ok: false, error: currentVerdict.ok ? "read-failed" : currentVerdict.error, message: "Preview read scope changed" };
+        }
+        if (!validateHostRendererSender(e)) return { ok: false, error: "unauthorized", message: "sender frame not authorized" };
         // Audit the preview read the same way a `read_file` tool call is audited
         // — a file left the sandbox boundary for display. The path is redacted
         // (username stripped) via the shared DLP filter, consistent with the
@@ -178,18 +191,18 @@ export function registerPreviewHandlers(deps: IpcDeps): void {
           input: JSON.stringify({
             channel: CHANNELS.preview.readFile,
             path: redactFsPath(resolved),
-            bytes: stat.size,
+            bytes: input?.length ?? stat.size,
           }),
         });
         return {
           ok: true,
-          content: window.content,
+          ...(imageFormat && input ? { image: { dataUrl: `data:${imageFormat.mimeType};base64,${input.toString("base64")}`, mimeType: imageFormat.mimeType } }
+            : { content: window!.content, truncated: window!.truncated, lineCount: window!.lines.length }),
           path: resolved,
-          bytes: stat.size,
-          truncated: window.truncated,
-          lineCount: window.lines.length,
+          bytes: input?.length ?? stat.size,
         };
       } catch (err) {
+        if (err instanceof TableDocumentError) return { ok: false, error: err.code === "too-large" ? "too-large" : err.code === "not-a-file" ? "not-a-file" : "read-failed", path: resolved, message: err.message };
         return {
           ok: false,
           error: "read-failed",

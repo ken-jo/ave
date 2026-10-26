@@ -12,6 +12,10 @@ export interface TurnReviewFile {
   path: string;
   bytes: number;
   lineCount: number;
+  added: number;
+  removed: number;
+  operation: "create" | "modify" | "delete";
+  countsKnown: boolean;
   referenceable: boolean;
   hunks: TurnReviewHunk[];
 }
@@ -19,6 +23,7 @@ export interface TurnReviewFile {
 export interface TurnChangeReview {
   sessionId: string;
   turnId: string;
+  workspaceRoot?: string;
   files: TurnReviewFile[];
 }
 

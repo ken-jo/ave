@@ -1217,7 +1217,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (!turnId) return { ok: false, error: "turn-review-unavailable" };
       return getTurnChangeReview(expectedSessionId, turnId, () => ({
         cwd: loop.getSessionExecutionCwd(), extraAllowedDirectories: loop.getTurnAdditionalDirectories(),
-      }));
+      }), { currentDetails: true });
     });
     return mutation ?? { ok: false, error: STREAMING_ACTIVE };
   });

@@ -2008,7 +2008,7 @@ interface WorkspaceFileMatch {
 }
 
 /**
- * Preview file-read surface (§6.10). Reads a text file for in-panel preview,
+ * Preview file-read surface (§6.10). Reads text or passive image data for in-panel preview,
  * gated by the SAME traversal guard as the builtin `read_file` tool — never a
  * broader read authority. `error` is a kebab-case code the renderer maps to a
  * Korean message; `message` is English dev detail.
@@ -2023,6 +2023,7 @@ export interface AvePreviewApi {
     bytes?: number;
     truncated?: boolean;
     lineCount?: number;
+    image?: { dataUrl: string; mimeType: string };
     error?:
       | "unauthorized"
       | "path-not-allowed"

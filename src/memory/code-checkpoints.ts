@@ -9,6 +9,7 @@ import { sameFileIdentity } from "../lib/file-identity.js";
 import { renameFile, retryOnFileLock } from "../lib/transient-fs-lock-retry.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
 import { FILE_MENTION_REFERENCE_POLICY } from "../shared/file-mention-reference.js";
+import { countFileChangeLines } from "../shared/file-change-counts.js";
 import type { TurnChangeReview, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
 import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
 import { assertReadableFilePath } from "../tools/file-read-core.js";
@@ -43,6 +44,8 @@ const StoredChangeSchema = ChangeSchema.omit({ before: true }).extend({
   before: z.string().regex(IMAGE_NAME_PATTERN).nullable(),
   beforeHash: HashSchema,
   storageBytes: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxStorageBytes),
+  addedLines: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxFileBytes).optional(),
+  removedLines: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxFileBytes).optional(),
 });
 const StoredTurnSchema = TurnSchema.extend({ changes: z.array(StoredChangeSchema) });
 const IndexSchema = z.object({ version: z.literal(2), turns: z.array(StoredTurnSchema) });
@@ -275,14 +278,18 @@ async function sweepImages(turns: Turn[]): Promise<void> {
   }
 }
 
+function ledgerStorageBytes(turns: Turn[]): number {
+  return Buffer.byteLength(JSON.stringify({ version: 2, turns }, null, 2) + "\n")
+    + turns.reduce((total, turn) => total + turn.changes.reduce((sum, change) => sum + change.storageBytes, 0), 0);
+}
+
 async function save(turns: Turn[], retained?: Turn): Promise<void> {
   // Prune only the target session for session limits; shared quotas prune globally without breaking surviving ranges.
   for (;;) {
     const overfull = turns.find((turn) =>
       turns.filter((other) => other.sessionId === turn.sessionId).length > CODE_CHECKPOINT_POLICY.maxSessionTurns,
     );
-    const bytes = Buffer.byteLength(JSON.stringify({ version: 2, turns }, null, 2) + "\n")
-      + turns.reduce((total, turn) => total + turn.changes.reduce((sum, change) => sum + change.storageBytes, 0), 0);
+    const bytes = ledgerStorageBytes(turns);
     if (!overfull && turns.length <= CODE_CHECKPOINT_POLICY.maxTurns && bytes <= CODE_CHECKPOINT_POLICY.maxStorageBytes) break;
     const oldest = turns.findIndex((turn, index) => (!overfull || turn.sessionId === overfull.sessionId)
       && turns.findIndex((other) => other.sessionId === turn.sessionId) === index
@@ -495,6 +502,37 @@ export async function checkpointFileMutation<T>(
       }
       await save(turns, turn);
     };
+    const recordVerifiedCounts = async () => {
+      let recorded = false;
+      for (const change of changes) {
+        if (!turn.changes.includes(change)) continue;
+        const captures = turn.changes.filter((entry) => entry.path === change.path);
+        if (captures.at(-1) !== change
+          || captures.some((entry, index) => index > 0 && captures[index - 1].afterHash !== entry.beforeHash)) continue;
+        const current = await snapshot(change.path).catch(() => undefined);
+        if (!current || hash(current.bytes) !== change.afterHash) continue;
+        const first = captures[0];
+        const before = (await hydrate(first)).before;
+        const original = turnReviewText(before === null ? null : Buffer.from(before, "base64"));
+        const after = turnReviewText(current.bytes);
+        const counts = countFileChangeLines(original, after);
+        if (!counts.exact) continue;
+        const previousAdded = change.addedLines;
+        const previousRemoved = change.removedLines;
+        change.addedLines = counts.added;
+        change.removedLines = counts.removed;
+        // Optional display metadata cannot evict a fitting restore image.
+        if (ledgerStorageBytes(turns) > CODE_CHECKPOINT_POLICY.maxStorageBytes) {
+          if (previousAdded === undefined) delete change.addedLines;
+          else change.addedLines = previousAdded;
+          if (previousRemoved === undefined) delete change.removedLines;
+          else change.removedLines = previousRemoved;
+          continue;
+        }
+        recorded = true;
+      }
+      if (recorded) await save(turns, turn);
+    };
     try {
       const result = await run();
       if (result && typeof result === "object" && "isError" in result && result.isError === true) {
@@ -504,6 +542,9 @@ export async function checkpointFileMutation<T>(
     } catch (error) {
       await removeUnchanged();
       throw error;
+    } finally {
+      // Informational totals never replace the effect outcome or weaken restore hashes.
+      await recordVerifiedCounts().catch((error: unknown) => log.warn("checkpoint line counts unavailable: %s", (error as Error).message));
     }
   });
 }
@@ -539,6 +580,7 @@ export async function getTurnChangeReview(
   sessionId: string,
   turnId: string,
   context: () => RestoreContext,
+  options?: { currentDetails: true },
 ): Promise<TurnReviewResult> {
   return exclusive(async () => {
     try {
@@ -550,6 +592,7 @@ export async function getTurnChangeReview(
       if (!turn || turn.messageId !== turnId || turn.unavailable || turn.consumed) {
         throw new TurnReviewReadError("turn-review-unavailable");
       }
+      const workspaceRoot = resolve(context().cwd);
       const plan = new Map<string, { first: StoredChange; last: StoredChange; local: string }>();
       for (const change of turn.changes) {
         const local = turnReviewPath(change.path, context);
@@ -557,35 +600,48 @@ export async function getTurnChangeReview(
         if (previous && previous.last.afterHash !== change.beforeHash) throw new TurnReviewReadError("turn-review-stale");
         plan.set(change.path, { first: previous?.first ?? change, last: change, local });
       }
-      const currentFile = async (path: string, expectedHash: string | null) => {
+      const currentFile = async (path: string, expectedHash: string | null, requireMatch = true) => {
         turnReviewPath(path, context);
         const current = await snapshot(path).catch(() => { throw new TurnReviewReadError("turn-review-stale"); });
         turnReviewPath(path, context);
-        if (hash(current.bytes) !== expectedHash) throw new TurnReviewReadError("turn-review-stale");
+        if (requireMatch && hash(current.bytes) !== expectedHash) throw new TurnReviewReadError("turn-review-stale");
         return current;
       };
       const files: TurnChangeReview["files"] = [];
+      const disclosedHashes = new Map<string, string | null>();
       for (const [path, { first, last, local }] of plan) {
-        const current = await currentFile(path, last.afterHash);
+        const current = await currentFile(path, last.afterHash, !options?.currentDetails);
+        const currentMatches = hash(current.bytes) === last.afterHash;
+        disclosedHashes.set(path, hash(current.bytes));
         const before = (await hydrate(first)).before;
         const original = turnReviewText(before === null ? null : Buffer.from(before, "base64"));
-        const text = turnReviewText(current.bytes);
+        let text: string | undefined;
+        try { text = turnReviewText(current.bytes); }
+        catch (error) { if (!options?.currentDetails) throw error; }
         if (first.beforeHash === last.afterHash) continue;
-        const lineCount = countTurnReviewLines(text);
+        const lineCount = text === undefined ? 0 : countTurnReviewLines(text);
+        const hunks = text === undefined ? [] : createTurnReviewHunks(original, text, first.beforeHash === null || current.bytes === null,
+          JSON.stringify([sessionId, turnId, local]));
+        const currentCounts = currentMatches && text !== undefined ? countFileChangeLines(original, text) : undefined;
+        const countsKnown = currentCounts?.exact === true || (last.addedLines !== undefined && last.removedLines !== undefined);
         files.push({
           path: local, bytes: current.bytes?.length ?? 0, lineCount,
-          referenceable: current.bytes !== null && lineCount > 0,
-          hunks: createTurnReviewHunks(original, text, first.beforeHash === null || last.afterHash === null,
-            JSON.stringify([sessionId, turnId, local])),
+          added: currentCounts?.exact ? currentCounts.added : last.addedLines ?? 0,
+          removed: currentCounts?.exact ? currentCounts.removed : last.removedLines ?? 0,
+          operation: first.beforeHash === null ? "create" : last.afterHash === null ? "delete" : "modify",
+          countsKnown,
+          referenceable: currentMatches && current.bytes !== null && lineCount > 0,
+          hunks,
         });
       }
       // Originals and other files may take asynchronous reads; recheck every final capture before disclosure.
       for (const [path, { last, local }] of plan) {
         if (turnReviewPath(path, context) !== local) throw new TurnReviewReadError("turn-review-stale");
-        await currentFile(path, last.afterHash);
+        await currentFile(path, options?.currentDetails ? disclosedHashes.get(path)! : last.afterHash);
       }
       if (unavailable()) throw new TurnReviewReadError("turn-review-unavailable");
-      return { ok: true, review: { sessionId, turnId, files } };
+      if (resolve(context().cwd) !== workspaceRoot) throw new TurnReviewReadError("turn-review-stale");
+      return { ok: true, review: { sessionId, turnId, workspaceRoot, files } };
     } catch (error) {
       return { ok: false, error: error instanceof TurnReviewReadError ? error.code : "turn-review-failed" };
     }

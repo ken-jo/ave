@@ -308,6 +308,15 @@ describe("ave:chat:* with chat groups", () => {
       expect(tile.getHistory().getMessages()).toHaveLength(2);
       expect(memoryManager.saveSession).not.toHaveBeenCalled();
     });
+    it("keeps recorded totals while the Files workspace details show subsequent current edits", async () => {
+      const { invoke, tile, file } = await setup();
+      await writeFile(file, "external\nextra\n");
+      const result = await invoke("ave:chat:get-turn-review", tile.getSessionId(), "group-2");
+      expect(result).toMatchObject({ ok: true, review: { files: [{ path: "code.txt", added: 1, removed: 1,
+        countsKnown: true, referenceable: false, hunks: [{ oldText: "before", newText: "external\nextra\n" }],
+      }] } });
+      expect(await readFile(file, "utf8")).toBe("external\nextra\n");
+    });
     it("does not resolve a review for another session", async () => {
       const { invoke, main } = await setup();
       expect(await invoke("ave:chat:get-turn-review", main.getSessionId(), "group-2")).toEqual({ ok: false, error: "turn-review-stale" });

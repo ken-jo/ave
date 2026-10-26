@@ -28,6 +28,8 @@ import { ToolActivityBody, ToolActivityWorkspace, toolActivityTotal, type ToolAc
 import { EdgeResizeBar } from "./EdgeResizeBar.js";
 import type { AveApi } from "../types.js";
 import type { ChatPreviewTarget, WorkspaceFileItem } from "../preview/preview-targets.js";
+import type { WorkspaceChanges, FileWorkspaceReveal } from "../preview/workspace-changes.js";
+import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
 import { PtyTerminalView } from "./PtyTerminalView.js";
 import { SideChatView, type SideChatOpenRequest } from "./SideChatView.js";
 import { ActiveSurfaceChip } from "./ActiveSurfaceChip.js";
@@ -717,6 +719,10 @@ export interface ChatSidePanelProps {
   sessionId?: string;
   targets: ChatPreviewTarget[];
   files: WorkspaceFileItem[];
+  changes?: WorkspaceChanges;
+  revealRequest?: FileWorkspaceReveal | null;
+  onReference?: (reference: FileMentionReference) => void;
+  onFileReference?: (path: string) => void;
   selectedId: string | null;
   onSelect: (id: string) => void;
   /**
@@ -781,6 +787,10 @@ export function ChatSidePanel({
   sessionId,
   targets,
   files,
+  changes,
+  revealRequest,
+  onReference,
+  onFileReference,
   selectedId,
   onSelect,
   workspaceTabs,
@@ -1250,9 +1260,14 @@ export function ChatSidePanel({
               manualUrl={browserUrlByTab[activeTab.id] ?? null} onBrowserUrlChange={setBrowserTabUrl} />
           ) : activeTab.kind === "file-browser" ? (
             <FileBrowserWorkspace
+              key={sessionId}
               api={api}
               sessionId={sessionId}
               files={files}
+              changes={changes}
+              revealRequest={revealRequest}
+              onReference={onReference}
+              onFileReference={onFileReference}
               targetById={targetById}
               selectedId={selectedId}
               onSelect={onSelect}

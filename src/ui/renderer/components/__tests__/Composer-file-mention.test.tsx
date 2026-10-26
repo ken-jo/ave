@@ -85,18 +85,67 @@ describe("Composer changed-location references", () => {
     act(() => { handle.current?.insertFileReference(reference); });
     expect(ta.value).toBe("before [File #1] after");
     fireEvent.click(screen.getByText("Replace draft"));
-    act(() => { handle.current?.insertFileReference(reference); });
+    act(() => { handle.current?.insertFileReference({ ...reference, hunkId: "hunk-2" }); });
     expect(ta.value).toBe("replacement draft[File #2]");
+  });
+
+  it("inserts an ordinary file mention without a line range at the selection", () => {
+    render(<ReferenceHarness />);
+    const ta = textarea();
+    ta.focus();
+    ta.setSelectionRange(7, 15);
+    act(() => { expect(handle.current?.insertFileMention("src/app.ts")).toEqual({ inserted: true }); });
+    expect(ta.value).toBe("before [File #1] after");
+    expect(lastAttachments).toEqual([expect.objectContaining({ path: "src/app.ts", reference: true })]);
+    expect(lastAttachments[0]).not.toHaveProperty("location");
+    expect(screen.getByTestId("chip-count-badge").textContent).toBe("@src/app.ts");
+  });
+
+  it("preserves a native file path while deriving its filename independently of directory separators", () => {
+    render(<ReferenceHarness />);
+    act(() => { handle.current?.insertFileMention("C:\\work\\project.v2\\source"); });
+    expect(lastAttachments[0]).toMatchObject({ path: "C:\\work\\project.v2\\source", name: "source", ext: "" });
+    expect(screen.getByTestId("chip-count-badge").textContent).toBe("@source");
+  });
+
+  it("ignores repeated file and location inserts without allocating a marker or changing the draft", () => {
+    render(<ReferenceHarness />);
+    const insert = handle.current!.insertFileReference;
+    act(() => { expect(insert(reference)).toEqual({ inserted: true }); });
+    const previous = textarea().value;
+    act(() => { expect(insert(reference)).toEqual({ inserted: false }); });
+    expect(textarea().value).toBe(previous);
+    expect(lastAttachments).toHaveLength(1);
+    act(() => { expect(handle.current?.insertFileMention("src/app.ts")).toEqual({ inserted: true }); });
+    const plainDraft = textarea().value;
+    act(() => { expect(handle.current?.insertFileMention("src/app.ts")).toEqual({ inserted: false }); });
+    expect(textarea().value).toBe(plainDraft);
+    expect(lastAttachments.map((attachment) => attachment.n)).toEqual([1, 2]);
+    act(() => { expect(insert({ ...reference, hunkId: "hunk-2" })).toEqual({ inserted: true }); });
+    expect(lastAttachments.map((attachment) => attachment.n)).toEqual([1, 2, 3]);
+  });
+
+  it("removes a reference chip and its marker while preserving adjacent text and other references", () => {
+    render(<ReferenceHarness />);
+    act(() => { handle.current?.insertFileReference(reference); });
+    act(() => { handle.current?.insertFileMention("src/other.ts"); });
+    const first = lastAttachments[0];
+    expect(first).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /참조 제거.*src\/app.ts:3-5|Remove reference.*src\/app.ts:3-5/ }));
+    expect(textarea().value).not.toContain("[File #1]");
+    expect(textarea().value).toContain("[File #2]");
+    expect(textarea().value).toContain("before selected after");
+    expect(lastAttachments).toEqual([expect.objectContaining({ path: "src/other.ts" })]);
   });
 
   it("refuses the sixth reference atomically", () => {
     render(<ReferenceHarness />);
     const insert = handle.current!.insertFileReference;
     for (let index = 0; index < 5; index += 1) {
-      act(() => { expect(insert(reference)).toEqual({ inserted: true }); });
+      act(() => { expect(insert({ ...reference, hunkId: `hunk-${index}` })).toEqual({ inserted: true }); });
     }
     const previous = textarea().value;
-    act(() => { expect(insert(reference)).toEqual({ inserted: false }); });
+    act(() => { expect(insert({ ...reference, hunkId: "sixth" })).toEqual({ inserted: false }); });
     expect(textarea().value).toBe(previous);
     expect(lastAttachments).toHaveLength(5);
   });

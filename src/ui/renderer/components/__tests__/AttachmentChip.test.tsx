@@ -45,6 +45,15 @@ const paste3: PasteAttachment = {
 };
 
 describe("AttachmentChip (single)", () => {
+  it("renders removable path references as inline chips without exposing an absolute workspace path", () => {
+    const onRemove = vi.fn();
+    render(<AttachmentChip attachment={{ ...file2, reference: true }} total={1} onRemove={onRemove} />);
+    expect(screen.getByTestId("chip-count-badge").textContent).toBe("@budget-2026.pdf");
+    expect(screen.getByTestId("attachment-chip").textContent).not.toContain("/Users/");
+    fireEvent.click(screen.getByRole("button", { name: /Remove reference budget-2026.pdf|참조 제거 budget-2026.pdf/ }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("attachment-overlay")).toBeNull();
+  });
   it("shows the relative location and source turn without enabling external open", () => {
     const reference: FileAttachment = { ...file2, path: "src/app.ts", name: "app.ts", reference: true,
       location: { startLine: 3, endLine: 5, turnId: "turn-1" } };

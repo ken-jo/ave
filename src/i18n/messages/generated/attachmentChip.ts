@@ -1,5 +1,6 @@
 // i18n fragment. Source: src/ui/renderer/components/AttachmentChip.tsx.
 export const en = {
+  "attachmentChip.removeReference": "Remove reference {label}",
   "attachmentChip.chipAriaLabel": "Attachment {label} — view info or open file",
   "attachmentChip.chipTitle": "View attachment info / open file",
   "attachmentChip.locationSourceTurn": "Changed location from turn {turn}",
@@ -16,6 +17,7 @@ export const en = {
   "attachmentChip.resourceClipped": "From MCP server {server} · untrusted, clipped",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "attachmentChip.removeReference": "참조 제거 {label}",
   "attachmentChip.chipAriaLabel": "첨부 {label} — 정보 보기 또는 파일 열기",
   "attachmentChip.chipTitle": "첨부 정보 보기 / 파일 열기",
   "attachmentChip.locationSourceTurn": "턴 {turn}에서 변경된 위치",

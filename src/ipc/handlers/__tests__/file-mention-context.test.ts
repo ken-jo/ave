@@ -55,7 +55,12 @@ beforeEach(async () => {
   }));
   loop.history.append({ role: "user", content: "Change source", meta: { messageId: "latest" } });
 });
-afterEach(async () => { vi.restoreAllMocks(); vi.unstubAllEnvs(); await rm(root, { recursive: true, force: true }); });
+afterEach(async () => {
+  vi.restoreAllMocks();
+  await loop.auditLogger.close();
+  vi.unstubAllEnvs();
+  await rm(root, { recursive: true, force: true });
+});
 
 describe("host file mention context", () => {
   it("preserves ordinary input without reading files or looking up checkpoints", async () => {

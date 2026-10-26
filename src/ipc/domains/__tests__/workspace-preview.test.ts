@@ -66,6 +66,7 @@ import { CHANNELS } from "../../../contract/app-contract.js";
 import { getWorkspaceRootLifecycle } from "../../../permissions/workspace-root-lifecycle.js";
 import { canonicalizePathForMatch, caseFoldForMatch } from "../../../permissions/sensitive-paths.js";
 import { ReadFileTool } from "../../../tools/file-tools.js";
+import * as previewInput from "../../../tools/preview-document-input.js";
 
 function withSandboxRuntime(value: unknown): never {
   return {
@@ -167,6 +168,53 @@ beforeEach(() => {
 });
 
 describe("preview:read-file handler", () => {
+  it("previews signature-verified images through the normal allowed-root read", async () => {
+    const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64");
+    const path = join(root, "source-image.dat");
+    writeFileSync(path, image);
+    expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, path)).toMatchObject({
+      ok: true, path, bytes: image.length, image: { mimeType: "image/png", dataUrl: `data:image/png;base64,${image.toString("base64")}` },
+    });
+  });
+  it("rechecks image scope after asynchronous reading before disclosing bytes", async () => {
+    const path = join(root, "revoked-image.png");
+    writeFileSync(path, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64"));
+    const read = previewInput.readPreviewDocumentInput;
+    const spy = vi.spyOn(previewInput, "readPreviewDocumentInput").mockImplementationOnce(async (...args) => {
+      const bytes = await read(...args);
+      additionalDirectories.value = [];
+      return bytes;
+    });
+    try {
+      expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, path)).toMatchObject({ ok: false, error: "path-not-allowed" });
+    } finally { spy.mockRestore(); }
+  });
+  it("caps image bytes before returning a preview", async () => {
+    const path = join(root, "large-image.png");
+    const bytes = Buffer.alloc(2_000_001);
+    bytes.set(Buffer.from("iVBORw0KGgo=", "base64"));
+    writeFileSync(path, bytes);
+    expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, path)).toMatchObject({ ok: false, error: "too-large" });
+  });
+  it("keeps image line references text-only and does not trust an image extension", async () => {
+    const imagePath = join(root, "range-image.png");
+    writeFileSync(imagePath, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64"));
+    expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, imagePath, { offset: 0, limit: 1 }))
+      .toMatchObject({ ok: false, error: "binary-file" });
+    const textPath = join(root, "not-image.png");
+    writeFileSync(textPath, "plain source text");
+    const text = await invoke(CHANNELS.preview.readFile, OK_FRAME, textPath) as Record<string, unknown>;
+    expect(text).toMatchObject({ ok: true, content: "plain source text" });
+    expect(text.image).toBeUndefined();
+  });
+  it("keeps image data behind sender and live allowed-root checks", async () => {
+    const path = join(root, "scope-image.png");
+    writeFileSync(path, Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6idAAAAAASUVORK5CYII=", "base64"));
+    expect(await invoke(CHANNELS.preview.readFile, EVIL_FRAME, path)).toMatchObject({ ok: false, error: "unauthorized" });
+    additionalDirectories.value = [];
+    expect(await invoke(CHANNELS.preview.readFile, OK_FRAME, path)).toMatchObject({ ok: false, error: "path-not-allowed" });
+  });
+
   it("reads the selected relative file window under an already allowed workspace root", async () => {
     const file = join(root, "range.txt");
     writeFileSync(file, Array.from({ length: 750 }, (_, index) => `source ${index + 1}`).join("\n"));

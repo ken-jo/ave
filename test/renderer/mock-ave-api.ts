@@ -1,3 +1,4 @@
+import type { TurnReviewResult } from "../../src/shared/turn-change-review.js";
 /** Mockable AveApi surface for renderer tests. Every method is a `vi.fn()` so tests can spy on calls,
  * and the default return values are sensible empty/pass values so <App /> can mount without crashing. */
 import { vi, type Mock } from "vitest";
@@ -127,6 +128,7 @@ type ApiOverrides = {
   history?: ({ sessionId: string } & HistoryMock) | Promise<{ sessionId: string } & HistoryMock>;
   historyBySession?: Record<string, HistoryMock | Promise<HistoryMock>>;
   hasApiKey?: boolean;
+  turnReview?: TurnReviewResult | ((sessionId: string) => TurnReviewResult);
   subscriptionRuntimeStatus?: unknown;
   hasProvider?: boolean;
   usage?: unknown;
@@ -590,6 +592,8 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     chatSessionResume: vi.fn(async (id: string) => ({ ok: true, compacted: false, compactedAt: null, removedMessageCount: 0 })),
     // Reached whenever a tile that is NOT focused takes stream activity; the window marks that conversation unread. A window with two tiles hits it in the ordinary course of a test.
     chatSessionUpdate: vi.fn(async () => ({ ok: true as const })),
+    chatGetTurnReview: vi.fn(async (sessionId: string): Promise<TurnReviewResult> => typeof overrides.turnReview === "function"
+      ? overrides.turnReview(sessionId) : overrides.turnReview ?? { ok: false, error: "turn-review-unavailable" }),
     chatCompact: vi.fn(async () => ({ compacted: false, compactedAt: null, summary: "불필요", removedMessageCount: 0 })),
     chatMainActiveState: vi.fn(async () => mainActiveState),
     chatGetHistory: vi.fn(async () => {

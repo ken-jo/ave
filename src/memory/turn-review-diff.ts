@@ -1,14 +1,13 @@
 import { createHash } from "node:crypto";
 import type { TurnReviewHunk } from "../shared/turn-change-review.js";
+import { countFileChangeTextLines } from "../shared/file-change-counts.js";
 
 const MAX_DIFF_CELLS = 1_000_000;
 const MAX_DIFF_LINES = 2_000;
 
 /** Count current file lines with the same separator semantics as file previews. */
 export function countTurnReviewLines(text: string): number {
-  let count = 0;
-  for (const _match of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g)) count += 1;
-  return count;
+  return countFileChangeTextLines(text);
 }
 
 /**

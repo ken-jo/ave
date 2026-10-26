@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { File as FileIcon, ClipboardPaste, Database } from "lucide-react";
+import { File as FileIcon, ClipboardPaste, Database, Link2, X } from "lucide-react";
 import { displaySafeLabel } from "../../../shared/display-safe-text.js";
 import { MCP_RESOURCE_URI_MAX_CHARS } from "../../../shared/mcp-resource-bounds.js";
 import { fileMentionReferenceLabel } from "../../../shared/file-mention-reference.js";
@@ -141,20 +141,37 @@ function StackVisual({ layers }: { layers: number }) {
  * is a popover trigger so the user can inspect the file path and open the
  * file in the OS's default app, matching the multi-attachment overlay UX.
  *
- * No close button: the textarea body is the source of truth, so removal
- * happens by deleting the `[…#N]` marker from the body text.
+ * Path references use a removable inline chip. Ordinary attachments retain
+ * their popover; removing a reference also removes its composer marker.
  */
 export function AttachmentChip({
   attachment,
   total,
   onOpenExternal,
+  onRemove,
 }: {
   attachment: Attachment;
   total: number;
   onOpenExternal?: (path: string) => void;
+  onRemove?: () => void;
 }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
+  if (attachment.kind === "file" && attachment.reference && onRemove) {
+    const label = attachment.location ? fileMentionReferenceLabel({ path: attachment.path, ...attachment.location })
+      : /^(?:[/\\]|[a-zA-Z]:[/\\])/.test(attachment.path) ? attachment.name : attachment.path;
+    return (
+      <span data-testid="attachment-chip" className="inline-flex h-6 max-w-full min-w-0 items-center gap-1 rounded-lg bg-(--file-reference-bg) py-0.5 pl-2 pr-0.5 text-(--file-reference-fg)"
+        title={attachment.location ? t("attachmentChip.locationSourceTurn", { turn: attachment.location.turnId }) : label}>
+        <Link2 aria-hidden="true" className="h-3 w-3 shrink-0" />
+        <span data-testid="chip-count-badge" className="min-w-0 truncate font-mono text-xs">@{label}</span>
+        <button type="button" onClick={onRemove} aria-label={t("attachmentChip.removeReference", { label })}
+          className="flex h-5 w-5 shrink-0 items-center justify-center rounded-md hover:bg-primary/(--opacity-subtle) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-(--file-reference-fg)">
+          <X aria-hidden="true" className="h-3 w-3" />
+        </button>
+      </span>
+    );
+  }
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>

@@ -37,6 +37,16 @@ afterEach(() => {
 });
 
 describe("bounded document input", () => {
+  it("does not allow a caller to widen the maximum byte ceiling", async () => {
+    await expect(readPreviewDocumentInput(path, undefined, PREVIEW_DOCUMENT_LIMITS.maxFileBytes + 1)).rejects.toMatchObject({ code: "too-large" });
+    expect(opened).toBeUndefined();
+  });
+
+  it("honors a narrower caller byte cap without widening the document limit", async () => {
+    await expect(readPreviewDocumentInput(path, undefined, 3)).rejects.toMatchObject({ code: "too-large" });
+    expect(opened?.fd).toBe(-1);
+  });
+
   it("closes a superseded read before allocating its input buffer", async () => {
     const controller = new AbortController();
     onOpened = (handle) => {
