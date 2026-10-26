@@ -1,9 +1,10 @@
 import { copyFileSync, mkdtempSync, readdirSync, realpathSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
-import { execFileSync, spawn } from "node:child_process";
+import { execFile, execFileSync, spawn } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { decodeWindowsAclScript, withWindowsAclScript, windowsCommandLineLength } from "../../__tests__/support/windows-acl-launch.js";
 import {
   assertCodexExecutableLocation,
   assertCodexLocations,
@@ -158,6 +159,61 @@ it.runIf(process.platform === "win32")("keeps real first-call module streams fre
   expect(reply.result.paths.length).toBeGreaterThan(0);
   process.stdout.write(`ACL host stream evidence ${JSON.stringify({ pid: host.pid, elapsedMs: Math.round(performance.now() - started), stdoutLines: lines.length, stderrBytes: Buffer.byteLength(output.stderr) })}\n`);
 }, 30_000);
+
+it.runIf(process.platform === "win32")("preserves bootstrap arguments and isolated preferences through the real command channel", async () => {
+  const fixture = realHostFixture();
+  await fixture.prime();
+  const script = decodeWindowsAclScript(fixture.launch.args);
+  const ready = "[Console]::Out.WriteLine('READY')";
+  const loop = "while ($null -ne ($line = [Console]::In.ReadLine())) {";
+  const check = [
+    "function Assert-HostPreferences {",
+    "if ($ErrorActionPreference -ne 'Stop' -or $PSModuleAutoLoadingPreference -ne 'None') { throw 'Host preferences changed' }",
+    "$stopped = $false; try { Write-Error 'Preference probe' } catch { $stopped = $true }",
+    "if (-not $stopped) { throw 'Nonterminating error did not stop' }",
+    "if (Get-Command Get-CimInstance -ListImported -ErrorAction Ignore) { throw 'Autoload probe command is already imported' }",
+    "try { Get-CimInstance -ClassName Win32_OperatingSystem; throw 'Unexpected module autoload' } catch [System.Management.Automation.CommandNotFoundException] {}",
+    "}",
+    "Assert-HostPreferences",
+  ].join("\n");
+  expect(script).toContain(ready);
+  expect(script).toContain(loop);
+  const marker = "한글 'quoted' \"double\" \\ trailing\\";
+  const probe = script.replace(ready, `${check}\n[Console]::Out.WriteLine('${marker.replaceAll("'", "''")}')\n[Console]::Out.WriteLine(('APARTMENT ' + [Threading.Thread]::CurrentThread.GetApartmentState()))\n${ready}`)
+    .replace(loop, `${loop}\nAssert-HostPreferences`);
+  const launch = withWindowsAclScript(fixture.launch, probe);
+  const outer = "([string]$ErrorActionPreference + '|' + [string]$PSModuleAutoLoadingPreference + '|' + [string][bool]${function:Assert-HostPreferences} + '|' + [string][bool]$request + '|' + [string][bool]$currentSid + '|' + [string]@(Get-Module).Count + '|' + [Threading.Thread]::CurrentThread.GetApartmentState())";
+  const args = [...launch.args.slice(0, 4),
+    `[Console]::Out.WriteLine(('BEFORE ' + ${outer})); ${launch.args[4]}; `
+    + `[Console]::Out.WriteLine(('AFTER ' + ${outer})); `
+    + '[Console]::Out.WriteLine(("ARGV " + [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([Environment]::GetCommandLineArgs()[-1])))); '
+    + '[Console]::Out.WriteLine(("LENGTH " + [Environment]::CommandLine.Length))'];
+  const output = await new Promise<string>((resolveOutput, reject) => {
+    const child = execFile(launch.command, args, {
+      ...launch.options, encoding: "utf8", maxBuffer: 256 * 1024,
+      timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+    }, (error, stdout, stderr) => {
+      if (error) return reject(error);
+      if (stderr) return reject(new Error(stderr));
+      resolveOutput(stdout);
+    });
+    child.stdin!.end([500, 501].map((id) => JSON.stringify({ id, paths: [], capSids: [], skipPackage: true, setOwner: false })).join("\n") + "\n");
+  });
+  const lines = output.trim().split(/\r?\n/);
+  expect(lines).toHaveLength(11);
+  expect(lines[0]).toBe("BEFORE Continue||False|False|False|0|STA");
+  expect(lines[1]).toBe(marker);
+  expect(lines[2]).toBe("APARTMENT STA");
+  expect(lines[3]).toBe("READY");
+  for (const [index, id] of [[4, 500], [6, 501]]) {
+    expect(JSON.parse(lines[index]!)).toMatchObject({ id, result: { paths: [] } });
+    expect(lines[index + 1]).toBe(`END ${id}`);
+  }
+  expect(lines[8]).toBe(lines[0]!.replace("BEFORE", "AFTER"));
+  expect(Buffer.from(lines[9]!.slice("ARGV ".length), "base64").toString("utf8")).toBe(args[4]);
+  expect(Number(lines[10]!.slice("LENGTH ".length)) + 1).toBe(windowsCommandLineLength(launch.command, args));
+  process.stdout.write(`ACL bootstrap evidence ${JSON.stringify({ argvIntact: true, utf8Intact: true, isolatedPreferences: true, outerScopeUnchanged: true, requests: 2, measuredLength: windowsCommandLineLength(launch.command, args) })}\n`);
+}, 45_000);
 
 // Stock Windows grants Authenticated Users FILE_ADD_SUBDIRECTORY on C:\, so this real probe reproduces the original refusal of every route on the system drive.
 it.runIf(process.platform === "win32")("admits the real system command executable as a native route with real access rules", async () => {
@@ -354,14 +410,14 @@ it.runIf(process.platform === "win32")("falls back to the directory service when
   // The launch is captured by the first request, so read it only after prime.
   const { request, launch } = fixture;
   const expected = (JSON.parse(await request(400, [])) as RawReply).result.machineDomainSid;
-  const script = Buffer.from(launch.args[4]!, "base64").toString("utf16le");
+  const script = decodeWindowsAclScript(launch.args);
   const absent = script.replaceAll(String.raw`Microsoft.PowerShell.LocalAccounts\Microsoft.PowerShell.LocalAccounts.psd1`,
     String.raw`Microsoft.PowerShell.LocalAccounts\Absent.psd1`);
   expect(absent).not.toBe(script);
   const host = new WindowsAclHost((command, args, options) => spawn(command, args, options));
   realHosts.push(host);
   const reply = JSON.parse(await host.request({ id: 401, paths: [], capSids: [], skipPackage: true, setOwner: false },
-    { ...launch, args: [...launch.args.slice(0, 4), Buffer.from(absent, "utf16le").toString("base64")] },
+    withWindowsAclScript(launch, absent),
     { timeoutMs: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBytes: 256 * 1024 })) as RawReply;
   expect(expected).toMatch(/^S-1-5-21-\d+-\d+-\d+$/);
   expect(reply.result.machineDomainSid).toBe(expected);

@@ -302,8 +302,11 @@ const WINDOWS_ACL_SCRIPT = [
   "[Console]::Out.Flush()",
   "}",
 ].join("\n");
-// Drop indentation on the wire to keep the encoded command below the native command-line limit.
-const WINDOWS_ACL_ENCODED_SCRIPT = Buffer.from(WINDOWS_ACL_SCRIPT.replace(/^ +/gm, ""), "utf16le").toString("base64");
+// UTF-8 leaves command-line headroom. A private runspace preserves the global-only autoload preference without leaking state.
+// Use the calling thread to preserve its apartment; forward the original error record before disposing both execution objects.
+const WINDOWS_ACL_COMMAND = "& { $ErrorActionPreference = 'Stop'; $hostRunspace = [System.Management.Automation.Runspaces.RunspaceFactory]::CreateRunspace(); try { $hostRunspace.ThreadOptions = 'UseCurrentThread'; $hostRunspace.Open(); $hostShell = [PowerShell]::Create(); try { $hostShell.Runspace = $hostRunspace; [void]$hostShell.AddScript([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('"
+  + Buffer.from(WINDOWS_ACL_SCRIPT.replace(/^ +/gm, ""), "utf8").toString("base64")
+  + "'))); try { $hostShell.Invoke() } catch { throw $hostShell.InvocationStateInfo.Reason.ErrorRecord } } finally { $hostShell.Dispose() } } finally { $hostRunspace.Dispose() } }";
 
 function assertAbsolutePath(candidate: string): void {
   if (/[\u0000-\u001f\u007f]/.test(candidate)) {
@@ -572,7 +575,7 @@ function windowsAclLaunch(): WindowsAclHostLaunch {
   // The host process stays as fixed as the per-probe process was. Inputs that travelled in its environment travel in each request line instead.
   return {
     command,
-    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", WINDOWS_ACL_ENCODED_SCRIPT],
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", WINDOWS_ACL_COMMAND],
     options: { windowsHide: true, env: windowsPowerShellEnv({ SystemRoot: systemRoot, WINDIR: systemRoot, PATH: `${system32};${systemRoot}` }) },
   };
 }

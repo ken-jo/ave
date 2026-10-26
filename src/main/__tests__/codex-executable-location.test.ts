@@ -7,6 +7,7 @@ import { dirname, join } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { decodeWindowsAclScript, withWindowsAclScript, windowsCommandLineLength } from "../../__tests__/support/windows-acl-launch.js";
 import {
   assertCodexExecutableLocation,
   assertCodexLocations,
@@ -32,6 +33,7 @@ vi.mock("node:child_process", async (importOriginal) => ({
 }));
 
 const HOST = process.platform;
+const WINDOWS_COMMAND_LINE_MARGIN = 8192;
 const roots: string[] = [];
 // Windows fixtures answer each ACL host request here, at the request level.
 const aclRequest = vi.fn(async (_request: WindowsAclRequest, _launch: WindowsAclHostLaunch, _limits: WindowsAclLimits): Promise<string> => {
@@ -641,8 +643,9 @@ describe("native access-rule admission", () => {
   ])("resolves package principals read-only using command mocks: $label", async (testCase) => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
-    const [, { command, args }] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    const [, launch] = aclRequest.mock.calls[0]!;
+    const { command, args } = launch;
+    const script = decodeWindowsAclScript(args);
     const packageSetup = script.slice(script.indexOf("$appxReady ="), script.indexOf("[Console]::Out.WriteLine('READY')"));
     const fullResolver = packageSetup + script.slice(script.indexOf("$desktopPackageIdentity ="), script.lastIndexOf("$result = [PSCustomObject]@{ currentSid ="));
     // An absent Appx module must reach the same deterministic outcome as a failed query.
@@ -675,7 +678,7 @@ describe("native access-rule admission", () => {
     ].join("\n");
     const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     const stdout = await new Promise<string>((resolve, reject) => {
-      childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(mockedScript, "utf16le").toString("base64")], {
+      childProcess.execFile(command, withWindowsAclScript(launch, mockedScript).args, {
         windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs,
         env: windowsPowerShellEnv({ ...process.env, AVE_DESKTOP_PACKAGE_FIXTURE: JSON.stringify(input),
           AVE_ACL_REQUEST_FIXTURE: JSON.stringify({ skipPackage: testCase.skip === true }) }),
@@ -788,7 +791,7 @@ describe("native access-rule admission", () => {
     process.env.COMPUTERNAME = "untrusted-host";
     await assertCodexExecutableLocation(fixture.candidate);
     const [, launch] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(launch.args[4]!, "base64").toString("utf16le");
+    const script = decodeWindowsAclScript(launch.args);
     expect(launch.options.env).not.toHaveProperty("COMPUTERNAME");
     expect(script).not.toContain("$env:COMPUTERNAME");
     expect(script).toContain("WinNT://./CodexSandboxUsers,group");
@@ -807,8 +810,9 @@ describe("native access-rule admission", () => {
   it.runIf(HOST === "win32").each(["empty", "single", "multiple"])("probes account translation for %s cap candidates", async (kind) => {
     const fixture = windowsFixture();
     await assertCodexExecutableLocation(fixture.candidate);
-    const [, { command, args }] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    const [, launch] = aclRequest.mock.calls[0]!;
+    const { command, args } = launch;
+    const script = decodeWindowsAclScript(args);
     const resolver = script.slice(script.indexOf("$capCandidates ="), script.indexOf("$desktopPackageIdentity ="));
     const query = [
       hostModulePreamble(script),
@@ -821,7 +825,7 @@ describe("native access-rule admission", () => {
     ].join("\n");
     const childProcess = await vi.importActual<typeof import("node:child_process")>("node:child_process");
     const stdout = await new Promise<string>((resolve, reject) => {
-      childProcess.execFile(command, ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(query, "utf16le").toString("base64")], {
+      childProcess.execFile(command, withWindowsAclScript(launch, query).args, {
         windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.globalCeilingMs, env: windowsPowerShellEnv(),
       }, (error, output) => error ? reject(error) : resolve(output));
     });
@@ -892,7 +896,7 @@ describe("native access-rule admission", () => {
     const fixture = windowsFixture(String.raw`C:\Tools\odd'; \uD55C\uAE00 $(Write-Output injected).exe`);
     await assertCodexExecutableLocation(fixture.candidate);
     const [request, { args }] = aclRequest.mock.calls[0]!;
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    const script = decodeWindowsAclScript(args);
     expect(request.paths).toContain(fixture.candidate);
     expect(script).toContain("ConvertFrom-Json");
     expect(script).toContain("[ExecutablePathSecurity]::Read($target)");
@@ -907,16 +911,38 @@ describe("native access-rule admission", () => {
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
   });
 
+  it.each([
+    String.raw`C:\Windows`,
+    String.raw`C:\System Images` + String.raw`\Managed deployment`.repeat(9) + String.raw`\Windows`,
+    // Also cover the system-root validator's accepted ceiling, beyond ordinary installation paths.
+    "C:\\" + "Managed images\\".repeat(33) + "Windows".padStart(14, "W"),
+  ])("reserves command-line headroom with system root %s", async (systemRoot) => {
+    const fixture = windowsFixture();
+    process.env.SystemRoot = systemRoot;
+    await assertCodexExecutableLocation(fixture.candidate);
+    const [, { command, args }] = aclRequest.mock.calls[0]!;
+    expect(command).toBe(`${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`);
+    expect(systemRoot.length).toBeLessThanOrEqual(512);
+    const length = windowsCommandLineLength(command, args);
+    process.stdout.write(`ACL command-line evidence ${JSON.stringify({ systemRootLength: systemRoot.length, length, margin: WINDOWS_COMMAND_LINE_MARGIN })}\n`);
+    expect(length + WINDOWS_COMMAND_LINE_MARGIN).toBeLessThan(32_767);
+    // The only variable command-line input is the system root. Request paths and principals stay in stdin.
+    await assertCodexExecutableLocation("C:\\Tools\\" + "x".repeat(240) + ".exe", "native");
+    expect(aclRequest.mock.calls[1]![1].args).toEqual(args);
+  });
+
   it("uses one absolute system command with bounded execution and path data outside its code", async () => {
     const fixture = windowsFixture(String.raw`C:\Tools\odd'; $(Write-Output injected).exe`);
     await assertCodexExecutableLocation(fixture.candidate);
     expect(aclRequest).toHaveBeenCalledTimes(1);
     const [request, { command, args, options }, limits] = aclRequest.mock.calls[0]!;
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
-    expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand"]);
+    expect(args.slice(0, 4)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command"]);
     expect(args).toHaveLength(5);
-    expect([command, ...args].join(" ").length + 1).toBeLessThan(32767);
-    const script = Buffer.from(args[4]!, "base64").toString("utf16le");
+    expect(windowsCommandLineLength(command, args) + WINDOWS_COMMAND_LINE_MARGIN).toBeLessThan(32_767);
+    const script = decodeWindowsAclScript(args);
+    // `exit` in the private runspace would not end the host; failures stay terminating errors, which exit 1.
+    expect(script).not.toMatch(/\bexit\b/i);
     expect(script).toContain("CreateFile(path, 0x00020000, 7, IntPtr.Zero, 3, 0x02200000");
     expect(script).toContain("GetSecurityInfo");
     expect(script).toContain("HKCU:\\Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows\\CurrentVersion\\AppContainer\\Mappings");
@@ -1304,15 +1330,15 @@ describe("Windows ACL host", () => {
     await expect(assertCodexExecutableLocation(fixture.candidate)).resolves.toBeUndefined();
     expect(spawn).toHaveBeenCalledTimes(1);
     const [command, args, options] = vi.mocked(spawn).mock.calls[0]!;
-    // These equal the old per-probe execFile launch; its timeout and output bound now apply to each request instead of the process.
+    // The timeout and output bound apply to each request instead of the process.
     expect(command).toBe(String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`);
-    expect(args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", expect.any(String)]);
+    expect(args).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", expect.any(String)]);
     expect(options).toEqual({
       windowsHide: true,
       env: { SystemRoot: String.raw`C:\Windows`, WINDIR: String.raw`C:\Windows`, PATH: String.raw`C:\Windows\System32;C:\Windows` },
     });
     expect(Object.keys(options!.env!)).not.toContain("PSModulePath");
-    const script = Buffer.from((args as string[])[4]!, "base64").toString("utf16le");
+    const script = decodeWindowsAclScript(args as string[]);
     expect(script).toContain("[Console]::In.ReadLine()");
     for (const stream of ["Progress", "Warning", "Verbose", "Information"]) {
       expect(script).toContain(`$${stream}Preference = 'SilentlyContinue'`);
