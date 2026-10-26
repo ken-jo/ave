@@ -1,12 +1,13 @@
 import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import * as sandboxUtils from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { configureHostResources } from "../../main/host-resources.js";
 import * as evidence from "../../shared/windows-read-deny-evidence.js";
 import * as srtWinIntegrity from "../srt-win-integrity.js";
 import * as denyAcl from "../windows-deny-acl.js";
@@ -42,6 +43,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   const manager = runtime.SandboxManager;
 
   beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = mkdtempSync(join(os.tmpdir(), "deny-absent-"));
     profile = join(root, "profile");
     mkdirSync(profile);
@@ -555,7 +557,7 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     expect(next.filesystem.denyWrite).toContain(unc);
   });
 
-  it("does not let a concurrent bracket grant retain unrelated rows while protecting its reachable rows", async () => {
+  it("keeps unproven read denies while isolating bracket grants from unrelated write denies", async () => {
     const wrap = captureRuntime();
     const unrelated = join(profile, ".curlrc");
     const grant = join(profile, "work[1]");
@@ -579,14 +581,14 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
       ]);
       const concurrent = wrap.mock.calls.slice(-2).map(call => call[2]?.filesystem);
       for (const next of concurrent) {
-        expect(paths(next?.denyRead)).not.toContain(unrelated);
+        expect(paths(next?.denyRead)).toContain(unrelated);
         expect(paths(next?.denyWrite)).not.toContain(unrelated);
         expect(paths(next?.denyRead)).toContain(protectedTarget);
         expect(paths(next?.denyWrite)).toContain(protectedTarget);
         expect(paths(next?.denyRead)).toContain(absent);
         expect(paths(next?.denyWrite)).toContain(absent);
       }
-      expect(paths(before?.denyRead)).not.toContain(unrelated);
+      expect(paths(before?.denyRead)).toContain(unrelated);
     } finally {
       held.release();
     }

@@ -3,7 +3,8 @@ import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 
 import {
   appOwnedSandboxTempRoot,
@@ -22,6 +23,7 @@ let home: string;
 let previousAveHome: string | undefined;
 
 beforeAll(() => {
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   home = mkdtempSync(join(tmpdir(), "ave-pin-"));
   previousAveHome = process.env.AVE_HOME;
   process.env.AVE_HOME = join(home, ".ave");

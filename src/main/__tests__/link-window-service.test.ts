@@ -1,18 +1,32 @@
 import { describe, expect, it, vi } from "vitest";
+import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import type { WebContents } from "electron";
+
+useChromiumRuntime();
+
+const viewerSession = vi.hoisted(() => ({
+  setUserAgent: (() => {}) as (ua: string) => void,
+  setPermissionRequestHandler: () => {},
+  cookies: { flushStore: () => {} },
+}));
 
 vi.mock("electron", () => ({
   BrowserWindow: vi.fn(),
-  session: {
-    fromPartition: vi.fn(() => ({
-      setUserAgent: vi.fn(),
-      setPermissionRequestHandler: vi.fn(),
-      cookies: { flushStore: vi.fn() },
-    })),
-  },
+  app: { getVersion: () => "0.14.1" },
+  session: { fromPartition: vi.fn(() => viewerSession) },
 }));
 
-const { attachLinkNavigationGuards } = await import("../link-window-service.js");
+const { attachLinkNavigationGuards, applyPersistentBrowserUserAgent } = await import("../link-window-service.js");
+const { buildPersistentBrowserUserAgent } = await import("../browser-user-agent.js");
+
+describe("applyPersistentBrowserUserAgent", () => {
+  it("gives the viewer partition the honest Chromium + Ave user agent", () => {
+    const setUserAgent = vi.spyOn(viewerSession, "setUserAgent");
+    applyPersistentBrowserUserAgent("persist:link-viewer");
+    expect(setUserAgent).toHaveBeenCalledWith(buildPersistentBrowserUserAgent());
+    expect(setUserAgent.mock.calls[0]?.[0]).toMatch(/Safari\/537\.36 Ave\/0\.14\.1$/);
+  });
+});
 
 function makeContents() {
   const handlers = new Map<string, (event: { url: string; preventDefault: () => void }) => void>();

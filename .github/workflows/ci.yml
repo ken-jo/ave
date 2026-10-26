@@ -661,6 +661,7 @@ jobs:
           src/main/__tests__/windows-job-launcher.test.ts
           src/main/__tests__/codex-executable-location.test.ts
           src/main/__tests__/codex-executable-location.windows.test.ts
+          src/main/host-api/__tests__/mapped-drive-root.test.ts
           src/main/__tests__/codex-user-runtime.test.ts
           src/main/__tests__/claude-code-executable.test.ts
           src/main/__tests__/claude-code-runtime.test.ts
@@ -675,8 +676,11 @@ jobs:
           src/shared/__tests__/windows-admin-policy.test.ts
           src/__tests__/program-data-isolation.test.ts
           src/permissions/__tests__/asrt-stamp-targets.test.ts
+          src/permissions/__tests__/windows-stamp-targets.test.ts
           src/permissions/__tests__/filesystem-policy-boundary.test.ts
           src/shared/__tests__/windows-read-deny-evidence.test.ts
+          src/shared/__tests__/windows-path-facts.test.ts
+          src/shared/__tests__/windows-system-path.test.ts
           src/tools/__tests__/file-read-core.test.ts
           src/tools/__tests__/preview-document-process.test.ts
           src/tools/__tests__/shell-path-policy.test.ts
@@ -684,6 +688,7 @@ jobs:
           src/permissions/__tests__/windows-sandbox-logic.test.ts
           src/permissions/__tests__/sandbox-write-policy.test.ts
           src/permissions/__tests__/asrt-windows-support.test.ts
+          src/permissions/__tests__/asrt-windows-grant-paths.test.ts
           src/permissions/__tests__/srt-win-integrity.test.ts
           src/permissions/__tests__/egress-runtime-proxy.test.ts
           src/tools/__tests__/shell-windows-partial-plan-b.test.ts

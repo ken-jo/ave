@@ -723,9 +723,8 @@ describe.each([
     await initializeAsrtSandbox({ allowedDomains: [], denyRead: [...denyRead] });
   });
 
-  const referenceCovers = (denied: string, canonicalPath: string): boolean => {
-    if (/[\[\]]/.test(denied)) return true;
-    const pattern = canonicalizePathForMatch(expandLeadingTilde(denied));
+  const referenceCovers = (pattern: string, canonicalPath: string): boolean => {
+    if (/[\[\]]/.test(pattern)) return true;
     for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
       if (globMatch(candidate, pattern) || globMatch(`${candidate}/`, pattern)) return true;
       if (dirname(candidate) === candidate) return false;
@@ -762,11 +761,14 @@ describe.each([
     expect(sessions.denyRead).toEqual(expect.arrayContaining([...denyRead]));
     const privateRoots = appOwnedSandboxPrivateRoots();
     const own = canonicalizePathForMatch(ownHome);
+    // The fixture is immutable during matching; canonicalize each deny once while retaining the per-path, per-ancestor oracle.
+    const patterns = new Map([...sessions.denyRead, ...privateRoots].map(denied => [denied,
+      /[\[\]]/.test(denied) ? denied : canonicalizePathForMatch(expandLeadingTilde(denied))]));
     const expected = [...reads, ...sessions.allowRead].filter((path) => {
       const resolved = canonicalizePathForMatch(path);
-      if (sessions.denyRead.some((denied) => referenceCovers(denied, resolved))) return false;
+      if (sessions.denyRead.some((denied) => referenceCovers(patterns.get(denied)!, resolved))) return false;
       const insideOwnHome = resolved === own || resolved.startsWith(`${own}/`);
-      return insideOwnHome || !privateRoots.some((root) => referenceCovers(root, resolved));
+      return insideOwnHome || !privateRoots.some((root) => referenceCovers(patterns.get(root)!, resolved));
     });
     const policy = getBuiltinShellReadPolicy(reads, homedir(), ownHome);
     expect(policy.allowRead).toEqual(expected);

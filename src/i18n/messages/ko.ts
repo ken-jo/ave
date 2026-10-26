@@ -3,6 +3,8 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "providerSettingsError.title": "공급자 설정을 불러올 수 없습니다",
+  "providerSettingsError.detail": "설정 파일에 올바르지 않은 필드가 있습니다.\n\n파일: {path}\n필드: {field}\n\n이 필드를 수정한 뒤 Ave를 다시 시작하세요. 파일은 변경되지 않았습니다.",
   "mainToolbar.hideSidebar": "사이드바 숨기기",
   "mainToolbar.showSidebar": "사이드바 표시",
   "sidebar.generalLabel": "일반",

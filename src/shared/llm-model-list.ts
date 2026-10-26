@@ -1,12 +1,15 @@
 import { modelDiscoveryPolicyUsesSeededOptions, type MarketplaceProviderModelDiscoveryPolicy } from "./marketplace-package-assets.js";
 import { isLLMVendor, isOpenAICompatibleVendor } from "./llm-vendor-defaults.js";
 import { vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
+import type { CustomProviderWire } from "./custom-provider.js";
 
 export type LlmModelListRequest = {
   vendor: string;
   /** Optional draft endpoint from the settings UI. When omitted, the host reads the persisted vendor block and
    * provider defaults. The host must not attach stored credentials unless this resolves to the persisted/default endpoint. */
   baseUrl?: string;
+  /** API format paired with the draft custom endpoint. Omitted drafts use the default format. */
+  wire?: CustomProviderWire;
   /** Optional marketplace provider preset id. Renderer uses this when multiple installed
    * OpenAI-compatible presets share one endpoint but must use separate credential namespaces and cache entries. */
   credentialScope?: string;

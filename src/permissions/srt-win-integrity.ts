@@ -2,9 +2,10 @@ import { execFileSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import { lstatSync, mkdirSync, readFileSync, rmdirSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, type } from "node:os";
-import { basename, dirname, join, win32 } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 import SRT_WIN_PINS from "./srt-win-pins.json" with { type: "json" };
 
 export class SrtWinIntegrityError extends Error {
@@ -125,9 +126,8 @@ const SWEEP_SCRIPT = [
 const SWEEP_COMMAND = Buffer.from(SWEEP_SCRIPT, "utf16le").toString("base64");
 
 function runDirectoryCommand(command: string, env: Record<string, string>): void {
-  const root = process.env.SystemRoot;
-  if (!root || !win32.isAbsolute(root)) throw new SrtWinIntegrityError("srt-win-integrity-mismatch");
-  const output = execFileSync(win32.join(root, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+  const root = windowsSystemRoot();
+  const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
     "-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", command,
   ], {
     env: { SystemRoot: root, AVE_SRT_OWNER_PID: String(process.pid), ...env },

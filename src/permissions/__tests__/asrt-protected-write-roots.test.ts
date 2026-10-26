@@ -4,7 +4,8 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
 import * as os from "node:os";
-import { join, relative, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
@@ -84,6 +85,7 @@ describe("filesystem expansion admission", () => {
 describe("the shared layer withholds grants under the protected floor", () => {
   let root: string;
   beforeAll(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = realpathSync(mkdtempSync(join(tmpdir(), "ave-protected-roots-")));
   });
   afterEach(() => {

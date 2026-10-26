@@ -1,7 +1,7 @@
 /** Service orchestration uses isolated repositories; named boundary cases retain real HTTP transport. */
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, sep } from "node:path";
+import { join, resolve, sep } from "node:path";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { readPayloadFiles } from "../../../plugins/contribution-approval-digest.js";
 import { requiresPackage } from "../../updates/eligibility.js";
@@ -45,6 +45,7 @@ import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
 import { setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../../../permissions/sandbox-capability.js";
 
 
@@ -126,6 +127,7 @@ describe("MarketplaceService", () => {
   let deactivateHold: (() => Promise<void>) | null;
 
   beforeAll(async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     serverRoot = mkdtempSync(join(tmpdir(), "ave-service-served-"));
     emptyRepo = createFixtureRepo(serverRoot, "empty-seed");
     server = await startGitHttpServer({ root: serverRoot });

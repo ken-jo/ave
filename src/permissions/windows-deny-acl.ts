@@ -1,8 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
-import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
-import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
+import { admitWindowsReparse, leadingWindowsDenies, readWindowsDacls } from "../shared/windows-path-facts.js";
 
 export const WINDOWS_READ_DENY_MASK = 0x1f01ff;
 export const WINDOWS_WRITE_DENY_MASK = 0x10116;
@@ -14,30 +11,15 @@ export interface WindowsDenyAcl {
   readonly directory: boolean;
 }
 
-// One short native call keeps obligation capture through publication in the same
-// event-loop turn. No child-process binding is evaluated on import.
 export function readWindowsDenyAcls(paths: readonly string[], sandboxUserSid: string): readonly WindowsDenyAcl[] {
-  if (paths.length === 0) return [];
-  const targets = paths.map(path => resolve(path));
-  const identities = targets.map(path => lstatSync(path, { bigint: true, throwIfNoEntry: false }));
   try {
-    const output = execFileSync(resolveWindowsPathKindHelper(), ["--deny-acls", sandboxUserSid, ...targets], {
-      encoding: "utf8", windowsHide: true,
-      timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 2 * 1024 * 1024,
-    });
-    const rows: unknown = JSON.parse(output);
-    if (!Array.isArray(rows) || rows.length !== paths.length) throw new Error("Invalid deny DACL response");
-    return rows.map((row: WindowsDenyAcl, index) => {
-      if (row === null || typeof row !== "object" || typeof row.directory !== "boolean"
-        || [row.denyMask, row.inheritableMask, row.parentMask].some(mask => !Number.isInteger(mask) || mask < 0 || mask > 0xffffffff)) {
-        throw new Error("Invalid deny DACL masks");
-      }
-      const before = identities[index];
-      const after = lstatSync(targets[index]!, { bigint: true, throwIfNoEntry: false });
-      if (before?.dev !== after?.dev || before?.ino !== after?.ino || after?.isSymbolicLink()) {
-        throw new Error("Deny DACL object identity changed");
-      }
-      return row;
+    return readWindowsDacls(paths.map(path => resolve(path)), { parent: true }).map(row => {
+      if (!admitWindowsReparse(row, "evidence")) throw new Error("Reparse path refused");
+      const target = leadingWindowsDenies(row.dacl, sandboxUserSid);
+      if (!row.exists) return { denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false };
+      if (!row.parent) throw new Error("Deny DACL parent is missing");
+      return { denyMask: target.mask, inheritableMask: target.inheritable,
+        parentMask: leadingWindowsDenies(row.parent, sandboxUserSid).mask, directory: row.directory };
     });
   } catch (error) {
     throw new Error("Windows deny DACL verification failed", { cause: error });

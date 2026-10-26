@@ -1,6 +1,7 @@
 // Each shell command gets its own container, filesystem policy and kernel-bound proxy listener; deny/read-only entries outrank write grants, but missing read-only targets do not protect future paths. Killing the launcher tears down descendants, and containers cannot terminate host processes (docs/architecture/architecture.md).
 // Use the signed CLI to relay stdio/exit while the embedded runtime lacks required native support. Plugin workers retain their separate sandbox because proxy mode forbids direct loopback control; terminals remain user-owned and need background descendants to survive.
 import { win32 as winPath } from "node:path";
+import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { errorMessage } from "../shared/error-message.js";
 import type { SandboxMxcUnavailableReason } from "../shared/sandbox-capability-info.js";
@@ -204,7 +205,7 @@ export async function probeMxcPowerShellStart(deps: DetectMxcSupportDeps): Promi
       LOCALAPPDATA: deps.probeDirectory,
       TEMP: deps.probeDirectory,
       TMP: deps.probeDirectory,
-      PATH: `${winPath.join(deps.systemRoot, "System32")};${deps.systemRoot}`,
+      PATH: `${win32SystemBinary("", { SystemRoot: deps.systemRoot })};${deps.systemRoot}`,
     },
     // Nothing listens there: the probe makes no network call.
     proxyUrl: "http://127.0.0.1:9",
@@ -388,15 +389,10 @@ export function mxcRequestArgs(request: MxcContainerRequest): string[] {
   return ["--config-base64", Buffer.from(JSON.stringify(request), "utf8").toString("base64")];
 }
 
-// Windows PowerShell 5.1 at its System32 path: never MSIX `pwsh`, which MXC refuses.
-function windowsPowerShellPath(systemRoot: string): string {
-  return winPath.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-}
-
 // The container command line for one PowerShell command. `-EncodedCommand` carries the command as UTF-16LE base64, so no quoting of the command's own text can change how the line splits.
 export function powerShellMxcCommandLine(systemRoot: string, command: string): string {
   const encoded = Buffer.from(command, "utf16le").toString("base64");
-  return `"${windowsPowerShellPath(systemRoot)}" -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
+  return `"${win32SystemBinary("WindowsPowerShell/v1.0/powershell", { SystemRoot: systemRoot })}" -NoLogo -NoProfile -NonInteractive -EncodedCommand ${encoded}`;
 }
 
 // Why the Bash tool does not run under MXC, for the tool result.
@@ -455,7 +451,7 @@ async function withHostMxcDeps(step: HostProbe): Promise<MxcSupport> {
       exists: existsSync,
       sha256: sha256OfFile,
       probeDirectory,
-      systemRoot: process.env["SystemRoot"] ?? process.env["WINDIR"] ?? "C:\\Windows",
+      systemRoot: process.platform === "win32" ? windowsSystemRoot() : "",
       run: (file, args, timeoutMs) =>
         new Promise((resolve, reject) => {
           execFile(file, [...args], { cwd: path.dirname(file), timeout: timeoutMs, windowsHide: true, maxBuffer: 1024 * 1024 }, (error, stdout, stderr) => {

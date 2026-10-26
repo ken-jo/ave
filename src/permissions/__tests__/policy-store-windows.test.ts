@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "v
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadPolicy, getAdminPolicyPath } from "../policy-store.js";
 import { buildSandboxConfig } from "../asrt-sandbox.js";
 import { FilePolicySource, loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
@@ -13,6 +13,8 @@ import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { createServiceClient } from "../../boot/steps/service-endpoint.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import * as pathFacts from "../../shared/windows-path-facts.js";
 
 describe.skipIf(process.platform !== "win32")("Windows administrative policy trust", () => {
   let root: string;
@@ -21,6 +23,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
   let token: WindowsDirectoryDacl;
 
   beforeEach(async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = await mkdtemp(join(tmpdir(), "policy-trust-"));
     vi.stubEnv("ProgramData", join(root, "machine"));
     vi.stubEnv("AVE_HOME", join(root, "home"));
@@ -109,9 +112,13 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
       .toThrow(`Windows write grant ${pattern} contains machine root ${process.env.ProgramData!}`);
   });
 
-  it("does not read the extended-length prefix as a wildcard", () => {
+  it("refuses an extended-length grant before treating its prefix as a wildcard", () => {
     const grant = `\\\\?\\${join(root, "work")}`;
-    expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [grant] })).not.toThrow();
+    const pin = vi.spyOn(pathFacts, "pinWindowsPaths");
+    try {
+      expect(() => buildSandboxConfig({ allowedDomains: [], allowWrite: [grant] })).toThrow(/literal local absolute path/);
+      expect(pin).not.toHaveBeenCalled();
+    } finally { pin.mockRestore(); }
   });
 
   it("refuses a recursive write pattern rooted at a machine root", () => {

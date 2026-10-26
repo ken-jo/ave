@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("node:child_process", () => ({
   execFileSync: vi.fn(),
@@ -6,6 +6,8 @@ vi.mock("node:child_process", () => ({
 
 import { execFileSync } from "node:child_process";
 import { resolveShell, ShellMismatchError, __resetShellResolverCache } from "../shell-resolver.js";
+
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
 
 afterEach(() => {
   __resetShellResolverCache();
@@ -15,13 +17,21 @@ afterEach(() => {
 });
 
 describe("shell-resolver", () => {
+  it("looks up a shell through the absolute system binary", () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    vi.stubEnv("SystemRoot", "C:/Windows");
+    vi.mocked(execFileSync).mockImplementation(() => { throw new Error("unavailable"); });
+    expect(() => resolveShell()).toThrow(ShellMismatchError);
+    expect(execFileSync).toHaveBeenCalledWith("C:\\Windows\\System32\\where.exe", ["sh"], expect.any(Object));
+    expect(vi.mocked(execFileSync).mock.calls.some(([cmd]) => cmd === "where")).toBe(false);
+  });
   it("returns sh on Windows when sh is found", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32" as NodeJS.Platform);
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
       if (String(cmd).includes("C:\\Program Files\\Git\\")) {
         throw new Error("not installed");
       }
-      if (cmd === "where" && args[0] === "sh") {
+      if (cmd === "C:\\Windows\\System32\\where.exe" && args[0] === "sh") {
         return "C:\\Windows\\System32\\sh.exe";
       }
       if (cmd === "sh" && args[1] === "printf __ave_shell_ok__") {
@@ -64,10 +74,10 @@ describe("shell-resolver", () => {
       if (String(cmd).includes("C:\\Program Files\\Git\\")) {
         throw new Error("not installed");
       }
-      if (cmd === "where" && args[0] === "sh") {
+      if (cmd === "C:\\Windows\\System32\\where.exe" && args[0] === "sh") {
         throw new Error("not found");
       }
-      if (cmd === "where" && args[0] === "bash") {
+      if (cmd === "C:\\Windows\\System32\\where.exe" && args[0] === "bash") {
         return "C:\\Program Files\\Git\\bin\\bash.exe";
       }
       if (cmd === "bash" && args[1] === "printf __ave_shell_ok__") {
@@ -138,7 +148,7 @@ describe("shell-resolver", () => {
     vi.spyOn(process, "platform", "get").mockReturnValue("win32");
     const executable = "D:\\Shell Runtime\\bash.exe";
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
-      if (cmd === "where") return `${executable}\r\nE:\\Other\\bash.exe\r\n`;
+      if (cmd === "C:\\Windows\\System32\\where.exe") return `${executable}\r\nE:\\Other\\bash.exe\r\n`;
       if (cmd !== executable) throw new Error("not installed");
       return Array.isArray(args) && args[1] === "uname -s" ? "MSYS_NT" : "__ave_shell_ok__";
     });
@@ -158,7 +168,7 @@ describe("shell-resolver", () => {
     "rejects unusable Windows Bash lookup result %j without probing a bare command", (lookup) => {
       vi.spyOn(process, "platform", "get").mockReturnValue("win32");
       vi.mocked(execFileSync).mockImplementation((cmd) => {
-        if (cmd === "where") return lookup;
+        if (cmd === "C:\\Windows\\System32\\where.exe") return lookup;
         throw new Error("not installed");
       });
       expect(() => resolveShell("bash")).toThrow(/absolute executable path/);
@@ -176,18 +186,18 @@ describe("shell-resolver", () => {
     vi.stubEnv("AVE_INTERNAL_SECRET", "sentinel-host-secret");
     vi.stubEnv("BASH_ENV", "/sentinel-startup-script");
     vi.stubEnv("PATH", "sentinel-runtime-path");
-    vi.stubEnv("SystemRoot", "sentinel-system-root");
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     vi.stubEnv("USERPROFILE", "sentinel-user-profile");
     vi.stubEnv("LANG", "sentinel-locale");
     vi.mocked(execFileSync).mockImplementation((cmd, args) => {
-      if (cmd === "where") return executable;
+      if (cmd === "C:\\Windows\\System32\\where.exe") return executable;
       if (cmd !== executable) throw new Error("not installed");
       return Array.isArray(args) && args[1] === "uname -s" ? "MSYS_NT" : "__ave_shell_ok__";
     });
 
     expect(resolveShell(dialect).cmd).toBe(executable);
     if (platform === "win32") {
-      expect(execFileSync).toHaveBeenCalledWith("where", [lookup], expect.any(Object));
+      expect(execFileSync).toHaveBeenCalledWith("C:\\Windows\\System32\\where.exe", [lookup], expect.any(Object));
       expect(execFileSync).toHaveBeenCalledWith(executable, ["-c", "uname -s"], expect.any(Object));
     }
     for (const [, , options] of vi.mocked(execFileSync).mock.calls) {
@@ -197,7 +207,7 @@ describe("shell-resolver", () => {
       expect(env?.AVE_INTERNAL_SECRET).toBeUndefined();
       expect(env?.BASH_ENV).toBeUndefined();
       expect(env?.PATH).toBe("sentinel-runtime-path");
-      expect(env?.SystemRoot).toBe("sentinel-system-root");
+      expect(env?.SystemRoot).toBe("C:\\Windows");
       expect(env?.USERPROFILE).toBe("sentinel-user-profile");
       expect(env?.LANG).toBe("sentinel-locale");
     }

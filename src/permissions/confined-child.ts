@@ -1,6 +1,7 @@
 // Per-command deny arrays replace the shared boot floor, even when empty; this primitive always restates it so children cannot regain secret reads. Callers provide allow paths only.
 import { spawn, type ChildProcess, type StdioOptions } from "node:child_process";
 import { assertSrtWinSpawnIntegrity } from "./srt-win-integrity.js";
+import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { existsSync } from "node:fs";
 import { extname, join } from "node:path";
 import type { Readable, Writable } from "node:stream";
@@ -358,7 +359,7 @@ function buildConfinedCommandLine(
     }
     return {
       cmdline: buildCmdCommandLine(spec.label, command, args, spec.windowsCommandLineEnv ?? {}),
-      binShell: cmdBinShell(spec.label),
+      binShell: { exe: win32SystemBinary("cmd"), args: ["/d", "/v:off", "/s", "/c"] },
     };
   }
   return { cmdline: [command, ...args].map((part) => shellQuote(part)).join(" ") };
@@ -405,15 +406,6 @@ function assertCmdSafe(label: string, token: string): void {
         + "move the plugin, or the app, to a path without it",
     );
   }
-}
-
-// `cmd.exe` from the system root, never from `PATH`, with AutoRun and delayed expansion off.
-function cmdBinShell(label: string): { exe: string; args: string[] } {
-  const root = process.env.SystemRoot ?? process.env.WINDIR;
-  if (root === undefined || root.trim().length === 0) {
-    throw new Error(`[confined-child] ${label}: cannot locate cmd.exe: SystemRoot is unset`);
-  }
-  return { exe: `${root.replace(/[\\/]+$/, "")}\\System32\\cmd.exe`, args: ["/d", "/v:off", "/s", "/c"] };
 }
 
 // Compose the child's environment. Only the variables ASRT actually CHANGED are overlaid. Taking its whole composed environment would drag in this process's own values under the guise of proxy configuration, so it is diffed against a baseline composed from `process.env` and only the differences carry over.

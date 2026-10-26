@@ -2,6 +2,7 @@
 // text: pass it by environment or argv, never interpolation.
 import { execFile } from "node:child_process";
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
+import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { X509Certificate } from "node:crypto";
 import { open, readdir } from "node:fs/promises";
 import { join } from "node:path";
@@ -148,7 +149,7 @@ foreach ($store in $stores) {
 async function readWindowsTrustStore(lookup: CorpCaLookup): Promise<string> {
   // `-NoProfile -NonInteractive` so a user profile script cannot change what comes back, and the name travels as data, never as script text.
   return await runTrustStoreTool(
-    "powershell.exe",
+    win32SystemBinary("WindowsPowerShell/v1.0/powershell.exe"),
     ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_EXPORT_SCRIPT],
     windowsPowerShellEnv({ ...process.env, AVE_CORP_CA_QUERY: lookup.commonName }),
   );

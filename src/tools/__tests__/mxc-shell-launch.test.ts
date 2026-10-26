@@ -1,5 +1,5 @@
 import net from "node:net";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
@@ -25,6 +25,7 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
 import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
 
 const WS = String.raw`C:\work\repo`;
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
 const INPUT = {
   egressToken: "tok",
   commandLine: "cmd.exe /d /c echo hi",
@@ -49,11 +50,31 @@ function portAccepts(port: number): Promise<boolean> {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   vi.restoreAllMocks();
   vi.clearAllMocks();
 });
 
 describe("prepareMxcShellLaunch", () => {
+  it("refuses a missing system root and closes preparation resources", async () => {
+    const roots = ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"];
+    const previous = roots.map(key => process.env[key]);
+    try {
+      for (const key of roots) vi.stubEnv(key, undefined);
+      h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
+      const listen = vi.spyOn(net.Server.prototype, "listen");
+      await expect(prepareMxcShellLaunch(INPUT)).rejects.toThrow(/system root/i);
+      const server = listen.mock.contexts[0] as net.Server | undefined;
+      expect(server).toBeDefined();
+      expect(server?.listening).toBe(false);
+      expect(h.closeRelay).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllEnvs();
+      // Environment keys alias each other on Windows; restore defined values after all removals.
+      roots.forEach((key, index) => { if (previous[index] !== undefined) process.env[key] = previous[index]; });
+    }
+  });
+
   it("opens the invocation's own listener and points the container's only network path at it", async () => {
     h.openRelay.mockResolvedValue({ port: 9, proxyAuthorization: "Basic eA==", registerPort: h.registerPort, recordRefusal: h.recordRefusal, close: h.closeRelay });
     const launch = await prepareMxcShellLaunch(INPUT);

@@ -117,7 +117,6 @@ describe("settings normalization drops seeded-policy model-list caches for every
             },
           },
         } as never,
-        ["openai-compatible"] as never,
         [installedPreset(policy)] as never,
       );
 

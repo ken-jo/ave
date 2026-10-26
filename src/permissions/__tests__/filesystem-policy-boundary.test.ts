@@ -3,9 +3,10 @@ import { join } from "node:path";
 import childProcess, { type ChildProcess } from "node:child_process";
 import { EventEmitter } from "node:events";
 import { syncBuiltinESMExports } from "node:module";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import { useScratchLinks, useTempDirs } from "../../__tests__/test-helpers.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { observeWindowsGrantIdentity } from "../../__tests__/support/windows-grant-identity.js";
 import * as policyHome from "../../shared/policy-home.js";
 import * as integrity from "../srt-win-integrity.js";
 import * as writePolicy from "../sandbox-write-policy.js";
@@ -89,11 +90,30 @@ describe.runIf(process.platform === "win32")("pinned filesystem admission bounda
       expect(runtime.grantWindowsAcl).not.toHaveBeenCalled(); expect(update).not.toHaveBeenCalled();
     });
   }
-  it.each(["allowWrite", "allowRead"] as const)("refuses a reparse ancestor in %s at pin time", async list => {
+  it.each(["allowWrite", "allowRead"] as const)("pins the resolved identity through a reparse ancestor in %s", async list => {
     const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
     const target = scratch(); mkdirSync(join(target, "leaf"));
     const alias = link(target, join(scratch(), "alias"));
-    expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] })).toThrow(/reparse/i);
+    const identity = observeWindowsGrantIdentity(join(target, "leaf"));
+    const pinned = pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] });
+    expect(pinned[list]).toEqual([{ path: identity.canonical, literal: true }]);
+    const { sandbox, runtime } = await setup();
+    vi.mocked(runtime.revokeWindowsAcl).mockReturnValue([{ path: identity.canonical, status: "revoked" }]);
+    const grant = await sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, [list]: [join(alias, "leaf")] });
+    try {
+      expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({
+        read: [identity.canonical], write: list === "allowWrite" ? [identity.canonical] : [],
+      }));
+    } finally { grant.release(); }
+    identity.assertPinned();
+  });
+
+  it.each(["allowWrite", "allowRead"] as const)("refuses a guarded resolved target through a reparse ancestor in %s", async list => {
+    phase.guarded = true;
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+    const alias = link(inject("realAccountHome"), join(scratch(), "alias"));
+    expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "missing", "leaf")] }))
+      .toThrow(/constrain the test's deny\/allow targets to fixtures/);
   });
 
   it.each(["denyRead", "denyWrite"] as const)("keeps uncertain %s rows outside grant admission", async list => {

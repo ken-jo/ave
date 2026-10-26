@@ -8,6 +8,7 @@ import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import * as homeGuard from "../../shared/ave-home-test-guard.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { observeWindowsGrantIdentity } from "../../__tests__/support/windows-grant-identity.js";
 import { useScratchLinks, useTempDirs } from "../../__tests__/test-helpers.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
@@ -389,30 +390,38 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     await sandbox.wrapToolCommand("echo fixture", { commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] } });
   });
 
-  it("refuses a session junction glob before runtime initialization", async () => {
+  it("pins a session junction glob to the resolved target before runtime initialization", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const target = scratch();
     const existing = join(target, "existing.stamp-fixture");
     writeFileSync(existing, "");
     const alias = link(target, join(scratch(), "alias"));
+    const identity = observeWindowsGrantIdentity(existing);
     const initialize = vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowWrite: [join(alias, "*.stamp-fixture")] }))
-      .rejects.toThrow(/reparse point|Sandbox stamp target identity changed/);
-    expect(initialize).not.toHaveBeenCalled();
+      .resolves.toBeUndefined();
+    expect(runtimeAllowWrite(initialize.mock.calls[0]![0].filesystem)).toEqual([identity.canonical]);
+    identity.assertPinned();
   });
 
-  it("refuses a tool junction literal with a missing tail before runtime wrapping", async () => {
+  it("resolves a tool junction prefix and omits its missing tail at runtime handoff", async () => {
     const target = scratch();
-    const alias = join(scratch(), "alias");
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox({ allowWrite: [join(alias, "missing", "leaf")] });
-    link(target, alias);
-    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
+    const alias = link(target, join(scratch(), "alias"));
+    const identity = observeWindowsGrantIdentity(target);
+    const { pinWindowsFilesystemConfig, existingWindowsGrants } = await import("../windows-stamp-targets.js");
+    const pinned = pinWindowsFilesystemConfig({ allowWrite: [join(alias, "missing", "leaf")] });
+    expect(pinned.allowWrite).toEqual([{ path: join(identity.canonical, "missing", "leaf"), literal: true }]);
+    expect(existingWindowsGrants(pinned.allowWrite)).toEqual([]);
+    const { SandboxManager, sandbox, sharedConfig } = await initializeFixtureSandbox({ allowWrite: [join(alias, "missing", "leaf")] });
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["fixture"], env: {} });
     await expect(sandbox.wrapToolCommand("echo fixture", {
       commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] },
-    })).rejects.toThrow(/reparse point|Sandbox stamp target identity changed/);
-    expect(wrap).not.toHaveBeenCalled();
+    })).resolves.toBeDefined();
+    expect(wrap.mock.calls[0]![2]?.filesystem?.allowWrite).toEqual([]);
+    expect(sharedConfig.filesystem.allowWrite).toEqual([]);
+    identity.assertPinned();
   });
 
   it("keeps fixture junction deny lists on the deny path at initialization", async () => {
@@ -443,27 +452,49 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(wrap).toHaveBeenCalledOnce();
   });
 
-  it("refuses fixture junction grants before runtime initialization", async () => {
+  it("pins fixture junction grants to the resolved identity before runtime initialization", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const target = scratch();
     const alias = link(target, join(scratch(), "alias"));
+    const identity = observeWindowsGrantIdentity(target);
     vi.spyOn(SandboxManager, "initialize").mockResolvedValue(undefined);
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowRead: [alias], allowWrite: [alias] })).rejects.toThrow(/reparse point/);
-    expect(SandboxManager.initialize).not.toHaveBeenCalled();
+    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, allowRead: [alias], allowWrite: [alias] })).resolves.toBeUndefined();
+    const config = vi.mocked(SandboxManager.initialize).mock.calls[0]![0];
+    expect(config.filesystem.allowRead).toEqual([{ path: identity.canonical, literal: true }]);
+    expect(config.filesystem.allowWrite).toEqual([{ path: identity.canonical, literal: true }]);
+    identity.assertPinned();
   });
 
-  it("refuses a grant with a missing tail through chained intermediate junctions", async () => {
-    const intermediate = link(scratch(), join(scratch(), "intermediate"));
-    const alias = join(scratch(), "alias");
-    const { SandboxManager, sandbox } = await initializeFixtureSandbox({ allowWrite: [join(alias, "missing", "leaf")] });
-    link(intermediate, alias);
-    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv");
+  it.each(["session-glob", "tool-missing-tail", "session-grants", "chained-missing-tail"] as const)(
+    "refuses a %s junction whose resolved target reaches the real home", async kind => {
+      const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+      const intermediate = link(inject("realAccountHome"), join(scratch(), "intermediate"));
+      const alias = kind === "chained-missing-tail" ? link(intermediate, join(scratch(), "alias")) : intermediate;
+      const path = kind === "session-glob" ? join(alias, "*.stamp-fixture")
+        : kind === "session-grants" ? alias : join(alias, "missing", "leaf");
+      expect(() => pinWindowsFilesystemConfig({ allowRead: [path], allowWrite: [path] })).toThrow(refusal);
+    },
+  );
+
+  it("resolves chained intermediate junctions and omits a missing grant at runtime handoff", async () => {
+    const target = scratch();
+    const intermediate = link(target, join(scratch(), "intermediate"));
+    const alias = link(intermediate, join(scratch(), "alias"));
+    const identity = observeWindowsGrantIdentity(target);
+    const { pinWindowsFilesystemConfig, existingWindowsGrants } = await import("../windows-stamp-targets.js");
+    const pinned = pinWindowsFilesystemConfig({ allowWrite: [join(alias, "missing", "leaf")] });
+    expect(pinned.allowWrite).toEqual([{ path: join(identity.canonical, "missing", "leaf"), literal: true }]);
+    expect(existingWindowsGrants(pinned.allowWrite)).toEqual([]);
+    const { SandboxManager, sandbox, sharedConfig } = await initializeFixtureSandbox({ allowWrite: [join(alias, "missing", "leaf")] });
+    const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["fixture"], env: {} });
     await expect(sandbox.wrapToolCommand("echo fixture", {
       commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [] },
-    })).rejects.toThrow(/reparse point|Sandbox stamp target identity changed/);
-    expect(wrap).not.toHaveBeenCalled();
+    })).resolves.toBeDefined();
+    expect(wrap.mock.calls[0]![2]?.filesystem?.allowWrite).toEqual([]);
+    expect(sharedConfig.filesystem.allowWrite).toEqual([]);
+    identity.assertPinned();
   });
 
   it("refuses a replaced literal when the runtime consumes the pinned session list", async () => {

@@ -1,4 +1,5 @@
 /** Browser-safe vendor and default configuration shared by settings and provider selection. */
+import { customProviderWire, type CustomProviderWire } from "./custom-provider.js";
 import { DEFAULT_LLM_OUTPUT_TOKEN_LIMIT } from "./model-host-policy.js";
 import { catalogChatModelIds, vendorHasCatalogProvider } from "./model-catalog/vendor-models.js";
 import { isNonNegativeSafeInteger, isPositiveSafeInteger } from "./safe-integer.js";
@@ -566,6 +567,7 @@ export interface LLMVendorSettings {
   catalogModel?: string;
   imageInput?: Partial<Record<string, boolean>>;
   baseUrl?: string;
+  wire?: CustomProviderWire;
   vertexProject?: string;
   vertexLocation?: string;
   /** Preset models need separate slots; only the compatible-provider block carries them. Read through llmRouteModel. */
@@ -611,6 +613,7 @@ function defaultBlock(vendor: LLMVendor): LLMVendorSettings {
     // A catalog or endpoint listing offers choices; connecting is not a choice.
     model: "",
     ...(preset ? { baseUrl: preset.baseUrl } : {}),
+    ...(vendor === "openai-compatible" ? { wire: "openai-chat" as const } : {}),
     enableThinking: true,
     thinkingBudgetTokens: DEFAULT_THINKING_BUDGET_TOKENS,
   };
@@ -716,6 +719,8 @@ export function getLlmVendorSettings(
         : defaults.enableThinking,
     thinkingBudgetTokens: normalizeLlmThinkingBudgetTokens(stored?.thinkingBudgetTokens, outputTokenLimit),
   };
+  if (vendor === "openai-compatible") block.wire = customProviderWire(stored?.wire);
+  else delete block.wire;
   if (presetModels) block.presetModels = presetModels;
   else delete block.presetModels;
   if (outputTokenLimit !== undefined) block.outputTokenLimit = outputTokenLimit;

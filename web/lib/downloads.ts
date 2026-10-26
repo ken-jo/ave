@@ -42,7 +42,7 @@ const RELEASE_CHANNEL_ORIGIN = "https://downloads.agent-connector.ai";
  * release is uploaded); the setup steps stay readable. Set it to true in the
  * change that follows the first published release.
  */
-export const RELEASE_PUBLISHED = false;
+export const RELEASE_PUBLISHED = true;
 
 /** The stable `latest/` alias for one installer. */
 const latest = (file: string) => `${RELEASE_CHANNEL_ORIGIN}/latest/${file}`;

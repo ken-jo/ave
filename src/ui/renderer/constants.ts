@@ -12,11 +12,9 @@ export const LONG_TOAST_TTL_MS = 5000;
 
 import type { AppSettings, ExecutionMode } from "./types.js";
 import {
-  DEFAULT_VISIBLE_LLM_VENDOR_IDS,
   LLM_VENDORS,
   OPENAI_COMPATIBLE_PRESET_VENDOR_IDS,
   OPENAI_COMPATIBLE_VENDOR_PRESETS,
-  isLLMVendor,
   llmVendorModelOptions,
   getLlmThinkingBudgetRungs,
   type OpenAICompatiblePresetVendor,
@@ -48,8 +46,6 @@ export interface VendorOption extends VendorUiMeta {
    * catalog before it mounts, after this module has loaded, so the value cannot be taken here. */
   readonly modelOptions: readonly string[];
 }
-
-type VendorOptionFor<T extends LLMVendor> = VendorOption & { id: T };
 
 const CORE_VENDOR_UI: Record<Exclude<LLMVendor, OpenAICompatiblePresetVendor>, VendorUiMeta> = {
   claude: { label: "Anthropic Claude", placeholder: "sk-ant-...", needsBaseUrl: false },
@@ -102,27 +98,14 @@ export const ALL_VENDORS: VendorOption[] = LLM_VENDORS.map((id) => ({
   },
 }));
 
-function requireVendorOption<T extends LLMVendor>(id: T): VendorOptionFor<T> {
-  const option = ALL_VENDORS.find((vendor) => vendor.id === id);
-  if (!option) throw new Error(`Missing LLM vendor metadata: ${id}`);
-  return option as VendorOptionFor<T>;
-}
-
-export const VENDORS = DEFAULT_VISIBLE_LLM_VENDOR_IDS.map(requireVendorOption);
+export const VENDORS = [...ALL_VENDORS];
 
 export function getVendorOption(vendorId: string): VendorOption {
   return ALL_VENDORS.find((vendor) => vendor.id === vendorId) ?? VENDORS[0]!;
 }
 
-export function visibleVendorsFor(currentVendorIds: readonly string[] = []): VendorOption[] {
-  const visible: VendorOption[] = [...VENDORS];
-  for (const vendorId of currentVendorIds) {
-    if (!isLLMVendor(vendorId)) continue;
-    if (visible.some((vendor) => vendor.id === vendorId)) continue;
-    const option = getVendorOption(vendorId);
-    visible.push(option);
-  }
-  return visible;
+export function visibleVendorsFor(): VendorOption[] {
+  return [...ALL_VENDORS];
 }
 
 export const WEB_PROVIDERS: { id: AppSettings["webSearch"]["provider"]; label: string; readonly placeholder: string; needsKey: boolean }[] = [
