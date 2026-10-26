@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../shared/side-browser.js";
+
+useChromiumRuntime();
 
 const electronMock = vi.hoisted(() => {
   const sideBrowserSession = {
@@ -46,6 +49,7 @@ const {
   isSideBrowserContents,
   isSideBrowserPopupUrlAllowed,
 } = await import("../side-browser-webview.js");
+const { buildPersistentBrowserUserAgent } = await import("../browser-user-agent.js");
 
 function event() {
   return { preventDefault: vi.fn() };
@@ -154,8 +158,9 @@ describe("side browser webview attach policy", () => {
     installSideBrowserPartitionPolicy();
 
     const ua = electronMock.sideBrowserSession.setUserAgent.mock.calls[0]?.[0] as string;
-    expect(ua).toMatch(/Chrome\/\d+/);
-    expect(ua).not.toContain("Electron");
+    expect(ua).toBe(buildPersistentBrowserUserAgent());
+    expect(ua).toMatch(/Chrome\/\d+\.0\.0\.0 Safari\/537\.36 Ave\/\S+$/);
+    expect(ua).not.toMatch(/Electron\/|Edg\//);
     expect(electronMock.sideBrowserSession.setPermissionRequestHandler).toHaveBeenCalledOnce();
     expect(electronMock.sideBrowserSession.setPermissionCheckHandler).toHaveBeenCalledWith(expect.any(Function));
     // Downloads are allowed, behind the Save-dialog policy below.

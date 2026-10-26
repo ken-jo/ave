@@ -1,4 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
+
+useChromiumRuntime();
 
 const electronMocks = vi.hoisted(() => {
   class Emitter {
