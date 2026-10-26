@@ -1,7 +1,7 @@
 /** Mock the account home so a broken isolation guard can only resolve scratch paths. */
-import { mkdirSync } from "node:fs";
+import { mkdirSync, realpathSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -159,6 +159,52 @@ describe("the test process's Ave home", () => {
 });
 
 describe("canonicalPath", () => {
+  it.skipIf(process.platform !== "win32")("normalizes an unreachable network path when realpath fails", () => {
+    const path = "\\\\unreachable\\profiles\\tester\\work\\..\\locked";
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw Object.assign(new Error("unreachable share"), { code: "UNKNOWN" });
+    });
+    try {
+      expect(canonicalPath(path)).toBe(resolve(path));
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("normalizes an unreachable extended network path when realpath fails", () => {
+    const path = "\\\\?\\UNC\\unreachable\\profiles\\tester\\locked";
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => {
+      throw Object.assign(new Error("unreachable share"), { code: "EACCES" });
+    });
+    try {
+      expect(canonicalPath(path)).toBe(resolve(path));
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
+  it("preserves local realpath permission failures", () => {
+    const path = join(scratch(), "locked");
+    const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => { throw error; });
+    try {
+      expect(() => canonicalPath(path)).toThrow(error);
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
+  it.skipIf(process.platform !== "win32")("preserves extended local realpath failures", () => {
+    const path = `\\\\?\\${join(scratch(), "locked")}`;
+    const error = Object.assign(new Error("permission denied"), { code: "EACCES" });
+    const realpath = vi.spyOn(realpathSync, "native").mockImplementation(() => { throw error; });
+    try {
+      expect(() => canonicalPath(path)).toThrow(error);
+    } finally {
+      realpath.mockRestore();
+    }
+  });
+
   it("resolves the nearest existing ancestor and keeps the parts not created yet", () => {
     const real = scratch();
     const via = link(real, join(scratch(), "via"));
