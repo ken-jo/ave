@@ -1,4 +1,4 @@
-// Renderer previews and agent reads must share identical approval-free file access and line-window rules.
+// Text previews and native agent reads share line windows; each caller retains its existing read policy.
 import { createReadStream, realpathSync } from "node:fs";
 import { isAbsolute, resolve as pathResolve } from "node:path";
 import { finished } from "node:stream/promises";

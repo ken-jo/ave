@@ -70,6 +70,8 @@ The [table preview contract](table-document-preview.md) owns request replacement
 container checks, expansion refusals and bounded display windows.
 The [page preview contract](page-document-preview.md) adds presentation outlines
 and rendered PDF pages through that same lifecycle.
+The [agent document tools](agent-document-tools.md) reuse that parser with bounded
+model-context selections and policy-checked, session-bound panel requests.
 
 Host service bootstrap accepts `BootHost` (`src/boot/host-runtime.ts`) for
 user-data and resource paths, packaged mode, encryption, network fetches, and
@@ -191,7 +193,13 @@ writes or access to other protected namespaces.
 The Bash tool resolves the same Bash dialect for foreground, background, and
 sandbox execution through `src/lib/shell-resolver.ts`; discovery probes use the
 generic filtered child environment. Background handles belong to a session and
-retain bounded incremental output. `bash_output.waitMs` is an integer from 0 to
+retain bounded incremental output. The command panel and Ctrl+B can transfer an
+eligible running, unsandboxed POSIX shell without executing it again. Its original
+deadline and session cleanup remain in force. Sandbox, explicit host-approval,
+broker foreground and Windows execution cannot transfer through this path.
+Panel actions bind the expected session and window; output snapshots show a bounded
+preview without advancing the model's output cursor.
+`bash_output.waitMs` is an integer from 0 to
 30,000 ms, default 0. Its default `waitFor: "output"` returns on unread/new output
 or completion. Opt-in `waitFor: "completion"` keeps waiting through progress
 output until the shell ends or that same wait expires. Both return accumulated
@@ -453,6 +461,11 @@ Important rules:
   history. Measurement does not consume an instruction's execution allowance.
 - Long histories are compacted through the structured compact path rather than
   silent truncation.
+- Manual compaction accepts focus instructions. An optional compaction model
+  defaults to the originating conversation's current model and retains its
+  authentication route. An explicit selection is scoped to its provider,
+  endpoint and preset; switching routes leaves that selection inactive. Summary
+  input also respects the selected model's own context budget.
 - A round that stops at `end_turn` with reasoning but no visible text and no
   tool call does not end the turn: the loop re-prompts it a bounded number of
   times before returning, because that reasoning states the action the model

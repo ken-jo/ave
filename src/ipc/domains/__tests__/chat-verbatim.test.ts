@@ -5,6 +5,7 @@ import { mkdirSync, realpathSync } from "node:fs";
 import { fakeLlmSettings } from "../../../shared/__tests__/fake-llm-settings.js";
 import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import { CHANNELS } from "../../../contract/app-contract.js";
+import * as shellTasks from "../../../tools/shell-tools.js";
 import {
   MCP_RESOURCE_ATTACHMENTS_PER_TURN,
   MCP_RESOURCE_FENCE_OPEN,
@@ -195,6 +196,31 @@ class SessionMutationGate<T> {
     });
   }
 }
+
+describe("session command controls", () => {
+  it("binds list and control to the active group session and refuses malformed input", async () => {
+    const loop = makeConversationLoop("commands-session", []);
+    await setupHandlers(loop);
+    const list = vi.spyOn(shellTasks, "listShellTasks").mockReturnValue([]);
+    const control = vi.spyOn(shellTasks, "controlShellTask").mockReturnValue({ ok: true, shellId: "owned-shell" });
+    try {
+      expect(invokeRegisteredHandler(handlers, "ave:chat:list-shell-tasks", "main", "commands-session")).toEqual([]);
+      expect(list).toHaveBeenCalledWith("commands-session");
+      expect(invokeRegisteredHandler(handlers, "ave:chat:control-shell-task", "main", "commands-session", "background")).toEqual({ ok: true, shellId: "owned-shell" });
+      expect(control).toHaveBeenCalledWith("commands-session", "background", undefined);
+      expect(invokeRegisteredHandler(handlers, "ave:chat:control-shell-task", "main", "commands-session", "start", "foreign")).toEqual({ ok: false, error: "invalid-shell-action" });
+      expect(control).toHaveBeenCalledTimes(1);
+      const unauthorized = handlers.get("ave:chat:control-shell-task")!;
+      expect(unauthorized({ senderFrame: { url: "https://untrusted.example" } }, "main", "commands-session", "background")).toEqual({ ok: false, error: "unauthorized-frame" });
+      expect(control).toHaveBeenCalledTimes(1);
+      loop.getSessionId.mockReturnValue("switched-session");
+      expect(invokeRegisteredHandler(handlers, "ave:chat:control-shell-task", "main", "commands-session", "background")).toEqual({ ok: false, error: "session-changed" });
+      expect(invokeRegisteredHandler(handlers, "ave:chat:list-shell-tasks", "main", "commands-session")).toEqual([]);
+      expect(control).toHaveBeenCalledTimes(1);
+      expect(list).toHaveBeenCalledTimes(1);
+    } finally { list.mockRestore(); control.mockRestore(); }
+  });
+});
 
 describe("ave:chat:get-verbatim-tool-result", () => {
   const CHANNEL = "ave:chat:get-verbatim-tool-result";

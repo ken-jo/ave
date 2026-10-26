@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../../shared/shell-tasks.js";
 import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Types extracted from src/renderer.tsx.
 // Pure type declarations — no React runtime, no hook state, no side effects.
@@ -614,6 +615,8 @@ export type AveApi = {
    * object to AveApi keep compiling — production preload always defines it.
    */
   sideChat?: {
+    listShellTasks: (expectedSessionId: string) => Promise<ShellTask[]>;
+    controlShellTask: (expectedSessionId: string, action: ShellTaskAction, shellId?: string) => Promise<ShellTaskActionResult>;
     send: (
       input: string,
       attachments?: unknown[],
@@ -851,6 +854,8 @@ export type AveApi = {
     shouldAutoContinue: boolean;
   } | { error: string }>;
   chatAbort: () => Promise<{ ok: boolean }>;
+  chatListShellTasks: (expectedSessionId: string) => Promise<ShellTask[]>;
+  chatControlShellTask: (expectedSessionId: string, action: ShellTaskAction, shellId?: string) => Promise<ShellTaskActionResult>;
   /** Lazy-load in-session verbatim content for a compacted tool_result.
    * Returns null when: session changed, toolUseId not found, verbatim
    * already flushed to disk stub, or meta.compactedAt was never set. lineCount
@@ -2009,6 +2014,8 @@ interface WorkspaceFileMatch {
  * Korean message; `message` is English dev detail.
  */
 export interface AvePreviewApi {
+  onDocumentOpen: (handler: (request: import("../../shared/document-open.js").DocumentOpenRequest) => void) => () => void;
+  acknowledgeDocumentOpen: (ack: import("../../shared/document-open.js").DocumentOpenAck) => Promise<{ ok: true } | { ok: false; error: string }>;
   readFile: (path: string) => Promise<{
     ok: boolean;
     content?: string;

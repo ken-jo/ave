@@ -1,5 +1,6 @@
 // Side chat owns independent loops and streams; never mutate the main conversation.
 import { ipcMain } from "electron";
+import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import type { WebContents } from "electron";
 import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
@@ -31,6 +32,32 @@ const log = createLogger("sidechat");
 
 export function registerSideChatHandlers(deps: IpcDeps): void {
   const { sideChatConversationLoop, paneChatLoops, auditLogger, getMainWindow, settingsService } = deps;
+  let railShellOwnerId: number | undefined;
+  const shellTaskSession = (sender: WebContents, expectedSessionId: unknown): string | null => {
+    if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return null;
+    if (sideChatConversationLoop?.getSessionId() === expectedSessionId) {
+      return railShellOwnerId === sender.id && !sideChatConversationLoop.isSessionTransitioning() ? expectedSessionId : null;
+    }
+    const held = paneChatLoops?.holding(expectedSessionId);
+    const owner = mainWindowForContents(sender);
+    return held && owner?.id === held.windowId && held.loop.getSessionId() === expectedSessionId && !held.loop.isSessionTransitioning()
+      ? expectedSessionId : null;
+  };
+  ipcMain.handle(CHANNELS.sidechat.listShellTasks, (e, expectedSessionId: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.listShellTasks, e); return []; }
+    const sessionId = shellTaskSession(e.sender, expectedSessionId);
+    return sessionId === null ? [] : listShellTasks(sessionId);
+  });
+  ipcMain.handle(CHANNELS.sidechat.controlShellTask, (e, expectedSessionId: unknown, action: unknown, shellId?: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.sidechat.controlShellTask, e); return UNAUTHORIZED_FRAME; }
+    if ((action !== "background" && action !== "stop") ||
+        (shellId !== undefined && (typeof shellId !== "string" || shellId.length === 0 || shellId.length > 128))) return { ok: false, error: "invalid-shell-action" };
+    const sessionId = shellTaskSession(e.sender, expectedSessionId);
+    if (sessionId === null) return { ok: false, error: "session-changed" };
+    const result = controlShellTask(sessionId, action, shellId as string | undefined);
+    auditLogger.log({ timestamp: new Date().toISOString(), sessionId, type: "info", input: JSON.stringify({ event: "shell_task_control", action, ok: result.ok }) });
+    return result;
+  });
 
   ipcMain.handle(CHANNELS.sidechat.getSubAgentTranscript, (e, payload: unknown): SubAgentTranscriptResult => {
     if (!validateHostRendererSender(e)) {
@@ -309,7 +336,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     turns.sendRequestId = typeof p.sendRequestId === "string" ? p.sendRequestId : null;
     turns.senderId = e.sender.id;
     turns.sessionId = turnSideChatSessionId;
-    if (pane === null) setSideChatOwnerContents(e.sender);
+    if (pane === null) { setSideChatOwnerContents(e.sender); railShellOwnerId = e.sender.id; }
     // Cancel on owning-document replacement or death; a reloaded view loses the request id needed to abort.
     const owner = e.sender;
     const cancelOrphanedTurn = (): void => {

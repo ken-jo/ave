@@ -24,6 +24,8 @@ import type { AppSettings } from "./settings-store.js";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   llm: {
+    compactionModel: "",
+    compactionModelRoute: "",
     activeChatRuntime: { kind: "api" },
     provider: DEFAULT_LLM_VENDOR,
     vendors: freshVendorBlocks(),
@@ -103,6 +105,7 @@ export const DEFAULT_SETTINGS: AppSettings = {
     bundleId: DEFAULT_BUNDLE_ID,
     language: DEFAULT_LOCALE,
   },
+  documents: { openMode: "direct" },
   webView: {
     preferredFlow: "in-app",
   },

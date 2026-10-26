@@ -1,3 +1,4 @@
+import { chatSurface } from "./chat-surface.js";
 import type React from "react";
 import { KeyRound, ShieldQuestion, Store } from "lucide-react";
 import { useTranslation } from "../../../i18n/react.js";
@@ -5,6 +6,7 @@ import { imageInputRecoveryMessage } from "../../../shared/model-capability-sett
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { useCallback, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
+import { ShellTasksPanel } from "./ShellTasksPanel.js";
 import { SessionGoalPanel } from "./SessionGoalPanel.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
 import { StatusBar, type StatusBarProps } from "./StatusBar.js";
@@ -36,6 +38,8 @@ type InputStatusRow = React.ComponentProps<typeof ComposerStatusRow>["statusRow"
 
 export interface ChatComposerDockProps {
   dockColumnClass: string;
+  /** Next-send notices belong inside the composer's reading column, above its frame. */
+  notices?: React.ReactNode;
   /** Empty conversation: offer the new-chat project selector. The composer itself stays bottom-docked whether or
    * not the conversation is empty — there is no centered placement and no descent on first send. */
   emptyConversation?: boolean;
@@ -240,6 +244,7 @@ export function resolveComposerRuntimeGates({
  */
 export function ChatComposerDock({
   dockColumnClass,
+  notices,
   emptyConversation = false,
   workflowApi,
   api,
@@ -352,13 +357,14 @@ export function ChatComposerDock({
       // renders the very same test ids.
       data-composer-surface="main"
     >
-      <div className={dockColumnClass} data-testid="composer-queue-dock">
+      <div className={`${dockColumnClass} px-3`} data-testid="composer-queue-dock">
         <ApprovalWaitingBand pendingApprovals={pendingApprovals} />
         <MessageQueuePanel
           store={messageQueueStore}
           onSendNow={onMessageQueueSendNow}
           heldByApproval={pendingApprovals.length > 0}
         />
+        {notices}
       </div>
       <div className={`${dockColumnClass} flex flex-col overflow-x-hidden pb-1`}>
         {/* This conversation's notices — an attachment the composer refused,
@@ -381,9 +387,9 @@ export function ChatComposerDock({
             UNDER the box by ComposerStatusRow, not inside it: what is inside
             the box is about the message being written. The window StatusBar
             is notifications-only.
-            `ave-surface-raised` paints the edge as an inset hairline so
+            The shared surface paints the edge as an inset hairline so
             the dock's overflow handling cannot clip the composer edge. */}
-        <div className="relative mx-3 mb-2 pt-9">
+        <div className={`relative mx-3 mb-2 ${hasApiKey === false || (emptyConversation && onNewChatForProject) ? "pt-9" : ""}`}>
           {/* Empty-state project selector — attached directly above the
               composer card, in the reserved strip it shares with the no-key
               chip. Offered only while the conversation is empty: a project is
@@ -519,7 +525,7 @@ export function ChatComposerDock({
             // ring: it describes the work this conversation is doing, which
             // is what the row is for. Up in the queue dock it floated over an
             // empty toast reserve whenever there was nothing to notify.
-            tasksSlot={<SessionTasksPanel api={workflowApi} sessionId={currentSessionId} />}
+            tasksSlot={<><SessionTasksPanel api={workflowApi} sessionId={currentSessionId} /><ShellTasksPanel api={api} sessionId={currentSessionId} composerRef={composerRef} /></>}
             /** The goal sits next to the plan for the same reason the plan sits here: it describes what this conversation is doing. */
             goalSlot={<SessionGoalPanel api={workflowApi} sessionId={currentSessionId} />}
             onOpenModelSettings={onOpenModelSettings}
@@ -548,8 +554,7 @@ export function ChatComposerDock({
  * conversation asked, beside the queue it explains: the approval card is drawn
  * in that tile's own overlay lane, away from the composer, so the dock alone
  * would show a turn that has simply stopped moving and a queue that never
- * drains. Same band grammar as the queue strip below it (dashed = not
- * committed yet), in the hue the approval chips already use.
+ * drains. Its frame follows the queue card below it; the icon carries the warning state.
  */
 function ApprovalWaitingBand({ pendingApprovals }: { pendingApprovals: readonly ApprovalRequest[] }) {
   const { t } = useTranslation();
@@ -559,7 +564,7 @@ function ApprovalWaitingBand({ pendingApprovals }: { pendingApprovals: readonly 
     <div
       role="status"
       aria-live="polite"
-      className="flex items-center gap-2 border-x border-y border-dashed border-warning/(--opacity-medium) bg-warning/(--opacity-subtle) px-3 py-1.5 text-xs text-foreground"
+      className={`${chatSurface()} mb-2 flex min-w-0 items-center gap-2 px-3 py-2 text-xs text-foreground`}
       data-testid="approval-waiting-band"
       data-tool-names={tools}
     >

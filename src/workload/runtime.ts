@@ -83,6 +83,8 @@ const TOOL_OPERATIONS = Object.freeze({
   bash_kill: ["shell.kill"],
   read_file: ["file.read"],
   view_image: ["file.read_binary"],
+  read_document: ["file.read_binary"],
+  open_document: ["file.read_binary"],
   list_files: ["file.list"],
   glob_files: ["file.glob"],
   grep_files: ["file.grep"],

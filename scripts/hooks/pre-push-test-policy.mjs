@@ -12,8 +12,9 @@ const deniedPathSegments = new Set([
   "screenshots",
 ]);
 
+// These consumers still require their own targeted preparation validation.
+// The icon pixel suite uses the normal runner's prepared assets.
 const generatedAssetTestBasenames = new Set([
-  "app-icon-assets.test.ts",
   "desktop-packaging.test.ts",
   "tray-icon.test.ts",
 ]);

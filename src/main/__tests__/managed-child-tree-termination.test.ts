@@ -1,27 +1,28 @@
 import { once } from "node:events";
-import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { spawnSync, type SpawnOptions } from "node:child_process";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { forceKillManagedChildProcess, spawnManaged } from "../managed-child-processes.js";
 
-const treeKill = vi.hoisted(() => ({ delayed: false, exercised: false, status: undefined as number | null | undefined }));
+const treeKill = vi.hoisted(() => ({ delayed: false, exercised: false, exit: undefined as Promise<number | null> | undefined }));
 
+// The product runs `%SystemRoot%\System32\taskkill.exe` asynchronously; delay that one spawn.
 vi.mock("node:child_process", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:child_process")>();
   return {
     ...actual,
-    spawnSync: vi.fn((command: string, args: readonly string[] = [], options: SpawnSyncOptions = {}) => {
-      if (command !== "taskkill" || !treeKill.delayed) return actual.spawnSync(command, args, options);
+    spawn: vi.fn((command: string, args: readonly string[] = [], options: SpawnOptions = {}) => {
+      if (!/[\\/]System32[\\/]taskkill\.exe$/iu.test(command) || !treeKill.delayed) return actual.spawn(command, args, options);
       treeKill.exercised = true;
       const pid = args[1];
       if (!pid || !/^\d+$/u.test(pid)) throw new Error("Expected an owned process id");
       const powershell = `${process.env.SystemRoot ?? "C:\\Windows"}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
-      const result = actual.spawnSync(powershell, ["-NoProfile", "-NonInteractive", "-Command", `
+      const runner = actual.spawn(powershell, ["-NoProfile", "-NonInteractive", "-Command", `
         Start-Sleep -Milliseconds 1500
         & (Join-Path $env:SystemRoot 'System32\\taskkill.exe') /PID ${pid} /T /F
         exit $LASTEXITCODE
       `], options);
-      treeKill.status = result.status;
-      return result;
+      treeKill.exit = new Promise((resolve) => runner.once("exit", resolve));
+      return runner;
     }),
   };
 });
@@ -29,7 +30,7 @@ vi.mock("node:child_process", async (importOriginal) => {
 afterEach(() => {
   treeKill.delayed = false;
   treeKill.exercised = false;
-  treeKill.status = undefined;
+  treeKill.exit = undefined;
 });
 
 describe.skipIf(process.platform !== "win32")("managed child tree termination", () => {
@@ -62,9 +63,9 @@ describe.skipIf(process.platform !== "win32")("managed child tree termination", 
       await vi.waitFor(() => {
         expect(() => process.kill(workerPid!, 0)).toThrow();
         workerGone = true;
-      }, { timeout: 3_000 });
+      }, { timeout: 9_000 }); // The 1.5 s delay plus PowerShell start-up must fit the product's 10 s tree-kill budget.
       await closed;
-      expect(treeKill.status).toBe(0);
+      expect(await treeKill.exit).toBe(0);
     } finally {
       treeKill.delayed = false;
       // Only the fixture's still-owned process ids are eligible for cleanup.

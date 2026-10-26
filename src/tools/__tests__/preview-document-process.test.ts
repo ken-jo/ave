@@ -85,6 +85,49 @@ async function runProbe(program: string): Promise<Record<string, number>> {
 }
 
 describe("isolated table parsing", () => {
+  it("transports absolute windows to the isolated parser", async () => {
+    const slot = await acquireParseSlot("window-transport");
+    try {
+      const document = await slot.parse(offsetWorkbook("xlsx"), "xlsx", 0,
+        { rowOffset: 10001, columnOffset: 1, rowCount: 1, columnCount: 1 });
+      expect(document.sheet).toMatchObject({ firstRow: 10001, firstColumn: 1, rows: [["42"]],
+        sourceRange: { firstRow: 10000, firstColumn: 0 } });
+    } finally { slot.release(); }
+  });
+
+  it("refuses malformed windows before spawning a child", async () => {
+    const slot = await acquireParseSlot("invalid-window");
+    const spawned = vi.spyOn(managedChildren, "spawnManaged");
+    try {
+      await expect(slot.parse(Buffer.from("a,b"), "csv", 0,
+        { rowOffset: -1, rowCount: 1, columnCount: 1 })).rejects.toMatchObject({ code: "invalid-index" });
+      expect(spawned).not.toHaveBeenCalled();
+    } finally { spawned.mockRestore(); slot.release(); }
+  });
+
+  it.each([
+    '{"rowCount":0,"columnCount":1}',
+    '{"rowCount":1,"columnCount":1,"extra":true}',
+    'not-json',
+  ])("rejects malformed window arguments in the child: %s", (windowArg) => {
+    const child = spawnSync(process.execPath, [entry, "csv", "0", "0", windowArg], {
+      env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" }, encoding: "utf8",
+      timeout: PREVIEW_DOCUMENT_LIMITS.startupTimeoutMs,
+    });
+    expect(child.status).toBe(0);
+    expect(child.stdout).toBe(JSON.stringify({ ok: false, error: "read-failed" }));
+  });
+
+  it("does not accept a default preview response for a window request", async () => {
+    const expected = await parseTableDocumentIsolated(Buffer.from("a,b"), "csv", 0);
+    childProgram(`process.stdout.write(${JSON.stringify(JSON.stringify({ ok: true, document: expected }))})`);
+    const slot = await acquireParseSlot("mismatched-window");
+    try {
+      await expect(slot.parse(Buffer.from("a,b"), "csv", 0,
+        { rowCount: 1, columnCount: 1 })).rejects.toMatchObject({ code: "read-failed" });
+    } finally { slot.release(); }
+  });
+
   it.each([["pptx", presentationFixture], ["pdf", pdfFixture]] as const)("loads a real %s page through the split child", async (format, fixture) => {
     const slot = await acquireParseSlot(`page-test:${format}`);
     try {

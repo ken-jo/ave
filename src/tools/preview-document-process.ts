@@ -5,6 +5,8 @@ import { spawnManaged, forceKillManagedChildProcess } from "../main/managed-chil
 import { buildSafeChildEnv } from "./safe-env.js";
 import {
   PREVIEW_DOCUMENT_LIMITS,
+  isPreviewTableWindow,
+  type PreviewTableWindow,
   previewDocumentFormatOf,
   type PreviewTableDocument,
 } from "../shared/preview-document.js";
@@ -29,7 +31,7 @@ interface ParseRequest {
 
 export interface DocumentParseSlot {
   readonly signal: AbortSignal;
-  parse<F extends PreviewAnyFormat>(bytes: Buffer, format: F, sheetIndex: number): Promise<PreviewDocumentFor<F>>;
+  parse<F extends PreviewAnyFormat>(bytes: Buffer, format: F, sheetIndex: number, window?: PreviewTableWindow): Promise<PreviewDocumentFor<F>>;
   release(): void;
 }
 
@@ -67,15 +69,16 @@ export async function acquireParseSlot(owner: string, controller = new AbortCont
     activeParses += 1;
     return {
       signal,
-      async parse<F extends PreviewAnyFormat>(bytes: Buffer, format: F, sheetIndex: number) {
+      async parse<F extends PreviewAnyFormat>(bytes: Buffer, format: F, sheetIndex: number, window?: PreviewTableWindow) {
         if (request.released || request.running) throw documentError("read-failed");
         signal.throwIfAborted();
         if (!Buffer.isBuffer(bytes) || (previewDocumentFormatOf(`input.${format}`) ?? previewPageFormatOf(`input.${format}`)) !== format) throw documentError("read-failed");
         if (bytes.length > PREVIEW_DOCUMENT_LIMITS.maxFileBytes) throw documentError("too-large");
         if (!Number.isSafeInteger(sheetIndex) || sheetIndex < 0) throw documentError("invalid-index");
+        if (window !== undefined && (!isPreviewTableWindow(window) || previewPageFormatOf(`input.${format}`))) throw documentError("invalid-index");
         request.running = true;
         try {
-          const document = await runChild(bytes, format, sheetIndex, signal);
+          const document = await runChild(bytes, format, sheetIndex, signal, window);
           signal.throwIfAborted();
           return document as PreviewDocumentFor<F>;
         } catch (error) {
@@ -98,7 +101,7 @@ export async function acquireParseSlot(owner: string, controller = new AbortCont
 }
 
 /** Parse admitted bytes in a bounded and killable child; native memory is not capped. */
-function runChild(bytes: Buffer, format: PreviewAnyFormat, sheetIndex: number, signal: AbortSignal): Promise<PreviewTableDocument | PreviewPageDocument> {
+function runChild(bytes: Buffer, format: PreviewAnyFormat, sheetIndex: number, signal: AbortSignal, window?: PreviewTableWindow): Promise<PreviewTableDocument | PreviewPageDocument> {
   // Resolve from the runtime asset root: this module may live in a split chunk.
   const entryPath = join(mainDir, "preview-document-child-main.js");
   if (!statSync(entryPath).isFile()) throw new TableDocumentError("read-failed", DOCUMENT_PARSE_MESSAGES["read-failed"]);
@@ -107,6 +110,7 @@ function runChild(bytes: Buffer, format: PreviewAnyFormat, sheetIndex: number, s
     "--disallow-code-generation-from-strings",
     entryPath,
     format, String(sheetIndex), String(bytes.length),
+    ...(window ? [JSON.stringify(window)] : []),
   ], {
     env: buildSafeChildEnv({ ELECTRON_RUN_AS_NODE: "1", DISABLE_SYSTEM_FONTS_LOAD: "1" }),
     stdio: ["pipe", "pipe", "pipe"],
@@ -175,7 +179,8 @@ function runChild(bytes: Buffer, format: PreviewAnyFormat, sheetIndex: number, s
         }
         if (response.ok !== true || Object.keys(response).length !== 2) throw new Error("Invalid document response.");
         const document = previewPageFormatOf(`input.${format}`)
-          ? readPageDocumentResponse(response.document) : readDocumentResponse(response.document);
+          ? readPageDocumentResponse(response.document) : readDocumentResponse(response.document, window);
+        if ("sheet" in document && !window && document.sheet.sourceRange !== undefined) throw new Error("Document window mismatch.");
         if (document.format !== format || ("sheet" in document ? document.sheet.index : document.page.index) !== sheetIndex) throw new Error("Document request mismatch.");
         resolve(document);
       } catch {

@@ -941,6 +941,7 @@ export function App() {
     llmContextWindow,
     llmOutputTokenLimit,
     llmInputLimit,
+    autoCompactEnabled,
     llmRoutePricing,
     llmRouteModalities,
     enableThinkingChat,
@@ -1389,7 +1390,7 @@ export function App() {
 
   /** Tiles share window-scoped dependencies through one environment object. */
   const chatGroupEnvironment = useMemo<ChatGroupEnvironment>(() => ({
-    llmVendor, llmModel, llmContextWindow, llmInputLimit, llmRoutePricing, llmRouteModalities, settingsLoaded,
+    llmVendor, llmModel, llmContextWindow, llmInputLimit, autoCompactEnabled, llmRoutePricing, llmRouteModalities, settingsLoaded,
     subscriptionRuntimeSelected, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
@@ -1428,7 +1429,7 @@ export function App() {
     onProjectError: handleProjectError,
     pendingAnswers,
   }), [
-    llmVendor, llmModel, llmContextWindow, llmInputLimit, llmRoutePricing, llmRouteModalities, settingsLoaded, subscriptionRuntimeSelected, subscriptionRuntimePolicy,
+    llmVendor, llmModel, llmContextWindow, llmInputLimit, autoCompactEnabled, llmRoutePricing, llmRouteModalities, settingsLoaded, subscriptionRuntimeSelected, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     apiUsageProjectionAvailable, activeSubscriptionRuntime,
@@ -1455,11 +1456,13 @@ export function App() {
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     llmVendor, llmModel, llmRouteModalities, processingDisplayLevel,
     usageAvailable: apiUsageProjectionAvailable,
+    llmContextWindow, llmInputLimit, autoCompactEnabled,
   }), [
     effectiveLlmReady, settingsLoaded, onOpenSettings, subscriptionRuntimePolicy,
     subscriptionImageAttachmentProvider, subscriptionFileAttachmentProvider,
     subscriptionUnavailableProvider, subscriptionPendingProvider,
     llmVendor, llmModel, llmRouteModalities, processingDisplayLevel, apiUsageProjectionAvailable,
+    llmContextWindow, llmInputLimit, autoCompactEnabled,
   ]);
 
   /** A maximized pane's restore control carries attention for requests parked in hidden panes. */

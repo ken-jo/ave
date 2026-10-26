@@ -3,6 +3,7 @@ import {
   previewDocumentFormatOf,
   type PreviewDocumentError,
   type PreviewTableDocument,
+  type PreviewTableWindow,
 } from "../shared/preview-document.js";
 import { isPlainRecord } from "../shared/is-record.js";
 
@@ -35,7 +36,7 @@ export function isDocumentParseError(value: unknown): value is Exclude<ParseErro
 const DOCUMENT_FIELDS = ["format", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"] as const;
 const SHEET_FIELDS = [
   "index", "name", "rows", "firstRow", "firstColumn", "totalRows", "totalColumns",
-  "rowsTruncated", "columnsTruncated", "cellsTruncated",
+  "rowsTruncated", "columnsTruncated", "cellsTruncated", "clippedCells",
 ] as const;
 
 function hasExactFields(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
@@ -56,7 +57,7 @@ function invalidResponse(): never {
 }
 
 /** Validate in place: copying a large grid would allocate it again in the host. */
-export function readDocumentResponse(value: unknown): PreviewTableDocument {
+export function readDocumentResponse(value: unknown, window?: PreviewTableWindow): PreviewTableDocument {
   if (!hasExactFields(value, DOCUMENT_FIELDS)
       || typeof value.format !== "string" || previewDocumentFormatOf(`document.${value.format}`) !== value.format
       || !Array.isArray(value.sheetNames) || value.sheetNames.length === 0
@@ -64,7 +65,8 @@ export function readDocumentResponse(value: unknown): PreviewTableDocument {
       || !value.sheetNames.every(isDisplayString)
       || !isCount(value.totalSheets) || value.totalSheets < value.sheetNames.length
       || value.sheetsTruncated !== (value.totalSheets > value.sheetNames.length)
-      || !hasExactFields(value.sheet, SHEET_FIELDS)) invalidResponse();
+      || !(hasExactFields(value.sheet, SHEET_FIELDS)
+        || hasExactFields(value.sheet, [...SHEET_FIELDS, "sourceRange"]))) invalidResponse();
   const sheet = value.sheet;
   if (!isCount(sheet.index) || value.sheetNames[sheet.index] !== sheet.name || !isDisplayString(sheet.name)
       || !isCount(sheet.firstRow) || !isCount(sheet.firstColumn)
@@ -72,12 +74,48 @@ export function readDocumentResponse(value: unknown): PreviewTableDocument {
       || typeof sheet.cellsTruncated !== "boolean" || !Array.isArray(sheet.rows)
       || sheet.rows.length > PREVIEW_DOCUMENT_LIMITS.maxRows || sheet.totalRows < sheet.rows.length
       || sheet.rowsTruncated !== (sheet.totalRows > sheet.rows.length)) invalidResponse();
-  const width = Math.min(sheet.totalColumns, PREVIEW_DOCUMENT_LIMITS.maxColumns);
+  const origin = sheet.sourceRange;
+  let width = Math.min(sheet.totalColumns, PREVIEW_DOCUMENT_LIMITS.maxColumns);
+  if (origin !== undefined) {
+    if (!hasExactFields(origin, ["firstRow", "firstColumn", "totalsExact"])
+        || !isCount(origin.firstRow) || !isCount(origin.firstColumn) || typeof origin.totalsExact !== "boolean"
+        || ((value.format !== "csv" && value.format !== "tsv") && origin.totalsExact !== true)
+        || sheet.firstRow < origin.firstRow || sheet.firstColumn < origin.firstColumn
+        || !Number.isSafeInteger(origin.firstRow + sheet.totalRows)
+        || !Number.isSafeInteger(origin.firstColumn + sheet.totalColumns)) invalidResponse();
+    width = sheet.rows.length === 0 ? 0 : (Array.isArray(sheet.rows[0]) ? sheet.rows[0].length : -1);
+    if (width < 0 || width > PREVIEW_DOCUMENT_LIMITS.maxColumns
+        || (sheet.rows.length > 0 && (width === 0
+          || sheet.firstRow + sheet.rows.length > origin.firstRow + sheet.totalRows
+          || sheet.firstColumn + width > origin.firstColumn + sheet.totalColumns))) invalidResponse();
+    if (window) {
+      const firstRow = Math.max(origin.firstRow, window.rowOffset ?? origin.firstRow);
+      const firstColumn = Math.max(origin.firstColumn, window.columnOffset ?? origin.firstColumn);
+      const height = Math.max(0, Math.min(origin.firstRow + sheet.totalRows,
+        (window.rowOffset ?? origin.firstRow) + window.rowCount) - firstRow);
+      const expectedWidth = Math.max(0, Math.min(origin.firstColumn + sheet.totalColumns,
+        (window.columnOffset ?? origin.firstColumn) + window.columnCount) - firstColumn);
+      if (sheet.firstRow !== firstRow || sheet.firstColumn !== firstColumn
+          || sheet.rows.length !== (expectedWidth === 0 ? 0 : height)
+          || width !== (height === 0 ? 0 : expectedWidth)) invalidResponse();
+    }
+  } else if (window) invalidResponse();
   if (sheet.columnsTruncated !== (sheet.totalColumns > width)
       || sheet.rows.length * width > PREVIEW_DOCUMENT_LIMITS.maxReturnedCells) invalidResponse();
   for (const row of sheet.rows) {
     if (!Array.isArray(row) || row.length !== width) invalidResponse();
     for (const cell of row) if (!isDisplayString(cell)) invalidResponse();
+  }
+  if (!Array.isArray(sheet.clippedCells) || sheet.clippedCells.length > sheet.rows.length * width
+      || sheet.cellsTruncated !== (sheet.clippedCells.length > 0)) invalidResponse();
+  const clippedCoordinates = new Set<string>();
+  for (const cell of sheet.clippedCells) {
+    if (!hasExactFields(cell, ["row", "column"]) || !isCount(cell.row) || !isCount(cell.column)
+        || cell.row < sheet.firstRow || cell.row - sheet.firstRow >= sheet.rows.length
+        || cell.column < sheet.firstColumn || cell.column - sheet.firstColumn >= width) invalidResponse();
+    const key = `${cell.row}:${cell.column}`;
+    if (clippedCoordinates.has(key)) invalidResponse();
+    clippedCoordinates.add(key);
   }
   return value as unknown as PreviewTableDocument;
 }

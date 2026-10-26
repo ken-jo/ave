@@ -49,15 +49,32 @@ export function isSafeMainBundleManifestPath(path) {
  * contract and stay exact. Do not record measurements here: the build prints them, and CI
  * writes them with each ceiling's headroom to the job summary.
  *
- * Owner policy 2026-10-16: initial 8_000_000 and total 14_000_000 (from 5_430_000 and
- * 11_050_000, which were raised a few kilobytes per merge and re-conflicted on every
- * category merge). Measured then: entry 425_403, initial 5_426_065, total 9_108_501.
+ * Total is derived from the entry and initial budgets plus a fixed lazy allowance.
+ * The 4_300_000-byte allowance preserves the existing 14_000_000-byte tripwire;
+ * it is additive budget headroom, not a separate cap on measured lazy bytes.
+ * Initial already includes entry: this formula reserves an extra entry budget for
+ * deferred and child-process outputs. Measurements still count every output once.
+ * See docs/development/main-process-bundle.md for the accounting contract.
  */
-export const MAIN_BUNDLE_BUDGETS = Object.freeze({
+export const MAIN_BUNDLE_BUDGETS = createMainBundleBudgets({
   entryBytes: 1_700_000,
   initialBytes: 8_000_000,
-  totalBytes: 14_000_000,
+  lazyAllowanceBytes: 4_300_000,
 });
+
+export function createMainBundleBudgets({ entryBytes, initialBytes, lazyAllowanceBytes }) {
+  const inputs = { entryBytes, initialBytes, lazyAllowanceBytes };
+  for (const [key, value] of Object.entries(inputs)) {
+    if (!Number.isSafeInteger(value) || value <= 0) {
+      throw new Error(`budget ${key} is not a positive integer`);
+    }
+  }
+  const totalBytes = entryBytes + initialBytes + lazyAllowanceBytes;
+  if (!Number.isSafeInteger(totalBytes)) {
+    throw new Error("budget totalBytes is not a positive integer");
+  }
+  return Object.freeze({ ...inputs, totalBytes });
+}
 
 const MAIN_BUNDLE_BUDGET_KEYS = Object.freeze(["entryBytes", "initialBytes", "totalBytes"]);
 const MAIN_BUNDLE_BUDGET_SOURCE = "scripts/lib/main-bundle-budget.mjs";
@@ -174,6 +191,13 @@ export function assertMainBundleBudget(measurement, budgets) {
       failures.push(`${key} is not a non-negative finite number`);
     } else if (measurement[key] > budgets[key]) {
       failures.push(`${key} ${measurement[key]} exceeds ${budgets[key]}`);
+      if (key === "totalBytes") {
+        failures.push(
+          `emitted output shares: entry=${measurement.entryBytes}, `
+            + `initial shared=${measurement.initialBytes - measurement.entryBytes}, `
+            + `lazy/other=${measurement.totalBytes - measurement.initialBytes}`,
+        );
+      }
       exceeded = true;
     }
   }
@@ -182,7 +206,7 @@ export function assertMainBundleBudget(measurement, budgets) {
       "these ceilings are tripwires far above normal growth: first look for a module that "
         + "belongs behind a dynamic import (startup code) or a dependency bundled twice; "
         + `if the growth is intended, raise the ceiling in ${MAIN_BUNDLE_BUDGET_SOURCE} `
-        + "with the owner's approval",
+        + "with the owner's approval; keep content under its owning cap and never move files just to evade it",
     );
   }
   if (failures.length > 0) {
@@ -211,6 +235,11 @@ export function formatMainBundleSummary(measurement, budgets) {
     ...rows,
     `| async (lazy) | ${bytes(measurement.asyncBytes)} | — | — |`,
     "",
+    ...(Number.isSafeInteger(budgets?.lazyAllowanceBytes) ? [
+      `Total ceiling = entry budget (${bytes(budgets.entryBytes)}) + initial budget (${bytes(budgets.initialBytes)}) + lazy allowance (${bytes(budgets.lazyAllowanceBytes)}).`,
+      "Initial includes entry; the extra entry budget and lazy allowance reserve headroom for non-initial outputs.",
+      "",
+    ] : []),
   ].join("\n");
 }
 

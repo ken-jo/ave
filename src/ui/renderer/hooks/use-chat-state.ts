@@ -356,6 +356,10 @@ export function useChatState(
         finalAssistantRoundClosedRef.current = phase === "final";
         streamRef.current = "";
         thoughtRef.current = "";
+      } else if (ev.type === "compact_failed") {
+        setIsCompacting(false);
+        setCompactTriggerSource(null);
+        setEntries((p) => [...p, { kind: "system", text: t("useChatState.autoCompactFailed") }]);
       } else if (ev.type === "error") {
         // LLM compact may have started but thrown — clear the indicator so the StatusBar item doesn't stick when compact_notice
         // never arrives.
@@ -803,8 +807,7 @@ export function useChatState(
     setEntries((p) => p.slice(0, entryIndex + 1));
   }, [releaseActiveStream]);
 
-  /** B1 — /compact manual command handler. Intercepts user messages starting with "/compact", calls IPC, then shows a system
-   * banner with the result. Returns true if intercepted. */
+  /** Intercept /compact and leave successful history rendering to compact_notice. */
   const handleCompactCommand = useCallback(
     async (input: string): Promise<boolean> => {
       const command = input.trimStart();
@@ -813,10 +816,8 @@ export function useChatState(
       const focus = command.slice("/compact".length).trim();
       try {
         const res = await api.chatCompact(focus.length > 0 ? focus : undefined);
-        const banner = res.compacted
-          ? t("useChatState.compactBanner", { count: res.removedMessageCount })
-          : res.summary;
-        setEntries((p) => [...p, { kind: "system", text: banner }]);
+        // Successful compaction already arrives as a checkpoint and summary through compact_notice.
+        if (!res.compacted) setEntries((p) => [...p, { kind: "system", text: res.summary }]);
       } catch (err) {
         setEntries((p) => [...p, { kind: "system", text: t("useChatState.compactError", { error: errorMessage(err) }) }]);
       } finally {

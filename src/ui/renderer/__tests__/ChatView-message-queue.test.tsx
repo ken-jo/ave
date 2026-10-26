@@ -134,3 +134,21 @@ describe("ChatView ⌘K guide", () => {
     }
   });
 });
+
+
+describe("automatic compaction notice surface", () => {
+  it("renders failure in the owning transcript while the answer continues", async () => {
+    const { container, emitChatStream } = await renderApp({ hasApiKey: true });
+    await act(async () => {
+      emitChatStream({ type: "compact_started", streamId: 1 });
+      emitChatStream({ type: "compact_failed", streamId: 1 });
+      emitChatStream({ type: "text_delta", text: "Usable chat answer", streamId: 1 });
+      emitChatStream({ type: "done", streamId: 1 });
+    });
+    const notice = [...container.querySelectorAll('[data-testid="system-entry"]')].find((element) => /압축|compaction/.test(element.textContent ?? ""));
+    expect(notice).toBeDefined();
+    expect(notice!.closest('[data-testid="chat-transcript-log"]')).not.toBeNull();
+    expect(notice!.closest('[data-testid="composer-toast-dock"]')).toBeNull();
+    expect(container.textContent).toContain("Usable chat answer");
+  });
+});

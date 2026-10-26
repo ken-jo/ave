@@ -1,7 +1,12 @@
 import "../../../../../test/renderer/setup.js";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ChatTab } from "../ChatTab.js";
+import { makeMockAveApi } from "../../../../../test/renderer/mock-ave-api.js";
+
+beforeEach(() => {
+  window.aveApi = makeMockAveApi().api as never;
+});
 
 function renderChatTab(overrides: Partial<Parameters<typeof ChatTab>[0]> = {}) {
   const setSubAgentAutonomousWake = vi.fn();
