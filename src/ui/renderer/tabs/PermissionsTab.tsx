@@ -1443,6 +1443,14 @@ export function PermissionsTab({
             </div>
           ) : null}
           {/* ── Windows srt-win consent flow ── */}
+          {(sandboxCapability?.profileReadDenyWarnings ?? windowsStatus?.profileReadDenyWarnings ?? []).map(({ path, principals }) => (
+            <p key={path} data-testid="os-sandbox-windows-profile-read-deny-warning" role="alert"
+              className="rounded-md border border-warning/(--opacity-medium) bg-warning/(--opacity-soft) px-3 py-2 text-[11px] text-warning">
+              {principals?.length
+                ? t("permissionsTab.osSandboxWindowsProfileReadDenyReadable", { path, principals: principals.join(", ") })
+                : t("permissionsTab.osSandboxWindowsProfileReadDenyUnverified", { path })}
+            </p>
+          ))}
           {windowsInstallOutcome ? (
             <p
               data-testid="os-sandbox-windows-install-outcome"

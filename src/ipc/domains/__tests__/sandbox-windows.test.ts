@@ -5,6 +5,7 @@ import { setProcessPlatform } from "../../../__tests__/support/process-platform.
 import { setAveHomePrivacyAtBoot, areExtensionsWithoutIsolationApproved, _resetAveHomePrivacyForTest } from "../../../shared/ave-home.js";
 import { readdirSync } from "node:fs";
 import * as srtIntegrity from "../../../permissions/srt-win-integrity.js";
+import * as asrtSandbox from "../../../permissions/asrt-sandbox.js";
 import {
   foreignFrameEvent,
   hostFrameEvent,
@@ -208,6 +209,20 @@ describe("extension isolation session approval", () => {
 });
 
 describe("sandboxWindowsStatus", () => {
+  it("includes readable and unverified profile rows in both status surfaces", async () => {
+    setProcessPlatform("win32");
+    const warnings = [{ path: String.raw`D:\Users\tester\.ssh`, principals: ["Users", "INTERACTIVE"] as const },
+      { path: String.raw`D:\Users\tester\.aws` }];
+    const readWarnings = vi.spyOn(asrtSandbox, "getWindowsProfileReadDenyWarnings").mockReturnValue(warnings);
+    try {
+      await setup();
+      expect(await invoke(PERMISSIONS.sandboxWindowsStatus, hostFrameEvent())).toMatchObject({ profileReadDenyWarnings: warnings });
+      expect(await invoke(PERMISSIONS.sandboxCapability, hostFrameEvent())).toMatchObject({ profileReadDenyWarnings: warnings });
+    } finally {
+      readWarnings.mockRestore();
+    }
+  });
+
   it("surfaces an integrity failure without reporting ready or missing", async () => {
     setProcessPlatform("win32");
     await setup();
