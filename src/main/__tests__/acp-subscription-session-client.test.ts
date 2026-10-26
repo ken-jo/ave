@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   AcpSubscriptionSessionClient,
   AcpSubscriptionSessionError,
@@ -101,7 +101,9 @@ interface Harness {
 }
 
 const harnesses: Harness[] = [];
-const TEST_RUNTIME_PARENT = process.platform === "win32" ? "C:\\tmp" : tmpdir();
+const TEST_RUNTIME_PARENT = tmpdir();
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 const AVE_BRIDGE_MCP: readonly AcpSubscriptionMcpServerConfig[] = [{
   name: "ave-host-tools",
   command: process.execPath,

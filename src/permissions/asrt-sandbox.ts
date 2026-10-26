@@ -4,9 +4,10 @@ import { spawn } from "node:child_process";
 import { containsGlobCharsWin, expandWindowsEnvRefs, globPatternBaseDir, isUncPath, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
-import { chmodSync, lstatSync, mkdirSync, readlinkSync, realpathSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { listAuthorizedWorkspaceProjects } from "../main/project-root-authorization.js";
 import { createRequire } from "node:module";
-import { homedir } from "node:os";
+import { homedir, platform as hostPlatform } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
 import { admitWindowsReparse, pinWindowsPaths, type WindowsPathFacts } from "../shared/windows-path-facts.js";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
@@ -1222,7 +1223,10 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     ...POSIX_ASRT_TEMP_DENIES,
   ]);
   const checkedReadEvidence = kind === "read" && readDenyEvidence !== undefined
-    ? recheckWindowsReadDenyEvidence([...expandedPaths.values()], readDenyEvidence) : undefined;
+    ? hostPlatform() === "win32"
+      ? recheckWindowsReadDenyEvidence([...expandedPaths.values()], readDenyEvidence)
+      : readDenyEvidence
+    : undefined;
   return paths
     .filter((path) => !posixRooted.has(path))
     .filter((original) => {
@@ -2266,6 +2270,10 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
       assertWindowsGrantPins(allowRead, pins);
       // srt-win writes the DACL by name: a swap between the pre-pin and native write
       // cannot be excluded. Only the post-pin and revoke detect that remaining window.
+      // A swap restored before the post-pin is undetected; a crash before it skips
+      // compensation. After holder exit, a later native ACL operation prunes its
+      // tracked hold; sweepStaleSrtWinDirectories cleans stale helper copies.
+      // Neither recovers a by-name grant to an object absent from that ledger.
       grantWindowsAcl({
         sandboxUserSid,
         holderPid: opts.holderPid,
@@ -2275,7 +2283,18 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
       });
       assertWindowsGrantPins(allowRead, pins);
     } catch (err) {
-      revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin });
+      let outcome: ReturnType<typeof revokeWindowsAcl> = undefined;
+      let cleanupError: unknown;
+      try { outcome = revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin }); }
+      catch (error) { cleanupError = error; }
+      if (!Array.isArray(outcome) || outcome.some(row => row === null || typeof row !== "object"
+        || typeof row.path !== "string" || !["revoked", "stillHeld"].includes(row.status))
+        || allowRead.some(path => !outcome.some(row => win32.normalize(row.path).toLowerCase() === win32.normalize(path).toLowerCase()))) {
+        // Keep confinement active: disabling it would permit host execution fallback.
+        session.windowsDenyFailure = new Error(`Windows filesystem grant cleanup failed for ${allowRead.join(", ")}; reset the sandbox session`, { cause: cleanupError ?? err });
+        log.error(`[sandbox-grant-cleanup] paths=${JSON.stringify(allowRead)} holder=${opts.holderPid} outcome=${JSON.stringify(outcome)} error=${cleanupError === undefined ? "none" : errorMessage(cleanupError)}`);
+        throw session.windowsDenyFailure;
+      }
       throw err;
     }
   }
@@ -2346,10 +2365,12 @@ function pinWindowsGrantTargets(paths: readonly string[]): WindowsPathFacts[] {
         // Resolve one admitted link at a time so a later surrogate cannot hide behind it.
         const components = [...row.ancestors, row];
         const linkIndex = components.findIndex(component => admitWindowsReparse({ ...component, ancestors: [] }, "grant") === "resolve");
-        const link = stripExtendedPathPrefix(components[linkIndex]!.canonical!);
+        const component = components[linkIndex]!;
+        const link = stripExtendedPathPrefix(component.canonical!);
+        if (!component.reparseTarget) throw new Error(`Windows filesystem grant link target is unproven: ${link}`);
         const normalized = win32.normalize(request.path);
         const remaining = normalized.slice(win32.parse(normalized).root.length).split(/[\\/]/).filter(Boolean).slice(linkIndex);
-        next.push({ ...request, path: win32.resolve(dirname(link), stripExtendedPathPrefix(readlinkSync(link)), ...remaining) });
+        next.push({ ...request, path: win32.resolve(win32.dirname(link), stripExtendedPathPrefix(component.reparseTarget), ...remaining) });
       } else {
         if (!admission || row.exists !== true || !row.canonical) throw new Error(`Windows filesystem grant identity is unproven: ${request.path}`);
         assertWindowsGrantGrammar(stripExtendedPathPrefix(row.canonical));
@@ -2369,7 +2390,8 @@ function assertWindowsGrantBoundaries(read: readonly string[], write: readonly s
     if (windowsMachineRoots().some(root => win32.resolve(path).toLowerCase() === win32.resolve(root).toLowerCase())) {
       throw new Error(`Windows filesystem grant refuses a machine root: ${path}`);
     }
-    if ([process.cwd(), aveHome()].some(root => isGrantPathWithin(path, root))) {
+    if ([...listAuthorizedWorkspaceProjects().map(project => project.projectRoot), aveHome()]
+      .some(root => isGrantPathWithin(path, root))) {
       throw new Error(`Windows filesystem grant refuses an ancestor of the workspace or Ave home: ${path}`);
     }
     if (protectedReadDenyCovering(path, getDefaultSensitiveReadDenyPaths())) {

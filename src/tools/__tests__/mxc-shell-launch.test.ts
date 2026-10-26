@@ -1,5 +1,5 @@
 import net from "node:net";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const h = vi.hoisted(() => ({
   openRelay: vi.fn(),
@@ -25,6 +25,7 @@ vi.mock("../../permissions/mxc-windows.js", async (importOriginal) => ({
 import { prepareMxcShellLaunch } from "../mxc-shell-launch.js";
 
 const WS = String.raw`C:\work\repo`;
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
 const INPUT = {
   egressToken: "tok",
   commandLine: "cmd.exe /d /c echo hi",

@@ -1550,6 +1550,23 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
+  it.each(["linux", "darwin"] as const)("does not request native Windows evidence on a %s host", platform => {
+    const previous = process.platform;
+    const host = vi.spyOn(os, "platform").mockReturnValue(platform);
+    const recheck = vi.spyOn(readDenyEvidenceModule, "recheckWindowsReadDenyEvidence").mockImplementation(() => {
+      throw new Error("native Windows evidence requested on another host");
+    });
+    setProcessPlatform("win32");
+    try {
+      buildSandboxConfig({}, new Map());
+      expect(recheck).not.toHaveBeenCalled();
+    } finally {
+      setProcessPlatform(previous);
+      recheck.mockRestore();
+      host.mockRestore();
+    }
+  });
+
   it("Windows: profile read denies retain exposed targets and evidence failures", () => {
     const previousHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-deny-evidence-profile");

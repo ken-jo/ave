@@ -15,6 +15,8 @@ interface WindowsPathComponentFacts {
   readonly attributes: number;
   readonly reparseTag: number;
   readonly directory: boolean;
+  /** Substitute name read from the retained link handle; null for other objects. */
+  readonly reparseTarget: string | null;
 }
 
 export interface WindowsPathFacts extends WindowsPathComponentFacts {
@@ -58,6 +60,7 @@ function isUint(value: unknown, maximum = 0xffffffff): value is number {
 function isComponent(value: unknown): value is WindowsPathComponentFacts {
   if (value === null || typeof value !== "object") return false;
   const row = value as WindowsPathComponentFacts;
+  if (row.reparseTarget !== null && (typeof row.reparseTarget !== "string" || !row.reparseTarget || row.reparseTarget.includes("\0"))) return false;
   if (![true, false, null].includes(row.exists) || !isUint(row.attributes) || !isUint(row.reparseTag) || typeof row.directory !== "boolean") return false;
   if (row.exists !== true) return [row.canonical, row.volumeSerial, row.fileId, row.volumeSerialNumber, row.fileIndex].every(field => field === null)
     && row.attributes === 0 && row.reparseTag === 0 && !row.directory;

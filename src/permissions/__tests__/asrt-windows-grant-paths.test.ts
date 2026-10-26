@@ -13,7 +13,10 @@ import * as facts from "../../shared/windows-path-facts.js";
 import { readWindowsReadDenyEvidence, windowsReadDenyKey } from "../../shared/windows-read-deny-evidence.js";
 import * as integrity from "../srt-win-integrity.js";
 import * as denyAcl from "../windows-deny-acl.js";
-import { buildSandboxConfig, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../asrt-sandbox.js";
+import { permissionSettingsPath } from "../permission-settings-store.js";
+import * as defaultWorkspace from "../../main/default-workspace-root.js";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { buildSandboxConfig, grantWindowsWorkerFilesystemAccess, initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => ({
   ...(await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>()),
@@ -118,6 +121,41 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       expect(pin.mock.calls.slice(-2)).toEqual([[expected], [expected]]);
       expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ read: expected, write: expected }));
     } finally { granted.release(); }
+  });
+
+  it.each(["project", "additional"])("refuses direct and junction ancestors and equality of an authorized %s root", async kind => {
+    const ancestor = join(fixture, kind, "team");
+    const root = join(ancestor, "repo");
+    mkdirSync(root, { recursive: true });
+    if (kind === "project") vi.spyOn(defaultWorkspace, "getDefaultWorkspaceRoot").mockReturnValue(root);
+    else writeFileSync(permissionSettingsPath(), JSON.stringify({ permissions: { additionalDirectories: [root] } }));
+    const link = join(fixture, "ancestor-link");
+    symlinkSync(ancestor, link, "junction");
+    await initializeAsrtSandbox({});
+    for (const path of [ancestor, link, root]) {
+      await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowRead: [path] })).rejects.toThrow(/ancestor/);
+    }
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it.each(["undefined", "incomplete", "empty", "missing-row", "malformed", "throws"])("contains the session and exposes failed compensation when revoke %s", async outcome => {
+    await initializeAsrtSandbox({});
+    vi.mocked(runtime.grantWindowsAcl).mockImplementation(() => {
+      renameSync(target, join(fixture, "original"));
+      mkdirSync(target);
+    });
+    const revoke = vi.mocked(runtime.revokeWindowsAcl);
+    if (outcome === "throws") revoke.mockImplementation(() => { throw new Error("revoke unavailable"); });
+    else if (outcome === "malformed") revoke.mockReturnValue(null as unknown as ReturnType<typeof runtime.revokeWindowsAcl>);
+    else revoke.mockReturnValue(outcome === "undefined" ? undefined : outcome === "empty" ? []
+      : outcome === "missing-row" ? [{ path: join(fixture, "other"), status: "revoked" }] : [{ path: target, status: "leftChanged" }]);
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [target] })).rejects.toThrow(/cleanup failed/);
+    expect(isAsrtSandboxActive()).toBe(true);
+    const calls = vi.mocked(runtime.grantWindowsAcl).mock.calls.length;
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 2, allowRead: [target] })).rejects.toThrow(/cleanup failed/);
+    expect(runtime.grantWindowsAcl).toHaveBeenCalledTimes(calls);
+    await expect(wrapToolCommand("echo confined", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/cleanup failed/);
+    revoke.mockReturnValue([]);
   });
 
   it("resolves a junction ancestor before granting a descendant", async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
@@ -8,6 +8,9 @@ import * as srtWinIntegrity from "../srt-win-integrity.js";
 import { classifySandboxDependencyErrors } from "../sandbox-start-failure.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 import {
   grantAsrtWindowsBackendAcl,

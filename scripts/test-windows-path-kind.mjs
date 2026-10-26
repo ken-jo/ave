@@ -79,6 +79,8 @@ console.log("windows-path-kind: ok");
 
 const fixture = mkdtempSync(join(tmpdir(), "ave-path-facts-"));
 try {
+  console.log(execFileSync(join(tmpdir(), "ave-path-pin-test.exe"), [fixture], { windowsHide: true, encoding: "utf8" }).trim());
+  console.log("native pin: deterministic retag and swapped ancestor checks passed");
   const directory = join(fixture, "directory");
   mkdirSync(directory);
   const file = join(directory, "file");
@@ -107,6 +109,7 @@ try {
   } finally { closeSync(descriptor); }
   assert.equal(rows[2].exists, false);
   assert.equal(rows[3].reparseTag, 0xa0000003);
+  assert.equal(rows[3].reparseTarget.toLowerCase(), directory.toLowerCase(), "the retained junction handle supplies the target");
   assert.equal(rows[4].exists, null, "a reparse ancestor prevents opening the target");
   assert.equal(rows[5].ancestors.at(-1).exists, null);
   // A GUID-owned tag has no link semantics known to the filesystem runtime.
@@ -124,7 +127,7 @@ public static class FixtureReparse {
   [DllImport("kernel32.dll", SetLastError=true)]
   private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, byte[] input, int length, IntPtr output, int size, out int returned, IntPtr overlapped);
   public static void Set(string path) {
-    using(var handle=CreateFile(path,0x40000000,7,IntPtr.Zero,3,0x00200000,IntPtr.Zero)) {
+    using(var handle=CreateFile(path,0x40000000,7,IntPtr.Zero,3,0x02200000,IntPtr.Zero)) {
       if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
       var data=new byte[24]; data[0]=0x42;
       new Guid("db26d866-5321-4f43-977f-4591ca0bf0ee").ToByteArray().CopyTo(data,8);

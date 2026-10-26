@@ -10,7 +10,7 @@ import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingW
 const SID = "S-1-5-21-100-200-300-1001";
 const ORDINARY: WindowsPathFacts = { exists: true, canonical: "\\\\?\\C:\\fixture", volumeSerial: "0x0000000000000001",
   fileId: "0x00000000000000000000000000000001", volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001",
-  attributes: 16, reparseTag: 0, directory: true, ancestors: [] };
+  attributes: 16, reparseTag: 0, reparseTarget: null, directory: true, ancestors: [] };
 
 function descriptor(aces: WindowsDacl["aces"]): WindowsDacl {
   return { identity: { volumeSerial: ORDINARY.volumeSerial!, fileId: ORDINARY.fileId! }, owner: SID, group: SID, protected: true, nullDacl: false, aces };
@@ -43,6 +43,13 @@ describe("Windows path facts admission and evaluation", () => {
       expect(admitWindowsReparse({ ...ORDINARY, exists: null, ancestors: [link] })).toBe(false);
     }
     expect(admitWindowsReparse({ ...ORDINARY, attributes: 0x410 })).toBe(false);
+  });
+
+  it("admits a proven child below a non-surrogate ancestor only for grants", () => {
+    const child = { ...ORDINARY, ancestors: [{ ...ORDINARY, reparseTag: 0x9000001a, attributes: 0x410 }] };
+    expect(admitWindowsReparse(child, "grant")).toBe(true);
+    expect(admitWindowsReparse(child, "evidence")).toBe(false);
+    expect(admitWindowsReparse({ ...child, exists: null }, "grant")).toBe(false);
   });
 
   it("keeps every migrated consumer on the common reparse admission rule", () => {
@@ -121,6 +128,11 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     expect(child!.canonical).toBeNull();
     expect(admitWindowsReparse(target!)).toBe(false);
     expect(admitWindowsReparse(child!)).toBe(false);
+  });
+
+  it("reports the grant link target from the pinned handle", () => {
+    const [link] = pinWindowsPaths([join(fixture, "junction")]);
+    expect(link).toHaveProperty("reparseTarget", join(fixture, "directory"));
   });
 
   it("reads raw DACL and bounded bytes from one pinned file without writing", () => {

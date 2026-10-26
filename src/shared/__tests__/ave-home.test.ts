@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it, vi, type TestContext } from "vitest";
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi, type TestContext } from "vitest";
 import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +10,7 @@ import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
 
 const OWNER_SID = "S-1-5-21-1004336348-11-77-1417";
 const OWNER_RULE: WindowsAccessRule = { sid: OWNER_SID, accessControlType: 0, fileSystemRights: 2032127,
@@ -22,7 +23,7 @@ function descriptor(path: string): WindowsDirectoryDacl {
 function nativeDescriptor(path: string, owner = OWNER_SID): windowsPathFacts.WindowsDaclFacts {
   const identity = { volumeSerial: "0x0000000000000001", fileId: "0x00000000000000000000000000000001" };
   return { exists: true, canonical: resolve(path), ...identity, volumeSerialNumber: "0x0000000000000001",
-    fileIndex: "0x0000000000000001", attributes: 16, reparseTag: 0, directory: true, ancestors: [],
+    fileIndex: "0x0000000000000001", attributes: 16, reparseTag: 0, reparseTarget: null, directory: true, ancestors: [],
     currentUserSid: OWNER_SID, elevated: false, principals: {},
     dacl: { identity, owner, group: OWNER_SID, protected: true, nullDacl: false,
       aces: [{ type: 0, flags: 3, mask: 0x1f01ff, sid: OWNER_SID }] } };
@@ -64,7 +65,7 @@ describe("aveHome", () => {
 });
 describe("win32SystemBinary", () => {
   it("pins the binary to System32 and refuses missing system roots", () => {
-    expect(win32SystemBinary("icacls", { SystemRoot: "C:\\Windows" })).toBe(join("C:\\Windows", "System32", "icacls.exe"));
+    expect(win32SystemBinary("icacls", { SystemRoot: "C:\\Windows" })).toBe("C:\\Windows\\System32\\icacls.exe");
     expect(win32SystemBinary("icacls", { windir: "D:\\Win" })).toBe(join("D:\\Win", "System32", "icacls.exe"));
     expect(() => win32SystemBinary("icacls", {})).toThrow(/system root/i);
   });

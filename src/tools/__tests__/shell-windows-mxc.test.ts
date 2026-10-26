@@ -114,6 +114,7 @@ function context(toolUseId: string): ToolExecutionContext {
 
 describe("builtin shell — Windows MXC containers", () => {
   beforeEach(() => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
       args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");

@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <utility>
+#include <winternl.h>
+#include <winioctl.h>
 
 namespace {
 
@@ -21,6 +23,7 @@ struct PathFacts {
   FILE_ID_INFO id{};
   BY_HANDLE_FILE_INFORMATION legacy{};
   FILE_ATTRIBUTE_TAG_INFO tag{};
+  std::wstring reparse_target;
 };
 
 struct PinnedPath {
@@ -79,6 +82,80 @@ bool handle_facts(HANDLE handle, PathFacts& facts) {
   return true;
 }
 
+// Child names are resolved by the pinned directory object, never by its pathname.
+HANDLE open_child(HANDLE parent, const std::wstring& name, DWORD access) {
+  const HMODULE module = GetModuleHandleW(L"ntdll.dll");
+  if (module == nullptr || name.empty() || name.size() > 32767
+      || name.find_first_of(L"\\/:") != std::wstring::npos) { SetLastError(ERROR_INVALID_NAME); return INVALID_HANDLE_VALUE; }
+  const auto address = GetProcAddress(module, "NtCreateFile");
+  decltype(&NtCreateFile) create = nullptr;
+  static_assert(sizeof(create) == sizeof(address));
+  std::memcpy(&create, &address, sizeof(create));
+  if (create == nullptr) { SetLastError(ERROR_PROC_NOT_FOUND); return INVALID_HANDLE_VALUE; }
+  UNICODE_STRING text{};
+  text.Buffer = const_cast<wchar_t*>(name.data());
+  text.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+  text.MaximumLength = text.Length;
+  OBJECT_ATTRIBUTES attributes{};
+  attributes.Length = sizeof(attributes);
+  attributes.RootDirectory = parent;
+  attributes.ObjectName = &text;
+  attributes.Attributes = 0x40;  // OBJ_CASE_INSENSITIVE
+  IO_STATUS_BLOCK status{};
+  HANDLE handle = INVALID_HANDLE_VALUE;
+  // FILE_OPEN_REPARSE_POINT | FILE_OPEN_FOR_BACKUP_INTENT | FILE_SYNCHRONOUS_IO_NONALERT.
+  const NTSTATUS result = create(&handle, access | SYNCHRONIZE, &attributes, &status, nullptr,
+    0, FILE_SHARE_READ, FILE_OPEN, 0x00204020, nullptr, 0);
+  if (result < 0) {
+    SetLastError(result == static_cast<NTSTATUS>(0xc0000034) ? ERROR_FILE_NOT_FOUND
+      : result == static_cast<NTSTATUS>(0xc000003a) ? ERROR_PATH_NOT_FOUND : ERROR_OPEN_FAILED);
+    return INVALID_HANDLE_VALUE;
+  }
+  return handle;
+}
+
+bool read_reparse_target(HANDLE handle, PathFacts& facts) {
+  if (facts.tag.ReparseTag != IO_REPARSE_TAG_MOUNT_POINT && facts.tag.ReparseTag != IO_REPARSE_TAG_SYMLINK) return true;
+  std::vector<BYTE> bytes(MAXIMUM_REPARSE_DATA_BUFFER_SIZE);
+  DWORD returned = 0;
+  if (!DeviceIoControl(handle, FSCTL_GET_REPARSE_POINT, nullptr, 0, bytes.data(),
+      static_cast<DWORD>(bytes.size()), &returned, nullptr) || returned < 16) return false;
+  DWORD tag = 0; WORD length = 0, offset = 0, size = 0;
+  std::memcpy(&tag, bytes.data(), 4);
+  std::memcpy(&length, bytes.data() + 4, 2);
+  std::memcpy(&offset, bytes.data() + 8, 2);
+  std::memcpy(&size, bytes.data() + 10, 2);
+  const size_t start = tag == IO_REPARSE_TAG_SYMLINK ? 20 : 16;
+  if (tag != facts.tag.ReparseTag || static_cast<size_t>(length) + 8 > returned || size == 0
+      || offset % 2 != 0 || size % 2 != 0 || start + offset + size > static_cast<size_t>(length) + 8) return false;
+  facts.reparse_target.resize(size / sizeof(wchar_t));
+  std::memcpy(facts.reparse_target.data(), bytes.data() + start + offset, size);
+  if (facts.reparse_target.find(L'\0') != std::wstring::npos) return false;
+  DWORD flags = 0;
+  if (tag == IO_REPARSE_TAG_SYMLINK) std::memcpy(&flags, bytes.data() + 16, sizeof(flags));
+  if ((flags & ~1u) != 0) return false;
+  if ((flags & 1) != 0) return facts.reparse_target.find_first_of(L"\\/") != 0
+    && facts.reparse_target.find(L':') == std::wstring::npos;
+  if (facts.reparse_target.compare(0, 8, L"\\??\\UNC\\") == 0) facts.reparse_target = L"\\\\" + facts.reparse_target.substr(8);
+  else if (facts.reparse_target.compare(0, 4, L"\\??\\") == 0) facts.reparse_target.erase(0, 4);
+  // Unmapped device/volume targets must not be reinterpreted as relative grants.
+  return facts.reparse_target.compare(0, 2, L"\\\\") == 0
+    || (facts.reparse_target.size() >= 3 && facts.reparse_target[1] == L':' && facts.reparse_target[2] == L'\\');
+}
+
+bool verify_pinned_path(const PinnedPath& pinned) {
+  for (size_t index = 0; index < pinned.handles.size(); ++index) {
+    PathFacts current;
+    const auto& previous = pinned.facts[index];
+    if (!handle_facts(pinned.handles[index].value, current)
+        || current.id.VolumeSerialNumber != previous.id.VolumeSerialNumber
+        || std::memcmp(&current.id.FileId, &previous.id.FileId, sizeof(FILE_ID_128)) != 0
+        || current.tag.FileAttributes != previous.tag.FileAttributes || current.tag.ReparseTag != previous.tag.ReparseTag
+        || current.canonical != previous.canonical) return false;
+  }
+  return true;
+}
+
 bool pin_path(const wchar_t* input, PinnedPath& pinned, bool content = false) {
   if (!path_components(input, pinned.components)) return false;
   bool blocked = false;
@@ -92,8 +169,11 @@ bool pin_path(const wchar_t* input, PinnedPath& pinned, bool content = false) {
       ? L"\\\\?\\UNC\\" + component.substr(2) : L"\\\\?\\" + component;
     DWORD access = FILE_READ_ATTRIBUTES | READ_CONTROL;
     if (content && index + 1 == pinned.components.size()) access |= FILE_READ_DATA;
-    HANDLE handle = CreateFileW(extended.c_str(), access, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
-      FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    HANDLE handle = index == 0
+      ? CreateFileW(extended.c_str(), access, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, nullptr)
+      : open_child(pinned.handles.back().value, component.substr(pinned.components[index - 1].size()
+          + (pinned.components[index - 1].back() == L'\\' ? 0 : 1)), access);
     if (handle == INVALID_HANDLE_VALUE) {
       const DWORD error = GetLastError();
       if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND) return false;
@@ -102,11 +182,12 @@ bool pin_path(const wchar_t* input, PinnedPath& pinned, bool content = false) {
       continue;
     }
     pinned.handles.emplace_back(handle);
-    if (!handle_facts(handle, facts)) return false;
-    blocked = (facts.tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0;
+    if (!handle_facts(handle, facts) || !read_reparse_target(handle, facts)) return false;
+    blocked = (facts.tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0
+      && (facts.tag.ReparseTag == 0 || (facts.tag.ReparseTag & 0x20000000) != 0);
     if (!blocked && index + 1 < pinned.components.size() && (facts.tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0) return false;
   }
-  return true;
+  return verify_pinned_path(pinned);
 }
 
 // The compatibility deny mode keeps its refusal contract; facts modes report all tags.
