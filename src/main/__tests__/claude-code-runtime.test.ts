@@ -556,19 +556,39 @@ describe("CLI account and verification boundary", () => {
   });
 
   it("opens a complete trusted login URL once and ignores cancelled output", async () => {
-    const directories = await paths(); const h = spawnHarness(undefined, {}); const openExternal = vi.fn();
+    const directories = await paths(); const h = spawnHarness(undefined, {}); const openAuthorizationUrl = vi.fn();
     const cli = installedCli(directories.runtimeHome);
     const client = new ClaudeCodeSubscriptionClient({ ...directories, ...h, candidates: cli.candidates,
-      resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest, openExternal }); owners.push(client);
+      resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest, openAuthorizationUrl }); owners.push(client);
     await client.startBrowserLogin(); const child = await h.started;
     expect(h.calls[0]!.args).toEqual(["auth", "login"]);
     child.stdout.write("See https://untrusted.invalid/help\nhttps://user:secret@claude.ai/oauth\n");
-    child.stdout.write("https://claude.ai/oauth/"); await Promise.resolve(); expect(openExternal).not.toHaveBeenCalled();
+    child.stdout.write("https://claude.ai/oauth/"); await Promise.resolve(); expect(openAuthorizationUrl).not.toHaveBeenCalled();
     child.stdout.write("authorize?code=private\n"); await Promise.resolve();
     child.stderr.write("https://claude.ai/oauth/authorize?code=second\n"); await Promise.resolve();
-    expect(openExternal).toHaveBeenCalledTimes(1);
+    expect(openAuthorizationUrl).toHaveBeenCalledTimes(1);
+    const login = openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
     await client.stop(); child.stdout.write("https://claude.ai/oauth/authorize?code=late\n");
-    await Promise.resolve(); expect(openExternal).toHaveBeenCalledTimes(1);
+    await expect(login.completion).resolves.toBeUndefined();
+    await Promise.resolve(); expect(openAuthorizationUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it("terminates the CLI and reports failure when its login window cancels", async () => {
+    const directories = await paths();
+    const h = spawnHarness(undefined, {});
+    const openAuthorizationUrl = vi.fn();
+    const cli = installedCli(directories.runtimeHome);
+    const client = new ClaudeCodeSubscriptionClient({ ...directories, ...h, candidates: cli.candidates,
+      resolveExecutable: async (path) => path, _pinExecutableForTest: pinForTest, openAuthorizationUrl });
+    owners.push(client);
+    await client.startBrowserLogin();
+    const child = await h.started;
+    child.stdout.write("https://claude.ai/oauth/authorize?state=cancel\n");
+    await vi.waitFor(() => expect(openAuthorizationUrl).toHaveBeenCalledOnce());
+    const login = openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
+    login.onCancel();
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalled());
+    await expect(client.getStatus()).rejects.toMatchObject({ code: "claude-code-login-failed" });
   });
 });
 

@@ -2,19 +2,12 @@ import { rememberPluginAuthPartition } from "./plugin-auth-partition-tracker.js"
 export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberPluginAuthPartition, getTrackedPluginAuthPartitions, forgetTrackedPluginAuthPartitions } from "./plugin-auth-partition-tracker.js";
 // The host owns login-window lifecycle; plugins supply completion patterns and cookie-domain allowlists.
 import { randomBytes } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
-import { getCommonChromeOptions } from "./window-chrome.js";
-import { BrowserWindow, screen, session, type Cookie, type Session, type WebContents } from "electron";
-import { registerWindowEventListeners } from "./window-event-listeners.js";
-import { markAsWindowControlOwned } from "../ipc/window-control-registry.js";
-import { markAsAuthOwned } from "./auth-window-registry.js";
-import {
-  buildTitlebarCss,
-  buildTitlebarHtml,
-  buildTitlebarButtonScript,
-} from "./window-titlebar-shell.js";
+import { BrowserWindow, dialog, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
+import { attachAuthWindowContent, buildAuthWindowShellHtml, installAuthSessionPermissions, type AuthNavigationFailure } from "./auth-window-content.js";
+export { buildAuthWindowShellHtml } from "./auth-window-content.js";
+import { isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
 import { resolveAppIconPath } from "./app-icon.js";
+import { configureAuthWebviewAttach } from "./plugin-webview-attach.js";
 import {
   withAuthPartitionViewersClosed,
 } from "./auth-partition-viewer-service.js";
@@ -26,27 +19,11 @@ import {
   urlHostMatchesAllowList,
 } from "./host-allow-list.js";
 import { createLogger } from "../lib/logger.js";
-import { escapeHtml } from "../shared/escape-html.js";
 import { errorMessage } from "../shared/error-message.js";
-import { preloadPreferences } from "./preload-bundles.js";
+import { t } from "../i18n/index.js";
+import type { OAuthLoginOptions } from "./oauth-login.js";
 
 const log = createLogger("auth-window");
-
-const requireFromHere = createRequire(import.meta.url);
-
-// Eruda devtools source — read once on demand and cached. Lets the auth shell + the embedded webview both inline a working in-page console without the
-// webview having to fetch any external script (its CSP comes from the remote server and would block <script src=...>).
-let cachedErudaSource: string | null = null;
-function getErudaSource(): string | null {
-  if (cachedErudaSource !== null) return cachedErudaSource;
-  try {
-    const erudaPath = requireFromHere.resolve("eruda");
-    cachedErudaSource = readFileSync(erudaPath, "utf8");
-    return cachedErudaSource;
-  } catch {
-    return null;
-  }
-}
 
 function isDevConsoleEnabled(): boolean {
   return process.env.AVE_DEV_CONSOLE === "1";
@@ -100,58 +77,6 @@ const inFlightVisibleAuthWindows = new Map<
 
 function authWindowDedupKey(effectivePartition: string, windowTitle: string): string {
   return `${effectivePartition}\u0000${windowTitle}`;
-}
-
-export function buildAuthWindowShellHtml(input: {
-  title: string;
-  url: string;
-  partition: string;
-  // macOS keeps native inset controls; Windows/Linux need HTML controls because the native frame is removed.
-  platform?: NodeJS.Platform;
-  // When true, inline eruda devtools script.
-  devConsole?: boolean;
-}): string {
-  const platform: NodeJS.Platform = input.platform ?? process.platform;
-  const title = JSON.stringify(input.title);
-  const url = JSON.stringify(input.url);
-  const partition = JSON.stringify(input.partition);
-  const erudaScript = input.devConsole === true ? buildErudaInlineScript() : "";
-  const titleBarHtml = buildTitlebarHtml({ platform, title: input.title });
-  return `<!doctype html>
-<html lang="ko">
-<head>
-  <meta charset="utf-8" />
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data:; frame-src http: https:;" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>${escapeHtml(input.title)}</title>
-  <style>${buildTitlebarCss()}</style>
-</head>
-<body>
-  ${titleBarHtml}
-  <webview id="auth-view" src="" partition=""></webview>
-  <script>
-    const title = ${title};
-    const url = ${url};
-    const partition = ${partition};
-    document.title = title;
-    const titleEl = document.getElementById("title");
-    if (titleEl) titleEl.textContent = title;
-    const view = document.getElementById("auth-view");
-    view.setAttribute("partition", partition);
-    view.setAttribute("src", url);
-    ${buildTitlebarButtonScript({ platform, title: input.title })}
-  </script>
-  ${erudaScript}
-</body>
-</html>`;
-}
-
-function buildErudaInlineScript(): string {
-  const src = getErudaSource();
-  if (!src) return "";
-  // Wrap in a try/catch so a malformed eruda load can't break the shell. `__ave_eruda_booted` guards against double-init when the shell is re-rendered (HMR / future flows).
-  return `<script>${src}
-;try{if(!window.__ave_eruda_booted){window.__ave_eruda_booted=true;eruda.init();}}catch(e){console.error("[ave] auth shell eruda init failed", e);}</script>`;
 }
 
 // Use shared host matching and idempotent normalization so direct callers and cookie-domain spellings obey the same allowlist.
@@ -297,6 +222,61 @@ export async function openAuthWindow(
   parent: BrowserWindow,
   options: OpenAuthWindowOptions,
 ): Promise<AuthCookie[] | OpenAuthWindowResult> {
+  return openAuthWindowInternal(parent, options);
+}
+
+/** OAuth uses the same isolated shell; only the host listener can complete it. */
+export async function openOAuthInAuthWindow(
+  parent: BrowserWindow,
+  url: string,
+  options: OAuthLoginOptions,
+): Promise<void> {
+  try {
+    if (requiresSystemBrowser(url)) {
+      await openSystemBrowserLogin(parent, url, options);
+      return;
+    }
+    await openAuthWindowInternal(parent, {
+      url, completionUrlPatterns: [], cookieHosts: [], timeoutMs: options.timeoutMs,
+      windowTitle: t("oauthWindow.title"),
+    }, options);
+  } catch (error) {
+    options.onCancel();
+    throw error;
+  }
+}
+
+async function announceSystemBrowserLogin(parent: BrowserWindow, url: string): Promise<void> {
+  void dialog.showMessageBox(parent, {
+    type: "info", title: t("oauthWindow.title"), message: t("oauthWindow.systemBrowser"),
+  }).catch(() => undefined);
+  await shell.openExternal(url);
+}
+
+async function openSystemBrowserLogin(parent: BrowserWindow, url: string, options: OAuthLoginOptions): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      options.completion,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error("OAuth login timeout")), options.timeoutMs);
+      }),
+      announceSystemBrowserLogin(parent, url).then(() => options.completion),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function openAuthWindowInternal(
+  parent: BrowserWindow,
+  options: OpenAuthWindowOptions,
+  oauth?: OAuthLoginOptions,
+): Promise<AuthCookie[] | OpenAuthWindowResult> {
+  const policy = {
+    harvestCookies: !oauth, clearOnClose: Boolean(oauth), escalateOnRefusal: true,
+    devConsole: !oauth && isDevConsoleEnabled(), completion: oauth?.completion,
+  };
   const {
     url,
     completionUrlPatterns,
@@ -342,7 +322,7 @@ export async function openAuthWindow(
     .filter((p): p is string => typeof p === "string")
     .map((p) => p.trim())
     .filter((p) => p.length > 0);
-  if (normalizedCompletionPatterns.length === 0) {
+  if (policy.harvestCookies && normalizedCompletionPatterns.length === 0) {
     throw new Error("openAuthWindow: completionUrlPatterns must be a non-empty array of non-blank strings");
   }
 
@@ -362,7 +342,7 @@ export async function openAuthWindow(
       `openAuthWindow: cookieHosts rejected — ${errorMessage(err)}`,
     );
   }
-  if (normalizedCookieHosts.length === 0) {
+  if (policy.harvestCookies && normalizedCookieHosts.length === 0) {
     throw new Error("openAuthWindow: cookieHosts must be a non-empty array of non-blank strings");
   }
 
@@ -374,6 +354,7 @@ export async function openAuthWindow(
       : `ephemeral-auth-${randomBytes(8).toString("hex")}`;
   rememberPluginAuthPartition(effectivePartition);
   const partitionSession = session.fromPartition(effectivePartition);
+  installAuthSessionPermissions(partitionSession);
   applyBrowserSessionIdentity(partitionSession);
 
   // Idempotency guard — a single visible auth window per (partition, title). Silent warmups (show:false) are never deduped: they are invisible and may
@@ -395,8 +376,7 @@ export async function openAuthWindow(
     if (existing) inFlightVisibleAuthWindows.delete(dedupKey);
   }
 
-  // Hardened webPreferences: this window loads an external portal in Chromium, so fully block the renderer ↔ Node boundary to reduce RCE surface. Remote
-  // pages must not get Node APIs or permission to create other BrowserWindows.
+  // Remote pages and their child windows share an isolated session without host privileges.
   const authWindow = new BrowserWindow({
     parent,
     modal: false,
@@ -405,65 +385,34 @@ export async function openAuthWindow(
     title: windowTitle,
     icon: resolveAppIconPath(),
     autoHideMenuBar: true,
-    // Frame settings sourced from the shared `getCommonChromeOptions()` helper so this window — when made visible — uses the same 36px CustomTitleBar slot +
-    // traffic-light position as the other Ave windows. See `src/main/window-chrome.ts`.
-    ...getCommonChromeOptions(),
+    // Native controls keep both login lanes independent of host IPC capabilities.
+    frame: true, titleBarStyle: "default",
     // Explicit show:false suppresses initial display and later web-content focus while still permitting navigation and harvest.
     show: showRequested,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
-      ...preloadPreferences("preload"),
+      sandbox: true,
     },
+  });
+  authWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
+    configureAuthWebviewAttach({ event, webPreferences: webPreferences as Record<string, unknown>, params, url, partition: effectivePartition });
   });
   // Centering only matters for visible windows; skip the geometry math when the caller asked for a hidden warmup.
   if (showRequested) centerAuthWindowOnScreen(authWindow);
   if (typeof authWindow.setMenu === "function") authWindow.setMenu(null);
-  markAsWindowControlOwned(authWindow.webContents);
-  registerWindowEventListeners(authWindow);
 
   let authContents: WebContents | null = null;
-
-  // Allow only HTTP(S) in both will-navigate and will-redirect; server redirects do not pass through the former.
-  const isHttpUrl = (targetUrl: string): boolean => {
-    try {
-      const p = new URL(targetUrl).protocol;
-      return p === "http:" || p === "https:";
-    } catch {
-      return false;
+  let content: ReturnType<typeof attachAuthWindowContent>;
+  let partitionCleanup: Promise<void> | undefined;
+  const cleanUp = (): Promise<void> => partitionCleanup ??= (async () => {
+    await content.close();
+    if (policy.clearOnClose) {
+      if (!authWindow.isDestroyed()) authWindow.destroy();
+      await Promise.all([partitionSession.clearStorageData(), partitionSession.clearCache(), partitionSession.clearAuthCache()]);
     }
-  };
-  // Read the canonical details.url; deprecated positional navigation arguments may be empty and would block valid login redirects.
-  const attachAuthNavigationGuards = (contents: WebContents) => {
-    contents.setWindowOpenHandler(() => ({ action: "deny" }));
-    contents.on("will-navigate", (details) => {
-      if (!isHttpUrl(details.url)) details.preventDefault();
-    });
-    contents.on("will-redirect", (details) => {
-      if (!isHttpUrl(details.url)) details.preventDefault();
-    });
-  };
-
-  // The host shell is local/data: and owns only the chrome. The external login page must be the single sandboxed webview below.
-  authWindow.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-  authWindow.webContents.on("will-attach-webview", (event, webPreferences, params) => {
-    if (typeof params.src !== "string" || params.src !== url) {
-      event.preventDefault();
-      return;
-    }
-    const prefs = webPreferences as Record<string, unknown>;
-    delete prefs.preload;
-    delete prefs.preloadURL;
-    prefs.nodeIntegration = false;
-    prefs.nodeIntegrationInWorker = false;
-    prefs.nodeIntegrationInSubFrames = false;
-    prefs.contextIsolation = true;
-    prefs.webSecurity = true;
-    prefs.sandbox = true;
-    prefs.webviewTag = false;
-    prefs.partition = effectivePartition;
-  });
+  })();
 
   // Record close timing, URL, and reason to distinguish early external closes from navigation races.
   const createdAtMs = Date.now();
@@ -488,11 +437,52 @@ export async function openAuthWindow(
 
   const authPromise = new Promise<AuthCookie[] | OpenAuthWindowResult>((resolve, reject) => {
     let settled = false;
+    let handedOff = false;
     const finish = (fn: () => void) => {
       if (settled) return;
       settled = true;
       fn();
     };
+
+    const handOff = (authorizationUrl: string): void => {
+      if (handedOff || settled) return;
+      handedOff = true;
+      if (!authWindow.isDestroyed()) authWindow.close();
+      log.info(`[auth-window:system-browser] ${new URL(authorizationUrl).host}`);
+      void cleanUp().then(() => announceSystemBrowserLogin(parent, url)).then(() => {
+        if (!policy.harvestCookies) return;
+        finish(() => {
+          clearTimeout(timer);
+          reject(new Error("Login continued in the system browser; session cookies are unavailable"));
+        });
+      }, () => {
+        finish(() => {
+          clearTimeout(timer);
+          reject(new Error("Unable to open the system browser"));
+        });
+      });
+    };
+    const escalate = (authorizationUrl: string): boolean => {
+      if (!policy.escalateOnRefusal || !isOAuthBrowserRefusal(authorizationUrl)) return false;
+      handOff(authorizationUrl);
+      return true;
+    };
+
+    if (policy.completion) {
+      void policy.completion.then(() => {
+        finish(() => {
+          clearTimeout(timer);
+          resolve([]);
+          if (!authWindow.isDestroyed()) authWindow.close();
+        });
+      }, () => {
+        finish(() => {
+          clearTimeout(timer);
+          reject(new Error("OAuth login did not complete"));
+          if (!authWindow.isDestroyed()) authWindow.close();
+        });
+      });
+    }
 
     const timer = setTimeout(() => {
       finish(() => {
@@ -543,14 +533,15 @@ export async function openAuthWindow(
     // One harvest at a time. The attach-time probe, `did-navigate`, `did-navigate-in-page` and the ERR_ABORTED re-check can all fire on the same completion
     // URL; the first harvest settles the promise, so the overlapping ones would only repeat the partition write-back.
     let harvesting = false;
-    const checkAndCollect = async () => {
-      if (settled || harvesting) return;
-      if (!authContents || authContents.isDestroyed()) return;
-      const currentUrl = authContents.getURL();
+    const checkAndCollect = async (contents = authContents) => {
+      if (!policy.harvestCookies) return;
+      if (settled || handedOff || harvesting) return;
+      if (!contents || contents.isDestroyed()) return;
+      const currentUrl = contents.getURL();
       if (!isCompletionUrl(currentUrl, normalizedCompletionPatterns)) return;
       harvesting = true;
       try {
-        const harvestSession = authContents.session as Session;
+        const harvestSession = contents.session as Session;
         const allCookies = await harvestSession.cookies.get({});
         const filtered = filterCookiesByHost(allCookies, normalizedCookieHosts);
         await retainAcrossRestart(harvestSession, allCookies);
@@ -570,75 +561,9 @@ export async function openAuthWindow(
       }
     };
 
-    authWindow.webContents.on("did-attach-webview", (_event, contents) => {
-      authContents = contents;
-      webviewAttached = true;
-      markAsAuthOwned(contents);
-      attachAuthNavigationGuards(contents);
-      log.info(
-        { phase: "webview-attached", elapsedMs: sinceCreated(), url: sanitizedOpenUrl },
-        `[auth-window:webview-attached] elapsedMs=${sinceCreated()} url=${sanitizedOpenUrl}`,
-      );
-      const trackNav = (navUrl: string, kind: string, isCommitted: boolean): void => {
-        lastSeenUrl = navUrl;
-        if (isCommitted) lastCommittedUrl = navUrl;
-        log.info(
-          { phase: kind, elapsedMs: sinceCreated(), url: sanitizeUrlForLog(navUrl), isCommitted },
-          `[auth-window:${kind}] elapsedMs=${sinceCreated()} url=${sanitizeUrlForLog(navUrl)} committed=${isCommitted}`,
-        );
-      };
-      contents.on("did-navigate", (_e, navUrl: string) => {
-        trackNav(navUrl, "did-navigate", true);
-        void checkAndCollect();
-      });
-      contents.on("did-navigate-in-page", (_e, navUrl: string) => {
-        // history.pushState / replaceState — page-script controlled, NOT a committed navigation. Diagnostic only, not trusted for grace-collect.
-        trackNav(navUrl, "did-navigate-in-page", false);
-        void checkAndCollect();
-      });
-      contents.on("will-redirect", (_e, navUrl: string) => {
-        // Pre-commit redirect intent — not yet observed by server.
-        trackNav(navUrl, "will-redirect", false);
-      });
-      contents.on("did-finish-load", () => {
-        const cur = (() => { try { return contents.getURL(); } catch { return null; } })();
-        if (cur) lastSeenUrl = cur;
-        log.info(
-          { phase: "did-finish-load", elapsedMs: sinceCreated(), url: cur ? sanitizeUrlForLog(cur) : null },
-          `[auth-window:did-finish-load] elapsedMs=${sinceCreated()} url=${cur ? sanitizeUrlForLog(cur) : "unknown"}`,
-        );
-      });
-      contents.on("destroyed", () => {
-        log.warn(
-          {
-            phase: "webview-destroyed",
-            elapsedMs: sinceCreated(),
-            lastSeenUrl: lastSeenUrl ? sanitizeUrlForLog(lastSeenUrl) : null,
-          },
-          `[auth-window:webview-destroyed] elapsedMs=${sinceCreated()} lastSeenUrl=${lastSeenUrl ? sanitizeUrlForLog(lastSeenUrl) : "none"}`,
-        );
-      });
-      // Reinject the in-page console after navigation; executeJavaScript runs in the page main world and bypasses its CSP.
-      if (isDevConsoleEnabled()) {
-        const injectEruda = () => {
-          const src = getErudaSource();
-          if (!src || contents.isDestroyed()) return;
-          const script =
-            `${src}\n;try{if(!window.__ave_eruda_booted){window.__ave_eruda_booted=true;eruda.init();}}catch(e){console.error("[ave] webview eruda init failed", e);}`;
-          contents.executeJavaScript(script).catch(() => {
-            // Swallow — devtools is best-effort, never block the auth flow.
-          });
-        };
-        contents.on("did-finish-load", injectEruda);
-        contents.on("did-frame-finish-load", (_e, isMainFrame) => {
-          if (isMainFrame) injectEruda();
-        });
-      }
-      void checkAndCollect();
-    });
     // F12 / Cmd+Alt+I → open native Chromium DevTools on the webview. Eruda is fine for read-only inspection but native DevTools is needed for network panel
     // / breakpoints when the login flow misbehaves.
-    if (isDevConsoleEnabled()) {
+    if (policy.devConsole) {
       authWindow.webContents.on("before-input-event", (_event, input) => {
         const isF12 = input.key === "F12" && input.type === "keyDown";
         const isCmdAltI =
@@ -657,7 +582,7 @@ export async function openAuthWindow(
 
     // Fail real main-frame load errors promptly; ignore subresource failures and benign ERR_ABORTED redirects unless completion already matches.
     const ERR_ABORTED = -3;
-    const failReject = (errorCode: number, errorDesc: string, validatedUrl: string) =>
+    const failReject = (errorCode: number, validatedUrl: string) =>
       finish(() => {
         clearTimeout(timer);
         log.warn(
@@ -665,43 +590,50 @@ export async function openAuthWindow(
             phase: "close",
             closeReason: "did-fail-load",
             errorCode,
-            errorDescription: errorDesc,
+            errorDescription: "Navigation failed",
             url: sanitizeUrlForLog(validatedUrl),
             elapsedMs: sinceCreated(),
           },
-          `[auth-window:fail-load] errorCode=${errorCode} desc=${errorDesc} url=${sanitizeUrlForLog(validatedUrl)} elapsedMs=${sinceCreated()}`,
+          `[auth-window:fail-load] errorCode=${errorCode} desc=Navigation failed url=${sanitizeUrlForLog(validatedUrl)} elapsedMs=${sinceCreated()}`,
         );
         reject(
           new Error(
-            `openAuthWindow: navigation failed (${errorCode} ${errorDesc}) url=${sanitizeUrlForLog(validatedUrl)}`,
+            `openAuthWindow: navigation failed (${errorCode} Navigation failed) url=${sanitizeUrlForLog(validatedUrl)}`,
           ),
         );
         if (!authWindow.isDestroyed()) authWindow.close();
       });
 
     // Read canonical event error fields; deprecated positional args can be empty and silently disable fast failure.
-    type FailLoadEvent = {
-      errorCode: number;
-      errorDescription: string;
-      validatedURL: string;
-      isMainFrame: boolean;
-    };
-    const onFailLoad = (event: FailLoadEvent) => {
+    const onFailLoad = (event: AuthNavigationFailure) => {
       if (!event.isMainFrame) return;
+      // The failed connection stays blocked while the trusted chrome shows the certificate error.
+      if (event.errorCode <= -200 && event.errorCode > -300) return;
       if (event.errorCode === ERR_ABORTED) {
         // Benign redirect/page-transition cancel. Re-check completion and resolve through cookie collection when possible; otherwise ignore it.
         void checkAndCollect();
         return;
       }
-      failReject(event.errorCode, event.errorDescription, event.validatedURL);
+      failReject(event.errorCode, event.validatedURL);
     };
 
+    content = attachAuthWindowContent({
+      window: authWindow, session: partitionSession, partition: effectivePartition,
+      title: windowTitle, url, devConsole: policy.devConsole,
+      active: () => !settled && !handedOff,
+      onRefusal: escalate,
+      onNavigation: (navUrl, committed) => {
+        lastSeenUrl = navUrl;
+        if (committed) lastCommittedUrl = navUrl;
+        log.info({ url: sanitizeUrlForLog(navUrl), committed }, "[auth-window:navigate]");
+      },
+      onCheck: contents => { void checkAndCollect(contents); },
+      onAttached: contents => { authContents = contents; webviewAttached = true; },
+      onFailure: onFailLoad,
+    });
     authWindow.webContents.on("did-fail-load", onFailLoad as never);
     authWindow.webContents.on("did-fail-provisional-load", onFailLoad as never);
-    authWindow.webContents.on("did-attach-webview", (_event, contents) => {
-      contents.on("did-fail-load", onFailLoad as never);
-      contents.on("did-fail-provisional-load", onFailLoad as never);
-    });
+
     authWindow.webContents.on("render-process-gone", (_e, details) => {
       finish(() => {
         clearTimeout(timer);
@@ -721,14 +653,14 @@ export async function openAuthWindow(
     });
 
     authWindow.on("closed", () => {
-      if (settled) return;
+      if (settled || handedOff) return;
       clearTimeout(timer);
       // On an early SSO close, retry partition cookies only after a committed top-level completion URL; history changes are not trusted.
       const lastUrlSanitized = lastSeenUrl ? sanitizeUrlForLog(lastSeenUrl) : null;
       const lastCommittedSanitized = lastCommittedUrl
         ? sanitizeUrlForLog(lastCommittedUrl)
         : null;
-      const isGraceEligible = shouldGraceCollectClosedAuthWindow({
+      const isGraceEligible = policy.harvestCookies && shouldGraceCollectClosedAuthWindow({
         webviewAttached,
         lastCommittedUrl,
         completionPatterns: normalizedCompletionPatterns,
@@ -807,7 +739,8 @@ export async function openAuthWindow(
       url,
       partition: effectivePartition,
       platform: process.platform,
-      devConsole: isDevConsoleEnabled(),
+      devConsole: policy.devConsole,
+      nativeFrame: true,
     });
     authWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch((err) => {
       finish(() => {
@@ -842,7 +775,11 @@ export async function openAuthWindow(
     authWindow.webContents.on("render-process-gone", clearOwnEntry);
   }
 
-  return authPromise;
+  try {
+    return await authPromise;
+  } finally {
+    await cleanUp();
+  }
 }
 
 // Auth windows are centered in the primary display work area. The previous behavior followed the host parent position, which clipped auth windows when

@@ -8,6 +8,7 @@ import type {
   SubscriptionRuntimeStatus,
 } from "../../shared/subscription-runtime.js";
 import { DEFAULT_SUBSCRIPTION_RUNTIME_CAPABILITIES } from "../../shared/subscription-runtime.js";
+import type { OpenOAuthLogin } from "../oauth-login.js";
 import { createChatGptPlanFetch } from "./egress.js";
 import { DEFAULT_SUBSCRIPTION_IMAGE_ATTACHMENT_LIMITS } from "../subscription-attachment-input.js";
 import { ChatGptPlanIdTokenVerifier } from "./id-token.js";
@@ -23,7 +24,7 @@ import {
 
 /**
  * The plan-usage runtime behind the `chatgpt-plan` subscription id. It owns
- * no process: the session signs in through the system browser and a loopback
+ * no process: the session signs in through an isolated window and a loopback
  * callback, keeps its record in the encrypted secret store, and every request
  * leaves through the host network stack behind the plan egress allowlist.
  */
@@ -205,7 +206,7 @@ export function notConfiguredChatGptPlanStatus(): SubscriptionRuntimeStatus {
 
 export function createChatGptPlanRuntime(
   deps: ChatGptPlanRuntimeDeps,
-  openExternal: (url: string) => Promise<void> | void,
+  openAuthorizationUrl: OpenOAuthLogin,
 ): ChatGptPlanRuntime {
   const planFetch = createChatGptPlanFetch(deps.networkFetch);
   const namespace = deps.namespace ?? openFeatureNamespace("chatgpt-plan");
@@ -220,9 +221,7 @@ export function createChatGptPlanRuntime(
       });
       return hostId;
     },
-    openExternal: async (url) => {
-      await openExternal(url);
-    },
+    openAuthorizationUrl,
     startListener: deps.startListener ?? ((expectedState) => startChatGptPlanCallbackListener(expectedState)),
     verifier: new ChatGptPlanIdTokenVerifier(planFetch),
     ...(deps.onEvent ? { onEvent: deps.onEvent } : {}),

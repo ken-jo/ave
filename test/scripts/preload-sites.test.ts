@@ -77,7 +77,7 @@ const WEBVIEW_SITES: Record<string, string | null> = {
   // Browser tabs use the preview guest partition and sandbox policy.
   "src/ui/renderer/components/WebSurfaceLayer.tsx": null,
   "src/main/link-window-service.ts": null,
-  "src/main/auth-window-service.ts": null,
+  "src/main/auth-window-content.ts": null,
 };
 
 const WINDOW_CLASSES = new Set(["BrowserWindow", "BrowserView", "WebContentsView"]);
@@ -1011,7 +1011,6 @@ describe("preload sites follow the preload table", () => {
       "session src/main/html-preview-partition.ts mcpAppPreload",
       "session src/main/html-preview-partition.ts pluginPreload",
       "window src/main/audio-capture-surface.ts audioCaptureWindowPreload",
-      "window src/main/auth-window-service.ts preload",
       "window src/main/floating-dock-surface.ts floatingDockPreload",
       "window src/main/link-window-service.ts preload",
       "window src/main/main-window.ts preload",
@@ -1019,7 +1018,7 @@ describe("preload sites follow the preload table", () => {
     const used = new Set(real.sites.map((site) => site.id));
     expect(Object.keys(TABLE).filter((id) => !used.has(id))).toEqual([]);
     expect(real.sites.filter((site) => site.guard !== undefined).map((site) => `${site.file} ${site.guard}`).sort()).toEqual([
-      "src/main/auth-window-service.ts inline: strips the preload, sandbox true",
+      "src/main/auth-window-service.ts configureAuthWebviewAttach",
       "src/main/floating-dock-surface.ts configurePluginWebviewAttach",
       "src/main/link-window-service.ts inline: strips the preload, sandbox true",
       "src/main/main-window.ts configureMainWindowWebviewAttach",
@@ -1027,13 +1026,17 @@ describe("preload sites follow the preload table", () => {
     expect(real.sites.filter((site) => site.kind === "window" && site.id === null).map((site) => site.file).sort()).toEqual([
       "src/ipc/domains/window.ts",
       "src/main/auth-partition-viewer-service.ts",
+      // Login popup window and its adopted guest view, then the login shell: none runs a host preload.
+      "src/main/auth-window-content.ts",
+      "src/main/auth-window-content.ts",
+      "src/main/auth-window-service.ts",
     ]);
   });
 
   it("finds every <webview> site in a mapped file, with the request its row's sandbox needs", () => {
     const webviews = real.sites.filter((site) => site.kind === "webview" || site.kind === "html-webview").map((site) => `${site.kind} ${site.file} ${site.id}`).sort();
     expect(webviews).toEqual([
-      "html-webview src/main/auth-window-service.ts null",
+      "html-webview src/main/auth-window-content.ts null",
       "html-webview src/main/link-window-service.ts null",
       "webview src/floating-dock-window.js pluginPreload",
       "webview src/plugin-ui-host.tsx pluginPreload",

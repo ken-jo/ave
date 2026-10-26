@@ -39,6 +39,7 @@ export function createDesktopHostFixture(overrides: Partial<DesktopHostCapabilit
   const unavailable = (): never => { throw new Error("test-desktop-capability-unused"); };
   return {
     getAppWindows: () => [],
+    openOAuthLogin: unavailable,
     getFocusedWindow: () => null,
     findSessionSurface: () => null,
     findTerminalSurface: () => null,

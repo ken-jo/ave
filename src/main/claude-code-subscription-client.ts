@@ -1,6 +1,7 @@
 // Qualify the installed CLI in an empty probe home; real turns validate its print protocol and isolation. Credentials stay in the isolated CLI home;
 // this module reads no token files and sends no model prompts.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { OAuthLoginAttempt, type OpenOAuthLogin } from "./oauth-login.js";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, posix, win32 } from "node:path";
@@ -61,7 +62,7 @@ export interface ClaudeCodeSubscriptionClientOptions {
   // Existing app-owned temporary directory.
   runtimeTempDir?: string;
   // Opens a trusted login page only when the CLI prints one.
-  openExternal?: (url: string) => Promise<void> | void;
+  openAuthorizationUrl?: OpenOAuthLogin;
   // Test seam; production uses the managed-child registry.
   spawn?: SpawnClaude;
   // Test seam for filesystem-based executable validation.
@@ -84,6 +85,7 @@ interface QualifiedClaudeCode {
 }
 
 interface PendingLogin {
+  window: OAuthLoginAttempt;
   child: ChildProcess;
   timer: NodeJS.Timeout;
 }
@@ -288,7 +290,8 @@ export class ClaudeCodeSubscriptionClient {
   private readonly runtimeHome: string;
   private readonly workspaceDir: string;
   private readonly runtimeTempDir: string;
-  private readonly openExternal: ((url: string) => Promise<void> | void) | null;
+  private readonly openAuthorizationUrl: OpenOAuthLogin | null;
+  private completedLoginError = false;
   private readonly spawn: SpawnClaude;
   private readonly pinExecutable: (candidate: string) => Promise<ClaudeCodeExecutable>;
   private readonly artifacts = new Map<string, ClaudeCodeExecutable>();
@@ -318,7 +321,7 @@ export class ClaudeCodeSubscriptionClient {
     this.runtimeHome = options.runtimeHome;
     this.workspaceDir = options.workspaceDir;
     this.runtimeTempDir = options.runtimeTempDir ?? join(options.runtimeHome, "tmp");
-    this.openExternal = options.openExternal ?? null;
+    this.openAuthorizationUrl = options.openAuthorizationUrl ?? null;
     this.spawn = options.spawn ?? spawnClaudeCode;
     this.resolveExecutable = options.resolveExecutable
       ?? ((candidate) => resolveClaudeCodeSubscriptionExecutable(candidate, options.platform));
@@ -358,6 +361,10 @@ export class ClaudeCodeSubscriptionClient {
   // Discovery runs on every status read, so "check again" after installing or updating the CLI is a status read. A found CLI that fails qualification
   // throws `claude-code-runtime-incompatible`; none found is `not-configured`.
   async getStatus(): Promise<ClaudeCodeSubscriptionStatus> {
+    if (this.completedLoginError) {
+      this.completedLoginError = false;
+      throw new ClaudeCodeSubscriptionError("claude-code-login-failed");
+    }
     if (this.pendingLogin) {
       return claudeCodeSubscriptionStatus("ready", "pending", this.verifiedVersion ?? this.found?.version ?? null, "browser");
     }
@@ -438,10 +445,13 @@ export class ClaudeCodeSubscriptionClient {
       const timer = setTimeout(() => {
         void this.cancelLoginQuietly();
       }, LOGIN_TIMEOUT_MS);
-      this.pendingLogin = { child, timer };
+      this.completedLoginError = false;
+      this.pendingLogin = { child, timer, window: new OAuthLoginAttempt() };
       timer.unref();
-      child.once("close", () => {
+      child.once("close", (code: number | null) => {
         if (this.pendingLogin?.child === child) {
+          this.pendingLogin.window.finish();
+          this.completedLoginError = code !== 0;
           clearTimeout(this.pendingLogin.timer);
           this.pendingLogin = null;
         }
@@ -638,6 +648,7 @@ export class ClaudeCodeSubscriptionClient {
     const pending = this.pendingLogin;
     if (!pending) return;
     this.pendingLogin = null;
+    pending.window.finish();
     clearTimeout(pending.timer);
     try {
       await forceKillManagedChildProcess(pending.child, "claude-code-login-cancel");
@@ -659,16 +670,19 @@ export class ClaudeCodeSubscriptionClient {
         if (opened) return;
         buffer += typeof chunk === "string" ? chunk : decoder.write(chunk);
         // Wait for a delimiter: a split URL must never open a partial address.
-        if (!this.openExternal) return;
+        if (!this.openAuthorizationUrl) return;
         for (const match of buffer.matchAll(/https:\/\/[^\s"'\u001b]+(?=[\s"'\u001b])/gi)) {
           let url: URL;
           try { url = new URL(match[0]); } catch { continue; }
           if (url.protocol !== "https:" || url.username || url.password || url.port
             || !["claude.ai", "console.anthropic.com", "platform.claude.com"].includes(url.hostname.toLowerCase())) continue;
           opened = true;
-          void Promise.resolve().then(() => {
-            if (this.pendingLogin?.child === child) return this.openExternal?.(url.toString());
-          }).catch(() => undefined);
+          const pending = this.pendingLogin;
+          pending.window.open(url.toString(), this.openAuthorizationUrl, LOGIN_TIMEOUT_MS, () => {
+            if (this.pendingLogin !== pending) return;
+            this.completedLoginError = true;
+            void this.cancelLoginQuietly();
+          });
           break;
         }
       });

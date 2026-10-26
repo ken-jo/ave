@@ -31,6 +31,7 @@ interface LiveCatcher {
   ownerKey: string;
   redirectUri: string;
   server: Server;
+  state: string | undefined;
   // Set once the redirect arrives; read by a `wait` that comes in after it.
   received: AuthRedirectParams | null;
   // Whether what arrived was a refusal. Decided when the redirect lands, not when the landing page is served — by then the query is gone, because the 303
@@ -58,7 +59,7 @@ function outcomePage(failed: boolean): string {
 </body></html>`;
 }
 
-// Require a loopback Host header to block DNS rebinding; downstream OAuth state validation still authenticates the redirect.
+// Require a loopback Host header to block DNS rebinding; catchers opened with a flow state also authenticate it before completion.
 function isLoopbackHostHeader(hostHeader: string | undefined): boolean {
   if (hostHeader === undefined) return false;
   const withoutPort = hostHeader.replace(/:\d+$/, "").toLowerCase();
@@ -81,11 +82,14 @@ function parseRedirectParams(requestUrl: string, base: string): AuthRedirectPara
   if (entries.length === 0) return null;
   if (entries.length > MAX_QUERY_PARAMS) return null;
   const out: Record<string, string> = {};
+  const seen = new Set<string>();
   for (const [name, value] of entries) {
     if (name.length > MAX_PARAM_NAME_LENGTH) return null;
     if (value.length > MAX_PARAM_VALUE_LENGTH) return null;
-    // Last write wins, matching `URLSearchParams.get` — a repeated parameter is malformed rather than meaningful, and picking a rule beats picking one per reader.
-    out[name] = value;
+    if (seen.has(name)) return null;
+    seen.add(name);
+    // Define own data properties so prototype-named parameters cannot invoke inherited setters.
+    Object.defineProperty(out, name, { value, enumerable: true, writable: true, configurable: true });
   }
   return Object.freeze(out);
 }
@@ -110,7 +114,12 @@ export class AuthRedirectCatchers {
 
   // localhost matches registered redirect hosts; the IP-literal option follows RFC 8252 §7.3 arbitrary-port rules.
   // Both URI forms bind the listener to 127.0.0.1.
-  async open(ownerKey: string, options: { redirectHost?: "localhost" | "127.0.0.1" } = {}): Promise<AuthRedirectOpenResult> {
+  // Host flows pass their state so only the authenticated callback completes; the plugin contract (protocol v3) carries none, and plugins check state themselves.
+  async open(ownerKey: string, options: { state?: string; redirectHost?: "localhost" | "127.0.0.1" } = {}): Promise<AuthRedirectOpenResult> {
+    const state = options.state;
+    if (state !== undefined && (state.length === 0 || state.length > MAX_PARAM_VALUE_LENGTH)) {
+      throw new Error("authRedirect.open: state must be a non-empty bounded string");
+    }
     if (this.byOwner.has(ownerKey)) {
       throw new Error(
         "authRedirect.open: a redirect catcher is already open for this plugin; close it before opening another",
@@ -138,6 +147,7 @@ export class AuthRedirectCatchers {
         ownerKey,
         redirectUri,
         server,
+        state,
         received: null,
         receivedFailure: false,
         waiters: [],
@@ -165,17 +175,23 @@ export class AuthRedirectCatchers {
       res.end();
       return;
     }
-    const params = parseRedirectParams(req.url ?? "/", catcher.redirectUri);
-    if (params === null) {
-      // The landing page: the browser followed the 303 below, or the provider sent the user here with nothing to report.
+    const requestUrl = req.url ?? "/";
+    const redirectPath = new URL(catcher.redirectUri).pathname;
+    if (requestUrl === redirectPath && catcher.received !== null) {
+      // Only a completed flow has a landing page, after removing the credential query.
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       res.end(outcomePage(catcher.receivedFailure));
+      return;
+    }
+    const params = parseRedirectParams(requestUrl, catcher.redirectUri);
+    if (requestUrl.split("?", 1)[0] !== redirectPath || params === null || (catcher.state !== undefined && params.state !== catcher.state) || catcher.received !== null) {
+      res.writeHead(404);
+      res.end();
       return;
     }
     // Redirect the browser to the bare URI so the authorization code does not remain in history. The response the USER ends up looking at is the landing page above.
     res.writeHead(303, { location: catcher.redirectUri });
     res.end();
-    if (catcher.received !== null) return; // single-use; a replay changes nothing
     catcher.received = params;
     // `error` is the OAuth 2.0 spelling (RFC 6749 §4.1.2.1) and the only one this layer reads. Which error it was is the caller's to interpret; that there
     // WAS one is what the page has to say.

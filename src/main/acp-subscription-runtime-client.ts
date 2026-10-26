@@ -1,5 +1,6 @@
 // Owns setup and authentication checks for approved runtimes; it exposes no LLM provider or native tools.
 import type { ChildProcess, SpawnOptions } from "node:child_process";
+import { OAuthLoginAttempt, type OpenOAuthLogin } from "./oauth-login.js";
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { isAbsolute, join, resolve, win32 } from "node:path";
 import { StringDecoder } from "node:string_decoder";
@@ -114,6 +115,7 @@ export interface AcpSubscriptionRuntimeClientOptions {
 }
 
 interface PendingLogin {
+  window: OAuthLoginAttempt;
   child: ChildProcess;
   timer: NodeJS.Timeout;
   outputBytes: number;
@@ -621,6 +623,7 @@ export class AcpSubscriptionRuntimeClient {
         throw new AcpSubscriptionRuntimeError("acp-operation-failed");
       }
       const pending = {
+        window: new OAuthLoginAttempt(),
         child,
         timer: undefined as unknown as NodeJS.Timeout,
         outputBytes: 0,
@@ -659,17 +662,14 @@ export class AcpSubscriptionRuntimeClient {
   }
 
   // The renderer never receives the dynamic URL; only this main-side callback does.
-  async openPendingVerificationUrl(openExternal: (url: string) => Promise<void>): Promise<AcpSubscriptionStatus> {
+  async openPendingVerificationUrl(openLogin: OpenOAuthLogin): Promise<AcpSubscriptionStatus> {
     return this.withOperationLock(async () => {
       const pending = this.pendingLogin;
       if (!pending?.verificationUrl) {
         throw new AcpSubscriptionRuntimeError("acp-verification-url-unavailable");
       }
-      try {
-        await openExternal(pending.verificationUrl);
-      } catch {
-        throw new AcpSubscriptionRuntimeError("acp-operation-failed");
-      }
+      pending.window.open(pending.verificationUrl, openLogin, LOGIN_TIMEOUT_MS,
+        () => this.queueFinishPendingLogin(pending, "failed"));
       return this.currentStatus();
     });
   }
@@ -950,6 +950,7 @@ export class AcpSubscriptionRuntimeClient {
   ): Promise<void> {
     if (this.pendingLogin !== pending) return;
     this.pendingLogin = null;
+    pending.window.finish();
     clearTimeout(pending.timer);
     pending.stdoutBuffer = "";
     pending.stderrBuffer = "";

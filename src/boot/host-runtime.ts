@@ -8,12 +8,14 @@ import type { InitPluginRuntimeInput } from "./steps/plugin-runtime.js";
 import type { ReleasePrepInput, ReleasePrepOutput } from "./steps/post-boot.js";
 import type { HostFetchTransport } from "../main/host-fetch-guard.js";
 import type { BrowserUploadPickerRequest } from "../main/browser/browser-upload.js";
+import type { OpenOAuthLogin } from "../main/oauth-login.js";
 
 /** Desktop-owned capabilities. The server has no presentation surface. */
 export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   "openAuthWindowService" | "openLinkWindowService" | "openAuthPartitionViewerService"
   | "clearAuthPartitionService" | "shellOpenExternal"> {
   getAppWindows(): BrowserWindow[];
+  openOAuthLogin: OpenOAuthLogin;
   getFocusedWindow(): BrowserWindow | null;
   /** The live renderer hosting this exact session, or null when it is unhosted. */
   findSessionSurface(sessionId: string | undefined): WebContents | null;
