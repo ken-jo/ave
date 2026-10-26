@@ -2,7 +2,7 @@ import type { RolePreset } from "../../../data/role-presets.js";
 import { buildActivePersonaPromptId } from "../../../data/role-presets.js";
 import type { UserContentPart } from "../../../engine/llm/types.js";
 import type { Attachment } from "../types/attachments.js";
-import { buildMarkerText } from "./attachment-markers.js";
+import { formatFileMentionReference, parseFileMentionReferences } from "../../../shared/file-mention-reference.js";
 
 export interface ComposedOutgoing {
   /** Plain-text portion that becomes the textual body of the user turn. */
@@ -18,6 +18,31 @@ export interface ComposedOutgoing {
   personaPromptId?: string;
 }
 
+/** Preserve location selectors in text-only queues and transcript echoes without expanding ordinary attachments. */
+export function augmentFileReferenceMarkers(raw: string, attachments: readonly Attachment[]): string {
+  return augmentFileMarkers(raw, attachments, false);
+}
+
+function augmentFileMarkers(raw: string, attachments: readonly Attachment[], includeOrdinaryFiles: boolean): string {
+  let encoded: ReturnType<typeof parseFileMentionReferences>;
+  try { encoded = parseFileMentionReferences(raw); } catch {
+    // Preserve malformed selectors verbatim for the host's authoritative refusal rather than rewriting their contents.
+    return raw;
+  }
+  const files = new Map(attachments.filter((attachment) => attachment.kind === "file")
+    .map((attachment) => [attachment.n, attachment]));
+  // Replace only the original input so marker-shaped path text never becomes another selector.
+  return raw.replace(/\[File #(\d+)\]/g, (marker, number: string, offset: number) => {
+    if (encoded.some((reference) => offset >= reference.start && offset < reference.end)) return marker;
+    const attachment = files.get(Number(number));
+    if (!attachment) return marker;
+    if (attachment.location) {
+      return formatFileMentionReference(attachment.n, { path: attachment.path, ...attachment.location });
+    }
+    return includeOrdinaryFiles ? `[File #${attachment.n} — path: ${attachment.path}]` : marker;
+  });
+}
+
 /** Keep image/resource markers and separate payload parts; augment file markers with paths and inline user pastes with
  * plain delimiters. Resource fences stay host-authored and verbatim. */
 export function composeOutgoing(params: {
@@ -27,19 +52,8 @@ export function composeOutgoing(params: {
 }): ComposedOutgoing {
   const { raw, activePreset, attachments } = params;
 
-  let body = raw;
-
-  // 1. Augment file markers with absolute path so the model can read via tool.
-  //    Order matters: file augmentation runs FIRST so it sees only the user's
-  //    own marker text. If we expanded paste markers first, the pasted body
-  //    might contain a literal "[File #N]" substring (e.g. quoted code snippet)
-  //    and our split/join would unintentionally augment it too.
-  for (const att of attachments) {
-    if (att.kind !== "file") continue;
-    const marker = buildMarkerText(att);
-    const augmented = `[File #${att.n} — path: ${att.path}]`;
-    body = body.split(marker).join(augmented);
-  }
+  // File augmentation precedes paste expansion so pasted marker-shaped content stays verbatim.
+  let body = augmentFileMarkers(raw, attachments, true);
 
   // Match edited paste line-count suffixes rather than rebuilt original markers; file augmentation must already have run on
   // the original body.

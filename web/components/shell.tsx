@@ -1,21 +1,22 @@
 import type { Metadata, Viewport } from "next";
-import { Geist, Geist_Mono, Noto_Sans_KR } from "next/font/google";
 import { SITE_ORIGIN, type Locale } from "@/lib/i18n";
 import { homeCopy } from "@/lib/home";
 import { SiteScripts } from "./client";
 import "../app/globals.css";
 
-/* Geist for Latin, Noto Sans KR for Hangul through the stack, Geist Mono for
-   code. All three are OFL and self-hosted by next/font. */
-const geist = Geist({ subsets: ["latin"], display: "swap", variable: "--font-geist" });
-const kr = Noto_Sans_KR({ subsets: ["latin"], display: "swap", variable: "--font-kr", preload: false });
-const mono = Geist_Mono({ subsets: ["latin"], display: "swap", variable: "--font-geist-mono", preload: false });
+/* Pretendard Variable for Latin and Hangul, JetBrains Mono for code. Both are
+   OFL and vendored under public/fonts with their licences (no font CDN).
+   Pretendard is the dynamic subset: the browser fetches only the unicode-range
+   slices a page uses. */
+const FONT_CSS = ["/fonts/pretendard/pretendardvariable-dynamic-subset.css", "/fonts/jetbrains-mono/jetbrains-mono.css"];
 
 export const viewport: Viewport = {
+  // Light and warm night follow the system (web/DESIGN.md, "Tokens").
   themeColor: [
-    { media: "(prefers-color-scheme: light)", color: "#ffffff" },
-    { media: "(prefers-color-scheme: dark)", color: "#0b0d10" },
+    { media: "(prefers-color-scheme: light)", color: "#f8f7f4" },
+    { media: "(prefers-color-scheme: dark)", color: "#120f0c" },
   ],
+  colorScheme: "light dark",
 };
 
 export function siteMetadata(locale: Locale): Metadata {
@@ -33,7 +34,12 @@ export function siteMetadata(locale: Locale): Metadata {
 /** One root layout per locale so `<html lang>` is right on every page. */
 export function Shell({ locale, children }: { locale: Locale; children: React.ReactNode }) {
   return (
-    <html lang={locale} className={`${geist.variable} ${kr.variable} ${mono.variable}`}>
+    <html lang={locale}>
+      <head>
+        {FONT_CSS.map((h) => (
+          <link key={h} rel="stylesheet" href={h} precedence="fonts" />
+        ))}
+      </head>
       <body>
         {children}
         <SiteScripts />

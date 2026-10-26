@@ -466,12 +466,12 @@ const ENTRIES = {
   "src/__probes__/p.ts": 1,
   "test/renderer/helpers.ts": 1,
   "src/preload/internal-surface.ts": 4,
-  "src/main/window-manager.ts": 1,
+  "src/main/main-window.ts": 1,
 };
 check(
   "reports production files as non-test",
   nonTestEntries(ENTRIES).join(",")
-    === "src/preload/internal-surface.ts,src/main/window-manager.ts",
+    === "src/preload/internal-surface.ts,src/main/main-window.ts",
 );
 check("never reports a __tests__ file", !nonTestEntries(ENTRIES).some((f) => f.includes("__tests__")));
 check("never reports a __probes__ file", !nonTestEntries(ENTRIES).some((f) => f.includes("__probes__")));

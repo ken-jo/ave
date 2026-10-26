@@ -83,6 +83,7 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
       // Report preset presence only; package ids may be private.
       hasMarketplaceProviderPreset: Boolean(llm.marketplaceProviderPresetId),
       streamSmoothing: llm.streamSmoothing,
+      compactionModel: llm.compactionModel ?? "",
       fallbackChain: llm.fallbackChain,
       vendors,
     };
@@ -119,7 +120,6 @@ export function pickRedactedSettings(settings: AppSettings): Record<string, unkn
     const s = settings.system;
     out.system = {
       closeBehavior: s.closeBehavior,
-      appMode: s.appMode,
       localApiServer: s.localApiServer,
       launchAtStartup: s.launchAtStartup,
       launchMinimized: s.launchMinimized,

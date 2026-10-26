@@ -1,193 +1,135 @@
-import { featurePage } from "@/lib/features";
-import { CATALOG, KIND_SAMPLES, pkg, pkgLabels } from "@/lib/marketplace";
-import { homeCopy } from "@/lib/home";
-import { href, type Locale } from "@/lib/i18n";
-import { FEATURES, more, page } from "@/lib/nav";
-import { pagesCopy } from "@/lib/pages";
-import { Bento, Facts, Points, SecHead } from "./blocks";
-import { ChangelogTeaser } from "./changelog";
+import { homeCopy, type Section } from "@/lib/home";
+import type { Locale } from "@/lib/i18n";
+import { pkg } from "@/lib/marketplace";
+import { doc, more, page, type NavLink } from "@/lib/nav";
 import { Footer, Header } from "./chrome";
-import { Frame, HeroLoop, PreloadShot } from "./media";
-import { MotionRoot, Reveal, RevealItem } from "./motion";
-import { PackageStack, type StackItem, type StackKind } from "./pkg-stack";
-import { Tour, type TourStep } from "./tour";
+import { FilesTab, HelloStage } from "./hello";
+import { DownloadGlyph } from "./icons";
+import { Frame } from "./media";
 
 /**
- * The home page: hero with the product loop, the feature tour (one step per
- * feature page, from that page's hero), the workbench beside its list of
- * facts, what agents work with, the three ways to connect a model, safety,
- * the extension kinds with one real catalog package each, the newest release,
- * then download. Each section ends
- * with a link to the page that covers it in full.
+ * The home page, "Greeting", paced like a product page: the hello card (main
+ * line, the Latin-hello line, a built Ave workspace that performs the
+ * trail-notes session), five sections for what "everything" means (the web,
+ * the terminal, files, models, connectors and plugins), each one headline,
+ * one or two sentences, one visual and the link to the page that covers it,
+ * then a dark closing card. Details live on the feature pages and the guide.
  */
 export function Home({ locale }: { locale: Locale }) {
   const c = homeCopy(locale);
-  const reqs = pagesCopy(locale).download.requirements;
   const download = page(locale, "download");
+  const docs = page(locale, "docs");
   const path = "/";
-  const tour: TourStep[] = FEATURES.map((f) => {
-    const fp = featurePage(locale, f);
-    const { eyebrow, title, lead, pic } = fp.hero;
-    const link = more(locale, f);
-    return { id: f, eyebrow, title, lead, pic, points: fp.first.points.slice(0, 3), detail: fp.first.pic, more: { href: link.href, label: link.label } };
-  });
-  const L = pkgLabels(locale);
-  const items: StackItem[] = [];
-  const kinds: StackKind[] = c.plugins.kinds.map((k, i) => {
-    const name = KIND_SAMPLES[i];
-    if (name === undefined) throw new Error(`KIND_SAMPLES has no entry for kind ${i} (${k.name})`);
-    if (name === null) return { name: k.name, body: k.body, item: null };
-    const p = pkg(name);
-    const rows: StackItem["rows"] = [
-      { label: L.source, value: `${CATALOG.displayName} · ${p.path}` },
-      { label: L.commit, value: p.commit.slice(0, 12), code: true },
-    ];
-    if (p.artifact) rows.push({ label: L.contents, value: `sha256 ${p.artifact.sha256.slice(0, 16)}…`, code: true });
-    rows.push({ label: L.compat, value: p.hostProtocol ? `${L.needs(p.minAppVersion)} · ${L.protocol(p.hostProtocol)}` : L.needs(p.minAppVersion) });
-    rows.push({ label: L.version, value: `${p.version} · ${L.published(p.publishedAt.slice(0, 10))}` });
-    if (p.allowedDomains) rows.push({ label: L.network, value: L.hosts(p.allowedDomains.length) });
-    items.push({
-      id: p.name,
-      kind: k.name,
-      title: p.displayName,
-      description: p.description,
-      descLang: locale === "en" && /[\u3131-\uD79D]/u.test(p.description) ? "ko" : undefined,
-      rows,
-    });
-    return { name: k.name, body: k.body, item: items.length - 1 };
-  });
+  const links: Record<Section["id"], NavLink> = {
+    web: more(locale, "browser"),
+    terminal: more(locale, "terminal"),
+    files: doc(locale, "workbench"),
+    models: more(locale, "models"),
+    connect: more(locale, "plugins"),
+  };
   return (
     <>
-      <PreloadShot k={c.hero.pic.k} />
       <Header locale={locale} path={path} />
       <main id="main">
-        <MotionRoot>
-        <section className="hero" aria-labelledby="hero-title">
-          <div className="wrap">
-            <div className="hero-copy">
-              <p className="eyebrow">{c.hero.eyebrow}</p>
-              <h1 id="hero-title" className="h1">{c.hero.title}</h1>
-              <p className="lead">{c.hero.sub}</p>
-              <div className="hero-ctas">
-                <a className="btn btn-primary btn-lg" href={download.href}>{c.hero.download}</a>
-                <a className="btn btn-ghost btn-lg" href={page(locale, "docs").href}>{c.hero.docs}</a>
-              </div>
-              <p className="hero-note">{c.hero.note}</p>
+        <section className="hello" aria-labelledby="hero-title">
+          <div className="hello-card">
+            <div className="hello-copy">
+              <h1 id="hero-title" className="hello-title">
+                {c.hero.title}
+              </h1>
+              <p className="hello-sub">{c.hero.sub}</p>
+              <p className="hello-ctas">
+                <a className="btn btn-primary btn-lg" href={download.href}>
+                  <DownloadGlyph />
+                  {c.hero.download}
+                </a>
+                <a className="btn btn-ghost btn-lg" href={docs.href}>
+                  {c.hero.docs}
+                </a>
+              </p>
+              <p className="hello-note">{c.hero.note}</p>
             </div>
-            <div className="hero-media">
-              <HeroLoop pic={c.hero.pic} label={c.hero.pic.alt} />
-            </div>
+            <HelloStage demo={c.hero.demo} />
           </div>
         </section>
 
-        <section className="sec band" aria-labelledby="tour">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="tour" eyebrow={c.tour.eyebrow} title={c.tour.title} body={c.tour.body} />
-          </Reveal>
-          <div className="wrap">
-            <Tour steps={tour} label={c.tour.label} />
-          </div>
-        </section>
-
-        <section className="sec" aria-labelledby="work">
-          <Reveal className="wrap">
-            <div className="split">
-              <RevealItem>
-                <Frame pic={c.work.pic} />
-              </RevealItem>
-              <RevealItem className="split-text">
-                <p className="eyebrow">{c.work.eyebrow}</p>
-                <h2 id="work" className="h2">{c.work.title}</h2>
-                <p className="lead">{c.work.body}</p>
-                <Points points={c.work.points} />
-              </RevealItem>
-            </div>
-          </Reveal>
-        </section>
-
-        <section className="sec band" aria-labelledby="surfaces">
-          <Reveal className="wrap">
-            <Bento
-              Item={RevealItem}
-              id="surfaces"
-              block={c.surfaces}
-              foot={
-                <p className="hero-ctas">
-                  <a className="more" href={more(locale, "browser").href}>{more(locale, "browser").label}</a>
-                  <a className="more" href={more(locale, "terminal").href}>{more(locale, "terminal").label}</a>
+        {c.sections.map((s, i) => (
+          <section key={s.id} className={`sec home-sec home-sec-${s.id}`} aria-labelledby={`sec-${s.id}`}>
+            <div className={`wrap home-row${i % 2 ? " flip" : ""}`}>
+              <div className="home-text">
+                <h2 id={`sec-${s.id}`} className="h2">
+                  {s.title}
+                </h2>
+                <p className="lead">{s.body}</p>
+                {s.id === "connect" ? <Connectors locale={locale} /> : null}
+                <p>
+                  <a className="more" href={links[s.id].href}>
+                    {links[s.id].label}
+                  </a>
                 </p>
-              }
-            />
-          </Reveal>
-        </section>
-
-        <section className="sec" aria-labelledby="models">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="models" eyebrow={c.models.eyebrow} title={c.models.title} body={c.models.body} />
-            <div className="split flip">
-              <RevealItem>
-                <Frame pic={c.models.pic} />
-              </RevealItem>
-              <div className="choices choices-stack">
-                {c.models.ways.map((w) => (
-                  <RevealItem key={w.tag} className="choice">
-                    <p className="tag">{w.tag}</p>
-                    <h3 className="h3">{w.title}</h3>
-                    <p>{w.body}</p>
-                  </RevealItem>
-                ))}
               </div>
+              <div className={`home-stage stage-${s.id}`}>{s.pic === "files" ? <FilesFragment locale={locale} /> : <Frame pic={s.pic} />}</div>
             </div>
-            <p className="sec-foot">
-              <a className="more" href={more(locale, "models").href}>{more(locale, "models").label}</a>
-            </p>
-          </Reveal>
-        </section>
+          </section>
+        ))}
 
-        <section className="sec band" aria-labelledby="safety">
-          <Reveal className="wrap">
-            <Bento Item={RevealItem} id="safety" block={c.safety} />
-            <div className="sec-gap">
-              <Facts Item={RevealItem} items={c.safetyFacts} />
-            </div>
-            <p className="sec-foot">
-              <a className="more" href={more(locale, "security").href}>{more(locale, "security").label}</a>
-            </p>
-          </Reveal>
+        {/* id="download": the app's unsigned-build update guide opens the site root, and this is where its download is. */}
+        <section className="closing" id="download" aria-labelledby="say-hello">
+          <div className="closing-card">
+            <h2 id="say-hello">
+              {c.close.before}
+              <span>{c.close.hello}</span>
+              {c.close.after}
+            </h2>
+            <p>{c.close.body}</p>
+            <a className="btn btn-lg btn-light" href={download.href}>
+              <DownloadGlyph />
+              {c.close.cta}
+            </a>
+            <p className="closing-note">{c.close.note}</p>
+          </div>
         </section>
-
-        <section className="sec" aria-labelledby="plugins">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="plugins" eyebrow={c.plugins.eyebrow} title={c.plugins.title} body={c.plugins.body} />
-            <RevealItem>
-              <PackageStack kinds={kinds} items={items} caption={c.plugins.cap} />
-            </RevealItem>
-            <p className="sec-foot">
-              <a className="more" href={more(locale, "plugins").href}>{more(locale, "plugins").label}</a>
-            </p>
-          </Reveal>
-        </section>
-
-        <section className="sec band" aria-labelledby="changes">
-          <Reveal className="wrap">
-            <RevealItem>
-              <ChangelogTeaser locale={locale} eyebrow={c.changes.eyebrow} title={c.changes.title} body={c.changes.body} />
-            </RevealItem>
-          </Reveal>
-        </section>
-
-        <section className="sec" id="download" aria-labelledby="get">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="get" eyebrow={c.get.eyebrow} title={c.get.title} body={c.get.body} />
-            <Facts Item={RevealItem} items={reqs} />
-            <p className="sec-foot">
-              <a className="btn btn-primary btn-lg" href={href(locale, "/download/")}>{c.get.cta}</a>
-            </p>
-          </Reveal>
-        </section>
-        </MotionRoot>
       </main>
       <Footer locale={locale} path={path} />
     </>
+  );
+}
+
+/** Section 5's names, each one a package in the catalog snapshot (pkg() fails the build otherwise). */
+function Connectors({ locale }: { locale: Locale }) {
+  const c = homeCopy(locale).connectors;
+  return (
+    <ul className="chips" aria-label={c.label}>
+      {[...c.mcp, ...c.plugins].map((name) => (
+        <li key={name} data-kind={pkg(name).kind}>
+          {pkg(name).displayName}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+/**
+ * The work panel's Files tab, built at fidelity because no capture of it
+ * exists yet (web/DESIGN.md, "Built fragments"): the session's files with
+ * what was done to each, and the captures' change opened below it.
+ */
+function FilesFragment({ locale }: { locale: Locale }) {
+  const label =
+    locale === "ko"
+      ? "작업 패널의 파일 탭: 세션의 파일 src/export.js에 읽음과 씀이 표시되고, 아래에 추가된 json 분기 줄이 강조된 모습"
+      : "The work panel's Files tab: the session's file src/export.js marked Read and Written, with the added json case highlighted below";
+  return (
+    <div className="files-window" role="img" aria-label={label}>
+      <div className="hw-tabs" aria-hidden="true">
+        <span data-on="">Files</span>
+        <span>Preview</span>
+        <span>Browser</span>
+        <span>Terminal</span>
+      </div>
+      <div className="files-body" aria-hidden="true">
+        <FilesTab />
+      </div>
+    </div>
   );
 }

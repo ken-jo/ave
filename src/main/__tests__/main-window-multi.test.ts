@@ -70,7 +70,6 @@ vi.mock("node:fs", async (importOriginal) => ({
   ...(await importOriginal<typeof import("node:fs")>()),
   existsSync: () => true,
 }));
-vi.mock("../persisted-app-mode.js", () => ({ readPersistedAppModeSync: () => "work" }));
 vi.mock("../native-window-coordinator.js", () => ({ requestNativeChromeRefresh: vi.fn() }));
 const killTerminalsOwnedBy = vi.fn((_ownerWindowId: number) => 0);
 vi.mock("../terminal/pty-manager.js", async (importOriginal) => ({
@@ -96,6 +95,16 @@ describe("main windows", () => {
     appState.setTray({ setContextMenu: vi.fn() } as never);
     appState.setServices(null);
     electronMock.app.quit.mockClear();
+  });
+
+  it("opens a centered responsive window with theme-only boot arguments", () => {
+    const win = open();
+    expect(win.options).toMatchObject({
+      x: 339, y: 156, width: 1243, height: 768, minWidth: 360,
+      webPreferences: { contextIsolation: true, nodeIntegration: false },
+    });
+    const options = win.options as { webPreferences: { additionalArguments: string[] } };
+    expect(options.webPreferences.additionalArguments.every((arg) => arg.startsWith("--ave-initial-theme="))).toBe(true);
   });
 
   it("gives the first window the primary role and every later one the secondary role", () => {

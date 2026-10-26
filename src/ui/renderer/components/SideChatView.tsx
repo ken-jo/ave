@@ -11,6 +11,7 @@ import { registerComposerTarget } from "../preview/composer-targets.js";
 import { ComposerApiKeyChip, resolveComposerRuntimeGates } from "./ChatComposerDock.js";
 import { AttachButton, ShortcutsButton, TurnControlButton } from "./InputActionBar.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
+import { ShellTasksPanel } from "./ShellTasksPanel.js";
 import { useSideChat } from "../hooks/use-side-chat.js";
 import { useChatScroll } from "../hooks/use-chat-scroll.js";
 import { useMessageQueue } from "../hooks/use-message-queue.js";
@@ -303,6 +304,10 @@ function SideChatSession({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentNCounter = useRef(0);
   const composerRef = useRef<ComposerHandle | null>(null);
+  const shellTasksApi = useMemo(() => ({
+    chatListShellTasks: sideChat.listShellTasks,
+    chatControlShellTask: sideChat.controlShellTask,
+  }), [sideChat]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   // Side chat is a second ConversationLoop, not a second credential policy. Read the app-level readiness contract so it
@@ -615,6 +620,7 @@ function SideChatSession({
                 runtimeImageAttachmentProvider ?? runtimeFileAttachmentProvider
               }
             />
+            {sessionId && <ShellTasksPanel api={shellTasksApi} sessionId={sessionId} composerRef={composerRef} />}
             <div className="ml-auto flex shrink-0 items-center gap-1.5">
               <ShortcutsButton />
               <TurnControlButton

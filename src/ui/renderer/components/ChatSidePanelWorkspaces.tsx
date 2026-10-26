@@ -7,10 +7,6 @@ import {
   ChevronRight,
   ChevronsDownUp,
   ExternalLink,
-  File,
-  FileText,
-  FilePenLine,
-  Folder,
   FolderPlus,
   Globe,
   RotateCw,
@@ -19,18 +15,24 @@ import {
 } from "lucide-react";
 import { Button } from "../../../components/ui/button.js";
 import { Input } from "../../../components/ui/input.js";
-import { Badge } from "../../../components/ui/badge.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "../../../components/ui/tooltip.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { navigateBrowserTabAsUser } from "../preview/agent-browser-bridge.js";
 import { BrowserSurfaceTools } from "./BrowserSurfaceTools.js";
 import { useGuestNavigation, useWebSurfaceGuest } from "../hooks/use-browser-navigation.js";
 import type { AveApi } from "../types.js";
-import { isFileChangeOperation, type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
+import { type ChatPreviewTarget, type WorkspaceFileItem } from "../preview/preview-targets.js";
 import { normalizeBrowserNavigationUrl } from "../preview/url-safety.js";
 import { formatIpcError } from "../format-ipc-error.js";
-import { VerticalSplitLayout } from "./VerticalSplitLayout.js";
-import { useVerticalSplit } from "../hooks/use-vertical-split.js";
+import { useFileTreeWidth } from "../hooks/use-file-tree-width.js";
+import { useEdgeResize, useMeasuredSize } from "../hooks/use-edge-resize.js";
+import { FILE_WORKSPACE_COLUMNS_MIN_WIDTH } from "../../../shared/shell-geometry.js";
+import { FILE_TREE_DEFAULT_WIDTH, FILE_TREE_MIN_WIDTH, FILE_TREE_MAX_WIDTH } from "../../../shared/side-panel.js";
+import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
+import { deriveWorkspaceChanges, workspaceFilePath, type WorkspaceChanges, type FileWorkspaceReveal, type WorkspaceFileFilter } from "../preview/workspace-changes.js";
+import { buildWorkspaceTree, normalizeWorkspaceTreePath, type WorkspaceTreeNode } from "../preview/workspace-file-tree.js";
+import { TurnChangeDetail } from "./TurnChangeDetail.js";
+import { FILE_CHANGE_ADDED_CLASS, FILE_CHANGE_REMOVED_CLASS, FILE_CHANGE_FOLDER_BADGE_CLASS, FILE_CHANGE_SELECTED_CLASS, SESSION_FILE_BADGE_CLASS, fileChangeBadgeClass, fileChangeLetter } from "./file-change-style.js";
 import {
   useAddProjectFolder,
   type AddProjectFolderOutcome,
@@ -45,17 +47,13 @@ import {
 import {
   BrowserDocumentViewer,
   EmptyState,
-  FileTreeRows,
   PreviewDetail,
   previewFillsPanel,
   UrlDocumentViewer,
-  buildFileTree,
   fileBasename,
   fileIcon,
-  filterFileTree,
   isPathWithinRoot,
   matchesQuery,
-  statusTone,
   toRelativePath,
 } from "./ChatSidePanelPreview.js";
 
@@ -86,10 +84,16 @@ type WorkspaceDirEntry = { name: string; path: string; type: "file" | "directory
  */
 function ProjectRootsBrowser({
   onOpenFile,
-  selectedPath,
+  selectedPath, files, changes, filter, query, revealRequest, focusSelectedToken,
 }: {
-  onOpenFile: (path: string) => void;
+  onOpenFile: (path: string, file?: WorkspaceFileItem, root?: string) => void;
   selectedPath: string | null;
+  files: readonly WorkspaceFileItem[];
+  changes: WorkspaceChanges;
+  filter: WorkspaceFileFilter;
+  query: string;
+  revealRequest?: FileWorkspaceReveal | null;
+  focusSelectedToken?: number;
 }) {
   const { t } = useTranslation();
   const openNativeContextMenu = useNativeContextMenu();
@@ -199,12 +203,14 @@ function ProjectRootsBrowser({
     let cancelled = false;
     void window.ave.workspace.listRoots().then((res) => {
       if (cancelled || !res.ok || !res.roots) return;
-      applyRoots(res.roots);
+      const preferred = changes.workspaceRoot
+        ? res.roots.find((root) => workspaceFilePath(root.path) === workspaceFilePath(changes.workspaceRoot!))?.path : undefined;
+      applyRoots(res.roots, preferred);
     });
     return () => {
       cancelled = true;
     };
-  }, [applyRoots]);
+  }, [applyRoots, changes.workspaceRoot]);
 
   useEffect(() => {
     if (
@@ -240,26 +246,71 @@ function ProjectRootsBrowser({
     });
   };
 
-  // Flattened pre-order list of the CURRENTLY VISIBLE nodes (expanded subtrees
-  // only). Rendering stays recursive; this memo backs keyboard navigation only.
-  const flatNodes = useMemo<
-    Array<{ path: string; name: string; isDir: boolean; depth: number; parentPath: string }>
-  >(() => {
-    if (!activeRoot) return [];
-    const out: Array<{ path: string; name: string; isDir: boolean; depth: number; parentPath: string }> = [];
-    const walk = (parentPath: string, depth: number) => {
-      const siblings = childrenByPath[parentPath] ?? [];
-      for (const entry of siblings) {
-        const isDir = entry.type === "directory";
-        out.push({ path: entry.path, name: entry.name, isDir, depth, parentPath });
-        if (isDir && expanded.has(entry.path)) walk(entry.path, depth + 1);
+  const tree = useMemo(() => buildWorkspaceTree({
+    root: activeRoot, roots: [...roots].sort((a, b) => Number(b.isDefault) - Number(a.isDefault)).map((root) => root.path), childrenByPath,
+    files, changes: changes.changedFiles, filter, query, workspaceRoot: changes.workspaceRoot,
+  }), [activeRoot, roots, childrenByPath, files, changes.changedFiles, changes.workspaceRoot, filter, query]);
+
+  const flatNodes = useMemo(() => {
+    const out: Array<{ path: string; name: string; isDir: boolean; depth: number; parentPath: string; file?: WorkspaceFileItem }> = [];
+    const walk = (nodes: WorkspaceTreeNode[], parentPath: string, depth: number) => {
+      for (const node of nodes) {
+        const isDir = node.type === "directory";
+        out.push({ path: node.path, name: node.name, isDir, depth, parentPath, file: node.file });
+        if (isDir && expanded.has(node.path)) walk(node.children, node.path, depth + 1);
       }
     };
-    walk(activeRoot, 0);
+    walk(tree.nodes, activeRoot ?? "", 0);
+    walk(tree.outsideNodes, "", 0);
     return out;
-  }, [activeRoot, childrenByPath, expanded]);
+  }, [activeRoot, tree, expanded]);
+
+  const appliedRootRevealRef = useRef<FileWorkspaceReveal | null>(null);
+  useEffect(() => {
+    if (!revealRequest || roots.length === 0 || (appliedRootRevealRef.current?.token === revealRequest.token && appliedRootRevealRef.current.path === revealRequest.path)) return;
+    appliedRootRevealRef.current = revealRequest;
+    const path = normalizeWorkspaceTreePath(revealRequest.path, changes.workspaceRoot ?? roots.find((root) => root.isDefault)?.path ?? roots[0]!.path);
+    const root = roots.find((candidate) => isPathWithinRoot(normalizeWorkspaceTreePath(candidate.path, null), path));
+    if (root) {
+      setActiveRoot(root.path);
+      const rootPath = normalizeWorkspaceTreePath(root.path, null);
+      setExpanded((previous) => {
+        const next = new Set(previous);
+        let parent = path.slice(0, path.lastIndexOf("/"));
+        while (parent && parent !== rootPath && isPathWithinRoot(rootPath, parent)) {
+          next.add(parent);
+          parent = parent.slice(0, parent.lastIndexOf("/"));
+        }
+        return next;
+      });
+    }
+    setActiveItemPath(path);
+  }, [revealRequest, roots, changes.workspaceRoot]);
+
+  useEffect(() => {
+    for (const path of expanded) {
+      if (!childrenByPath[path] && !loadingPaths.has(path) && !attemptedPaths.has(path)) void loadDir(path);
+    }
+  }, [expanded, childrenByPath, loadingPaths, attemptedPaths, loadDir]);
+
+  const focusedSelectionTokenRef = useRef(0);
+  useEffect(() => {
+    if (!focusSelectedToken || focusedSelectionTokenRef.current === focusSelectedToken) return;
+    const path = selectedPath ? normalizeWorkspaceTreePath(selectedPath, changes.workspaceRoot ?? roots.find((root) => root.isDefault)?.path ?? roots[0]?.path ?? null) : flatNodes[0]?.path;
+    const row = path ? itemRefs.current.get(path) : undefined;
+    if (row) { focusedSelectionTokenRef.current = focusSelectedToken; row.focus(); }
+  }, [focusSelectedToken, selectedPath, flatNodes, roots, changes.workspaceRoot]);
+
+  const scrolledRevealRef = useRef<FileWorkspaceReveal | null>(null);
+  useEffect(() => {
+    if (!revealRequest || (scrolledRevealRef.current?.token === revealRequest.token && scrolledRevealRef.current.path === revealRequest.path)) return;
+    const path = normalizeWorkspaceTreePath(revealRequest.path, changes.workspaceRoot ?? roots.find((root) => root.isDefault)?.path ?? roots[0]?.path ?? null);
+    const row = itemRefs.current.get(path);
+    if (row) { scrolledRevealRef.current = revealRequest; row.scrollIntoView?.({ block: "nearest" }); }
+  }, [revealRequest, roots, flatNodes, changes.workspaceRoot]);
 
   const rovingPath = deriveRovingPath(activeItemPath, flatNodes);
+  const normalizedSelectedPath = selectedPath ? normalizeWorkspaceTreePath(selectedPath, changes.workspaceRoot ?? roots.find((root) => root.isDefault)?.path ?? roots[0]?.path ?? null) : null;
 
   // Move DOM focus only for keyboard-driven changes (roving tabindex).
   useEffect(() => {
@@ -332,7 +383,7 @@ function ProjectRootsBrowser({
         e.preventDefault();
         if (cur.isDir && expanded.has(cur.path)) {
           toggleFolder(cur.path); // expanded -> collapse
-        } else if (cur.parentPath !== activeRoot) {
+        } else if (cur.parentPath && cur.parentPath !== activeRoot) {
           focusPath(cur.parentPath); // else -> parent (activeRoot isn't a treeitem)
         }
         break;
@@ -340,7 +391,7 @@ function ProjectRootsBrowser({
       case " ":
         e.preventDefault();
         if (cur.isDir) toggleFolder(cur.path);
-        else onOpenFile(cur.path);
+        else onOpenFile(cur.path, cur.file, activeRoot ?? undefined);
         break;
       case "Home":
         e.preventDefault();
@@ -498,128 +549,48 @@ function ProjectRootsBrowser({
     void loadDir(path);
   };
 
-  const renderEntries = (path: string, depth: number): ReactElement => {
-    const entries = childrenByPath[path] ?? [];
+  const renderEntries = (path: string, depth: number, entries: WorkspaceTreeNode[]): ReactElement => {
     const childPad = 8 + depth * 12;
-    // Child-folder listing states (the active root's own loading/error is handled
-    // one level up so the role=tree wrapper is always present).
-    if (depth > 0 && loadingPaths.has(path) && entries.length === 0) {
-      return (
-        <div
-          role="presentation"
-          className="flex h-7 items-center gap-1 text-[11px] text-muted-foreground"
-          style={{ paddingLeft: childPad }}
-          data-testid="chat-side-panel-fs-child-loading"
-        >
-          {t("chatPreviewRail.filePreviewLoading")}
-        </div>
-      );
-    }
-    if (depth > 0 && errorByPath[path]) {
-      return (
-        <button
-          type="button"
-          className="flex h-7 w-full items-center gap-1 text-left text-[11px] text-destructive hover:underline"
-          style={{ paddingLeft: childPad }}
-          data-testid="chat-side-panel-fs-child-error"
-          onClick={() => retryDir(path)}
-        >
-          {t("chatPreviewRail.dirLoadError")} · {t("common.retry")}
-        </button>
-      );
-    }
-    if (entries.length === 0 && attemptedPaths.has(path) && !loadingPaths.has(path) && !errorByPath[path]) {
-      return (
-        <div
-          role="presentation"
-          className="flex h-7 items-center text-[11px] italic text-muted-foreground"
-          style={{ paddingLeft: childPad }}
-          data-testid="chat-side-panel-fs-empty"
-        >
-          {t("chatPreviewRail.dirEmpty")}
-        </div>
-      );
-    }
-    return (
-    <>
+    if (depth > 0 && loadingPaths.has(path) && entries.length === 0) return <div role="presentation" className="flex h-7 items-center text-[11px] text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-child-loading">{t("chatPreviewRail.filePreviewLoading")}</div>;
+    if (depth > 0 && errorByPath[path]) return <button type="button" className="flex h-7 w-full items-center text-left text-[11px] text-destructive" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-child-error" onClick={() => retryDir(path)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button>;
+    if (entries.length === 0 && attemptedPaths.has(path) && !loadingPaths.has(path) && !errorByPath[path]) return <div role="presentation" className="flex h-7 items-center text-[11px] italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-empty">{t("chatPreviewRail.dirEmpty")}</div>;
+    return <>
       {entries.map((entry, index) => {
         const isDir = entry.type === "directory";
         const isOpen = expanded.has(entry.path);
-        const opened = !isDir && entry.path === selectedPath;
-        const isActiveItem = entry.path === rovingPath;
-        return (
-          <div key={entry.path}>
-                <div
-                  ref={(el) => {
-                    if (el) itemRefs.current.set(entry.path, el);
-                    else itemRefs.current.delete(entry.path);
-                  }}
-                  role="treeitem"
-                  aria-expanded={isDir ? isOpen : undefined}
-                  // APG tree pattern: aria-selected reflects SELECTION (the
-                  // opened file), not roving keyboard focus. Focus is carried
-                  // separately by the roving tabindex below, so a screen reader
-                  // announces the opened file — not merely the arrow-key cursor
-                  // position — as "selected". Non-opened rows omit the attribute.
-                  aria-selected={opened ? true : undefined}
-                  aria-level={depth + 1}
-                  aria-setsize={entries.length}
-                  aria-posinset={index + 1}
-                  tabIndex={isActiveItem ? 0 : -1}
-                  data-testid={isDir ? "chat-side-panel-fs-folder" : "chat-side-panel-fs-file"}
-                  className={`flex h-7 w-full min-w-0 cursor-pointer items-center gap-1 rounded-md pr-2 text-left text-xs outline-none hover:bg-muted/(--opacity-muted) focus-visible:ring-1 focus-visible:ring-ring ${
-                    opened ? "bg-accent text-accent-foreground" : ""
-                  }`}
-                  style={{ paddingLeft: 8 + depth * 12 }}
-                  onClick={() => {
-                    setActiveItemPath(entry.path);
-                    if (isDir) toggleFolder(entry.path);
-                    else onOpenFile(entry.path);
-                  }}
-                  onContextMenu={(event) => openNativeContextMenu(event, "workspace-entry", {
-                    "workspace.open": () => (
-                      isDir ? toggleFolder(entry.path) : onOpenFile(entry.path)
-                    ),
-                    "workspace.reveal": () => void revealEntry(entry.path),
-                    "workspace.copy-path": () =>
-                      void navigator.clipboard?.writeText(entry.path),
-                    "workspace.copy-relative-path": () =>
-                      void navigator.clipboard?.writeText(
-                        toRelativePath(activeRoot, entry.path),
-                      ),
-                  })}
-                >
-                  {isDir ? (
-                    isOpen ? (
-                      <ChevronDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    ) : (
-                      <ChevronRight className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                    )
-                  ) : (
-                    createElement(fileIcon(entry.name), {
-                      className: "h-3.5 w-3.5 shrink-0 text-muted-foreground",
-                    })
-                  )}
-                  <span className="min-w-0 flex-1 truncate">{entry.name}</span>
-                </div>
-            {isDir && isOpen ? <div role="group">{renderEntries(entry.path, depth + 1)}</div> : null}
+        const opened = !isDir && entry.path === normalizedSelectedPath;
+        const incompleteStatusKey = incompleteToolStatusLabelKey(entry.file?.status);
+        return <div key={entry.path}>
+          <div ref={(el) => { if (el) itemRefs.current.set(entry.path, el); else itemRefs.current.delete(entry.path); }}
+            role="treeitem" aria-expanded={isDir ? isOpen : undefined} aria-selected={opened ? true : undefined}
+            aria-level={depth + 1} aria-setsize={entries.length} aria-posinset={index + 1} tabIndex={entry.path === rovingPath ? 0 : -1}
+            data-testid={isDir ? "chat-side-panel-fs-folder" : "chat-side-panel-fs-file"}
+            className={cn("flex h-7 w-full min-w-0 cursor-pointer items-center gap-1.5 rounded-md pr-2 text-left text-xs outline-none hover:bg-muted/(--opacity-muted) focus-visible:ring-1 focus-visible:ring-ring", opened && FILE_CHANGE_SELECTED_CLASS)}
+            style={{ paddingLeft: `min(${childPad}px, 14%)` }}
+            onFocus={() => setActiveItemPath(entry.path)}
+            onClick={() => { setActiveItemPath(entry.path); if (isDir) toggleFolder(entry.path); else onOpenFile(entry.path, entry.file, activeRoot ?? undefined); }}
+            onContextMenu={(event) => openNativeContextMenu(event, "workspace-entry", {
+              "workspace.open": () => isDir ? toggleFolder(entry.path) : onOpenFile(entry.path, entry.file, activeRoot ?? undefined),
+              "workspace.reveal": () => void revealEntry(entry.path),
+              "workspace.copy-path": () => void navigator.clipboard?.writeText(entry.path),
+              "workspace.copy-relative-path": () => void navigator.clipboard?.writeText(toRelativePath(activeRoot, entry.path)),
+            })}>
+            {isDir ? isOpen ? <ChevronDown className="h-3 w-3 shrink-0 text-muted-foreground" /> : <ChevronRight className="h-3 w-3 shrink-0 text-muted-foreground" /> : createElement(fileIcon(entry.name), { className: "h-3 w-3 shrink-0 text-muted-foreground" })}
+            <span className={cn("min-w-0 flex-1 truncate", entry.change?.operation === "delete" && "text-muted-foreground line-through")}>{entry.name}</span>
+            {entry.session && !isDir ? <span data-testid="chat-side-panel-file-session-badge" className={cn("shrink-0 rounded px-1 text-[10.5px] font-medium", SESSION_FILE_BADGE_CLASS)}>{t("chatPreviewRail.sessionFileBadge")}</span> : null}
+            {incompleteStatusKey && !isDir ? <span data-testid="chat-side-panel-file-state" className="shrink-0 text-[10.5px] text-muted-foreground">{t(incompleteStatusKey)}</span> : null}
+            {entry.change && !isDir ? <>
+              <span className="shrink-0 font-mono text-[11px]" data-testid="chat-side-panel-file-change-counts"><span className={FILE_CHANGE_ADDED_CLASS}>+{entry.change.countsKnown ? entry.change.added : "—"}</span>{" "}<span className={FILE_CHANGE_REMOVED_CLASS}>−{entry.change.countsKnown ? entry.change.removed : "—"}</span></span>
+              <span title={t("chatPreviewRail.fileOperation." + entry.change.operation)} data-testid="chat-side-panel-file-change-operation" className={cn("flex size-4 shrink-0 items-center justify-center rounded text-[10px] font-semibold", fileChangeBadgeClass(entry.change.operation))}>{fileChangeLetter(entry.change.operation)}</span>
+            </> : null}
+            {isDir && entry.changedDescendants > 0 && (filter === "all" || !isOpen) ? <span data-testid="chat-side-panel-folder-changes" aria-label={t("chatPreviewRail.changedDescendants", { count: entry.changedDescendants })} className={cn("min-w-4 shrink-0 rounded-full px-1 text-center text-[10.5px] font-semibold", FILE_CHANGE_FOLDER_BADGE_CLASS)}>{entry.changedDescendants}</span> : null}
           </div>
-        );
+          {isDir && isOpen ? <div role="group">{renderEntries(entry.path, depth + 1, entry.children)}</div> : null}
+        </div>;
       })}
-      {truncatedPaths.has(path) ? (
-        <div
-          role="presentation"
-          className="flex h-6 items-center text-[11px] italic text-muted-foreground"
-          style={{ paddingLeft: childPad }}
-          data-testid="chat-side-panel-fs-truncated"
-        >
-          {t("chatPreviewRail.dirTruncated")}
-        </div>
-      ) : null}
-    </>
-    );
+      {truncatedPaths.has(path) ? <div role="presentation" className="flex h-6 items-center text-[11px] italic text-muted-foreground" style={{ paddingLeft: childPad }} data-testid="chat-side-panel-fs-truncated">{t("chatPreviewRail.dirTruncated")}</div> : null}
+    </>;
   };
-
   return (
     // Drag-drop add-root (#1458): a dropped folder resolves to a renderer-named
     // candidate path (preload webUtils bridge) that main-side dropPrepare
@@ -789,105 +760,26 @@ function ProjectRootsBrowser({
           </div>
         </div>
       ) : null}
-      {activeRoot ? (
-        loadingPaths.has(activeRoot) && !childrenByPath[activeRoot] ? (
-          <div className="px-2 py-1 text-[11px] text-muted-foreground">{t("chatPreviewRail.filePreviewLoading")}</div>
-        ) : errorByPath[activeRoot] ? (
-          <button
-            type="button"
-            className="flex w-full items-center gap-1 px-2 py-1 text-left text-[11px] text-destructive hover:underline"
-            data-testid="chat-side-panel-fs-error"
-            onClick={() => retryDir(activeRoot)}
-          >
-            {t("chatPreviewRail.dirLoadError")} · {t("common.retry")}
-          </button>
-        ) : (
-          <div role="tree" aria-label={t("chatPreviewRail.projectRoots")} onKeyDown={onTreeKeyDown}>
-            {renderEntries(activeRoot, 0)}
-          </div>
-        )
-      ) : (
-        <div
-          className="flex flex-col items-start gap-2 px-2 py-3 text-[11px] text-muted-foreground"
-          data-testid="chat-side-panel-roots-empty"
-        >
+      <div role="tree" aria-label={t("chatPreviewRail.projectRoots")} onKeyDown={onTreeKeyDown}>
+        {activeRoot ? <>
+          {loadingPaths.has(activeRoot) && !childrenByPath[activeRoot] ? <div className="px-2 py-1 text-[11px] text-muted-foreground">{t("chatPreviewRail.filePreviewLoading")}</div> : errorByPath[activeRoot] ? <button type="button" className="flex w-full items-center gap-1 px-2 py-1 text-left text-[11px] text-destructive hover:underline" data-testid="chat-side-panel-fs-error" onClick={() => retryDir(activeRoot)}>{t("chatPreviewRail.dirLoadError")} · {t("common.retry")}</button> : null}
+          {renderEntries(activeRoot, 0, tree.nodes)}
+        </> : <div className="flex flex-col items-start gap-2 px-2 py-3 text-[11px] text-muted-foreground" data-testid="chat-side-panel-roots-empty">
           <p>{t("chatPreviewRail.projectRootsEmpty")}</p>
-          <Button type="button" size="sm" variant="outline" onClick={() => void addFolder()}>
-            <FolderPlus className="h-3.5 w-3.5" />
-            {t("chatPreviewRail.addProjectRoot")}
-          </Button>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/** The badge a changed file wears: the change, not the tool. */
-function fileChangeBadgeClass(operation: WorkspaceFileItem["operation"]): string {
-  if (operation === "create") return "bg-success/(--opacity-faint) text-success";
-  if (operation === "delete") return "bg-destructive/(--opacity-faint) text-destructive";
-  return "bg-primary/(--opacity-faint) text-primary";
-}
-
-/**
- * The file tab's changed-files list: a flat list, latest change first, each
- * row saying what happened to the file. A tree answers "where is it"; this
- * answers "what did the session do".
- */
-function ChangedFileRows({
-  files,
-  selectedFileId,
-  onSelectFile,
-}: {
-  files: WorkspaceFileItem[];
-  selectedFileId?: string;
-  onSelectFile: (file: WorkspaceFileItem) => void;
-}) {
-  const { t } = useTranslation();
-  if (files.length === 0) return <EmptyState>{t("chatPreviewRail.noFiles")}</EmptyState>;
-  return (
-    <div className="space-y-1" data-testid="chat-side-panel-file-changes">
-      {files.map((file) => {
-        const incompleteStatusKey = incompleteToolStatusLabelKey(file.status);
-        return (
-          <button
-            key={file.id}
-            type="button"
-            data-testid="chat-side-panel-file-change-row"
-            title={`${file.detail} · ${file.sourceLabel}`}
-            className={cn(
-              "flex w-full min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs hover:bg-muted/(--opacity-muted)",
-              file.id === selectedFileId ? "bg-accent text-accent-foreground" : "",
-            )}
-            onClick={() => onSelectFile(file)}
-          >
-            <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-            <span className="min-w-0 flex-1">
-              <span className="block truncate font-medium">{file.label}</span>
-              <span className="block truncate text-[10.5px] text-muted-foreground">{file.detail}</span>
-            </span>
-            <span
-              data-testid="chat-side-panel-file-change-operation"
-              className={cn("shrink-0 rounded px-1.5 py-0.5 text-[10px]", incompleteStatusKey
-                ? statusTone(file.status)
-                : fileChangeBadgeClass(file.operation))}
-            >
-              {t(incompleteStatusKey ?? `chatPreviewRail.fileOperation.${file.operation}`)}
-            </span>
-          </button>
-        );
-      })}
+          <Button type="button" size="sm" variant="outline" onClick={() => void addFolder()}><FolderPlus className="h-3.5 w-3.5" />{t("chatPreviewRail.addProjectRoot")}</Button>
+        </div>}
+        {tree.outsideNodes.length > 0 ? <div className="mt-2 border-t border-border pt-2" data-testid="chat-side-panel-outside-project">
+          <div role="presentation" className="px-2 pb-1 text-[11px] font-medium text-muted-foreground">{t("chatPreviewRail.outsideProject")}</div>
+          {renderEntries("", 0, tree.outsideNodes)}
+        </div> : null}
+      </div>
     </div>
   );
 }
 
 export function FileBrowserWorkspace({
-  api,
-  sessionId,
-  files,
-  targetById,
-  selectedId,
-  onSelect,
+  api, sessionId, files, targetById, selectedId, onSelect,
+  changes: providedChanges, revealRequest, onReference, onFileReference,
 }: {
   api: AveApi;
   sessionId?: string;
@@ -895,214 +787,118 @@ export function FileBrowserWorkspace({
   targetById: Map<string, ChatPreviewTarget>;
   selectedId: string | null;
   onSelect: (id: string) => void;
+  changes?: WorkspaceChanges;
+  revealRequest?: FileWorkspaceReveal | null;
+  onReference?: (reference: FileMentionReference) => void;
+  onFileReference?: (path: string) => void;
 }) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
-  const { topPercent, setTopPercent, commitTopPercent } = useVerticalSplit(api, "sidePanelSplitFilePercent");
-  // A concrete filesystem file opened from the project-roots browser. Takes
-  // precedence over the session-artifact selection in the detail pane.
+  const [filter, setFilter] = useState<WorkspaceFileFilter>("all");
   const [fsPath, setFsPath] = useState<string | null>(null);
-  // Which source the TOP pane shows: the project directory tree or this
-  // chat's session artifacts. A segment toggle, not vertical stacking, so the
-  // session list is not squeezed into a sliver. This is a SOURCE
-  // switch on the horizontal axis — orthogonal to the top/bottom split axis
-  // above, so the two never fight.
-  const [fileSource, setFileSource] = useState<"directory" | "session" | "changed">("directory");
-  const sessionFileCount = files.length;
-  const hasSessionFiles = sessionFileCount > 0;
-  const tree = useMemo(() => filterFileTree(buildFileTree(files), query), [files, query]);
-  const filteredFiles = useMemo(
-    () => files.filter((file) => matchesQuery(query, file.label, file.detail, file.path, file.sourceLabel)),
-    [files, query],
-  );
-  // The files this session created, modified, deleted or moved — the model
-  // lists them oldest first and re-appends a file on each change, so reading
-  // it backwards puts the latest change on top.
-  const changedFiles = useMemo(
-    () => filteredFiles.filter((file) => isFileChangeOperation(file.operation)).reverse(),
-    [filteredFiles],
-  );
-  const changedFileCount = useMemo(() => files.filter((file) => isFileChangeOperation(file.operation)).length, [files]);
-  // A segment is disabled with zero files; snap back to directory so a
-  // previously-selected-but-now-empty source can't strand an empty pane.
-  const effectiveSource =
-    fileSource === "session" && hasSessionFiles ? "session"
-      : fileSource === "changed" && changedFileCount > 0 ? "changed"
-        : "directory";
-  const selectedFile = useMemo(
-    () => filteredFiles.find((file) => file.previewTargetId === selectedId) ?? filteredFiles[0] ?? null,
-    [filteredFiles, selectedId],
-  );
-  const selectedFileTarget = selectedFile?.previewTargetId ? targetById.get(selectedFile.previewTargetId) ?? null : null;
-  const hasFiles = filteredFiles.length > 0;
-  const fsTarget = useMemo<Extract<ChatPreviewTarget, { kind: "file" }> | null>(() => {
-    if (!fsPath) return null;
-    return {
-      id: `fs:${fsPath}`,
-      kind: "file",
-      title: fileBasename(fsPath),
-      sourceLabel: "workspace",
-      createdOrder: Number.MAX_SAFE_INTEGER,
-      path: fsPath,
-      // Not in the attach allow-list, so the OS "open" button would be denied —
-      // keep it off; content still loads through the preview IPC.
-      canOpenExternal: false,
-    };
-  }, [fsPath]);
-  // The target the bottom pane shows (a directory pick wins over the session row).
-  const detailTarget = fsTarget ?? selectedFileTarget;
-
-  useEffect(() => {
-    if (selectedFile?.previewTargetId && selectedFile.previewTargetId !== selectedId) {
-      onSelect(selectedFile.previewTargetId);
+  const [fsRoot, setFsRoot] = useState<string | null>(null);
+  const [detailVisible, setDetailVisible] = useState(false);
+  const [focusSelectedToken, setFocusSelectedToken] = useState(0);
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  const treeRef = useRef<HTMLDivElement | null>(null);
+  const { width } = useMeasuredSize(containerRef);
+  const narrow = width < FILE_WORKSPACE_COLUMNS_MIN_WIDTH;
+  const { treeWidth, setTreeWidth, commitTreeWidth } = useFileTreeWidth(api);
+  const maxTreeWidth = Math.max(FILE_TREE_MIN_WIDTH, Math.min(FILE_TREE_MAX_WIDTH, width - 269));
+  const actualTreeWidth = Math.min(treeWidth, maxTreeWidth);
+  const resize = useEdgeResize({ width: actualTreeWidth, edge: "end", min: FILE_TREE_MIN_WIDTH, max: maxTreeWidth,
+    onWidthChange: setTreeWidth, onWidthCommit: commitTreeWidth });
+  const changes = useMemo(() => providedChanges ?? deriveWorkspaceChanges({ files, targets: [...targetById.values()], review: null }), [providedChanges, files, targetById]);
+  const selectedFile = files.find((file) => file.previewTargetId === selectedId);
+  const selectedPath = fsPath ?? selectedFile?.path ?? null;
+  const selectedChange = selectedPath ? changes.changedFiles.find((change) => change.path === selectedPath || change.displayPath === selectedPath) : undefined;
+  const selectedTarget = selectedChange?.file?.previewTargetId ? targetById.get(selectedChange.file.previewTargetId) : selectedFile?.previewTargetId ? targetById.get(selectedFile.previewTargetId) : undefined;
+  const previewTarget = useMemo<ChatPreviewTarget | null>(() => {
+    if (!selectedPath) return selectedTarget ?? null;
+    const root = fsRoot ?? changes.workspaceRoot;
+    const normalized = workspaceFilePath(selectedPath, root);
+    const normalizedRoot = root ? normalizeWorkspaceTreePath(root, null) : undefined;
+    const previewRoot = normalizedRoot && isPathWithinRoot(normalizedRoot, normalized) ? normalizedRoot
+      : /^(?:\/|[A-Za-z]:\/)/.test(normalized) ? normalized.slice(0, normalized.lastIndexOf("/")) || "/" : undefined;
+    if (selectedTarget?.kind === "file"
+      && workspaceFilePath(selectedTarget.path, selectedTarget.workspaceRoot ?? root) === normalized) {
+      return { ...selectedTarget, path: normalized, ...(previewRoot ? { workspaceRoot: previewRoot } : {}) };
     }
-  }, [onSelect, selectedFile, selectedId]);
-
-  return (
-    <div className="flex h-full min-h-0 w-full min-w-0 flex-col overflow-hidden" data-testid="chat-side-panel-file-browser">
-      {/*
-        The search box filters ONLY the session-artifact list (filteredFiles /
-        tree); the Directory source (ProjectRootsBrowser) has no query wiring, so
-        showing it there is a dead affordance. Render it only for the Session
-        segment so there is no no-op search control.
-      */}
-      {effectiveSource !== "directory" ? (
+    return { id: `fs:${normalized}`, kind: "file", title: fileBasename(normalized), sourceLabel: "workspace",
+      createdOrder: Number.MAX_SAFE_INTEGER, path: normalized, ...(previewRoot ? { workspaceRoot: previewRoot } : {}), canOpenExternal: false };
+  }, [selectedPath, selectedTarget, fsRoot, changes.workspaceRoot]);
+  const openFile = useCallback((path: string, matchedFile?: WorkspaceFileItem, root?: string) => {
+    changes.onRefresh?.();
+    setFsPath(path);
+    const normalizedRoot = root ? normalizeWorkspaceTreePath(root, null) : null;
+    setFsRoot(normalizedRoot && isPathWithinRoot(normalizedRoot, path) ? normalizedRoot : null);
+    const sessionFile = matchedFile ?? files.find((file) => workspaceFilePath(file.path) === workspaceFilePath(path));
+    if (sessionFile?.previewTargetId) onSelect(sessionFile.previewTargetId);
+    setDetailVisible(true);
+    requestAnimationFrame(() => detailRef.current?.focus());
+  }, [files, onSelect, changes.onRefresh]);
+  const appliedRevealRef = useRef<FileWorkspaceReveal | null>(null);
+  useEffect(() => {
+    if (!revealRequest) providedChanges?.onRefresh?.();
+  }, [providedChanges?.onRefresh, sessionId, revealRequest]);
+  useEffect(() => { setFsPath(null); setFsRoot(null); setQuery(""); setFilter("all"); setDetailVisible(false); }, [sessionId]);
+  useEffect(() => {
+    if (!revealRequest || (appliedRevealRef.current?.token === revealRequest.token && appliedRevealRef.current.path === revealRequest.path)) return;
+    appliedRevealRef.current = revealRequest;
+    changes.onRefresh?.();
+    setQuery("");
+    setFilter("changed");
+    const revealed = changes.changedFiles.find((change) => change.path === revealRequest.path || change.displayPath === revealRequest.path);
+    setFsPath(revealed?.path ?? revealRequest.path);
+    setFsRoot(changes.review?.workspaceRoot ?? null);
+    if (revealed?.file?.previewTargetId) onSelect(revealed.file.previewTargetId);
+    setDetailVisible(false);
+  }, [revealRequest, changes.changedFiles, changes.onRefresh, onSelect]);
+  const goBack = () => { setDetailVisible(false); setFocusSelectedToken((token) => token + 1); };
+  const focusTree = () => {
+    const row = treeRef.current?.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]') ?? treeRef.current?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]');
+    row?.focus();
+  };
+  return <div ref={containerRef} className="flex h-full min-h-0 w-full min-w-0 overflow-hidden" data-testid="chat-side-panel-file-browser" data-file-layout={narrow ? "single" : "columns"}>
+    <div ref={treeRef} className={cn("min-h-0 min-w-0 shrink-0 flex-col overflow-hidden", narrow && detailVisible ? "hidden" : "flex")}
+      style={{ width: narrow ? "100%" : actualTreeWidth }} data-testid="chat-side-panel-file-tree">
+      <div className="shrink-0 space-y-2 p-2">
         <SearchInput query={query} setQuery={setQuery} placeholder={t("chatPreviewRail.searchPlaceholder")} />
-      ) : null}
-      <VerticalSplitLayout
-        topPercent={topPercent}
-        onDragChange={setTopPercent}
-        onCommit={commitTopPercent}
-        ariaLabel={t("chatPreviewRail.resizeFilePanels")}
-        testId="chat-side-panel-file-split-layout"
-        separatorTestId="chat-side-panel-file-splitter"
-        top={
-          <div className="flex min-h-0 flex-col" data-testid="chat-side-panel-file-tree">
-            {/*
-              R3 segment toggle: pick the top pane's source (project directory
-              vs session artifacts) instead of stacking both. Only the chosen
-              source occupies the whole pane, so the session list is no longer
-              squeezed. The session segment is disabled when the chat has no
-              artifacts yet.
-            */}
-            <div
-              role="group"
-              aria-label={t("chatPreviewRail.fileSourceLabel")}
-              className="flex shrink-0 items-center gap-1 border-b px-1 py-0.5"
-              data-testid="chat-side-panel-file-source-segment"
-            >
-              <button
-                type="button"
-                aria-pressed={effectiveSource === "directory"}
-                data-testid="chat-side-panel-file-source-directory"
-                className={cn(
-                  "flex h-6 flex-1 items-center justify-center gap-1 rounded-md px-2 text-[11px] font-medium",
-                  effectiveSource === "directory"
-                    ? "bg-primary/(--opacity-subtle) text-primary"
-                    : "text-muted-foreground hover:bg-muted/(--opacity-muted) hover:text-foreground",
-                )}
-                onClick={() => setFileSource("directory")}
-              >
-                <Folder className="h-3.5 w-3.5" aria-hidden="true" />
-                {t("chatPreviewRail.fileSourceDirectory")}
-              </button>
-              <button
-                type="button"
-                aria-pressed={effectiveSource === "session"}
-                disabled={!hasSessionFiles}
-                data-testid="chat-side-panel-file-source-session"
-                className={cn(
-                  "flex h-6 flex-1 items-center justify-center gap-1 rounded-md px-2 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-(--opacity-half)",
-                  effectiveSource === "session"
-                    ? "bg-primary/(--opacity-subtle) text-primary"
-                    : "text-muted-foreground hover:bg-muted/(--opacity-muted) hover:text-foreground",
-                )}
-                onClick={() => setFileSource("session")}
-              >
-                <FileText className="h-3.5 w-3.5" aria-hidden="true" />
-                {t("chatPreviewRail.fileSourceSession")}
-                <Badge variant="outline" className="px-1 py-0 text-[10px]" data-testid="chat-side-panel-file-source-session-count">
-                  {sessionFileCount}
-                </Badge>
-              </button>
-              <button
-                type="button"
-                aria-pressed={effectiveSource === "changed"}
-                disabled={changedFileCount === 0}
-                data-testid="chat-side-panel-file-source-changed"
-                className={cn(
-                  "flex h-6 flex-1 items-center justify-center gap-1 rounded-md px-2 text-[11px] font-medium disabled:cursor-not-allowed disabled:opacity-(--opacity-half)",
-                  effectiveSource === "changed"
-                    ? "bg-primary/(--opacity-subtle) text-primary"
-                    : "text-muted-foreground hover:bg-muted/(--opacity-muted) hover:text-foreground",
-                )}
-                onClick={() => setFileSource("changed")}
-              >
-                <FilePenLine className="h-3.5 w-3.5" aria-hidden="true" />
-                {t("chatPreviewRail.fileSourceChanged")}
-                <Badge variant="outline" className="px-1 py-0 text-[10px]" data-testid="chat-side-panel-file-source-changed-count">
-                  {changedFileCount}
-                </Badge>
-              </button>
-            </div>
-            <div className="min-h-0 flex-1 overflow-auto p-2">
-              {effectiveSource === "directory" ? (
-                <ProjectRootsBrowser
-                  selectedPath={fsPath}
-                  onOpenFile={(path) => {
-                    setFsPath(path);
-                  }}
-                />
-              ) : effectiveSource === "changed" ? (
-                <ChangedFileRows
-                  files={changedFiles}
-                  selectedFileId={fsPath ? undefined : selectedFile?.id}
-                  onSelectFile={(file) => {
-                    setFsPath(null);
-                    if (file.previewTargetId) onSelect(file.previewTargetId);
-                  }}
-                />
-              ) : hasFiles && tree.length > 0 ? (
-                <FileTreeRows
-                  nodes={tree}
-                  selectedFileId={fsPath ? undefined : selectedFile?.id}
-                  onSelectFile={(file) => {
-                    setFsPath(null);
-                    if (file.previewTargetId) onSelect(file.previewTargetId);
-                  }}
-                />
-              ) : (
-                <EmptyState>{t("chatPreviewRail.noFiles")}</EmptyState>
-              )}
-            </div>
-          </div>
-        }
-        bottom={
-          <div className={detailTarget && previewFillsPanel(detailTarget) ? "flex min-h-full flex-col p-3" : "min-h-0 p-3"}>
-            {fsTarget ? (
-              <PreviewDetail api={api} sessionId={sessionId} target={fsTarget} />
-            ) : selectedFileTarget ? (
-              <PreviewDetail api={api} sessionId={sessionId} target={selectedFileTarget} />
-            ) : selectedFile ? (
-              <div className="space-y-3">
-                <div className="flex min-w-0 items-center gap-2">
-                  <File className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                  <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">{selectedFile.label}</h3>
-                </div>
-                <div className="rounded-md border bg-muted/(--opacity-muted) px-3 py-2 font-mono text-[11px] [overflow-wrap:anywhere]">
-                  {selectedFile.path}
-                </div>
-                <div className="text-[11px] text-muted-foreground">{t("chatPreviewRail.pathOnlyHint")}</div>
-              </div>
-            ) : (
-              <div className="text-xs text-muted-foreground">{t("chatPreviewRail.emptyState")}</div>
-            )}
-          </div>
-        }
-      />
+        <div role="group" aria-label={t("chatPreviewRail.fileFilterLabel")} className="flex gap-0.5 rounded-lg bg-muted p-0.5">
+          {(["all", "changed", "session"] as const).map((value) => <button key={value} type="button" aria-pressed={filter === value}
+            data-testid={`chat-side-panel-file-filter-${value}`} onClick={() => setFilter(value)}
+            className={cn("h-7 min-w-0 flex-1 rounded-md px-1 text-[11px] font-medium outline-none focus-visible:ring-2 focus-visible:ring-ring", filter === value ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground")}>
+            {t(value === "all" ? "chatPreviewRail.fileFilterAll" : value === "changed" ? "chatPreviewRail.fileFilterChanged" : "chatPreviewRail.fileFilterSession")}
+            {value !== "all" ? <span className="ml-1 tabular-nums">{value === "changed" ? changes.changedFiles.length : changes.sessionFiles.length}</span> : null}
+          </button>)}
+        </div>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2" onKeyDown={(event) => {
+        if (event.key === "F6" && previewTarget && !narrow) { event.preventDefault(); detailRef.current?.focus(); }
+      }}>
+        <ProjectRootsBrowser files={files} changes={changes} filter={filter} query={query} selectedPath={selectedPath}
+          onOpenFile={openFile} revealRequest={revealRequest} focusSelectedToken={focusSelectedToken} />
+      </div>
     </div>
-  );
+    {!narrow ? <div role="separator" aria-orientation="vertical" aria-label={t("chatPreviewRail.resizeFileColumns")} tabIndex={0}
+      aria-valuemin={FILE_TREE_MIN_WIDTH} aria-valuemax={Math.round(maxTreeWidth)} aria-valuenow={Math.round(actualTreeWidth)}
+      onPointerDown={resize.onPointerDown} onKeyDown={resize.onKeyDown} onDoubleClick={resize.makeResetHandler(FILE_TREE_DEFAULT_WIDTH)}
+      className="group flex w-[9px] shrink-0 cursor-col-resize items-stretch justify-center outline-none focus-visible:bg-accent"
+      data-testid="chat-side-panel-file-splitter"><div className="w-px bg-border group-hover:bg-ring group-focus-visible:bg-ring" /></div> : null}
+    <div ref={detailRef} tabIndex={-1} aria-label={t("chatPreviewRail.fileDetailLabel")}
+      className={cn("min-h-0 min-w-0 flex-1 flex-col overflow-hidden outline-none focus-visible:ring-1 focus-visible:ring-ring", narrow && !detailVisible ? "hidden" : "flex")}
+      data-testid="chat-side-panel-file-detail" onKeyDown={(event) => {
+        if (event.key === "F6") { event.preventDefault(); narrow ? goBack() : focusTree(); }
+      }}>
+      {narrow ? <button type="button" className="flex h-9 shrink-0 items-center gap-1 border-b border-border px-3 text-left text-xs text-primary" onClick={goBack} data-testid="chat-side-panel-file-back"><ArrowLeft className="h-3.5 w-3.5" />{t("chatPreviewRail.fileTreeBack")}</button> : null}
+      {selectedChange?.review && selectedChange.turnId && (selectedChange.review.referenceable || selectedChange.review.hunks.length > 0 || selectedChange.review.operation === "delete") ? <TurnChangeDetail file={selectedChange.review} turnId={selectedChange.turnId} onReference={onReference} onFileReference={onFileReference} />
+        : previewTarget ? <div className={cn("min-h-0 flex-1 overflow-auto p-3", previewFillsPanel(previewTarget) && "flex flex-col")}><PreviewDetail api={api} sessionId={sessionId} target={previewTarget} /></div>
+          : <EmptyState>{t("chatPreviewRail.emptyState")}</EmptyState>}
+    </div>
+  </div>;
 }
+
 
 export function PreviewWorkspace({
   api,

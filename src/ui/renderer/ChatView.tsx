@@ -14,7 +14,6 @@ import type { SideChatOpenRequest } from "./components/SideChatView.js";
 
 import { getApi } from "./api-client.js";
 import { useChatContext } from "./context/ChatContext.js";
-import type { AppMode } from "./MainToolbar.js";
 import { useInputStatusRow } from "./hooks/use-input-status-row.js";
 import { type ComposerHandle } from "./components/Composer.js";
 import { useSuggestedReplies } from "./hooks/use-suggested-replies.js";
@@ -33,6 +32,8 @@ import type { AgentPluginTemplatePrompt } from "../../shared/agent-plugin-prompt
 import type { ProjectIdentity } from "../../shared/project-identity.js";
 import { isTurnStartEntry } from "./utils/classify-turn-entries.js";
 import { collectChatPreviewModel, type ChatPreviewTarget } from "./preview/preview-targets.js";
+import { useWorkspaceChanges } from "./hooks/use-workspace-changes.js";
+import type { FileWorkspaceReveal } from "./preview/workspace-changes.js";
 import { useAgentDocumentPanel } from "./preview/use-agent-document-panel.js";
 import { useWorkspaceTabs } from "./preview/workspace-tabs.js";
 import { isMovableTabKind, registerSideTabsSink, useSurfaceMoves, type MovableTabKind } from "./preview/surface-moves.js";
@@ -52,7 +53,7 @@ import { interruptedTurnOffer } from "./utils/history.js";
 import { InterruptedTurnBanner } from "./components/InterruptedTurnBanner.js";
 import { SuggestedTasksPanel } from "./components/SuggestedTasksPanel.js";
 import type { SuggestedTask } from "./suggested-tasks/provider.js";
-import { useContainerNarrow } from "./hooks/use-container-narrow.js";
+import { sidePanelLayout, useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { CHAT_THUMBNAIL_WIDTH, chatColumnsLayout, type ChatColumnsVisibility } from "./preview/chat-columns-layout.js";
 import { ChatThumbnailColumn } from "./components/chat-thumbnail-column.js";
 import { SIDE_PANEL_MIN_RESERVE } from "../../shared/side-panel.js";
@@ -111,8 +112,6 @@ export interface ChatViewProps {
   /** Plugin list — surfaced inside the SlashPicker's plugin category. */
   plugins: PluginEntry[];
   onSelectPlugin: (viewKey: string) => void;
-  /** Workspace mode; chat mode compacts the footer model label. */
-  appMode?: AppMode;
   /** Opens the deferred approval queue dialog from the footer approval count. */
   onOpenApprovalQueue?: () => void;
   currentSessionKind?: "main" | "routine";
@@ -142,8 +141,6 @@ export interface ChatViewProps {
   onSessionsChanged?: (() => void | Promise<void>) | undefined;
   /** Use the window's hidden-card verdict so panel tabs and pane toggles show the same attention dot. */
   sideChatPendingAnswer?: boolean;
-  /** Constrain transcript and composer to a centered reading column. */
-  blogLayout?: boolean;
   /** Active project — drives the empty-state composer's project selector trigger label. */
   activeProject?: ProjectIdentity;
   /** Use the sidebar's project list so both selectors agree. */
@@ -155,7 +152,7 @@ export interface ChatViewProps {
 
 const SIDE_PANEL_LAYOUT_TRANSITION_MS = 300;
 
-export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, appMode = "work", onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, blogLayout = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
+export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEditSave, onFork, onReturnHere, onToggleStar, onRetryEffort, onContinueFromLastUser, isEntryStarred, onAbort, onGuide, onGuideError, onFeedback, subAgentSpawns, loadedSkills, hasAskQuestions, askQuestions, onResolveAskQuestion, approvalSentenceInterceptSubmit, pendingApprovals, plugins, onSelectPlugin, onOpenApprovalQueue, currentSessionKind = "main", currentSessionTitle, onLoadSession, commandActions, slashPickerOpen, onSlashPickerOpenChange, statusBar, onAttachmentWarning, thumbnailOpen = false, sidePanelOpen = false, onColumnsVisibilityChange, onSidePanelOpenChange, sideChatOpenRequest, onSessionsChanged, sideChatPendingAnswer = false, activeProject, workspaceProjects, onNewChatForProject, onRefreshProjects, onProjectError, chatGroupId }: ChatViewProps) {
   const { t } = useTranslation();
   const approvals = useApprovalSurface();
   const approvalHead = pendingApprovals[0] ?? null;
@@ -164,9 +161,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const composerRef = useRef<ComposerHandle | null>(null);
   const suggestedReplies = useSuggestedReplies();
   const suggestedRepliesActive = hasActiveSuggestedReplies(suggestedReplies);
-  const readingColumnClass = blogLayout
-    ? "mx-auto w-full max-w-(--reading-column-max) px-6 lg:px-8"
-    : "w-full max-w-full px-4";
+  const readingColumnClass = "chat-reading-column mx-auto w-full max-w-(--reading-column-max)";
   const {
     entries, streaming, editingEntryIdx, setEditingEntryIdx, editBusy,
     question, setQuestion, chatEndRef, currentSessionId, hidden,
@@ -190,16 +185,13 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   );
   // Offer new-chat controls only after readiness settles, with no pending request or suggestion ghost.
   const emptyConversation =
-    appMode === "work" &&
     hasAskQuestions === false &&
     visibleEntries.length === 0 &&
     hasApiKey !== null &&
     !suggestedRepliesActive &&
     viewMode === null;
   // Composer width follows layout, not emptiness, to avoid a jump on first send.
-  const dockColumnClass = blogLayout
-    ? "mx-auto w-full max-w-(--reading-column-max) min-w-0"
-    : "w-full max-w-full min-w-0";
+  const dockColumnClass = "chat-composer-column mx-auto w-full max-w-(--reading-column-max) min-w-0";
   // Close the project selector when its empty-state trigger unmounts.
   const [projectSelectorOpen, setProjectSelectorOpen] = useState(false);
   useEffect(() => {
@@ -209,9 +201,21 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const [openedDocuments, setOpenedDocuments] = useState<{ sessionId: string; targets: ChatPreviewTarget[] } | null>(null);
   const previewModel = useMemo(() => {
     const model = collectChatPreviewModel({ entries: visibleEntries, attachments });
-    if (openedDocuments?.sessionId === currentSessionId) model.targets.push(...openedDocuments.targets);
+    model.targets = model.targets.map((target) => target.kind === "file" && target.sourceTurnId !== undefined
+      ? { ...target, workspaceRoot: activeProject?.projectRoot }
+      : target);
+    if (openedDocuments?.sessionId === currentSessionId) {
+      const openedTargetIds = new Set(openedDocuments.targets.map((target) => target.id));
+      model.targets = model.targets.filter((target) => !openedTargetIds.has(target.id));
+      model.targets.push(...openedDocuments.targets);
+    }
     return model;
-  }, [attachments, visibleEntries, openedDocuments, currentSessionId]);
+  }, [attachments, visibleEntries, openedDocuments, currentSessionId, activeProject?.projectRoot]);
+  const reviewTurnKey = useMemo(() => visibleEntries.reduce((key, entry, index) =>
+    entry.kind === "user" && isTurnStartEntry(entry) ? entry.messageId ?? String(index) : key, ""), [visibleEntries]);
+  const workspaceChanges = useWorkspaceChanges({ api, sessionId: currentSessionId, streaming,
+    turnKey: reviewTurnKey, files: previewModel.files, targets: previewModel.targets, workspaceRoot: activeProject?.projectRoot });
+  const [fileReveal, setFileReveal] = useState<{ sessionId: string; request: FileWorkspaceReveal } | null>(null);
   const previewTargetIdKey = useMemo(
     () => previewModel.targets.map((target) => target.id).join("\u0001"),
     [previewModel.targets],
@@ -228,13 +232,19 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const [selectedPreviewId, setSelectedPreviewId] = useState<string | null>(null);
   // Keep workspace tabs in ChatView so closing the rail or navigating away does not destroy them.
   const workspaceTabs = useWorkspaceTabs();
+  const handleRevealChangedFile = useCallback((path: string) => {
+    workspaceTabs.ensureContainerTab("file-browser");
+    setFileReveal((previous) => ({ sessionId: currentSessionId, request: { path, token: (previous?.request.token ?? 0) + 1 } }));
+    onSidePanelOpenChange(true);
+  }, [workspaceTabs, currentSessionId, onSidePanelOpenChange]);
   const surfaceMoves = useSurfaceMoves();
   const { adoptTab, releaseTab, hasTab, setActiveTabId: selectWorkspaceTab } = workspaceTabs;
   const openSidePanelRef = useRef(onSidePanelOpenChange);
   openSidePanelRef.current = onSidePanelOpenChange;
   // Persist terminal directories and page addresses with the pane layout.
-  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab });
-  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab };
+  const savedTabsRef = useRef({ tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId });
+  savedTabsRef.current = { tabs: workspaceTabs.tabs, browserUrlByTab: workspaceTabs.browserUrlByTab, activeTabId: workspaceTabs.activeTabId };
+  const sidePanelVisibleRef = useRef(false);
   useEffect(() => {
     if (chatGroupId === undefined) return undefined;
     const unregister = registerSideTabsSink(chatGroupId, {
@@ -255,6 +265,11 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           tab.kind === "browser" ? webSurfaceLocation(tab.id) ?? browserUrlByTab[tab.id] ?? null : null,
         ));
       },
+      visibleTabId: () => {
+        if (!sidePanelVisibleRef.current) return null;
+        const { tabs, activeTabId } = savedTabsRef.current;
+        return (tabs.find((tab) => tab.id === activeTabId) ?? tabs[0])?.id ?? null;
+      },
     });
     for (const tab of takeRestoredSideTabs(chatGroupId)) adoptTab({ id: tab.tabId, kind: tab.kind, ordinal: tab.ordinal }, tab.url);
     return () => {
@@ -264,9 +279,6 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     };
   }, [chatGroupId, adoptTab, releaseTab, hasTab, selectWorkspaceTab]);
   const savedTabsKey = workspaceTabs.tabs.filter((tab) => isMovableTabKind(tab.kind)).map((tab) => `${tab.id}=${workspaceTabs.browserUrlByTab[tab.id] ?? ""}`).join("|");
-  useEffect(() => {
-    emitMainLayoutChange();
-  }, [savedTabsKey]);
   const seenSubAgentSpawnKeysRef = useRef<Set<string>>(new Set());
   // Keep persisted panel width beside the tab store so it survives panel unmount.
   const {
@@ -276,19 +288,31 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   } = usePanelWidth(api, SIDE_PANEL_WIDTH_PREF);
   // Measure both optional columns so hiding one cannot change the visibility decision.
   const chatViewRootRef = useRef<HTMLDivElement | null>(null);
+  const [chatViewRootElement, setChatViewRootElement] = useState<HTMLDivElement | null>(null);
+  const handleChatViewRootRef = useCallback((element: HTMLDivElement | null) => {
+    chatViewRootRef.current = element;
+    setChatViewRootElement(element);
+  }, []);
   const dockedPanelMotionRef = useRef<HTMLDivElement | null>(null);
   const panelSlot = usePanePanelSlot();
   const inFrame = panelSlot !== null;
   const panelHost = panelSlot?.panel ?? null;
   const tileElement = panelSlot?.tile ?? null;
-  const tileRef = useMemo(() => ({ current: tileElement }), [tileElement]);
-  const { width: containerWidth } = useContainerNarrow(inFrame ? tileRef : chatViewRootRef);
-  const columns = chatColumnsLayout(containerWidth, thumbnailOpen, sidePanelOpen, sidePanelWidth);
+  const { width: containerWidth, isNarrow } = useContainerNarrow(inFrame ? tileElement : chatViewRootElement);
+  const columns = chatColumnsLayout(containerWidth, thumbnailOpen, sidePanelOpen, sidePanelWidth, isNarrow);
+  // An explicitly revealed file remains reachable when the chat cannot spare a docked column.
+  const revealedPanelOverlay = sidePanelOpen && columns.panelHiddenForWidth && fileReveal?.sessionId === currentSessionId;
   useEffect(() => {
-    onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth });
-  }, [onColumnsVisibilityChange, columns.thumbnailHiddenForWidth, columns.panelHiddenForWidth]);
-  const { panelLayout, panelWidth: dockedPanelWidth } = columns;
-  const dockedPanelShouldOpen = columns.panelVisible;
+    onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth && !revealedPanelOverlay });
+  }, [onColumnsVisibilityChange, columns.thumbnailHiddenForWidth, columns.panelHiddenForWidth, revealedPanelOverlay]);
+  const panelLayout = revealedPanelOverlay ? sidePanelLayout(containerWidth, true) : columns.panelLayout;
+  const dockedPanelWidth = revealedPanelOverlay
+    ? Math.min(panelLayout.max, Math.max(panelLayout.min, sidePanelWidth)) : columns.panelWidth;
+  const dockedPanelShouldOpen = columns.panelVisible || revealedPanelOverlay;
+  sidePanelVisibleRef.current = dockedPanelShouldOpen && !hidden;
+  useEffect(() => {
+    emitMainLayoutChange();
+  }, [savedTabsKey, workspaceTabs.activeTabId, dockedPanelShouldOpen, hidden]);
   const [dockedPanelPresent, setDockedPanelPresent] = useState(dockedPanelShouldOpen);
   // Keep side-chat and agent-browser tabs mounted while hidden to preserve pending gates and working pages.
   const sideChatKeepsPanel = workspaceTabs.tabs.some((tab) =>
@@ -299,7 +323,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   const reduceMotion = usePrefersReducedMotion();
   useAgentDocumentPanel({
     api: window.ave?.preview, sessionId: currentSessionId ?? undefined, workspaceTabs,
-    panelVisible: dockedPanelShouldOpen && dockedPanelPresent && dockedPanelExpanded, panelHidden: columns.panelHiddenForWidth,
+    panelVisible: dockedPanelShouldOpen && dockedPanelPresent && dockedPanelExpanded, panelHidden: columns.panelHiddenForWidth && !revealedPanelOverlay,
     element: () => chatViewRootRef.current, targets: previewModel.targets,
     addTarget: (sessionId, target) => setOpenedDocuments((previous) => ({ sessionId, targets: [
       ...(previous?.sessionId === sessionId ? previous.targets.filter((existing) => existing.id !== target.id) : []), target,
@@ -398,6 +422,16 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
     (target: string, web: boolean) => routeActivity(target, web, "ephemeral"),
     [routeActivity],
   );
+  const handlePreviewTarget = useCallback((target: ChatPreviewTarget) => {
+    const openedTarget = target.kind === "file" ? { ...target, workspaceRoot: activeProject?.projectRoot } : target;
+    setOpenedDocuments((previous) => ({ sessionId: currentSessionId, targets: [
+      ...(previous?.sessionId === currentSessionId ? previous.targets.filter((existing) => existing.id !== target.id) : []),
+      openedTarget,
+    ] }));
+    workspaceTabs.openInEphemeral({ source: "preview", targetId: target.id });
+    setSelectedPreviewId(target.id);
+    onSidePanelOpenChange(true);
+  }, [workspaceTabs, onSidePanelOpenChange, currentSessionId, activeProject?.projectRoot]);
   const routeActivityItemPinned = useCallback(
     (target: string, web: boolean) => routeActivity(target, web, "pinned"),
     [routeActivity],
@@ -724,17 +758,18 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
       showTokenCostBadge={usageAvailable !== false}
       debugStreamEnabled={debugStreamEnabled}
       processingDisplayLevel={processingDisplayLevel}
+      onPreviewTarget={handlePreviewTarget}
     />
   );
 
   return (
     <div
-      ref={chatViewRootRef}
+      ref={handleChatViewRootRef}
       className="relative flex min-h-0 min-w-0 w-full flex-1 flex-row overflow-hidden"
       data-testid={TEST_IDS.chatViewRoot}
     >
       <div
-        className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size]"
+        className="@container/chat-transcript relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden [container-type:size]"
         data-testid="chat-main-column"
       >
 
@@ -822,6 +857,8 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         workflowApi={workflowApi}
         api={api}
         currentSessionId={currentSessionId}
+        workspaceChanges={workspaceChanges}
+        onRevealChangedFile={handleRevealChangedFile}
         messageQueueStore={messageQueueStore}
         onMessageQueueSendNow={handleMessageQueueSendNow}
         question={question}
@@ -938,7 +975,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
           style={{
             order: 2,
             width: dockedPanelExpanded ? `${dockedPanelWidth}px` : "0px",
-            maxWidth: columns.panelVisible ? dockedPanelWidth : 0,
+            maxWidth: dockedPanelShouldOpen ? dockedPanelWidth : 0,
             // Closed and settled, but kept for the side chat it holds: out of the layout entirely, not a collapsed sliver of padding.
             ...(dockedPanelPresent ? {} : { display: "none" }),
           }}
@@ -946,7 +983,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
             // Use the sidebar's pixel inset tokens for both floating-card edges and transcript reserve; font scaling must not change
             // the host's pixel reserve.
             "z-40 flex min-w-0 shrink-0 origin-right justify-end pt-(--shell-card-inset) pr-(--shell-card-inset) pb-(--shell-card-inset-bottom) pl-(--shell-card-inset) will-change-[width,opacity,transform]",
-            "relative self-stretch",
+            panelLayout.mode === "overlay" ? "absolute inset-y-0 right-0" : "relative self-stretch",
             sidePanelResizing
               ? "transition-none"
               : "transition-[width,opacity,transform] duration-[var(--motion-layout)] ease-[var(--motion-ease-out)] motion-reduce:transition-none",
@@ -969,11 +1006,15 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
         >
           <ChatSidePanel
             api={api}
-            visible={columns.panelVisible && !hidden}
+            visible={dockedPanelShouldOpen && !hidden}
             {...(chatGroupId !== undefined ? { chatGroupId } : {})}
             sessionId={currentSessionId}
             targets={previewModel.targets}
             files={previewModel.files}
+            changes={workspaceChanges}
+            revealRequest={fileReveal?.sessionId === currentSessionId ? fileReveal.request : null}
+            onReference={(reference) => { composerRef.current?.insertFileReference(reference); }}
+            onFileReference={(path) => { composerRef.current?.insertFileMention(path); }}
             selectedId={selectedPreviewId}
             onSelect={setSelectedPreviewId}
             workspaceTabs={workspaceTabs}

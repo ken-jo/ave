@@ -27,6 +27,7 @@ import { displaySafeLabel } from "../../../shared/display-safe-text.js";
 import { MCP_RESOURCE_URI_MAX_CHARS } from "../../../shared/mcp-resource-bounds.js";
 import { isRecord } from "../../../shared/is-record.js";
 import { formatBytes } from "../../../lib/turn-summary-format.js";
+import { fileMentionReferenceLabel, parseFileMentionReferences, type FileMentionReference } from "../../../shared/file-mention-reference.js";
 
 type ToolItem = Extract<ChatEntry, { kind: "tool_group" }>["tools"][number];
 
@@ -57,6 +58,10 @@ interface FilePreviewTarget extends ChatPreviewTargetBase {
   kind: "file";
   path: string;
   canOpenExternal: boolean;
+  startLine?: number;
+  endLine?: number;
+  sourceTurnId?: string;
+  workspaceRoot?: string;
   /**
    * Inline document text carried with the target (e.g. a Local Indexer search
    * hit's snippet/rawText). When present the file preview renders this text
@@ -64,6 +69,21 @@ interface FilePreviewTarget extends ChatPreviewTargetBase {
    * instead of showing only the path. Path-only targets omit it.
    */
   inlineText?: string;
+}
+
+export function fileMentionPreviewTarget(reference: FileMentionReference, createdOrder = 0): FilePreviewTarget {
+  return {
+    id: `file-reference:${JSON.stringify([reference.path, reference.startLine, reference.endLine, reference.turnId, reference.hunkId ?? null])}`,
+    kind: "file",
+    title: fileMentionReferenceLabel(reference),
+    sourceLabel: "reference",
+    createdOrder,
+    path: reference.path,
+    startLine: reference.startLine,
+    endLine: reference.endLine,
+    sourceTurnId: reference.turnId,
+    canOpenExternal: false,
+  };
 }
 
 interface ImagePreviewTarget extends ChatPreviewTargetBase {
@@ -491,6 +511,26 @@ export function collectChatPreviewModel({
   }
 
   for (const entry of entries) {
+    if (entry.kind === "user" && entry.injectHint !== "sub-agent") {
+      try {
+        for (const { reference } of parseFileMentionReferences(entry.text)) {
+          const target = fileMentionPreviewTarget(reference, order++);
+          addUnique(targets, target, targetIds);
+          addOrMergeFile(files, {
+            id: `reference:${reference.path}`,
+            path: reference.path,
+            label: fileMentionReferenceLabel(reference),
+            detail: reference.path,
+            sourceLabel: "reference",
+            operation: "attachment",
+            previewTargetId: target.id,
+            canOpenExternal: false,
+          }, fileIds);
+        }
+      } catch {
+        // Invalid persisted markers remain ordinary transcript text.
+      }
+    }
     if (entry.kind !== "tool_group") continue;
     for (const tool of [...entry.tools].sort((a, b) => a.displayOrder - b.displayOrder)) {
       const displayName = getToolDisplayName(tool.name);

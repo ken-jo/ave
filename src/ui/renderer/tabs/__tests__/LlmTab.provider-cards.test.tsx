@@ -188,6 +188,7 @@ function storedKeysFor(...providerIds: string[]) {
 }
 
 interface Profile {
+  provider?: string;
   pinnedModels?: string[];
   vendors?: Record<string, unknown>;
   installedProviderIds?: string[];
@@ -198,6 +199,7 @@ interface Profile {
 function profileSettings(profile: Profile) {
   return {
     llm: {
+      provider: profile.provider ?? "openai",
       pinnedModels: profile.pinnedModels ?? [],
       vendors: profile.vendors ?? {},
       modelListCache: profile.modelListCache ?? {},
@@ -505,6 +507,85 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("pairs the saved custom wire with its model discovery endpoint", async () => {
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { baseUrl: "https://custom.example/v1", wire: "google-gemini" } },
+    }, { hasApiKey: storedKeysFor("openai-compatible") });
+    await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
+    await waitFor(() => expect(api.listLlmModels).toHaveBeenCalledWith(expect.objectContaining({
+      vendor: "openai-compatible", baseUrl: "https://custom.example/v1", wire: "google-gemini",
+    })));
+  });
+
+  it("opens subscription setup from its grouped entry", async () => {
+    installSubscription([codexView(), claudeCodeView()]);
+    await renderTab(profileApi({}).api);
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude-code"));
+    expect(await screen.findByTestId("subscription-provider:claude-code:billing-disclosure")).toBeVisible();
+  });
+
+  it("offers every custom API format and saves the selected format on its connection", async () => {
+    const { hooks } = await renderTab(profileApi({}).api);
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:openai-compatible"));
+    const trigger = await screen.findByTestId("llm-tab:custom-wire");
+    fireEvent.click(trigger);
+    const option = await screen.findByRole("option", { name: "Anthropic Messages" });
+    fireEvent.click(option);
+    fireEvent.change(screen.getByTestId("llm-base-url-input"), { target: { value: "https://custom.example/v1" } });
+    const save = within(screen.getByTestId("llm-tab:manual-section")).getByRole("button", { name: t("llmTab.save") });
+    fireEvent.click(save);
+    await waitFor(() => expect(hooks.onSaveProviderCredential).toHaveBeenCalledWith(expect.objectContaining({
+      credentialProviderId: "openai-compatible",
+      vendorBlock: { baseUrl: "https://custom.example/v1", wire: "anthropic-messages" },
+    })));
+  });
+
+  it("renders the four provider groups in order with the custom footer", async () => {
+    await renderTab(profileApi({}).api);
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    const menu = await screen.findByRole("menu");
+    expect(Array.from(menu.querySelectorAll("[data-provider-group]")).map((node) => node.getAttribute("data-provider-group")))
+      .toEqual(["subscription", "api", "local", "custom"]);
+    expect(within(menu).getByTestId("llm-tab:add-provider-item:openai-compatible")).toHaveTextContent(t("llmTab.addCustomProvider"));
+    expect(within(menu).getByTestId("llm-tab:add-provider-item:deepseek")).toBeVisible();
+  });
+
+  it("shows compaction uses the current model when the runtime cannot choose another one", async () => {
+    installSubscription([], {}, { kind: "subscription", provider: "kimi-code" });
+    await renderTab(makeApi());
+    expect(screen.getByRole("textbox", { name: t("compactionSettings.model") })).toBeDisabled();
+    expect(screen.getByText(t("compactionSettings.unavailable"))).toBeVisible();
+    expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+  });
+
+  it("preserves compaction input on save failure and unrelated settings broadcasts", async () => {
+    const api = makeApi();
+    await renderTab(api);
+    const input = screen.getByRole("textbox", { name: t("compactionSettings.model") });
+    fireEvent.change(input, { target: { value: "summary-model" } });
+    await act(async () => { await api.updateSettings({ llm: { pinnedModels: [] } }); });
+    expect(input).toHaveValue("summary-model");
+    api.updateSettings.mockRejectedValueOnce(new Error("unavailable"));
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(screen.getByText(t("compactionSettings.saveFailed"))).toHaveAttribute("role", "alert"));
+    expect(input).toHaveValue("summary-model");
+  });
+
+  it("saves a separate compaction model and clears it to follow the current model", async () => {
+    const { api } = profileApi({}, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api);
+    const input = screen.getByRole("textbox", { name: t("compactionSettings.model") });
+    expect(input).toHaveValue("");
+    fireEvent.change(input, { target: { value: "summary-model" } });
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModel: "summary-model", compactionModelRoute: expect.any(String) } }));
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModel: "", compactionModelRoute: expect.any(String) } }));
+  });
+
   it("offers the catalog in release order in the fallback chooser without a key", async () => {
     const api = makeApi();
     await renderTab(api, { hasKey: false, model: "", fallbackOpen: true, fallbackChain: [{ provider: "claude", model: "" }] });
@@ -2181,7 +2262,7 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
   it.each([
     ["codex", "OpenAI", "ChatGPT", () => codexView()],
     ["claude-code", "Anthropic Claude", "Claude", () => claudeCodeView()],
-  ] as const)("%s: chooses nothing until asked, then shows only the chosen method", async (rowId, company, plan, view) => {
+  ] as const)("%s: selecting a subscription entry opens its setup, then allows changing the method", async (rowId, company, plan, view) => {
     installSubscription([view()], { beginLogin: vi.fn(), refreshStatus: vi.fn() });
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });
 
@@ -2193,14 +2274,13 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     }
     expect(card).toHaveTextContent(company);
 
-    // Nothing configured: the card asks, and shows neither a key field nor sign-in.
-    expect(method(rowId, "subscription")).toHaveAttribute("aria-checked", "false");
+    expect(method(rowId, "subscription")).toHaveAttribute("aria-checked", "true");
     expect(method(rowId, "api")).toHaveAttribute("aria-checked", "false");
     expect(method(rowId, "subscription")).toHaveAccessibleName(
       t("subscriptionProvidersSection.methodSubscription", { plan }),
     );
     expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
-    expect(within(card).queryByTestId(`subscription-provider:${rowId}:login-browser`)).toBeNull();
+    expect(within(card).getByTestId(`subscription-provider:${rowId}:login-browser`)).toBeVisible();
 
     fireEvent.click(method(rowId, "api"));
     expect(await within(card).findByTestId("llm-api-key-input")).toBeInTheDocument();
@@ -2316,7 +2396,7 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
   });
 
-  it("offers each company once in 'add a provider', and never a runtime by name", async () => {
+  it("offers subscription and API routes separately with consistent subscription labels", async () => {
     installSubscription([codexView(), claudeCodeView()]);
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });
     openMenu(screen.getByTestId("llm-tab:add-provider"));
@@ -2327,8 +2407,8 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     expect(labels.filter((label) => label === "Anthropic Claude")).toHaveLength(1);
     expect(labels.filter((label) => label === "OpenAI")).toHaveLength(1);
     expect(labels.join("\n")).not.toMatch(/Codex|Claude Code/);
-    // The Anthropic API vendor is that row's API-key method, not a second row.
-    expect(screen.queryByTestId("llm-tab:add-provider-item:claude")).toBeNull();
+    expect(screen.getByTestId("llm-tab:add-provider-item:claude")).toBeVisible();
+    expect(screen.getByTestId("llm-tab:add-provider-item:codex")).toHaveTextContent(t("subscriptionProvidersSection.subscriptionModels", { company: "OpenAI", plan: "ChatGPT" }));
   });
 });
 

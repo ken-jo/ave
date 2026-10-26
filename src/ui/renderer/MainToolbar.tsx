@@ -1,5 +1,4 @@
 import { ArrowDownToLine, Download, RefreshCw, Wrench, X } from "lucide-react";
-import { Button } from "../../components/ui/button.js";
 import { ViewPathBreadcrumb, type ViewPathNavProps } from "./components/ViewPathNav.js";
 import { useTranslation } from "../../i18n/react.js";
 import { RemoteA2AActionButton } from "./components/RemoteA2AActionButton.js";
@@ -25,14 +24,6 @@ function NoDrag({ children, className }: { children: React.ReactNode; className?
 import type { UpdateState } from "../../shared/update-state.js";
 export type AppUpdateBadgeState = UpdateState;
 
-/**
- * Workspace mode. MainToolbar owns this type because it hosts the toggle UI;
- * App.tsx imports it. "work" (default) renders built-in + plugin views
- * inline in the main area with the sidebar expanded; "chat" pops detachable
- * views into separate windows so the main area stays the chat.
- */
-export type AppMode = "chat" | "work";
-
 function isDevMode(): boolean {
   return (window as unknown as { __aveDevMode?: boolean }).__aveDevMode === true;
 }
@@ -42,10 +33,6 @@ export interface MainToolbarProps {
   viewNav: ViewPathNavProps;
   streaming: boolean;
   hasApiKey: boolean | null;
-  /** Current workspace mode (Chat / Work). Drives the segmented toggle. */
-  appMode: AppMode;
-  /** Fired when the user picks a segment in the Chat/Work toggle. */
-  onToggleAppMode: (mode: AppMode) => void;
   onOpenDevTools?: () => void;
   /** Latest app-update state from the main process. */
   appUpdateState?: AppUpdateBadgeState;
@@ -68,8 +55,6 @@ export function MainToolbar({
   viewNav,
   streaming: _streaming,
   hasApiKey: _hasApiKey,
-  appMode,
-  onToggleAppMode,
   onOpenDevTools,
   appUpdateState = { kind: "idle" },
   appUpdateInFlight = false,
@@ -146,8 +131,7 @@ export function MainToolbar({
         </NoDrag>
       )}
 
-      {/* ── Dev badge — only visible in non-production (AVE_DEV). Stays next to
-          the mode toggle at the far-right end. */}
+      {/* Development controls stay at the trailing edge of the title band. */}
       {isDevMode() && onOpenDevTools !== undefined && (
         <NoDrag className="hidden sm:inline-flex">
           <ToolbarStatusPill
@@ -165,52 +149,10 @@ export function MainToolbar({
         </NoDrag>
       )}
 
-      {/* ── Workspace mode (Chat / Work) — pinned to the FAR-RIGHT end of the
-          top bar. Both modes render every view inline; the mode drives the
-          shell layout (rail width, activity panel, OS window size). */}
-      <NoDrag>
-        <AppModeToggle mode={appMode} onToggle={onToggleAppMode} />
-      </NoDrag>
-
       {/* The work-panel toggle used to sit here. It moved into the chat
           group's own header: the panel shows what THAT conversation is doing,
           and one window-level button cannot mean the right thing once more
           than one conversation is on screen. */}
-    </div>
-  );
-}
-
-function AppModeToggle({ mode, onToggle }: { mode: AppMode; onToggle: (mode: AppMode) => void }) {
-  const { t } = useTranslation();
-  const segment = (value: AppMode, label: string, ariaLabel: string) => {
-    const active = mode === value;
-    return (
-      <Button
-        variant="ghost"
-        size="sm"
-        className={`h-(--chrome-icon-button) rounded-md px-2 text-[11px] font-medium ${
-          active
-            ? "bg-primary text-primary-foreground hover:bg-primary"
-            : "text-muted-foreground hover:bg-accent hover:text-foreground"
-        }`}
-        onClick={() => onToggle(value)}
-        aria-pressed={active}
-        aria-label={ariaLabel}
-        data-testid={`app-mode-${value}`}
-      >
-        {label}
-      </Button>
-    );
-  };
-  return (
-    <div
-      role="group"
-      aria-label={t("appMode.groupAriaLabel")}
-      className="flex h-(--chrome-control-height) items-center gap-0.5 rounded-lg border border-border bg-muted/(--opacity-medium) p-px shrink-0"
-      data-testid="app-mode-toggle"
-    >
-      {segment("chat", t("appMode.chat"), t("appMode.chatAriaLabel"))}
-      {segment("work", t("appMode.work"), t("appMode.workAriaLabel"))}
     </div>
   );
 }

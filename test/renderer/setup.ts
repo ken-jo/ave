@@ -42,6 +42,7 @@ afterEach(() => {
   // Clear parked drafts so unmounting one test cannot seed the next composer.
   clearComposerDrafts();
   intersectionStates.clear();
+  containerWidths = { shellWidth: Infinity, canvasWidth: Infinity };
 });
 
 // Supply explicit intersection delivery because the DOM test environment has no layout.
@@ -113,6 +114,50 @@ export function triggerIntersection(target: Element, isIntersecting = true): num
   return delivered;
 }
 
+export interface ContainerWidths {
+  shellWidth: number;
+  canvasWidth: number;
+}
+
+let containerWidths: ContainerWidths = { shellWidth: Infinity, canvasWidth: Infinity };
+const liveResizeObservers = new Set<TestResizeObserver>();
+
+class TestResizeObserver implements ResizeObserver {
+  private readonly targets = new Set<Element>();
+  constructor(private readonly callback: ResizeObserverCallback) {
+    liveResizeObservers.add(this);
+  }
+  observe(target: Element): void {
+    this.targets.add(target);
+    queueMicrotask(() => this.deliver(target));
+  }
+  unobserve(target: Element): void { this.targets.delete(target); }
+  disconnect(): void {
+    this.targets.clear();
+    liveResizeObservers.delete(this);
+  }
+  deliver(target: Element): void {
+    if (!this.targets.has(target)) return;
+    const width = target.matches('[data-testid="app-shell"]')
+      ? containerWidths.shellWidth : containerWidths.canvasWidth;
+    if (!Number.isFinite(width)) return;
+    this.callback([{
+      target,
+      contentRect: new DOMRectReadOnly(0, 0, width, 768),
+      contentBoxSize: [{ inlineSize: width, blockSize: 768 }],
+      borderBoxSize: [{ inlineSize: width, blockSize: 768 }],
+      devicePixelContentBoxSize: [{ inlineSize: width, blockSize: 768 }],
+    } as ResizeObserverEntry], this);
+  }
+  deliverAll(): void { for (const target of this.targets) this.deliver(target); }
+}
+
+// Deliver shell and canvas geometry independently, including observers mounted after a resize.
+export function setContainerWidths(widths: Partial<ContainerWidths>): void {
+  containerWidths = { ...containerWidths, ...widths };
+  for (const observer of liveResizeObservers) observer.deliverAll();
+}
+
 if (typeof window !== "undefined") {
   if (!window.matchMedia) {
     // @ts-expect-error — jsdom doesn't provide matchMedia.
@@ -146,12 +191,6 @@ if (typeof window !== "undefined") {
     window.IntersectionObserver = TestIntersectionObserver;
   }
   if (!window.ResizeObserver) {
-    window.ResizeObserver = class ResizeObserver {
-      // Match the callback-taking constructor so production calls remain type-correct.
-      constructor(_callback: ResizeObserverCallback) {}
-      observe() {}
-      unobserve() {}
-      disconnect() {}
-    };
+    window.ResizeObserver = TestResizeObserver;
   }
 }

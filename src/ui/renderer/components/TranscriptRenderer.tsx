@@ -35,6 +35,8 @@ import {
   type ProcessingDisplayLevel,
 } from "../../../shared/processing-display-level.js";
 import { shouldShowAssistantEntry } from "../utils/processing-display-policy.js";
+import { fileMentionReferenceLabel, parseFileMentionReferences } from "../../../shared/file-mention-reference.js";
+import { fileMentionPreviewTarget, type ChatPreviewTarget } from "../preview/preview-targets.js";
 
 type PermissionReviewEntry = Extract<ChatEntry, { kind: "permission_review" }>;
 
@@ -127,6 +129,7 @@ export interface SharedTranscriptProps {
 
   /** Controls which model work items are visible inside each WorkGroup. */
   processingDisplayLevel?: ProcessingDisplayLevel;
+  onPreviewTarget?: (target: ChatPreviewTarget) => void;
 }
 
 const NO_STAR: () => string | null = () => null;
@@ -146,6 +149,7 @@ export function TranscriptRenderer({
   debugStreamEnabled = false,
   workGroupsForceOpen = false,
   processingDisplayLevel = DEFAULT_PROCESSING_DISPLAY_LEVEL,
+  onPreviewTarget,
 }: SharedTranscriptProps): React.ReactElement {
   const { t } = useTranslation();
   const openNativeContextMenu = useNativeContextMenu();
@@ -365,7 +369,9 @@ export function TranscriptRenderer({
                   {t("chatView.interruptLabel")}
                 </div>
               ) : null}
-              <div className="cursor-text select-text whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{searchHighlight ? highlightText(entry.text, searchHighlight) : entry.text}</div>
+              <div className="cursor-text select-text whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+                {renderUserMessageText(entry.text, searchHighlight, onPreviewTarget)}
+              </div>
             </div>
             {/* Keep a fixed footer slot outside the bubble. The send time holds
                 the row open, so revealing the controls changes only opacity and
@@ -805,6 +811,7 @@ export function TranscriptRenderer({
     onRetryEffort,
     onReturnHere,
     onToggleStar,
+    onPreviewTarget,
     openNativeContextMenu,
     searchHighlight,
     searchIdx,
@@ -823,6 +830,35 @@ export function TranscriptRenderer({
   ]);
 
   return <>{rendered}</>;
+}
+
+function renderUserMessageText(text: string, searchHighlight: string, onPreviewTarget?: (target: ChatPreviewTarget) => void): React.ReactNode {
+  const plain = (value: string) => searchHighlight ? highlightText(value, searchHighlight) : value;
+  if (!onPreviewTarget) return plain(text);
+  let references: ReturnType<typeof parseFileMentionReferences>;
+  try {
+    references = parseFileMentionReferences(text);
+  } catch {
+    return plain(text);
+  }
+  if (references.length === 0) return plain(text);
+  const parts: React.ReactNode[] = [];
+  let position = 0;
+  for (const { start, end, reference } of references) {
+    parts.push(<span key={`text-${position}`}>{plain(text.slice(position, start))}</span>);
+    const label = fileMentionReferenceLabel(reference);
+    parts.push(
+      <button key={`reference-${start}`} type="button"
+        className="inline rounded border border-message-user-border bg-message-user-muted/(--opacity-subtle) px-1.5 py-0.5 align-baseline font-mono text-xs hover:bg-message-user-muted/(--opacity-medium) focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        title={reference.turnId}
+        onClick={() => onPreviewTarget(fileMentionPreviewTarget(reference))}>
+        {plain(label)}
+      </button>,
+    );
+    position = end;
+  }
+  parts.push(<span key={`text-${position}`}>{plain(text.slice(position))}</span>);
+  return parts;
 }
 
 // Small render-only pieces of the transcript. They live here rather than in

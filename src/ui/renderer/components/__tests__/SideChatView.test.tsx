@@ -21,6 +21,8 @@ function makeApi() {
     send: vi.fn(async (_input: string, _attachments?: unknown[], _originSessionId?: string, _sendRequestId?: string) => ({ ok: true as const, result: {} })),
     new: vi.fn(async () => ({ ok: true as const, sessionId: "side-2" })),
     abort: vi.fn(async () => ({ ok: true as const })),
+    listShellTasks: vi.fn(async () => []),
+    controlShellTask: vi.fn(async () => ({ ok: true as const, shellId: "side-command" })),
   };
   const api = {
     sideChat: {
@@ -85,6 +87,19 @@ async function startTurn(text = "hello") {
 }
 
 describe("SideChatView — New button gating during streaming", () => {
+  it("sends Ctrl+B command controls through the side conversation API", async () => {
+    const { api, acceptTurn, spies } = makeApi();
+    const mainControl = vi.fn();
+    api.chatControlShellTask = mainControl;
+    renderView(api);
+    await startTurn();
+    acceptTurn(1);
+    fireEvent.keyDown(sideComposer().textarea, { key: "b", ctrlKey: true });
+    await waitFor(() => expect(spies.controlShellTask).toHaveBeenCalledWith("side-1", "background", undefined));
+    expect(mainControl).not.toHaveBeenCalled();
+    expect(spies.listShellTasks).toHaveBeenCalledWith("side-1");
+  });
+
   it("keeps its own context warning in its composer and compaction history in its transcript", async () => {
     const { api, emit, acceptTurn } = makeApi();
     renderView(api, { hasApiKey: true, settingsLoaded: true, llmContextWindow: 100_000, autoCompactEnabled: true, contextOverflowPct: 0.1 });

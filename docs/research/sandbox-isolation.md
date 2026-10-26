@@ -75,7 +75,7 @@ The outcome is written to the boot audit log and shown in the Permissions tab.
 
 `src/permissions/sandbox-capability.ts` owns the capability. `detectSandboxCapability()` returns the published capability, or `{ kind: "none", confidence: "verified" }` when nothing was published.
 
-- `SandboxKind`: `none`, `asrt`, `disposable-container`, `partial`, `fs-only`. Only `none` and `asrt` are produced for host tools today; `disposable-container` belongs to a brokered guest route ([Linux workload resource controller](../architecture/linux-workload-resource-controller.md)); `partial` and `fs-only` are reserved.
+- `SandboxKind`: `none`, `asrt`, `disposable-container`, `partial`, `fs-only`. Only `none` and `asrt` are produced for host tools today; `disposable-container` belongs to a [brokered guest route](../architecture/permission-policy-design.md#host-native-workload-broker); `partial` and `fs-only` are reserved.
 - Confidence: `verified`, `assumed`, `policy-best-effort` (reserved; no current backend reports it).
 - `isWeakSandbox()` is true for `none`, `partial` or `assumed`. The reviewer framework (`src/shared/permission-reviewer-framework.ts`) then forbids an LLM downgrade of a rule MEDIUM or HIGH to LOW; `risk-classifier.ts` composes `max(rule, llm)`.
 - `sandboxRelaxesCategory()` decides relaxation per tool category from `confines`: network needs network, read/write/meta need filesystem, shell needs filesystem and process. On Windows, shell calls therefore never relax.
@@ -146,4 +146,3 @@ Current producers are `PermissionManager.dispatchReviewer` (`src/permissions/per
 - [Permission policy design](../architecture/permission-policy-design.md)
 - [Architecture](../architecture/architecture.md)
 - [Plugin process isolation](../blueprints/plugin-process-isolation.md)
-- [Linux workload resource controller](../architecture/linux-workload-resource-controller.md)

@@ -73,6 +73,19 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV_CONSOLE;
   });
 
+  it("limits the window surface to isolated previews and publishes the approved worlds", async () => {
+    const api = await loadAveApi();
+    const windowApi = api.window as Record<string, unknown>;
+    expect(Object.keys(windowApi)).toEqual(["openHtmlPreview"]);
+    expect(Object.keys(CHANNELS.window)).toEqual([
+      "minimize", "toggleMaximize", "close", "syncTitleBarTheme", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
+    ]);
+    expect([...exposed.keys()].sort()).toEqual([
+      "__aveDevMode", "__aveInitialTheme", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
+    ]);
+    expect(windowApi.openHtmlPreview).toBeTypeOf("function");
+  });
+
   afterEach(() => {
     if (originalDebugStreamEnv === undefined) {
       delete process.env.VITE_DEBUG_STREAM;
@@ -236,6 +249,15 @@ describe("preload — plugin webview asset URLs", () => {
     mockInvoke.mockResolvedValueOnce({ ok: false, error: "code-restore-conflict", conflictingFiles: ["/workspace/code.ts"] });
     expect(await surface.chatRewindTo("user-row", "both")).toEqual({ ok: false, error: "code-restore-conflict", conflictingFiles: ["/workspace/code.ts"] });
     expect(mockInvoke).toHaveBeenCalledWith(CHANNELS.chat.rewindTo, "user-row", chatGroupId, "both");
+  });
+
+  it.each([MAIN_CHAT_GROUP_ID, "tile-2"])("binds readonly turn review to %s", async (chatGroupId) => {
+    const { buildPublicSurface } = await import("../preload/public-surface.js");
+    const api = buildPublicSurface();
+    const surface = chatGroupId === MAIN_CHAT_GROUP_ID ? api : api.chatGroup(chatGroupId);
+    mockInvoke.mockResolvedValue({ ok: false, error: "turn-review-stale" });
+    await expect(surface.chatGetTurnReview("expected-session")).resolves.toEqual({ ok: false, error: "turn-review-stale" });
+    expect(mockInvoke).toHaveBeenLastCalledWith(CHANNELS.chat.getTurnReview, "expected-session", chatGroupId);
   });
 
   it("exposes pluginShellUrl as a file:// string under dist/src/", async () => {

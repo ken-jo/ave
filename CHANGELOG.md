@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **창 폭에 맞춰 작업 화면이 바뀝니다.** 별도 화면 전환 설정을 없애고 하나의 반응형
+  화면으로 통합했습니다. 창은 중앙에 1243×768로 열리며 최소 너비는 360px입니다.
+  캔버스가 좁아지면 포커스된 타일 하나를 보여 주고 분할·닫기·최대화·새 타일 열기를
+  제공하지 않습니다. 숨겨진 대화는 계속 실행되며 다시 넓히면 기존 배치와 최대화
+  선택이 돌아옵니다. 사이드바와 작업 패널은 공간에 따라 창 안에서 붙거나 겹쳐지고,
+  패널을 열어도 운영체제 창 크기는 바뀌지 않습니다. 이전 앱 모드 설정은 업데이트 시
+  제거되며 다른 설정은 유지됩니다.
+
+- **사이드바를 펼치거나 아이콘만 남기거나 완전히 숨길 수 있습니다.** 선택은 창 크기를
+  바꾸거나 앱을 다시 열어도 유지됩니다. 저장된 선택이 없는 최소 너비 창에서는 숨김으로
+  시작하며, 사이드바 아래의 숨기기 버튼으로 숨긴 뒤 제목 표시줄에서 다시 펼칠 수 있습니다.
+  펼친 사이드바는 공간이 부족하면 본문 위에 겹쳐집니다.
+
 - **OS 샌드박스 설정이 둘로 나뉘었습니다.** 설정 → 권한의 "셸 샌드박스"(`osToolSandbox`)는
   Bash·PowerShell 명령과 작업 공간 터미널만, 새 "익스텐션 격리"(`pluginWorkerConfinement`)는
   익스텐션 워커·프로세스·훅과 MCP stdio 서버를 격리합니다. 한쪽을 켜도 다른 쪽은 격리되지
@@ -679,7 +692,7 @@ v0.9.0 을 잇는 패치입니다. 한동안 꺼져 있던 **유휴 시간 작�
 - **빈 입력창은 한 줄**이고, 힌트는 세 토큰(`typing`, `⌘+V`, `/`)입니다.
   제안 답변은 정확히 하나만 보여 줍니다.
 - **사이드바가 기능/플러그인 두 그룹**으로 접히고, 그룹은 플라이아웃으로
-  열립니다. 채팅 모드에서는 대화 영역을 밀어내지 않고 **위에 떠서** 펼쳐집니다.
+  열립니다. 집중형 배치에서는 대화 영역을 밀어내지 않고 **위에 떠서** 펼쳐집니다.
 - **도구 활동이 헤더에서 작업 패널 탭으로** 옮겨졌습니다.
 
 ### 설정
@@ -747,7 +760,7 @@ v0.9.0 을 잇는 패치입니다. 한동안 꺼져 있던 **유휴 시간 작�
 
 ## v0.8.0 — 2026-08-29
 
-대화 영역이 **타일 워크벤치**가 되었습니다. 업무 모드에서 화면을 최대 네 개의
+대화 영역이 **타일 워크벤치**가 되었습니다. 화면을 최대 네 개의
 타일로 나누고, 타일마다 다른 대화를 열어 두고, 각 타일이 자기 작업 패널을
 갖습니다. 여기에 맞춰 사이드바·컴포저·설정의 공급자 화면과 내 메시지 카드의
 동작이 함께 정리되었습니다.
@@ -755,8 +768,8 @@ v0.9.0 을 잇는 패치입니다. 한동안 꺼져 있던 **유휴 시간 작�
 ### 타일 워크벤치
 
 - **VS Code 워크벤치 모델을 채택했습니다** (#2290). 대화 그룹이 프레임을
-  갖고, 행 액션과 타일링이 들어왔습니다. 업무 모드는 최대 4 타일, 채팅 모드는
-  1 타일입니다.
+  갖고, 행 액션과 타일링이 들어왔습니다. 최대 4 타일을 보여 주고 집중형 배치에서는
+  1 타일을 보여 줍니다.
 - **분할한 타일은 자기 대화를 시작합니다** (#2294). 한 세션은 한 번에 한
   타일에서만 열립니다 — 사이드바에서 대화를 고르면 그 대화를 들고 있는 타일이
   포커스됩니다. 메인 프로세스도 그룹마다 독립된 대화 루프를 돌립니다.
@@ -1136,7 +1149,7 @@ Hardens local state and plugin lifecycle recovery, self-heals Electron native-mo
 ### Plugins and onboarding
 
 - **Plugins can declare their first post-tour task.** The host validates bounded localized copy and mandatory priority, orders proposals deterministically, and surfaces rejected plugin declarations as retryable UI errors instead of inventing fallback content. Plugins using this field require `ave >= 0.5.7`.
-- **Plugin views stay inline in chat mode.** Opening a plugin panel no longer detaches it from the active conversation layout.
+- **Plugin views stay inline.** Opening a plugin panel no longer detaches it from the active conversation layout.
 
 ### Tools and runtime
 
@@ -1359,7 +1372,7 @@ Workspace rail, chat-rendering unification, side-chat, and permission/sub-agent 
 
 ### Chat rendering unification
 
-- **Single shared transcript renderer across all three chat surfaces** (PR #1464, #1465, #1467, #1468, #1463) — main, sub-agent, and side-chat now render through one `TranscriptRenderer` (tool/thinking parity); chat-mode side panel docks without a modal blur; the sub-agent tab shows the full conversation-loop transcript inline (tool-call-style) plus history from loaded sessions.
+- **Single shared transcript renderer across all three chat surfaces** (PR #1464, #1465, #1467, #1468, #1463) — main, sub-agent, and side-chat now render through one `TranscriptRenderer` (tool/thinking parity); the side panel docks without a modal blur; the sub-agent tab shows the full conversation-loop transcript inline (tool-call-style) plus history from loaded sessions.
 
 ### Side-chat engine
 
@@ -1396,13 +1409,13 @@ UI shell, localization, navigation, and action-panel polish release. This patch 
 ### UI / Navigation
 
 - **Shared page shell reconstruction** (PR #1406) — plugin-host pages now use the shared page chrome, flatter plugin host surfaces, page back navigation, and restored scroll position when moving away and returning.
-- **Sidebar and action-panel chrome cleanup** (PR #1407, #1408) — sidebar collapse and right action-panel controls use simpler chevron affordances without nested box chrome, with chat-mode visibility and collapsed defaults aligned to the intended layout.
+- **Sidebar and action-panel chrome cleanup** (PR #1407, #1408) — sidebar collapse and right action-panel controls use simpler chevron affordances without nested box chrome, with visibility and collapsed defaults aligned to the intended layout.
 - **Right action panel expansion** (PR #1403) — adds the right-side action activity panel foundation and refines collapsed counts, floating action activity interactions, opacity token usage, and duplicate prop/content cleanup.
 
 ### i18n / Settings
 
 - **Seven-locale catalog support** (PR #1401, #1405) — UI strings were tokenized and full seven-locale catalogs were added, with generated sentinel leak protection.
-- **Work mode and provider control alignment** (PR #1405) — app mode naming and provider controls are aligned around Work mode, reducing action/work naming drift.
+- **Shell and provider control alignment** (PR #1405) — shell labels and provider controls use consistent wording.
 - **ASRT setting persistence** (PR #1405) — ASRT opt-in now remains enabled after installer abort paths instead of immediately reverting.
 
 ### Plugins / Routines

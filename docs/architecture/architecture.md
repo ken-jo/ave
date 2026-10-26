@@ -132,16 +132,6 @@ cancellation, cgroup-v2 OOM evidence and terminal cleanup receipts. The
 [permission policy](permission-policy-design.md#host-native-workload-broker)
 defines the full route and lifecycle contract.
 
-The [Linux workload resource controller](linux-workload-resource-controller.md)
-is an unwired cgroup-v2 foundation for keeping the host controller outside
-per-invocation memory/PID bounds and explicit swap/CPU settings. It is not a
-security sandbox and does not itself advertise the disposable-container route.
-It remains distinct from both implemented routes: strict operator attestation
-for a controller already inside the disposable guest, and the host-native
-Docker workload broker. Runtime integration of this controller remains blocked
-until the workload cannot see or write a parent cgroup hierarchy and the
-resource capability and limits are bound into the execution grant.
-
 Each foreground capture artifact is limited to 5,000,000 bytes. Retained captures
 plus active reservations are limited to 20,000,000 bytes per session. Capture
 reserves the full artifact allowance before it starts and releases unused
@@ -193,7 +183,13 @@ writes or access to other protected namespaces.
 The Bash tool resolves the same Bash dialect for foreground, background, and
 sandbox execution through `src/lib/shell-resolver.ts`; discovery probes use the
 generic filtered child environment. Background handles belong to a session and
-retain bounded incremental output. `bash_output.waitMs` is an integer from 0 to
+retain bounded incremental output. The command panel and Ctrl+B can transfer an
+eligible running, unsandboxed POSIX shell without executing it again. Its original
+deadline and session cleanup remain in force. Sandbox, explicit host-approval,
+broker foreground and Windows execution cannot transfer through this path.
+Panel actions bind the expected session and window; output snapshots show a bounded
+preview without advancing the model's output cursor.
+`bash_output.waitMs` is an integer from 0 to
 30,000 ms, default 0. Its default `waitFor: "output"` returns on unread/new output
 or completion. Opt-in `waitFor: "completion"` keeps waiting through progress
 output until the shell ends or that same wait expires. Both return accumulated
@@ -426,9 +422,11 @@ and commits turn artifacts back to the session store.
 
 The return-here action can restore conversation, native file-tool edits, or
 both at a durable user-message boundary. The [code rewind design](../design/code-rewind.md)
-owns capture boundaries, conflict refusal, storage limits and untracked effects,
-and compares them with [Claude Code checkpointing](https://code.claude.com/docs/en/checkpointing)
-(accessed 2026-10-22).
+owns capture boundaries, restore conflict refusal, storage limits and untracked
+effects. Its [latest-turn review contract](../design/code-rewind.md#latest-turn-change-review)
+defines recorded change summaries above the composer, a unified Files tree
+with responsive side-by-side detail, and existing file-mention references with
+host-authorized, bounded context and clickable file previews.
 
 Important rules:
 
@@ -455,17 +453,31 @@ Important rules:
   history. Measurement does not consume an instruction's execution allowance.
 - Long histories are compacted through the structured compact path rather than
   silent truncation.
+- Manual compaction accepts focus instructions. An optional compaction model
+  defaults to the originating conversation's current model and retains its
+  authentication route. An explicit selection is scoped to its provider,
+  endpoint and preset; switching routes leaves that selection inactive. Summary
+  input also respects the selected model's own context budget.
 - A round that stops at `end_turn` with reasoning but no visible text and no
   tool call does not end the turn: the loop re-prompts it a bounded number of
   times before returning, because that reasoning states the action the model
   meant to take next.
 - Foreground turn-end notices stay out of the composer notification area; system
   notifications are reserved for background or non-focused app state.
-- The main window may show up to four conversations side by side (chat mode
-  shows one). Each tile is its own conversation loop in the main process,
+- The main window uses one responsive layout. A wide canvas may show up to
+  four conversations; a narrow canvas draws the focused tile while preserving
+  the tree, hidden conversations, and the saved maximized choice. Each tile is
+  its own conversation loop in the main process,
   addressed by `chatGroupId` on every per-conversation `ave:chat:*` channel;
   the loops share the memory manager and the window-wide idle services. A
-  closed tile releases its loop. See `docs/design/tiled-chat-groups.md`.
+  closed tile releases its loop. Width alone never releases a loop.
+  `src/shared/shell-geometry.ts` owns window bounds and layout thresholds;
+  `use-container-narrow.ts` applies them to independent shell and canvas
+  measurements. Panels dock or overlay inside their tile without changing OS
+  window bounds. The sidebar's expanded, rail, or hidden choice persists in
+  `system.sidebarState`; without a saved choice, the minimum-width window
+  starts hidden. Hidden navigation reserves no content width and reopens from
+  the title bar. See [responsive geometry](../design/tiled-chat-groups.md#responsive-shell-and-canvas).
 - Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
   tray). Only a packaged app on its real profile registers itself as the OS
   `ave://` handler; unpackaged, E2E, relocated-`AVE_HOME` and `--user-data-dir`
@@ -1663,6 +1675,21 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   covers only the `srt-win` Rust sources.
 
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
+On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; machine-root rows retained by the policy filter remain eligible for stamping regardless of absence. Before adding a worker write grant, raw session and earlier-wrap denies plus the pending policy identify every overlapping obligation, including machine read rows and targets created after omission. An overlapping deny glob refuses the grant because a DACL cannot protect future matches. Native target DACLs determine existing deny strength; stamping unions that strength with the obligations so reusing the session holder cannot downgrade its earlier read protection. After stamping, even if it throws, native DACLs must show the sandbox SID's expected deny mask, subtree inheritance for directories, and parent delete-child protection. A missing or unverifiable target refuses the grant, as does any stamp failure; successful stamping alone proves nothing. Grant failures revoke only the grant holder. Worker release leaves session denies until teardown; placeholders remain. These are point-in-time checks: concurrent path or DACL changes and protected descendant DACLs remain limitations. An omitted target created outside write grants while a command is running is not denied until the next wrap or worker/session re-initialization.
+
+Grant proof uses the shipped path helper's synchronous handle-based DACL mode.
+It pins non-reparse path components and reads target and parent descriptors
+from those handles. Only leading explicit deny ACEs count; inherited denies or
+denies after an allow supply no proof. Obligation capture through native grant
+and publication contains no await. An obligation revision and session/seal
+check guard the effect boundary; asynchronous wraps recheck their captured
+session and seal immediately before entering the native wrapper. Reset
+invalidates admission before its first await.
+
+A failed native deny verification seals the session against further wraps and
+worker grants until reset. Confinement stays marked active so callers cannot
+fall back to host execution. Previously issued commands are not revoked by this
+check.
 
 Isolation between plugins is a macOS and Linux property. There every wrap of
 plugin-owned code — plugin child, delegated worker, bundled hook, bundled MCP
@@ -2150,15 +2177,27 @@ with its own owner rule:
 - **The Windows sandbox helper copy is created with its final security
   descriptor.** `prepareSrtWinExecutable` in
   `src/permissions/srt-win-integrity.ts` picks a random, unpublished
-  `ave-srt-win-` name, and one PowerShell step creates the directory there with
-  the token user as owner and a protected DACL: full control for the user,
+  `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
+  both directories with the token user as owner and a protected DACL: full control for the user,
   read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at that path, a link included, refuses creation. The empty image and
-  the owner marker are then created new inside it, each with its own
+  already at either directory path, a link included, refuses creation. The empty image and
+  the owner marker are then created new inside `bin`, each with its own
   descriptor, and each owner is read on the handle that created the file. No
   step changes the owner or DACL of an object that already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
+  The write-deny target is `bin`, so its parent's inheritable delete-child deny
+  lands on the private outer directory, never `%TEMP%`. Grants inside or writable
+  grants covering that outer directory are refused. Session reset or holder
+  release removes the deny when its final hold ends. A dead holder leaves its
+  ACE until a later native ACL operation prunes its tracked hold.
+  The stale-copy sweep checks both directory owners and DACLs for the new layout,
+  and also accepts the old single-level layout with its original marker checks.
+  It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
+  without recursion. A sandbox-account ACE found on the temporary root emits
+  `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
+  Any remaining legacy ACE requires owner-approved inspection and repair of the
+  exact explicit ACE or its inheritance source, with active holders accounted for.
 - **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
   When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
   directory does not exist yet,

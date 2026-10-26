@@ -17,11 +17,6 @@ import {
   FONT_SIZE_SCALE_VALUES,
   isValidFontFamilyOverride,
 } from "../shared/appearance-font.js";
-import {
-  INITIAL_APP_MODE_ARG_PREFIX,
-  normalizeAppMode,
-  type InitialAppMode,
-} from "../shared/initial-app-mode.js";
 import type {
   NativeContextMenuAction,
   DynamicNativeMenuAction,
@@ -112,19 +107,6 @@ export function applyInitialThemePrime(payload: AveInitialThemePayload | null): 
     }
   } catch {
     // Non-fatal: ThemeProvider's async hydrate still runs as a fallback.
-  }
-}
-
-export function readInitialAppModeArg(): InitialAppMode | null {
-  try {
-    const arg = process.argv.findLast(
-      (a): a is string => typeof a === "string" && a.startsWith(INITIAL_APP_MODE_ARG_PREFIX),
-    );
-    if (!arg) return null;
-    const value = arg.slice(INITIAL_APP_MODE_ARG_PREFIX.length);
-    return normalizeAppMode(value);
-  } catch {
-    return null;
   }
 }
 
@@ -233,8 +215,8 @@ export function buildAveNamespaceExtras() {
       return () => ipcRenderer.removeListener(CHANNELS.preview.documentOpenRequest, listener);
     },
     acknowledgeDocumentOpen: (ack: DocumentOpenAck) => ipcRenderer.invoke(CHANNELS.preview.documentOpenAck, ack),
-    readFile: (filePath: string) =>
-      ipcRenderer.invoke(CHANNELS.preview.readFile, filePath),
+    readFile: (filePath: string, window?: { offset?: number; limit?: number; workspaceRoot?: string }) =>
+      ipcRenderer.invoke(CHANNELS.preview.readFile, filePath, ...(window === undefined ? [] : [window])),
     readDocument: (filePath: string, sheetIndex: number) =>
       ipcRenderer.invoke(CHANNELS.preview.readDocument, filePath, sheetIndex),
   },

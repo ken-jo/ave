@@ -11,7 +11,8 @@ import { approvalSurfaceStub, deferred } from "../../../../../test/renderer/help
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../../shared/side-browser.js";
 import { SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { ChatSidePanel } from "../ChatSidePanel.js";
-import { deriveRovingPath } from "../ChatSidePanelWorkspaces.js";
+import { FileBrowserWorkspace, deriveRovingPath } from "../ChatSidePanelWorkspaces.js";
+import { deriveWorkspaceChanges } from "../../preview/workspace-changes.js";
 import { WebSurfaceLayer } from "../WebSurfaceLayer.js";
 import { PaneFrame } from "../PaneFrame.js";
 import { emptyToolActivity } from "../../../../../test/renderer/helpers.js";
@@ -559,23 +560,13 @@ describe("ChatSidePanel", () => {
       />,
     );
 
-    // Open a file-browser tab from the launcher; the top pane defaults to the
-    // Directory source, so switch to the Session files segment to see artifacts.
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    fireEvent.click(screen.getByTestId("chat-side-panel-file-source-session"));
-    expect(screen.getByTestId("chat-side-panel-file-tree")).toHaveTextContent("report.md");
-    // Each session file says why it is listed: the operation that put it there,
-    // and on hover the path plus the tool that touched it.
-    expect(screen.getByTestId("chat-side-panel-file-tree-operation")).toHaveTextContent("읽음");
-    expect(screen.getByTestId("chat-side-panel-file-tree-file")).toHaveAttribute(
-      "title",
-      "C:/workspace/report.md · read_file",
-    );
-    const splitLayout = screen.getByTestId("chat-side-panel-file-split-layout") as HTMLElement;
-    const splitter = screen.getByTestId("chat-side-panel-file-splitter");
-    expect(splitLayout.style.gridTemplateRows).toContain("45%");
-    fireEvent.keyDown(splitter, { key: "ArrowDown" });
-    expect(splitLayout.style.gridTemplateRows).toContain("50%");
+    fireEvent.click(screen.getByTestId("chat-side-panel-file-filter-session"));
+    const report = await within(screen.getByRole("tree")).findByText("report.md");
+    expect(report.closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("chat-side-panel-file-session-badge")).toHaveTextContent("세션");
+    expect(screen.queryByTestId("chat-side-panel-file-source-segment")).toBeNull();
+    expect(screen.getByTestId("chat-side-panel-file-browser")).toHaveAttribute("data-file-layout", "single");
 
     // Open a browser tab via the "+" dropdown (replaces scattered add buttons).
     // A browser tab is its address row and its page — nothing else: the list
@@ -964,7 +955,7 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
     const fileRow = await screen.findByTestId("chat-side-panel-fs-file");
     fireEvent.click(fileRow);
-    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/ws/docs/architecture.md"));
+    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/ws/docs/architecture.md", { workspaceRoot: "/ws" }));
     // The real content (not a path-only placeholder) renders in the detail pane.
     await screen.findByTestId("chat-side-panel-file-preview");
     await waitFor(() => expect(screen.getByText(/real content/)).toBeTruthy());
@@ -1407,68 +1398,48 @@ describe("ChatSidePanel", () => {
     await screen.findByTestId("chat-side-panel-op-error");
   });
 
-  it("file tab: session segment is disabled with a 0 badge when there are no artifacts", () => {
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
-    );
+  it("file tab keeps zero-count filters available on the same directory tree", async () => {
+    renderPanel(<HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />);
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const sessionSeg = screen.getByTestId("chat-side-panel-file-source-session") as HTMLButtonElement;
-    expect(sessionSeg.disabled).toBe(true);
-    expect(screen.getByTestId("chat-side-panel-file-source-session-count").textContent).toBe("0");
-    // Directory is the default source.
-    expect(screen.getByTestId("chat-side-panel-file-source-directory").getAttribute("aria-pressed")).toBe("true");
+    const sessionFilter = screen.getByTestId("chat-side-panel-file-filter-session");
+    expect(sessionFilter).not.toBeDisabled();
+    expect(sessionFilter).toHaveTextContent("0");
+    expect(screen.getByTestId("chat-side-panel-file-filter-all")).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(sessionFilter);
+    expect(screen.getByTestId("chat-preview-search")).toBeVisible();
+    await screen.findByRole("tree");
   });
 
-  it("file tab: switching to the session segment shows the session artifacts", () => {
-    const targets: ChatPreviewTarget[] = [
-      { id: "file-1", kind: "file", title: "report.md", sourceLabel: "read_file", createdOrder: 1, path: "/ws/report.md", canOpenExternal: false },
-    ];
-    const files: WorkspaceFileItem[] = [
-      { id: "tool:/ws/report.md", path: "/ws/report.md", label: "report.md", detail: "/ws/report.md", sourceLabel: "read_file", operation: "read", previewTargetId: "file-1", canOpenExternal: false },
-    ];
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={targets} files={files} initialSelectedId="file-1" />,
-    );
+  it("file tab integrates session artifacts with the directory before filtering", async () => {
+    const files: WorkspaceFileItem[] = [{ id: "report", path: "/ws/report.md", label: "report.md", detail: "report.md", sourceLabel: "read_file", operation: "read", canOpenExternal: false }];
+    renderPanel(<HarnessPanel api={api()} sessionId="s" targets={[]} files={files} initialSelectedId={null} />);
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    // Default (directory) source does not list the session artifact.
-    expect(screen.getByTestId("chat-side-panel-file-tree")).not.toHaveTextContent("report.md");
-    const sessionSeg = screen.getByTestId("chat-side-panel-file-source-session") as HTMLButtonElement;
-    expect(sessionSeg.disabled).toBe(false);
-    expect(screen.getByTestId("chat-side-panel-file-source-session-count").textContent).toBe("1");
-    fireEvent.click(sessionSeg);
-    expect(screen.getByTestId("chat-side-panel-file-tree")).toHaveTextContent("report.md");
+    await within(screen.getByRole("tree")).findByText("report.md");
+    const sessionFilter = screen.getByTestId("chat-side-panel-file-filter-session");
+    expect(sessionFilter).toHaveTextContent("1");
+    fireEvent.click(sessionFilter);
+    expect(screen.getByRole("tree")).toHaveTextContent("report.md");
   });
 
-  it("file tab: the source segment strip is compact (h-6 buttons, tight padding)", () => {
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />,
-    );
+  it("file tab keeps filters compact with pressed-state semantics", () => {
+    renderPanel(<HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />);
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    // R3: the strip must not crowd the narrow file pane — 24px buttons + py-0.5.
-    const strip = screen.getByTestId("chat-side-panel-file-source-segment");
-    expect(strip.className).toContain("py-0.5");
-    const dir = screen.getByTestId("chat-side-panel-file-source-directory");
-    expect(dir.className).toContain("h-6");
-    expect(dir.className).not.toContain("h-7");
+    const all = screen.getByTestId("chat-side-panel-file-filter-all");
+    expect(all).toHaveClass("h-7");
+    fireEvent.click(screen.getByTestId("chat-side-panel-file-filter-changed"));
+    expect(all).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByTestId("chat-side-panel-file-filter-changed")).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("file tab: the search box is hidden on the Directory segment and shown on Session (no dead search)", () => {
-    const targets: ChatPreviewTarget[] = [
-      { id: "file-1", kind: "file", title: "report.md", sourceLabel: "read_file", createdOrder: 1, path: "/ws/report.md", canOpenExternal: false },
-    ];
-    const files: WorkspaceFileItem[] = [
-      { id: "tool:/ws/report.md", path: "/ws/report.md", label: "report.md", detail: "/ws/report.md", sourceLabel: "read_file", operation: "read", previewTargetId: "file-1", canOpenExternal: false },
-    ];
-    renderPanel(
-      <HarnessPanel api={api()} sessionId="s" targets={targets} files={files} initialSelectedId="file-1" />,
-    );
+  it("file tab search filters directory and session rows in the same tree", async () => {
+    stubRichWorkspace();
+    renderPanel(<HarnessPanel api={api()} sessionId="s" targets={[]} files={[]} initialSelectedId={null} />);
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    // Directory is the default source; the search box would be a no-op there
-    // (ProjectRootsBrowser takes no query), so it is not rendered.
-    expect(screen.queryByTestId("chat-preview-search")).toBeNull();
-    // Switching to Session (which the search actually filters) reveals it.
-    fireEvent.click(screen.getByTestId("chat-side-panel-file-source-session"));
-    expect(screen.getByTestId("chat-preview-search")).toBeTruthy();
+    await within(screen.getByRole("tree")).findByText("readme.md");
+    fireEvent.change(screen.getByTestId("chat-preview-search"), { target: { value: "missing" } });
+    expect(screen.getByRole("tree")).not.toHaveTextContent("readme.md");
+    fireEvent.change(screen.getByTestId("chat-preview-search"), { target: { value: "readme" } });
+    expect(screen.getByRole("tree")).toHaveTextContent("readme.md");
   });
 
   it("subagent tab: lists spawns (running first) and shows the selected one's detail", () => {
@@ -2502,6 +2473,151 @@ describe("ChatSidePanel", () => {
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("side-chat")));
     expect(screen.getByTestId("side-chat-view")).toBeTruthy();
   });
+  it("unifies directory and session metadata under filters without source switches", async () => {
+    stubRichWorkspace();
+    const files: WorkspaceFileItem[] = [
+      { id: "edit", path: "/ws/alpha/a1.md", label: "a1.md", detail: "alpha/a1.md", sourceLabel: "edit_file", operation: "modify", canOpenExternal: false },
+      { id: "outside", path: "/elsewhere/artifact.md", label: "artifact.md", detail: "artifact.md", sourceLabel: "attachment", operation: "attachment", canOpenExternal: false },
+    ];
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="s" files={files} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
+    expect(screen.queryByTestId("chat-side-panel-file-source-segment")).toBeNull();
+    await screen.findByTestId("chat-side-panel-file-filter-changed");
+    expect(screen.getByTestId("chat-side-panel-file-filter-session")).toHaveTextContent("1");
+    fireEvent.click(screen.getByTestId("chat-side-panel-file-filter-changed"));
+    const tree = screen.getByRole("tree");
+    expect(tree).toHaveTextContent("alpha");
+    expect(tree).not.toHaveTextContent("readme.md");
+    fireEvent.click(within(tree).getByText("alpha"));
+    expect(await within(tree).findByText("a1.md")).toBeTruthy();
+    expect(within(tree).queryByTestId("chat-side-panel-file-session-badge")).toBeNull();
+    fireEvent.click(screen.getByTestId("chat-side-panel-file-filter-session"));
+    expect(tree).toHaveTextContent("프로젝트 밖");
+    expect(tree).toHaveTextContent("artifact.md");
+  });
+
+  it("reveals a requested file through ancestors and clears search with the changed filter", async () => {
+    stubRichWorkspace();
+    const files: WorkspaceFileItem[] = [{ id: "edit", path: "/ws/alpha/a1.md", label: "a1.md", detail: "alpha/a1.md", sourceLabel: "edit_file", operation: "modify", canOpenExternal: false }];
+    const props = { api: api(), sessionId: "s", files, targetById: new Map<string, ChatPreviewTarget>(), selectedId: null, onSelect: vi.fn() };
+    const result = renderPanel(<FileBrowserWorkspace {...props} />);
+    const search = await screen.findByRole("textbox");
+    fireEvent.change(search, { target: { value: "missing" } });
+    result.rerender(<FileBrowserWorkspace {...props} revealRequest={{ token: 1, path: "alpha/a1.md" }} />);
+    await waitFor(() => expect(search).toHaveValue(""));
+    expect(screen.getByTestId("chat-side-panel-file-filter-changed")).toHaveAttribute("aria-pressed", "true");
+    const selected = await within(screen.getByRole("tree")).findByText("a1.md");
+    expect(selected.closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+    fireEvent.change(search, { target: { value: "follow-up" } });
+    result.rerender(<FileBrowserWorkspace {...props} files={[...files]} revealRequest={{ token: 1, path: "alpha/a1.md" }} />);
+    expect(search).toHaveValue("follow-up");
+    result.rerender(<FileBrowserWorkspace {...props} revealRequest={{ token: 2, path: "alpha/a1.md" }} />);
+    await waitFor(() => expect(search).toHaveValue(""));
+  });
+
+  it("uses a persisted horizontal divider in wide Files and arrow keys resize it", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    stubRichWorkspace();
+    const bridge = api();
+    renderPanel(<FileBrowserWorkspace api={bridge} sessionId="s" files={[]} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
+    await waitFor(() => expect(screen.getByTestId("chat-side-panel-file-browser")).toHaveAttribute("data-file-layout", "columns"));
+    const divider = screen.getByRole("separator");
+    expect(divider).toHaveAttribute("aria-orientation", "vertical");
+    expect(divider).toHaveAttribute("aria-valuenow", "300");
+    fireEvent.keyDown(divider, { key: "ArrowRight" });
+    expect(bridge.updateSettings).toHaveBeenCalledWith({ system: { sidePanelFileTreeWidth: 316 } });
+    expect(divider).toHaveAttribute("aria-valuenow", "316");
+    expect(screen.queryByTestId("chat-side-panel-file-split-layout")).toBeNull();
+  });
+
+  it("narrow selection opens detail and Back returns focus to the selected tree row", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(360);
+    stubRichWorkspace();
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="s" files={[]} targetById={new Map()} selectedId={null} onSelect={vi.fn()} />);
+    const row = (await within(screen.getByRole("tree")).findByText("readme.md")).closest<HTMLElement>('[role="treeitem"]')!;
+    act(() => row.focus());
+    fireEvent.keyDown(row, { key: "Enter" });
+    expect(screen.getByTestId("chat-side-panel-file-tree")).toHaveClass("hidden");
+    expect(screen.getByTestId("chat-side-panel-file-detail")).not.toHaveClass("hidden");
+    fireEvent.click(screen.getByTestId("chat-side-panel-file-back"));
+    expect(screen.getByTestId("chat-side-panel-file-tree")).not.toHaveClass("hidden");
+    await waitFor(() => expect(row).toHaveFocus());
+    expect(row).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("reveals a changed file under a nondefault project with Windows path separators", async () => {
+    const current = window.ave;
+    vi.stubGlobal("ave", { ...current, workspace: { ...current.workspace,
+      listRoots: vi.fn(async () => ({ ok: true, roots: [
+        { path: "C:\\default", isDefault: true }, { path: "C:\\project", isDefault: false },
+      ] })),
+      listDir: vi.fn(async (path: string) => ({ ok: true, path, entries: [], truncated: false })),
+    } });
+    const files: WorkspaceFileItem[] = [{ id: "win", path: "C:\\project\\src\\a.ts", label: "a.ts", detail: "src/a.ts", sourceLabel: "edit_file", operation: "modify", canOpenExternal: false }];
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="win" files={files} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "C:/project/src/a.ts" }} />);
+    await waitFor(() => expect(screen.getByTestId("chat-side-panel-root-select")).toHaveValue("C:\\project"));
+    const selected = await within(screen.getByRole("tree")).findByText("a.ts");
+    expect(selected.closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
+  });
+
+  it.each([false, true])("resolves a relative session preview against its nondefault conversation root, ranged: %s", async (ranged) => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    stubRichWorkspace({ listRoots: vi.fn(async () => ({ ok: true, roots: [{ path: "/projects/default", isDefault: true }, { path: "/projects/A", isDefault: false }] })) });
+    const readFile = vi.fn(async () => ({ ok: true as const, path: "/projects/A/src/a.ts", content: "Project A source", truncated: false }));
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    const target: ChatPreviewTarget = { id: "project-a-source", kind: "file", title: "a.ts", sourceLabel: "read_file", createdOrder: 1,
+      path: "src/a.ts", canOpenExternal: false, ...(ranged ? { startLine: 3, endLine: 5 } : {}) };
+    const files: WorkspaceFileItem[] = [{ id: "project-a-file", path: target.path, label: target.title, detail: target.path,
+      sourceLabel: "read_file", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
+    const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/projects/A", review: null });
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="project-a" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/projects/A/src/a.ts", ranged ? { offset: 2, limit: 3, workspaceRoot: "/projects/A" } : { workspaceRoot: "/projects/A" }));
+    expect(readFile).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves an indexed session file inline preview when its source is unavailable locally", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    stubRichWorkspace();
+    const readFile = vi.fn(async () => ({ ok: false as const, error: "read-failed" as const }));
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    const target: ChatPreviewTarget = { id: "indexed-result", kind: "file", title: "search.md", sourceLabel: "search", createdOrder: 1,
+      path: "/unavailable/docs/search.md", inlineText: "Supplied indexed document preview", canOpenExternal: false };
+    const files: WorkspaceFileItem[] = [{ id: "indexed-file", path: target.path, label: target.title, detail: target.path,
+      sourceLabel: "search", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="indexed" files={files} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    expect(await screen.findByText("Supplied indexed document preview")).toBeVisible();
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("prefers latest-turn diff detail over a matching inline session preview", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    stubRichWorkspace();
+    const target: ChatPreviewTarget = { id: "indexed-changed", kind: "file", title: "readme.md", sourceLabel: "search", createdOrder: 1,
+      path: "/ws/readme.md", inlineText: "Older indexed preview", canOpenExternal: false };
+    const files: WorkspaceFileItem[] = [{ id: "changed-file", path: target.path, label: target.title, detail: target.path,
+      sourceLabel: "search", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
+    const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/ws", review: { sessionId: "indexed", turnId: "latest",
+      files: [{ path: "readme.md", bytes: 6, lineCount: 1, added: 1, removed: 1, operation: "modify", countsKnown: true, referenceable: true,
+        hunks: [{ id: "latest-hunk", oldText: "before\n", newText: "after\n", oldStartLine: 1, newStartLine: 1, startLine: 1, endLine: 1 }] }] } });
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="indexed" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    expect(await screen.findByTestId("turn-change-detail")).toHaveTextContent("after");
+    expect(screen.queryByText("Older indexed preview")).toBeNull();
+  });
+
+  it("previews the current image when a recorded changed file no longer has readable diff hunks", async () => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    const readFile = vi.fn(async () => ({ ok: true, path: "/ws/source.png", image: { dataUrl: "data:image/png;base64,aW1hZ2U=", mimeType: "image/png" }, truncated: false }));
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    const changes = deriveWorkspaceChanges({ files: [], targets: [], workspaceRoot: "/ws", review: {
+      sessionId: "image-session", turnId: "latest", files: [{ path: "source.png", bytes: 8, lineCount: 0,
+        added: 8, removed: 2, operation: "modify", countsKnown: true, referenceable: false, hunks: [] }],
+    } });
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="image-session" files={[]} changes={changes} targetById={new Map()} selectedId={null} onSelect={vi.fn()} revealRequest={{ token: 1, path: "/ws/source.png" }} />);
+    expect(await screen.findByTestId("file-preview-image")).toHaveAttribute("src", "data:image/png;base64,aW1hZ2U=");
+    expect(screen.queryByTestId("turn-change-detail")).toBeNull();
+    expect(screen.getByTestId("chat-side-panel-file-change-counts")).toHaveTextContent("+8 −2");
+    expect(readFile).toHaveBeenCalledWith("/ws/source.png", { workspaceRoot: "/ws" });
+  });
+
 });
 
 describe("ChatSidePanel inside a chat group", () => {
@@ -2583,7 +2699,7 @@ describe("ChatSidePanel inside a chat group", () => {
     expect(toolRows[1]).toHaveTextContent("1.4s");
   });
 
-  it("file tab: the changed-files segment lists created / modified / deleted / moved files, latest first, with the change on each row", () => {
+  it("file tab integrates created, modified, deleted and moved state in the changed tree filter", async () => {
     const files: WorkspaceFileItem[] = [
       { id: "tool:/ws/read.md", path: "/ws/read.md", label: "read.md", detail: "/ws/read.md", sourceLabel: "read_file", operation: "read", canOpenExternal: false },
       { id: "tool:/ws/old.md", path: "/ws/old.md", label: "old.md", detail: "/ws/old.md", sourceLabel: "delete_file", operation: "delete", canOpenExternal: false },
@@ -2595,21 +2711,17 @@ describe("ChatSidePanel inside a chat group", () => {
       <HarnessPanel api={api()} sessionId="s" targets={[]} files={files} initialSelectedId={null} />,
     );
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    const changedSeg = screen.getByTestId("chat-side-panel-file-source-changed") as HTMLButtonElement;
-    expect(changedSeg.disabled).toBe(false);
-    // The read file is not a change, so it is not counted.
-    expect(screen.getByTestId("chat-side-panel-file-source-changed-count").textContent).toBe("4");
-    fireEvent.click(changedSeg);
-    const rows = screen.getAllByTestId("chat-side-panel-file-change-row");
+    const changed = screen.getByTestId("chat-side-panel-file-filter-changed");
+    expect(changed).toHaveTextContent("4");
+    fireEvent.click(changed);
+    await within(screen.getByRole("tree")).findByText("old.md");
+    const rows = within(screen.getByRole("tree")).getAllByRole("treeitem");
     expect(rows.map((row) => row.textContent)).toEqual([
-      expect.stringContaining("new.md"),
-      expect.stringContaining("moved.md"),
-      expect.stringContaining("edit.md"),
-      expect.stringContaining("old.md"),
+      expect.stringContaining("edit.md"), expect.stringContaining("moved.md"), expect.stringContaining("new.md"), expect.stringContaining("old.md"),
     ]);
-    expect(screen.getAllByTestId("chat-side-panel-file-change-operation").map((badge) => badge.textContent))
-      .toEqual(["생성", "이동", "수정", "삭제"]);
-    expect(screen.getByTestId("chat-side-panel-file-changes")).not.toHaveTextContent("read.md");
+    expect(screen.getAllByTestId("chat-side-panel-file-change-operation").map((badge) => badge.title)).toEqual(["수정", "이동", "생성", "삭제"]);
+    expect(within(screen.getByRole("tree")).getByText("old.md")).toHaveClass("line-through");
+    expect(screen.getByRole("tree")).not.toHaveTextContent("read.md");
   });
 
   it.each([
@@ -2617,7 +2729,7 @@ describe("ChatSidePanel inside a chat group", () => {
     ["error", "오류"],
     ["cancelled", "중단됨"],
     ["done", "생성"],
-  ] as const)("shows transfer state %s in both file lists", (status, label) => {
+  ] as const)("shows transfer state %s in the unified tree and its filters", async (status, label) => {
     const files: WorkspaceFileItem[] = ["copy_path", "extract_archive"].map((name) => ({
       id: `tool:/ws/${name}-destination`,
       path: `/ws/${name}-destination`,
@@ -2630,11 +2742,11 @@ describe("ChatSidePanel inside a chat group", () => {
     }));
     renderPanel(<HarnessPanel api={api()} sessionId="s" targets={[]} files={files} initialSelectedId={null} />);
     fireEvent.click(screen.getByTestId(chatSidePanelLauncherTestId("file-browser")));
-    fireEvent.click(screen.getByTestId("chat-side-panel-file-source-session"));
-    expect(screen.getAllByTestId("chat-side-panel-file-tree-operation").map((badge) => badge.textContent))
-      .toEqual([label, label]);
-    fireEvent.click(screen.getByTestId("chat-side-panel-file-source-changed"));
-    expect(screen.getAllByTestId("chat-side-panel-file-change-operation").map((badge) => badge.textContent))
-      .toEqual([label, label]);
+    fireEvent.click(screen.getByTestId("chat-side-panel-file-filter-all"));
+    await within(screen.getByRole("tree")).findByText("copy_path-destination");
+    const statusElements = () => screen.getAllByTestId(status === "done" ? "chat-side-panel-file-change-operation" : "chat-side-panel-file-state");
+    expect(statusElements().map((badge) => status === "done" ? badge.title : badge.textContent)).toEqual([label, label]);
+    fireEvent.click(screen.getByTestId("chat-side-panel-file-filter-changed"));
+    expect(statusElements().map((badge) => status === "done" ? badge.title : badge.textContent)).toEqual([label, label]);
   });
 });

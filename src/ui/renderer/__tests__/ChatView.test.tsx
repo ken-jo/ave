@@ -1,7 +1,7 @@
 /** Render through App because ChatView requires its chat context. */
 import "../../../../test/renderer/setup.js";
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { act, fireEvent, waitFor } from "@testing-library/react";
+import { act, fireEvent, waitFor, within } from "@testing-library/react";
 import { renderApp } from "../../../../test/renderer/render-app.js";
 import { deferred, submitChatMessage } from "../../../../test/renderer/helpers.js";
 import { MOCK_DEFAULT_SESSION_ID, MOCK_DEFAULT_SETTINGS } from "../../../../test/renderer/mock-ave-api.js";
@@ -13,6 +13,7 @@ import {
 import { TEST_IDS, testIdSelector } from "../../../shared/test-ids.js";
 import { SUGGESTIONS_SESSION_ID } from "../../../shared/suggestions-session.js";
 import { t } from "../../../i18n/runtime.js";
+import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
 
 function installDeterministicScrollMetrics(initialScrollHeight = 2400, clientHeight = 600) {
   const descriptors = {
@@ -268,7 +269,7 @@ describe("ChatView", () => {
     });
   });
 
-  it("keeps the work-mode composer dock in the reading column", async () => {
+  it("keeps the empty composer dock in the reading column", async () => {
     const { container } = await renderApp({ hasApiKey: true });
 
     await waitFor(() => {
@@ -398,7 +399,7 @@ describe("ChatView", () => {
     expect(api.hasApiKey.mock.calls.length).toBe(apiKeyChecksBeforeSend);
   });
 
-  it("keeps an active conversation composer on the full-width chat-mode dock", async () => {
+  it("keeps an active conversation in the same reading-column layout", async () => {
     const { container } = await renderApp({
       hasApiKey: true,
       history: {
@@ -419,19 +420,11 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("활성 대화 답변");
     });
 
-    await act(async () => {
-      fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
-    });
-
-    await waitFor(() => {
-      expect(container.querySelector('[data-testid="app-mode-chat"]')?.getAttribute("aria-pressed")).toBe("true");
-      const dock = container.querySelector('[data-testid="composer-queue-dock"]');
-      expect(dock).not.toBeNull();
-      expect(dock).toHaveClass("w-full");
-      expect(dock).toHaveClass("max-w-full");
-      expect(dock).not.toHaveClass("mx-auto");
-      expect(dock).not.toHaveClass("max-w-(--reading-column-max)");
-    });
+    const dock = container.querySelector('[data-testid="composer-queue-dock"]');
+    const transcript = container.querySelector('[data-testid="chat-transcript-log"]');
+    expect(dock).not.toBeNull();
+    expect(dock).toHaveClass("w-full", "mx-auto", "max-w-(--reading-column-max)");
+    expect(transcript).toHaveClass("chat-reading-column", "max-w-(--reading-column-max)");
   });
 
   it("renders assistant text after stream text_delta event", async () => {
@@ -1019,6 +1012,62 @@ describe("ChatView", () => {
       expect(container.textContent).toContain("other session probe");
       expect(container.textContent).not.toContain("current session probe");
     });
+  });
+
+  it.each([360, 1200])("opens a saved file location directly in a workspace preview tab at %s pixels", async (canvasWidth) => {
+    const sessionId = "file-location-session";
+    const reference = { path: "src/example.ts", startLine: 700, endLine: 701, turnId: "source-turn" };
+    const { container } = await renderApp({
+      canvasWidth,
+      workspaceRoots: [{ path: "/workspace/project", isDefault: true }],
+      currentSession: sessionId,
+      mainActiveState: { mainActiveSessionId: sessionId, mainActiveMode: "resume", updatedAt: new Date().toISOString() },
+      history: { sessionId, projectRoot: "/workspace/project", projectName: "project", messages: [{ index: 0, role: "user", content: `Inspect ${formatFileMentionReference(1, reference)} please.` }] },
+    });
+    vi.mocked(window.ave.preview.readFile).mockResolvedValue({ ok: true, content: "selected line\nnext line", path: reference.path });
+    const chip = await waitFor(() => within(container).getByRole("button", { name: "src/example.ts:700-701" }));
+    await act(async () => fireEvent.click(chip));
+    await waitFor(() => {
+      expect(window.ave.preview.readFile).toHaveBeenCalledWith(reference.path, { offset: 699, limit: 2, workspaceRoot: "/workspace/project" });
+      expect(container.querySelector('[data-testid="file-preview-line-700"]')?.textContent).toContain("selected line");
+    });
+    expect(container.querySelector(testIdSelector(TEST_IDS.chatSidePanel))).not.toBeNull();
+    expect(container.querySelector('[data-testid="chat-side-panel-launcher"]')).toBeNull();
+    await waitFor(() => {
+      const panel = container.querySelector('[data-testid="chat-side-panel-motion"]');
+      expect(panel?.getAttribute("aria-hidden")).toBe("false");
+      expect(panel?.getAttribute("data-panel-mode")).toBe(canvasWidth === 360 ? "overlay" : "docked");
+    });
+  });
+
+  it("keeps the selected project for reloaded file locations opened from the sidebar", async () => {
+    const sessionId = "sidebar-file-location-session";
+    const projectRoot = "/workspace/selected-project";
+    const first = { path: "src/first.ts", startLine: 3, endLine: 4, turnId: "source-turn" };
+    const second = { path: "src/second.ts", startLine: 7, endLine: 8, turnId: "source-turn" };
+    const { container } = await renderApp({
+      workspaceRoots: [{ path: "/workspace/default", isDefault: true }, { path: projectRoot, isDefault: false }],
+      currentSession: sessionId,
+      sessions: [{ id: sessionId, modifiedAt: new Date().toISOString(), projectRoot, projectName: "selected-project" }],
+      mainActiveState: { mainActiveSessionId: sessionId, mainActiveMode: "resume", updatedAt: new Date().toISOString() },
+      history: { sessionId, projectRoot, projectName: "selected-project", messages: [{ index: 0, role: "user", content: `${formatFileMentionReference(1, first)} ${formatFileMentionReference(2, second)}` }] },
+    });
+    vi.mocked(window.ave.preview.readFile).mockResolvedValue({ ok: true, content: "selected line\nnext line", lineCount: 2 });
+    const panelToggle = await waitFor(() => {
+      expect(within(container).getByRole("button", { name: "src/first.ts:3-4" })).toBeTruthy();
+      return container.querySelector(testIdSelector(TEST_IDS.panePanelToggle)) as HTMLButtonElement;
+    });
+    await act(async () => fireEvent.click(panelToggle));
+    const fileLauncher = await waitFor(() => within(container).getByTestId("chat-side-panel-launcher-file-browser"));
+    await act(async () => fireEvent.click(fileLauncher));
+    await waitFor(() => expect(window.ave.preview.readFile).toHaveBeenCalledWith(`${projectRoot}/${first.path}`, { offset: 2, limit: 2, workspaceRoot: projectRoot }));
+    await act(async () => fireEvent.click(within(container).getByTestId("chat-side-panel-file-filter-session")));
+    const sourceFolder = await within(container).findByRole("treeitem", { name: /^src/ });
+    await act(async () => fireEvent.click(sourceFolder));
+    const secondFile = await within(container).findByRole("treeitem", { name: /second.ts/ });
+    await act(async () => fireEvent.click(secondFile));
+    await waitFor(() => expect(window.ave.preview.readFile).toHaveBeenCalledWith(`${projectRoot}/${second.path}`, { offset: 6, limit: 2, workspaceRoot: projectRoot }));
+    expect(container.querySelector('[data-testid="chat-side-panel-file-preview"]')?.textContent).not.toContain(projectRoot);
   });
 
   it("keeps the preview rail closed by default and opens it without unmounting chat scroll", async () => {

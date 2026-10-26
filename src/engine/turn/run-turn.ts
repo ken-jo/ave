@@ -352,12 +352,12 @@ async function runTurnInSpan(
             });
             callbacks.onFallback?.(from, to);
           },
-          onError: (error, systemNotice, classifierCategory) => {
-            turnTrace?.span.setStatus({
+          onError: (error, systemNotice, classifierCategory, operation) => {
+            if (!operation) turnTrace?.span.setStatus({
               code: SpanStatusCode.ERROR,
               ...(systemNotice ? { message: systemNotice } : {}),
             });
-            callbacks.onError?.(error, systemNotice, classifierCategory);
+            callbacks.onError?.(error, systemNotice, classifierCategory, operation);
           },
           onToolStart: (name, input, meta) => {
             turnToolStarts.set(meta.toolUseId, Date.now());
