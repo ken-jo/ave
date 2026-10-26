@@ -9,6 +9,7 @@ import {
   beforeAll,
   beforeEach,
   vi,
+  type MockInstance,
 } from "vitest";
 import { execFileSync, spawn } from "node:child_process";
 import { createServer, type Server } from "node:http";
@@ -24,6 +25,8 @@ import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+import { windowsReadDenyKey, type WindowsReadDenyEvidence } from "../../shared/windows-read-deny-evidence.js";
+import * as readDenyEvidenceModule from "../../shared/windows-read-deny-evidence.js";
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -47,6 +50,7 @@ import {
   resetAsrtSandbox,
   wrapToolCommand,
   wrapWorkerCommand,
+  wrapTerminalCommand,
   cleanupAsrtSandboxAfterCommand,
   normalizeUnionForAsrt,
   computeDynamicEndpointHosts,
@@ -63,6 +67,7 @@ import {
   getVendoredApplySeccompPath,
   getVendoredJavaProxyAgentJarPath,
   checkAsrtDependencies,
+  _getWindowsReadDenySnapshotForTest,
 } from "../asrt-sandbox.js";
 import { buildMandatorySandboxWritePolicy } from "../sandbox-write-policy.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
@@ -131,7 +136,7 @@ function bare(paths: readonly unknown[]): string[] {
   return paths.map((path) => String(path).replace(/[\\/]$/, ""));
 }
 
-// A row of an ungranted config as srt-win receives it: POSIX-rooted rows never reach it (they would resolve on the current drive), nor do rows in the profile, where the sandbox user has no rights.
+// Expected rows for the absent, ungranted profile targets in these config-only tests.
 function reachesAsrt(path: string): boolean {
   if (process.platform !== "win32") return true;
   const home = homedir().toLowerCase();
@@ -526,6 +531,86 @@ describe("asrt-sandbox — self-enforcing gate (PR #1356 NIT)", () => {
   it("wrapWorkerCommand throws when the sandbox is not active", async () => {
     expect(isAsrtSandboxActive()).toBe(false);
     await expect(wrapWorkerCommand("echo nope", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/not active/i);
+  });
+});
+
+describe.runIf(process.platform === "win32")("asrt-sandbox — session read evidence", () => {
+  let reader: MockInstance<typeof readDenyEvidenceModule.readWindowsReadDenyEvidence>;
+
+  beforeEach(async () => {
+    reader = vi.spyOn(readDenyEvidenceModule, "readWindowsReadDenyEvidence").mockImplementation(async paths =>
+      new Map(paths.map(path => [windowsReadDenyKey(path), { status: "missing" as const }])));
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    expect(reader).toHaveBeenCalledTimes(1);
+    reader.mockClear();
+  });
+
+  afterEach(async () => {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    reader.mockRestore();
+  });
+
+  it("tool wraps reuse base read evidence without a native query", async () => {
+    await wrapToolCommand("echo covered", { commandId: TEST_COMMAND_ID,
+      filesystem: { denyRead: getDefaultSensitiveReadDenyPaths() } });
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("builtin shell read floors reuse base read evidence without a native query", async () => {
+    const { denyRead } = getBuiltinShellReadPolicy([], homedir());
+    await wrapToolCommand("echo covered", { commandId: TEST_COMMAND_ID, filesystem: { denyRead } });
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("equivalent path spellings reuse base read evidence without a native query", async () => {
+    const target = join(homedir(), ".ssh").toUpperCase().replace(/\\/g, "/") + "/";
+    await wrapToolCommand("echo covered", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [target] } });
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("worker wraps reuse base read evidence without a native query", async () => {
+    await wrapWorkerCommand("echo covered", { commandId: TEST_COMMAND_ID,
+      filesystem: { denyRead: getDefaultSensitiveReadDenyPaths() } });
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("terminal wraps reuse base read evidence without a native query", async () => {
+    await wrapTerminalCommand("echo covered", { commandId: TEST_COMMAND_ID, ownTty: "/dev/ttys000",
+      filesystem: { denyRead: getDefaultSensitiveReadDenyPaths() } });
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("an uncovered profile deny queries only that path", async () => {
+    const extra = join(homedir(), ".extra-profile-secret");
+    await wrapToolCommand("echo extra", { commandId: TEST_COMMAND_ID,
+      filesystem: { denyRead: [...getDefaultSensitiveReadDenyPaths(), extra] } });
+    expect(reader.mock.calls).toEqual([[[extra]]]);
+  });
+
+  it("worker socket registration reuses base read evidence without a native query", async () => {
+    const socketDir = join(homedir(), "worker-sockets");
+    const holder = {};
+    await registerWorkerUnixSocketDir(socketDir, holder);
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("worker socket unregistration reuses base read evidence without a native query", async () => {
+    const socketDir = join(homedir(), "worker-sockets");
+    const holder = {};
+    await registerWorkerUnixSocketDir(socketDir, holder);
+    reader.mockClear();
+    await unregisterWorkerUnixSocketDir(socketDir, holder);
+    expect(reader).not.toHaveBeenCalled();
+  });
+
+  it("reset clears read evidence and reinitialization takes a fresh snapshot", async () => {
+    const initial = _getWindowsReadDenySnapshotForTest();
+    expect(initial?.size).toBeGreaterThan(0);
+    await resetAsrtSandbox();
+    expect(_getWindowsReadDenySnapshotForTest()).toBeUndefined();
+    await initializeAsrtSandbox({ allowedDomains: [] });
+    expect(reader).toHaveBeenCalledTimes(1);
+    expect(_getWindowsReadDenySnapshotForTest()).not.toBe(initial);
   });
 });
 
@@ -1142,8 +1227,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
     expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
-    expect(bare(config.filesystem.denyRead)).toContain(runtime);
-    expect(bare(config.filesystem.denyWrite)).toContain(runtime);
+    expect(bare(config.filesystem.denyRead)).toContain(join(profile, "subscription-runtimes"));
+    expect(bare(config.filesystem.denyWrite)).toContain(join(profile, "subscription-runtimes"));
     expect(config.filesystem.denyRead).not.toContain(profile);
     expect(config.filesystem.denyWrite).not.toContain(profile);
   });
@@ -1277,7 +1362,70 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
-  it("Windows: a deny in the profile reaches srt-win only when overlapping a grant", () => {
+  it("Windows: profile read denies retain exposed targets and evidence failures", () => {
+    const previousHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-deny-evidence-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const exposed = join(profile, ".ssh", "id_ed25519");
+      const privateFile = join(profile, "private-file");
+      const missing = join(profile, "missing-file");
+      const failed = join(profile, "failed-file");
+      const evidence = new Map<string, WindowsReadDenyEvidence>([
+        [exposed.toLowerCase(), { status: "readable", reason: "S-1-1-0" } as const],
+        [privateFile.toLowerCase(), { status: "private" } as const],
+        [missing.toLowerCase(), { status: "missing" } as const],
+        [failed.toLowerCase(), { status: "error", reason: "Access denied" } as const],
+      ]);
+      const config = buildSandboxConfig({ denyRead: [exposed, privateFile, missing, failed] }, evidence);
+      const denies = bare(config.filesystem.denyRead);
+      expect(denies).toContain(exposed);
+      expect(denies).not.toContain(privateFile);
+      expect(denies).not.toContain(missing);
+      expect(denies).toContain(failed);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = previousHome;
+    }
+  });
+
+  it("Windows: profile read denies retain reparse targets in command overrides", () => {
+    const previousHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-deny-evidence-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const target = join(profile, "linked-secret");
+      const config = buildPerCommandSandboxCustomConfig({ denyRead: [target] }, undefined, undefined,
+        new Map([[target.toLowerCase(), { status: "reparse" } as const]]));
+      expect(config?.filesystem?.denyRead).toContain(target);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = previousHome;
+    }
+  });
+
+  it("Windows: profile read denies retain a failed DACL query", () => {
+    const previousHome = process.env.AVE_ASRT_TEST_HOME;
+    const profile = join(tmpdir(), "ave-deny-evidence-profile");
+    process.env.AVE_ASRT_TEST_HOME = profile;
+    setProcessPlatform("win32");
+    try {
+      const target = join(profile, "unreadable-secret");
+      const config = buildSandboxConfig({ denyRead: [target] },
+        new Map([[target.toLowerCase(), { status: "error", reason: "Access denied" } as const]]));
+      expect(config.filesystem.denyRead).toContain(target);
+    } finally {
+      setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
+      if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
+      else process.env.AVE_ASRT_TEST_HOME = previousHome;
+    }
+  });
+
+  it("Windows: missing profile denies reach srt-win only when overlapping a grant", () => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-windeny-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
@@ -1293,7 +1441,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(String);
       // Under the grant: kept, the sandbox user could otherwise reach it.
       expect(denies).toContain(join(work, "locked"));
-      // Elsewhere in the profile the sandbox user has no rights, and srt-win would stamp the profile itself as the parent (404 s measured).
+      // Missing disjoint rows would create placeholders and stamp the profile itself as the parent.
       expect(denies.filter((p) => p.startsWith(profile) && !p.startsWith(work))).toEqual([]);
       // Outside the profile: kept.
       expect(denies).toContain(join(FAKE_AVE_HOME, "settings.json"));
@@ -1344,15 +1492,16 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // A `C:\` grant now contains machine roots, so the drive-root row uses a synthetic, uninstalled drive.
     const realpath = vi.spyOn(realpathSync, "native").mockImplementation(((path) => {
       const candidate = resolve(String(path));
-      return /^Z:\\/i.test(candidate) ? candidate : nativeRealpath(path);
+      return /^Z:\\/i.test(candidate) || /^\\\\server\\profiles\\tester(?:\\|$)/i.test(candidate) ? candidate : nativeRealpath(path);
     }) as typeof realpathSync.native);
     try {
       const config = buildSandboxConfig({
         allowedDomains: [],
-        allowWrite: [grant],
+        // Synthetic network reads exercise coverage without filesystem write discovery.
+        ...(/^[/\\]{2}server[/\\]/i.test(grant) ? { allowRead: [grant] } : { allowWrite: [grant] }),
         denyRead: [target],
         denyWrite: [target],
-      });
+      }, new Map([[windowsReadDenyKey(target), { status: "missing" } as const]]));
       expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
       expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
     } finally {
