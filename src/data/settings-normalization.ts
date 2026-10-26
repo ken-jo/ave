@@ -53,7 +53,6 @@ import {
   normalizeLocaleSetting,
 } from "../i18n/index.js";
 import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
-import { normalizeAppMode } from "../shared/initial-app-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
 import { isInlineViewKey } from "../shared/view-key.js";
@@ -1125,16 +1124,6 @@ export function normalizeSystem(input: unknown): SystemSettings {
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
   acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
-  const rawAppMode = obj.appMode;
-  const normalizedAppMode = normalizeAppMode(rawAppMode);
-  if (normalizedAppMode !== null) {
-    result.appMode = normalizedAppMode;
-  } else if (rawAppMode !== undefined) {
-    log.warn(
-      `system.appMode invalid (received ${JSON.stringify(rawAppMode)}), using default %s`,
-      DEFAULT_SETTINGS.system.appMode,
-    );
-  }
   const rawLocalApi = obj.localApiServer;
   acceptField(result, "localApiServer", rawLocalApi, isBooleanValue, "system", STORED_FIELD);
   const rawHardwareAcceleration = obj.hardwareAcceleration;

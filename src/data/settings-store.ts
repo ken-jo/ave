@@ -53,7 +53,6 @@ import {
   normalizeLocaleSetting,
   type Locale,
 } from "../i18n/locale.js";
-import { normalizeAppMode, type InitialAppMode } from "../shared/initial-app-mode.js";
 import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
 import { type InlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab, type SettingsTab } from "../shared/settings-tabs.js";
@@ -152,6 +151,7 @@ const LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION = "llm-vendor-id-package-names";
  * {@link SettingsService.deleteRetiredMarketplaceApiKey}.
  */
 const MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION = "marketplace-server-settings-removed";
+const SYSTEM_APP_MODE_REMOVED_MIGRATION = "system-app-mode-removed";
 const BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION = "built-in-default-models-cleared";
 const MARKETPLACE_DEFAULT_MODEL_CLEARED_MIGRATION_PREFIX = "marketplace-default-model-cleared:";
 /** Frozen source: 26ab8c776^:src/shared/llm-vendor-defaults.ts, whose CORE_DEFAULT_MODEL and DEFAULT_MODEL preset expansion 26ab8c776
@@ -238,6 +238,7 @@ const KNOWN_MIGRATIONS: readonly string[] = [
   PROVIDER_PRESET_MODEL_SLOT_MIGRATION,
   LLM_VENDOR_ID_PACKAGE_NAMES_MIGRATION,
   MARKETPLACE_SERVER_SETTINGS_REMOVED_MIGRATION,
+  SYSTEM_APP_MODE_REMOVED_MIGRATION,
   BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION,
 ];
 
@@ -635,16 +636,10 @@ export interface WebViewSettings {
 
 export type SystemCloseBehavior = "hide-to-tray" | "quit";
 
-/** Workspace mode persisted across restarts. `"work"` is the inline working layout (expanded sidebar, centered work canvas); `"chat"` is the focused chat layout (collapsed icon rail, right-docked window). Persisted here so
- * the renderer can seed its first render from the saved value (no flash of the wrong mode) and the main process can size the window correctly at creation. SoT for the value union lives in `src/shared/initial-app-mode.ts`. */
-export type SystemAppMode = InitialAppMode;
-
 export interface SystemSettings {
   /** Use the default OS sound for background turn-completion notifications. Default true. */
   turnCompletionSoundEnabled?: boolean;
   closeBehavior: SystemCloseBehavior;
-  /** Persisted workspace mode (chat vs work). Default "work". */
-  appMode: SystemAppMode;
   /** Launch Ave automatically at OS login. Applied via `app.setLoginItemSettings({ openAtLogin })` (see
    * `src/main/startup-launch.ts`). Default `false`. No-op in dev (unpackaged) builds; the login item would point at the Electron dev binary. */
   launchAtStartup?: boolean;
@@ -680,7 +675,7 @@ export interface SystemSettings {
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
   /** Persisted active sidebar tab ("chats" = the plain ungrouped conversation list, "projects" = named-project groups). Durable
-   * UI preference, same family as `appMode`/`sidebarWidth`. Default "chats". SoT for the value set: `../shared/sidebar-tab.js`. */
+   * UI preference, same family as `sidebarWidth`. Default "chats". SoT for the value set: `../shared/sidebar-tab.js`. */
   sidebarActiveTab?: SidebarTab;
   /** Where the main window was when it last closed, so a restart resumes the user's location instead of always landing on home. Same durable-preference family as `sidebarActiveTab`. Default "home". SoT for the value set: `../shared/view-key.js`. Validation here is
    * STRUCTURAL only; this process cannot know which plugins are installed, and a `plugin:<id>:<viewId>` key stays well-formed after its plugin is uninstalled. The renderer therefore re-checks a restored plugin key against the views it actually loaded before navigating there. */
@@ -1215,16 +1210,6 @@ export class SettingsService {
       // not clobbered by a malformed renderer / IPC payload. The disk-load path's `normalizeSystem` still backfills missing fields with defaults.
       const next: SystemSettings = { ...this.settings.system };
       acceptField(next, "closeBehavior", partial.system.closeBehavior, isCloseBehavior, "system", PATCHED_FIELD);
-      const rawAppMode = partial.system.appMode;
-      const normalizedAppMode = normalizeAppMode(rawAppMode);
-      if (normalizedAppMode !== null) {
-        next.appMode = normalizedAppMode;
-      } else if (rawAppMode !== undefined) {
-        log.warn(
-          `system.appMode patch ignored (received ${JSON.stringify(rawAppMode)}), keeping %s`,
-          this.settings.system.appMode,
-        );
-      }
       const rawLocalApi = partial.system.localApiServer;
       acceptField(next, "localApiServer", rawLocalApi, isBooleanValue, "system", PATCHED_FIELD);
       const rawHardwareAcceleration = partial.system.hardwareAcceleration;
@@ -1691,6 +1676,12 @@ export class SettingsService {
         ? stored.appliedMigrations.filter((m): m is string => typeof m === "string")
         : [];
       let migrationWriteBack = false;
+
+      // The system normalizer drops the removed field; persist that cleanup once so it also leaves the saved file.
+      if (!appliedMigrations.includes(SYSTEM_APP_MODE_REMOVED_MIGRATION)) {
+        appliedMigrations.push(SYSTEM_APP_MODE_REMOVED_MIGRATION);
+        migrationWriteBack = true;
+      }
 
       // One-time rename of built-in vendor ids. It has to rewrite the file as read, ahead of everything below: each normalizer drops a vendor id this build does not know.
       let parsed = stored;
