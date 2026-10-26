@@ -106,7 +106,8 @@ describe.skipIf(process.platform === "win32")("foreground shell deadline settlem
         const pidFile = join(dir, `${name}.pid`);
         if (!existsSync(pidFile)) continue;
         const pid = Number(readFileSync(pidFile, "utf8"));
-        if (!Number.isInteger(pid) || pid <= 0) throw new Error("Invalid fixture PID");
+        // A file read before its write is empty; skip it so cleanup never hides the original failure.
+        if (!Number.isInteger(pid) || pid <= 0) continue;
         if (exitedPids.has(pid)) continue;
         try { process.kill(pid, "SIGKILL"); } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
