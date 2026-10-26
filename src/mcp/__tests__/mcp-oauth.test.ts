@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createServer, type Server } from "node:http";
-import type { AddressInfo } from "node:net";
+import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { MCP_CLIENT_METADATA_DOCUMENT_URL, McpOAuthSession, type McpOAuthSecrets } from "../mcp-oauth.js";
@@ -214,9 +214,9 @@ async function fixture(): Promise<Fixture> {
     }
     json({ error: "not_found" }, 404);
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = await listenFetchLoopback(server);
   state.server = server;
-  state.base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  state.base = `http://127.0.0.1:${port}`;
   state.issuer = state.base;
   state.resource = `${state.base}/mcp`;
   servers.push(server);
