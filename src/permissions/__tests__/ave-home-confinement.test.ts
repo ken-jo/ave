@@ -21,6 +21,21 @@ vi.mock("node:path", async original => {
         ? value as (...args: unknown[]) => unknown : actual[key as keyof typeof actual] as (...args: unknown[]) => unknown, undefined, args)])) };
 });
 
+// On a POSIX host a simulated drive is empty: only its root resolves, so path resolution still walks up to it.
+vi.mock("node:fs", async original => {
+  const actual = await original<typeof import("node:fs")>();
+  if (process.platform === "win32") return actual;
+  const simulated = (real: (...args: unknown[]) => unknown) => (...args: unknown[]) => {
+    const [path] = args;
+    if (typeof path !== "string" || !/^[A-Za-z]:[\/]/.test(path)) return real(...args);
+    if (/^[A-Za-z]:[\/]$/.test(path)) return path;
+    throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: "ENOENT" });
+  };
+  const realpathSync = Object.assign(simulated(actual.realpathSync as (...args: unknown[]) => unknown),
+    { native: simulated(actual.realpathSync.native as (...args: unknown[]) => unknown) }) as typeof actual.realpathSync;
+  return { ...actual, default: { ...actual, realpathSync }, realpathSync };
+});
+
 // Lifecycle fixtures on another kernel validate spellings but cannot open native handles.
 vi.mock("../windows-stamp-targets.js", async original => {
   const actual = await original<typeof import("../windows-stamp-targets.js")>();
