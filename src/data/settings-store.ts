@@ -1,3 +1,4 @@
+import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
   normalizeCorpCaCommonName,
@@ -102,6 +103,7 @@ import {
   withRenamedLlmVendorIds,
   SIDE_PANEL_SPLIT_KEYS,
   normalizeSystem,
+  normalizeDocuments,
   isWebViewPreferredFlow,
   normalizeWebView,
   preserveInstalledProviderPresetMetadata,
@@ -554,6 +556,8 @@ export interface AppSettings {
   appearance: AppearanceSettings;
   /** §B1; external URL viewer policy (in-app BrowserWindow vs system browser). */
   webView: WebViewSettings;
+  /** User-owned document opening policy; agent writes remain blocked by the settings-file floor. */
+  documents: DocumentSettings;
   /** Window close-button behaviour (hide-to-tray vs quit). */
   system: SystemSettings;
   /** Global keyboard shortcuts (show/hide window toggle). */
@@ -1202,6 +1206,11 @@ export class SettingsService {
       }
       this.settings.appearance = nextAppearance;
     }
+    if (partial.documents && typeof partial.documents === "object" && !Array.isArray(partial.documents)) {
+      const nextDocuments = { ...this.settings.documents };
+      acceptField(nextDocuments, "openMode", partial.documents.openMode, isDocumentOpenMode, "documents", PATCHED_FIELD);
+      this.settings.documents = nextDocuments;
+    }
     if (partial.webView) {
       // Field-level validation (mirrors `system`/`shortcuts`): an out-of-enum `preferredFlow` is dropped and the existing preference kept, instead of persisting a
       // value that only the *next* load would reject. The accepted value set is owned by `isWebViewPreferredFlow` so the load path and this path can never drift apart.
@@ -1834,6 +1843,7 @@ export class SettingsService {
         diagnostics: normalizeDiagnostics(parsed.diagnostics),
         appearance,
         webView: normalizeWebView(parsed.webView),
+        documents: normalizeDocuments(parsed.documents),
         system: normalizeSystem(parsed.system),
         shortcuts: normalizeShortcuts(parsed.shortcuts, DEFAULT_SETTINGS.shortcuts),
         plugins: {},

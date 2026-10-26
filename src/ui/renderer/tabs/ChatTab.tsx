@@ -1,4 +1,5 @@
 import { useCallback } from "react";
+import { DocumentSettingsContent } from "./DocumentSettingsContent.js";
 import { PrivacyTab } from "./PrivacyTab.js";
 import { Badge } from "../../../components/ui/badge.js";
 import { Checkbox } from "../../../components/ui/checkbox.js";
@@ -136,6 +137,8 @@ export function ChatTab({
           </div>
         </div>
       </SettingsSection>
+
+      <DocumentSettingsContent />
 
       <SettingsSection
         data-settings-section="chat-stream-smoothing"

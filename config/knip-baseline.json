@@ -1100,11 +1100,6 @@
     {
       "type": "types",
       "file": "src/ui/renderer/types.ts",
-      "name": "AvePreviewApi"
-    },
-    {
-      "type": "types",
-      "file": "src/ui/renderer/types.ts",
       "name": "AveUiApi"
     },
     {

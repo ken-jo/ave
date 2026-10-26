@@ -4,8 +4,10 @@ import { fileURLToPath } from "node:url";
 import { build, type Metafile, type OutputFile } from "esbuild";
 import { describe, expect, it } from "vitest";
 import {
+  MAIN_BUNDLE_BUDGETS,
   analyzeMainBundleMetafile,
   assertMainBundleBudget,
+  createMainBundleBudgets,
   createMainBundleManifest,
   formatMainBundleBudget,
   formatMainBundleSummary,
@@ -64,6 +66,48 @@ function staticallyLoadedOutputs(
 }
 
 describe("main bundle budget", () => {
+  it("derives the total ceiling from startup budgets and a fixed lazy allowance", () => {
+    expect(MAIN_BUNDLE_BUDGETS).toEqual({
+      entryBytes: 1_700_000,
+      initialBytes: 8_000_000,
+      lazyAllowanceBytes: 4_300_000,
+      totalBytes: 14_000_000,
+    });
+    const inputs = { entryBytes: 100, initialBytes: 150, lazyAllowanceBytes: 150 };
+    expect(createMainBundleBudgets(inputs).totalBytes).toBe(400);
+    expect(createMainBundleBudgets({ ...inputs, entryBytes: 120 }).totalBytes).toBe(420);
+    expect(createMainBundleBudgets({ ...inputs, initialBytes: 200 }).totalBytes).toBe(450);
+    expect(createMainBundleBudgets({ ...inputs, lazyAllowanceBytes: 200 }).totalBytes).toBe(450);
+    expect(Object.isFrozen(createMainBundleBudgets(inputs))).toBe(true);
+  });
+
+  it("rejects invalid allowances and unsafe derived ceilings", () => {
+    for (const lazyAllowanceBytes of [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(() => createMainBundleBudgets({ entryBytes: 100, initialBytes: 150, lazyAllowanceBytes }))
+        .toThrow(/lazyAllowanceBytes/);
+    }
+    expect(() => createMainBundleBudgets({
+      entryBytes: Number.MAX_SAFE_INTEGER, initialBytes: 150, lazyAllowanceBytes: 150,
+    })).toThrow(/totalBytes/);
+  });
+
+  it("identifies startup and lazy output shares when the derived total trips", () => {
+    const measurement = analyzeMainBundleMetafile(syntheticMetafile, {
+      entryPoint: "/repo/src/main.ts", requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    const budgets = createMainBundleBudgets({ entryBytes: 100, initialBytes: 150, lazyAllowanceBytes: 150 });
+    expect(() => assertMainBundleBudget(measurement, budgets)).not.toThrow();
+    const grown = structuredClone(syntheticMetafile);
+    grown.outputs["/repo/dist/chunks/locale.js"].bytes += 1;
+    const lazyGrowth = analyzeMainBundleMetafile(grown, {
+      entryPoint: "/repo/src/main.ts", requiredAsyncEntryPoint: "/repo/src/boot.ts",
+    });
+    expect(() => assertMainBundleBudget(lazyGrowth, budgets))
+      .toThrow(/totalBytes 401 exceeds 400[\s\S]*entry=100[\s\S]*initial shared=50[\s\S]*lazy\/other=251/);
+    expect(formatMainBundleSummary(measurement, budgets))
+      .toContain("Total ceiling = entry budget (100) + initial budget (150) + lazy allowance (150)");
+  });
+
   it("loads the round loop and its turn-only helpers on the first turn, not at startup", async () => {
     const result = await build({
       absWorkingDir: REPO_ROOT, outdir: resolve(REPO_ROOT, "dist/turn-boundary-probe"),

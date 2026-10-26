@@ -731,6 +731,7 @@ export async function executeAuthorizedToolInvocation(
     } : {}),
     extraAllowedDirectories: [...new Set(invocationRuntimeAllowedDirectories)],
     blockReadsOutsideWorkingDirectories,
+    headless: invocationPermissionContext.headless === true,
     // Owner plugin sandbox root — same derivation the reviewer uses
     // (executor permission path). Plugin-owned tools confine their OS
     // write-jail to `~/.ave/plugins/<pluginId>/data`, the plugin's own

@@ -11,7 +11,7 @@ function model(): PreviewTableDocument {
       index: 0, name: "S", firstRow: 0, firstColumn: 0,
       rows: Array.from({ length: height }, () => Array<string>(width).fill("")),
       totalRows: height, totalColumns: width,
-      rowsTruncated: false, columnsTruncated: false, cellsTruncated: false,
+      rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [],
     },
   };
 }
@@ -49,6 +49,63 @@ describe("bounded document model", () => {
     (document: PreviewTableDocument) => { document.sheet.rows[0]![0] = "x".repeat(PREVIEW_DOCUMENT_LIMITS.maxCellChars + 2); },
   ])("refuses an inconsistent internal model", (mutate) => {
     const document = model();
+    mutate(document);
+    expect(() => readDocumentResponse(document)).toThrow("preview contract");
+  });
+});
+
+describe("window response boundaries", () => {
+  function windowModel(): PreviewTableDocument {
+    return {
+      format: "xlsx", sheetNames: ["S"], totalSheets: 1, sheetsTruncated: false,
+      sheet: {
+        index: 0, name: "S", firstRow: 10002, firstColumn: 257,
+        sourceRange: { firstRow: 10000, firstColumn: 2, totalsExact: true },
+        totalRows: 4, totalColumns: 257, rows: [["late", ""], ["", "end"]],
+        rowsTruncated: true, columnsTruncated: true, cellsTruncated: false, clippedCells: [],
+      },
+    };
+  }
+
+  it("accepts a bounded source rectangle with its separate used-range origin", () => {
+    const document = windowModel();
+    expect(readDocumentResponse(document)).toBe(document);
+  });
+
+  it("preserves explicit clipping coordinates without inferring from the display length", () => {
+    const document = windowModel();
+    document.sheet.rows[0]![0] = `${"a".repeat(1999)}…`;
+    document.sheet.cellsTruncated = true;
+    document.sheet.clippedCells = [{ row: 10002, column: 257 }];
+    expect(readDocumentResponse(JSON.parse(JSON.stringify(document)))).toEqual(document);
+  });
+
+  it.each([
+    (document: PreviewTableDocument) => { Reflect.deleteProperty(document.sheet, "clippedCells"); },
+    (document: PreviewTableDocument) => { document.sheet.cellsTruncated = true; },
+    (document: PreviewTableDocument) => { document.sheet.clippedCells = [{ row: 10002, column: 257 }]; },
+    (document: PreviewTableDocument) => { document.sheet.cellsTruncated = true; document.sheet.clippedCells = [{ row: 10004, column: 257 }]; },
+    (document: PreviewTableDocument) => { document.sheet.cellsTruncated = true; document.sheet.clippedCells = [{ row: 10002, column: 259 }]; },
+    (document: PreviewTableDocument) => { document.sheet.cellsTruncated = true; document.sheet.clippedCells = [{ row: 10002.5, column: 257 }]; },
+    (document: PreviewTableDocument) => { document.sheet.cellsTruncated = true; document.sheet.clippedCells = [{ row: 10002, column: 257 }, { row: 10002, column: 257 }]; },
+    (document: PreviewTableDocument) => { document.sheet.cellsTruncated = true; document.sheet.clippedCells = [Object.assign({ row: 10002, column: 257 }, { extra: true })]; },
+  ])("refuses malformed or inconsistent cell clipping provenance", (mutate) => {
+    const document = windowModel();
+    mutate(document);
+    expect(() => readDocumentResponse(document)).toThrow("preview contract");
+  });
+
+  it.each([
+    (document: PreviewTableDocument) => { document.sheet.sourceRange!.firstRow = -1; },
+    (document: PreviewTableDocument) => { Reflect.deleteProperty(document.sheet.sourceRange!, "totalsExact"); },
+    (document: PreviewTableDocument) => { document.sheet.sourceRange!.totalsExact = false; },
+    (document: PreviewTableDocument) => { document.sheet.sourceRange!.firstColumn = 258; },
+    (document: PreviewTableDocument) => { document.sheet.totalRows = 3; },
+    (document: PreviewTableDocument) => { document.sheet.firstColumn = Number.MAX_SAFE_INTEGER; },
+    (document: PreviewTableDocument) => { Object.assign(document.sheet.sourceRange!, { extra: true }); },
+    (document: PreviewTableDocument) => { document.sheet.rows[1]!.push("extra"); },
+  ])("refuses malformed window geometry and origin", (mutate) => {
+    const document = windowModel();
     mutate(document);
     expect(() => readDocumentResponse(document)).toThrow("preview contract");
   });
