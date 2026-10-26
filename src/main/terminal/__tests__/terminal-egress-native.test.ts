@@ -48,7 +48,8 @@ let dir: string | undefined;
 const outputs = new Map<string, string>();
 let stopReleaseListener: (() => void) | undefined;
 
-let reachable: boolean | undefined;
+// One probe per run: concurrent callers share the in-flight promise, so HOST is chosen once.
+let reachable: Promise<boolean> | undefined;
 
 async function requireNativeCase(context: TestContext): Promise<void> {
   if (!(await sandboxCasesRun())) context.skip("ASRT cannot initialize (sandbox dependencies missing)");
@@ -67,7 +68,7 @@ const networkUnreachable = () =>
 // Hosted runners drop a fetch now and then, and one host can answer 5xx to a runner's address range for a while; one miss would fail the required precondition. Try each
 // example domain a few times within the 45 s test timeout.
 async function hostReachable(): Promise<boolean> {
-  reachable ??= await (async () => {
+  reachable ??= (async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
       for (const host of HOSTS) {
@@ -81,7 +82,7 @@ async function hostReachable(): Promise<boolean> {
     }
     return false;
   })();
-  return reachable;
+  return await reachable;
 }
 
 beforeEach(() => {
