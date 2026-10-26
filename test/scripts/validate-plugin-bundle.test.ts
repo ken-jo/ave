@@ -36,7 +36,7 @@ function helloWorld(name: string, minAppVersion: string): string {
         "ai.agent-connector.ave": {
           displayName: "Hello World",
           entry: "dist/index.js",
-          requires: { minAppVersion, hostProtocol: "3" },
+          requires: { minAppVersion, hostProtocol: "4" },
           tools: [
             {
               name: "hello_world",
@@ -120,7 +120,7 @@ describe("the vendored validator bundles", () => {
   });
 
   it("validates a hello-world plugin under plain node, with only the report on stdout", () => {
-    const result = runBundle(helloWorld("hello-world", "0.14.0"));
+    const result = runBundle(helloWorld("hello-world", "0.15.0"));
     expect(result.status).toBe(0);
     const rows = reportRows(result.stdout);
     expect(rows.find((row) => row.check === "tools.call:hello_world")?.ok).toBe(true);

@@ -12,7 +12,7 @@ const AT = "2026-09-23T00:00:00Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 
 const context = (patch: Partial<VersionChoiceContext> = {}): VersionChoiceContext => ({
-  appVersion: "0.14.0",
+  appVersion: "0.15.0",
   platform: "darwin",
   canaryOptIn: false,
   installationId: INSTALLATION,
@@ -46,7 +46,7 @@ function versionInBucket(below: boolean, threshold: number): string {
 
 describe("chooseVersion (design §6.1)", () => {
   it("offers only a served host protocol for code plugins", () => {
-    const current = version("1.0.0", { hostProtocol: "3" });
+    const current = version("1.0.0", { hostProtocol: "4" });
     const retired = version("2.0.0", { hostProtocol: "2" });
     const undeclared = version("3.0.0");
     expect(versionExclusions("acme", "plugin", "alpha", retired, [], context())).toEqual(["host_protocol"]);
@@ -66,7 +66,7 @@ describe("chooseVersion (design §6.1)", () => {
   });
 
   it.each([
-    ["minAppVersion above the app", { minAppVersion: "0.15.0" }, "min_app_version"],
+    ["minAppVersion above the app", { minAppVersion: "0.16.0" }, "min_app_version"],
     ["yanked", { yanked: { reason: "broken", at: AT } }, "yanked"],
     ["another platform", { platforms: ["win32", "linux"] as IndexVersion["platforms"] }, "platform"],
   ])("drops a version for %s", (_label, patch, reason) => {
@@ -77,8 +77,8 @@ describe("chooseVersion (design §6.1)", () => {
   });
 
   it("keeps a process-entry version from a 0.12.x app and from Windows, and offers it on darwin 0.13.0 (§9.7 P4)", () => {
-    const processVersion = version("2.0.0", { minAppVersion: "0.13.0", hostProtocol: "3", platforms: ["darwin", "linux"] });
-    const entryVersion = version("1.0.0", { hostProtocol: "3", platforms: ["darwin", "win32", "linux"] });
+    const processVersion = version("2.0.0", { minAppVersion: "0.13.0", hostProtocol: "4", platforms: ["darwin", "linux"] });
+    const entryVersion = version("1.0.0", { hostProtocol: "4", platforms: ["darwin", "win32", "linux"] });
     const old = context({ appVersion: "0.12.4" });
     const windows = context({ appVersion: "0.13.0", platform: "win32" });
     const mac = context({ appVersion: "0.13.0", platform: "darwin" });

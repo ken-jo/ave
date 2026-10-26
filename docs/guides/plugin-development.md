@@ -19,13 +19,13 @@ host APIs or tool execution.
 Every extension package needs a `plugin.json` manifest. The Host owns the canonical
 shape in `schemas/plugin-manifest.schema.json` and the complete TypeScript/JSDoc
 authoring contract in `src/plugins/public-contract.ts`. Vendor those two files
-and the host protocol schema `schemas/plugin-host-protocol/3/protocol.schema.json`
+and the host protocol schema `schemas/plugin-host-protocol/4/protocol.schema.json`
 unchanged into `contract/` at an app release tag, and record their hashes in
-`contract/sources.json`. An extension for app 0.14.0 or later declares
-`extensions["ai.agent-connector.ave"].requires.hostProtocol: "3"` and
-`requires.minAppVersion: "0.14.0"`. Protocol 3 is the `ave/*` wire; an
-extension built against protocol 2 (the previous wire) must re-vendor the contract from
-an Ave release tag. The retired `@ave/plugin-sdk` package is not a
+`contract/sources.json`. An extension for app 0.15.0 or later declares
+`extensions["ai.agent-connector.ave"].requires.hostProtocol: "4"` and
+`requires.minAppVersion: "0.15.0"`. Protocol 4 requires host-validated loopback OAuth state on the `ave/*` wire.
+Extensions built for protocol 3 or earlier must re-vendor and declare the new
+contract, even when they do not use loopback OAuth. The retired `@ave/plugin-sdk` package is not a
 contract source.
 
 Official extensions live in the official marketplace monorepo
@@ -47,11 +47,11 @@ The manifest should include:
 - `requires.minAppVersion`, which a marketplace install requires.
 
 Every extension, JavaScript or `process`, declares `requires.hostProtocol`
-(a positive integer written as a string). App 0.14.0 and later serve only `"3"`
+(a positive integer written as a string). App 0.15.0 and later serve only `"4"`
 and refuse an extension that declares no protocol, or one it does not serve,
 with `incompatible-host-protocol` before anything is spawned. An app whose
 schema predates the field rejects the manifest outright, so `minAppVersion`
-must name a release that serves the declared protocol (`"0.14.0"` for `"3"`).
+must name a release that serves the declared protocol (`"0.15.0"` for `"4"`).
 
 `tools[]` is the only callable surface. The retired `uiTool`, `uiTools`,
 `uiAction`, `uiActions`, top-level `operationGovernance`, and top-level
@@ -86,7 +86,7 @@ A manifest with both, or with neither, is rejected.
 ```
 
 A `process` extension is a program in any language. It reads and writes the
-JSON-RPC channel that `schemas/plugin-host-protocol/3/protocol.schema.json`
+JSON-RPC channel that `schemas/plugin-host-protocol/4/protocol.schema.json`
 describes on its own stdin and stdout, starting with `ave/instance/construct`,
 whose `entryPath` is the resolved absolute path of `command`. Its rules:
 
@@ -114,8 +114,8 @@ whose `entryPath` is the resolved absolute path of `command`. Its rules:
   `NODE_`, `PYTHON`, `UV_`, `PIP_`, `HTTPS_PROXY` and `SSL_CERT_`. Set such a
   variable from your own launcher inside the process instead. The program
   starts from the host's minimal environment, not the user's.
-- `requires.hostProtocol` must be `"3"`, so declare `requires.minAppVersion`
-  `0.14.0`, the first release that serves protocol 3; the extension validator
+- `requires.hostProtocol` must be `"4"`, so declare `requires.minAppVersion`
+  `0.15.0`, the first release that serves protocol 4; the extension validator
   (`src/plugins/validate/`) and a marketplace install both refuse a lower one. The separate `process` floor,
   `0.13.0` (the first release that runs one), is below it.
 
@@ -131,7 +131,7 @@ Three refusals apply to a `process` extension, each with what to do:
   `ave-package.json` does not publish the extension the way a `process` entry
   requires. Its `platforms` must be listed without `win32`, its `artifact` must
   pin a `release` or an `archive` by `sha256` and declare no `tree`, and its
-  `minAppVersion` must be `0.14.0` or newer (the protocol 3 floor, above the
+  `minAppVersion` must be `0.15.0` or newer (the protocol 4 floor, above the
   `process` floor of `0.13.0`). The message names the field; the
   marketplace's owner fixes it.
 - `process-entry-unconfined`: the program runs only inside the OS Tool Sandbox
@@ -155,8 +155,8 @@ or spoof another extension id.
 
 A JavaScript extension reaches the bridge through the `PluginHostApi` object it is
 handed. Underneath, each member is a JSON-RPC `ave/host/*` request on the
-extension's own stdio, and `schemas/plugin-host-protocol/3/protocol.schema.json`
-(protocol `3`, the version the host serves) describes every method, notification
+extension's own stdio, and `schemas/plugin-host-protocol/4/protocol.schema.json`
+(protocol `4`, the version the host serves) describes every method, notification
 and error code of that channel. The file is generated from the host's own sources
 at each app release, so it describes what the host actually serves. To validate a frame, compile a method's `params`,
 `result`, `errors` or `events` sub-schema (for example
@@ -167,7 +167,7 @@ request id, a nullable value) is a type array. The host does not yet admit a
 extension that speaks the protocol without its JavaScript runtime; every extension
 today is a JavaScript `entry`.
 
-Beside the schema, `schemas/plugin-host-protocol/3/protocol-client.ts` is the same
+Beside the schema, `schemas/plugin-host-protocol/4/protocol-client.ts` is the same
 protocol as TypeScript: every named type and every method's params and result,
 the `HostMethod`, `InstanceMethod`, `HostNotification` and `HostProtocolErrorCode`
 unions, and `createHostClient(transport)`, which has one typed method per
@@ -182,6 +182,53 @@ resolves with the matching reply's `result` (or rejects with its `error`), and
 `ave/instance/*` and MCP requests yourself, hand a reply to the pending `request`
 with its `id`, and route `isHostNotification(frame)` frames to the plugin. The client does
 not validate replies; validate with the schema where you need to.
+
+### Loopback OAuth with PKCE
+
+The host owns the redirect listener and its state. `authRedirect.open()` returns
+`{ handle, redirectUri, state }`; send that state unchanged, alongside a fresh
+PKCE `S256` challenge. Do not mint or encode another state in its place. Public
+clients must use PKCE ([RFC 9700 §2.1.1](https://www.rfc-editor.org/rfc/rfc9700.html#section-2.1.1));
+use the host state as well to prevent
+[PKCE downgrade (§4.8)](https://www.rfc-editor.org/rfc/rfc9700.html#section-4.8).
+Keep the verifier in the plugin's memory for this attempt and send it only to the
+token endpoint when exchanging the validated code.
+
+```ts
+import { createHash, randomBytes } from "node:crypto";
+
+const { handle, redirectUri, state } = await api.authRedirect.open();
+try {
+  const verifier = randomBytes(32).toString("base64url");
+  const challenge = createHash("sha256").update(verifier).digest("base64url");
+  // authorizationUrl already contains the provider's client_id, scope and response_type=code.
+  authorizationUrl.searchParams.set("redirect_uri", redirectUri);
+  authorizationUrl.searchParams.set("state", state);
+  authorizationUrl.searchParams.set("code_challenge", challenge);
+  authorizationUrl.searchParams.set("code_challenge_method", "S256");
+  await api.openExternalUrl(authorizationUrl.href);
+  const callback = await api.authRedirect.wait({ handle });
+  if (callback.error !== undefined || !callback.code) throw new Error("Authorization failed");
+  // Exchange callback.code through api.hostFetch with redirect_uri and code_verifier=verifier.
+} finally {
+  await api.authRedirect.close({ handle });
+}
+```
+
+The host accepts only its exact path and a single matching state, compared in
+constant time using fixed-size digests. Wrong or missing state gets a 4xx without
+settling the waiter. The first valid callback consumes the state; replays fail.
+`wait()` returns validated parameters, including provider `error` fields, or
+rejects on timeout or close. An error response must be handled before any code
+exchange. A later `wait()` reads the same validated result, never a new callback.
+
+For protocol 4 / app 0.15.0, re-vendor the public types, manifest schema and
+protocol schema/client from the app release tag, raise the manifest and package
+descriptor to `hostProtocol: "4"` / `minAppVersion: "0.15.0"`, and update each
+OAuth library adapter to use the host's state. If a library owns state, use its
+supported state option, or exchange the host-validated code directly with the
+same attempt's PKCE verifier; never disable host validation.
+Protocol 3 packages fail before activation and require an updated package.
 
 ## UI Extensions
 

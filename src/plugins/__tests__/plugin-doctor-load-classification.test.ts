@@ -25,7 +25,7 @@ async function writeProcessEntry(fixture: TestPluginRuntimeFixture): Promise<str
     name: "process-kit", version: "1.0.0", description: "Process extension",
     extensions: { "ai.agent-connector.ave": {
       process: { command: "./bin/plugin" },
-      requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+      requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
       tools: [],
     } },
   }), "utf8");
@@ -153,7 +153,7 @@ describe("PluginRuntime Doctor load-failure classification", () => {
       id: "p-protocol-served",
       tools: ["p_protocol_served_ping"],
       entrySource: makeTestPluginEntrySource({ p_protocol_served_ping: JSON.stringify("hi") }),
-      manifest: { requires: { capabilities: [], hostProtocol: "3" } },
+      manifest: { requires: { capabilities: [], hostProtocol: "4" } },
     });
     await writeTestPluginRegistry(fixture, [
       { id: "p-protocol", manifestPath: refused.manifestPath, enabled: true },
@@ -167,10 +167,10 @@ describe("PluginRuntime Doctor load-failure classification", () => {
     const card = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol");
     expect(card?.loadStatus).toBe("failed");
     expect(card?.installFailureKind).toBe("incompatible-host-protocol");
-    expect(card?.installFailureMessage).toMatch(/speaks host protocol 2; this app serves 3/);
+    expect(card?.installFailureMessage).toMatch(/speaks host protocol 2; this app serves 4/);
     const missing = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-undeclared");
     expect(missing?.installFailureKind).toBe("incompatible-host-protocol");
-    expect(missing?.installFailureMessage).toMatch(/does not declare a host protocol; this app serves 3/);
+    expect(missing?.installFailureMessage).toMatch(/does not declare a host protocol; this app serves 4/);
     const kept = runtime.listPluginCards().find((candidate) => candidate.id === "p-protocol-served");
     expect(kept?.loadStatus).not.toBe("failed");
   });

@@ -304,14 +304,14 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
   const DESCRIPTOR = "plugins/alpha/ave-package.json";
   type Patch = { platforms?: string[]; artifact?: Record<string, unknown>; minAppVersion?: string };
 
-  const processAuthority = (minAppVersion: string) => ({ capabilities: [], requires: { minAppVersion, hostProtocol: "3" } });
+  const processAuthority = (minAppVersion: string) => ({ capabilities: [], requires: { minAppVersion, hostProtocol: "4" } });
   const pinned = () => ({ release: { repo: "acme/market", tag: "alpha-v2.0.0", asset: "alpha-2.0.0.zip", sha256: SHA } });
 
   function alpha(newer: Patch = {}, older: Patch = {}) {
-    const newMin = newer.minAppVersion ?? "0.14.0";
+    const newMin = newer.minAppVersion ?? "0.15.0";
     const oldMin = older.minAppVersion ?? "0.12.0";
     const v2 = {
-      version: "2.0.0", minAppVersion: newMin, hostProtocol: "3",
+      version: "2.0.0", minAppVersion: newMin, hostProtocol: "4",
       platforms: newer.platforms ?? ["darwin", "linux"], artifact: newer.artifact ?? pinned(), authority: processAuthority(newMin),
     };
     const v1 = {
@@ -321,7 +321,7 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
     const files = validFiles();
     index(files).packages[0] = { kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "2.0.0", versions: [version(v2), version(v1)] };
     files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority: v2.authority, artifact: v2.artifact }, {
-      version: "2.0.0", minAppVersion: newMin, hostProtocol: "3", platforms: v2.platforms,
+      version: "2.0.0", minAppVersion: newMin, hostProtocol: "4", platforms: v2.platforms,
     }));
     const released = new Map<string, unknown>([
       ["alpha@2.0.0", { name: "alpha", version: "2.0.0", extensions: { "ai.agent-connector.ave": { process: { command: "./bin/plugin" }, tools: [], ...v2.authority } } }],
@@ -342,7 +342,7 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
       `artifact in ${DESCRIPTOR} pins no release or archive by sha256, which a process entry is installed from`],
     ["adds a tree", { artifact: { ...pinned(), tree: "plugins/alpha" } }, `artifact.tree is declared in ${DESCRIPTOR}; a process entry is never installed from the tree rung`],
     ["lowers its minAppVersion below the protocol-3 floor", { minAppVersion: "0.13.0" },
-      `minAppVersion in ${DESCRIPTOR} is "0.13.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it`],
+      `minAppVersion in ${DESCRIPTOR} is "0.13.0"; host protocol 4 needs 0.15.0 or newer, the first release that serves it`],
   ])("reports 2.0.0 when it %s, naming the descriptor and the version", (_label, patch, message) => {
     const treeAlone = patch.artifact?.tree ? [{ subject: "plugin/alpha", message: "artifact.tree is declared but plugins/alpha/plugin.json is missing" }] : [];
     expect(alpha(patch)).toEqual([...problem(message), ...treeAlone]);
@@ -350,7 +350,7 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
 
   it("reports both floors when 2.0.0 drops below the process-entry floor too", () => {
     expect(alpha({ minAppVersion: "0.12.0" })).toEqual(problem(
-      `minAppVersion in ${DESCRIPTOR} is "0.12.0"; host protocol 3 needs 0.14.0 or newer, the first release that serves it`,
+      `minAppVersion in ${DESCRIPTOR} is "0.12.0"; host protocol 4 needs 0.15.0 or newer, the first release that serves it`,
     ).concat(problem(
       `minAppVersion in ${DESCRIPTOR} is "0.12.0"; a process entry needs 0.13.0 or newer, the first release that runs one`,
     )));
@@ -367,14 +367,14 @@ describe("process-entry rules, per released version (§9.7 P4)", () => {
 
   it("reports a process plugin.json in the package directory, which declares the tree rung", () => {
     const files = validFiles();
-    const authority = processAuthority("0.14.0");
+    const authority = processAuthority("0.15.0");
     const artifact = pinned();
     index(files).packages[0] = {
       kind: "plugin", name: "alpha", path: "plugins/alpha", latest: "2.0.0",
-      versions: [version({ version: "2.0.0", minAppVersion: "0.14.0", hostProtocol: "3", platforms: ["darwin", "linux"], authority, artifact })],
+      versions: [version({ version: "2.0.0", minAppVersion: "0.15.0", hostProtocol: "4", platforms: ["darwin", "linux"], authority, artifact })],
     };
     files.delete("plugins/alpha/source/package.json");
-    files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority, artifact }, { version: "2.0.0", minAppVersion: "0.14.0", hostProtocol: "3", platforms: ["darwin", "linux"] }));
+    files.set(DESCRIPTOR, descriptor("plugin", "alpha", { authority, artifact }, { version: "2.0.0", minAppVersion: "0.15.0", hostProtocol: "4", platforms: ["darwin", "linux"] }));
     files.set("plugins/alpha/plugin.json", { name: "alpha", version: "2.0.0", extensions: { "ai.agent-connector.ave": { process: { command: "./dist/plugin" }, tools: [], ...authority } } });
     expect(check(files)).toEqual([{
       subject: "plugin/alpha",

@@ -614,7 +614,7 @@ function checkProcessEntryShape(
     fail(
       "requires.minAppVersion",
       `a plugin with a 'process' entry must require Ave ${PROCESS_ENTRY_FIRST_APP_VERSION} or newer, the first release that runs one`,
-      `"requires": { "minAppVersion": "${HOST_PROTOCOL_FIRST_APP_VERSION["3"]}", "hostProtocol": "3" }`,
+      `"requires": { "minAppVersion": "${HOST_PROTOCOL_FIRST_APP_VERSION["4"]}", "hostProtocol": "4" }`,
     );
   }
 }

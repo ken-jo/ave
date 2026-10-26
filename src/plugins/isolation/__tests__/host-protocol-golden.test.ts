@@ -45,7 +45,7 @@ import { settle } from "./stream-turns.js";
 import { installPythonSmoke, reportSmoke } from "./python-smoke-harness.js";
 import { repositoryRoot } from "./child-entry-bundle.js";
 
-const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/3/", import.meta.url));
+const GOLDEN_ROOT = fileURLToPath(new URL("./fixtures/host-protocol/4/", import.meta.url));
 const INVOKER_ENTRY = join(GOLDEN_ROOT, "invoker.mjs");
 
 type Frame = Record<string, unknown>;
@@ -87,7 +87,7 @@ const INVOKER_MANIFEST: PluginManifest = {
   name: "Golden Invoker",
   version: "1.0.0",
   entry: "invoker.mjs",
-  requires: { hostProtocol: "3" },
+  requires: { hostProtocol: "4" },
   description: "calls one hostApi member per tool call, so each method's golden is one pair",
   tools: ["invoke_member", "invoke_cancelled", "write_log", "dispose_all"].map((name) => ({
     name,
@@ -689,7 +689,8 @@ describe("a golden reads the same on every machine", () => {
 
 describe("one conversation per installed plugin's surface", () => {
   it.each([
-    ["meeting", /speaks host protocol 2; this app serves 3/],
+    ["meeting", /speaks host protocol 2; this app serves 4/],
+    ["samplemail", /speaks host protocol 3; this app serves 4/],
     ["local-indexer", /does not declare a host protocol/],
   ] as const)("refuses an old %s bundle before its child connects", async (pluginId, refusal) => {
     const dir = join(GOLDEN_ROOT, "old-bundles", pluginId);

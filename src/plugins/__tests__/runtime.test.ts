@@ -90,7 +90,7 @@ async function removeStoppedTestRoot(root: string): Promise<void> {
 
 function servedPluginDocument(manifest: Record<string, unknown>): Record<string, unknown> {
   const requires = manifest.requires as Record<string, unknown> | undefined;
-  return agentPluginsDocument({ ...manifest, requires: { hostProtocol: "3", ...requires } });
+  return agentPluginsDocument({ ...manifest, requires: { hostProtocol: "4", ...requires } });
 }
 
 function makeGenerationBoundRuntime(
@@ -2471,7 +2471,7 @@ export default async function createPlugin() {
     const consumerPath = await writePlugin("p-calendar-consumer");
     const consumerManifest = JSON.parse(await readFile(consumerPath, "utf-8"));
     patchAveFields(consumerManifest, {
-      requires: { hostProtocol: "3", capabilities: ["calendar-source"] },
+      requires: { hostProtocol: "4", capabilities: ["calendar-source"] },
     });
     await writeFile(consumerPath, JSON.stringify(consumerManifest), "utf-8");
     await writeFile(
@@ -3916,7 +3916,7 @@ describe("PluginRuntime attempt diagnostics belong to their attempt", () => {
     const { runtime, requires, card } = await setup(BROKEN_START);
     await expect(runtime.addPlugin(ID)).rejects.toThrow();
     expect(card()).toMatchObject({ loadStatus: "failed", arm: "child", confinement: "unconfined" });
-    await requires({ hostProtocol: "3", capabilities: ["attempt-owned-missing-capability"] });
+    await requires({ hostProtocol: "4", capabilities: ["attempt-owned-missing-capability"] });
     await expect(runtime.addPlugin(ID)).rejects.toThrow(/Missing capabilities|missing required capabilities/);
     expect(card()?.loadStatus).toBe("failed");
     expect(card()?.arm).toBeUndefined();

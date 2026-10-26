@@ -1066,6 +1066,15 @@ review: §15.6).
 
 Key boundaries:
 
+- Loopback OAuth callbacks are authenticated by the host before plugin delivery.
+  `authRedirect.open()` mints a 256-bit single-use state with the redirect URI;
+  exact path and timing-safe state validation are mandatory. Wrong or missing
+  state receives a 4xx without consuming the waiter, and rejection logs omit
+  query values. A matching provider error is returned as validated error fields.
+  Plugins must use PKCE S256 together with that state. Protocol 4 replaces 3 at
+  app 0.15.0; older packages fail before activation. The [protocol contract](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth)
+  and [author guide](../guides/plugin-development.md#loopback-oauth-with-pkce) own
+  the wire and migration details.
 - The complete extension-author TypeScript contract and its JSDoc are Host-owned in
   `src/plugins/public-contract.ts`. `src/plugins/types.ts` re-exports that
   surface and adds Host-private registry/marketplace DTOs. Extension repositories

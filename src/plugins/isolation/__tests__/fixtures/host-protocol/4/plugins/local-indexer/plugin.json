@@ -1,0 +1,70 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "local-indexer",
+  "version": "0.6.7",
+  "description": "Host protocol golden fixture: the hostApi surface the local-indexer plugin reaches, beside its own lifecycle and access declarations.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Local Indexer",
+      "entry": "entry.mjs",
+      "capabilities": [
+        "knowledge-index",
+        "document-indexer",
+        "external-auth-consumer",
+        "host:overlay",
+        "lifecycle-observer"
+      ],
+      "emittedEvents": [
+        "index.document.updated",
+        "index.folders.changed",
+        "index.scan.progress",
+        "index.scan.completed",
+        "index.warning"
+      ],
+      "eventSubscriptions": [
+        {
+          "type": "host.theme.changed"
+        }
+      ],
+      "hostSecrets": {
+        "read": [
+          "llm.apiKey.openai",
+          "llm.apiKey.azure-foundry"
+        ]
+      },
+      "llmKeySource": "host",
+      "requires": {
+        "minAppVersion": "0.15.0",
+        "hostProtocol": "4"
+      },
+      "startupTimeoutMs": 30000,
+      "configSchema": {
+        "properties": {
+          "realtimeWatch": {
+            "type": "boolean",
+            "title": "Watch folders",
+            "default": true
+          }
+        }
+      },
+      "tools": [
+        {
+          "name": "exercise_host",
+          "description": "Call each hostApi member this surface uses, once.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "report_host",
+          "description": "Report what the host pushed since, and release what is held.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    }
+  }
+}

@@ -53,7 +53,7 @@ import { randomBytes } from "node:crypto";
  * the previous version after its announced boundary (§3.2). The same value
  * governs both directions of the connection.
  */
-export const HOST_PROTOCOL_VERSIONS_SERVED = ["3"] as const;
+export const HOST_PROTOCOL_VERSIONS_SERVED = ["4"] as const;
 
 /** One served version, as it travels: an integer written as a string. */
 export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number];
@@ -68,9 +68,8 @@ export type HostProtocolVersion = (typeof HOST_PROTOCOL_VERSIONS_SERVED)[number]
  * the protocol, so it is read off the release history rather than restated.
  */
 export const HOST_PROTOCOL_FIRST_APP_VERSION: Readonly<Record<HostProtocolVersion, string>> = {
-  // Protocol 3 (the `ave/*` wire) first ships in 0.14.0; released 0.13.0
-  // served protocol 2 only, so a protocol-3 plugin cannot load on it.
-  "3": "0.14.0",
+  // State-validated plugin loopback callbacks replace the previous contract.
+  "4": "0.15.0",
 };
 
 /** Whether `value` names a version this build serves. */
@@ -1186,8 +1185,8 @@ export const HOSTAPI_PATH_CONTRACTS = {
     lifetime: "none",
     errors: ["effect-boundary-denied"],
   },
-  // The host-owned loopback redirect catcher. `handle` is the only state that
-  // crosses, and it is a NAME rather than a resource: the child cannot act on
+  // The host-owned loopback redirect catcher returns a URI and single-use OAuth
+  // state. Its `handle` is a NAME rather than a resource: the child cannot act on
   // it except by handing it back to one of these three members, each of which
   // re-checks that the calling plugin is its owner. That is why `lifetime` is
   // "none" and not "child-disposable" — nothing on the child side needs

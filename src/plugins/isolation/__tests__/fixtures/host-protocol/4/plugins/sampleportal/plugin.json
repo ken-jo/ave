@@ -1,0 +1,53 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "sampleportal",
+  "version": "0.21.5",
+  "description": "Host protocol golden fixture: the hostApi surface the sampleportal plugin reaches, beside its own lifecycle and access declarations.",
+  "extensions": {
+    "ai.agent-connector.ave": {
+      "displayName": "Portal",
+      "entry": "entry.mjs",
+      "capabilities": [
+        "external-auth-consumer",
+        "background-watcher"
+      ],
+      "emittedEvents": [
+        "sampleportal.auth.changed",
+        "sampleportal.ui.open-request",
+        "sampleportal.video-conference.reserved"
+      ],
+      "requires": {
+        "minAppVersion": "0.15.0",
+        "hostProtocol": "4"
+      },
+      "startupTimeoutMs": 5000,
+      "configSchema": {
+        "properties": {
+          "keepaliveIntervalMs": {
+            "type": "number",
+            "title": "Keepalive interval (ms)",
+            "default": 60000
+          }
+        }
+      },
+      "tools": [
+        {
+          "name": "exercise_host",
+          "description": "Call each hostApi member this surface uses, once.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        },
+        {
+          "name": "report_host",
+          "description": "Report what the host pushed since, and release what is held.",
+          "inputSchema": {
+            "type": "object",
+            "properties": {}
+          }
+        }
+      ]
+    }
+  }
+}

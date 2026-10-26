@@ -258,7 +258,7 @@ const ko: Record<DocSlug, DocPage> = {
             ["entry", "JavaScript 모듈입니다."],
             ["process", "어떤 언어로든 만든 프로그램이 표준 입출력의 JSON-RPC로 호스트와 대화합니다. OS 샌드박스가 켜져 있어야 실행되고, Windows에서는 지원하지 않습니다."],
           ] },
-          { p: "플러그인은 호스트 프로토콜 3을 요구한다고 선언합니다. 설치된 플러그인은 ~/.ave/plugins/<id>/ 에 있고, 켜진 목록은 registry.json 이 정합니다." },
+          { p: "플러그인은 호스트 프로토콜 4와 최소 앱 버전 0.15.0을 선언합니다. 루프백 OAuth에는 호스트가 발급한 state를 그대로 보내고 PKCE S256을 함께 사용합니다. 설치된 플러그인은 ~/.ave/plugins/<id>/ 에 있고, 켜진 목록은 registry.json 이 정합니다." },
         ],
       },
       {
@@ -714,7 +714,7 @@ const en: Record<DocSlug, DocPage> = {
             ["entry", "A JavaScript module."],
             ["process", "A program in any language that talks to the host over JSON-RPC on standard input and output. It runs only with the OS sandbox on and is not supported on Windows."],
           ] },
-          { p: "Plugins declare that they need host protocol 3. Installed plugins live in ~/.ave/plugins/<id>/, and registry.json decides which are active." },
+          { p: "Plugins declare host protocol 4 and minimum app version 0.15.0. Loopback OAuth sends the host-issued state unchanged together with PKCE S256. Installed plugins live in ~/.ave/plugins/<id>/, and registry.json decides which are active." },
         ],
       },
       {

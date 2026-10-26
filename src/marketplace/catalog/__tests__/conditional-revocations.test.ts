@@ -49,7 +49,7 @@ describe("conditional revocation policy", () => {
       formatVersion: 2, sourceId: "fixture", commit: "a".repeat(40), fetchedAt: entry.at,
       marketplace: { name: "fixture", displayName: "Fixture" }, diagnostics: [], revocations: [], conditionalRevocations: [entry],
       packages: [{ kind: "plugin", name: entry.name, path: "plugins/retired-fixture", versions: [
-        { version: "1.0.0", commit: "a".repeat(40), minAppVersion: "0.10.0", hostProtocol: "3", publishedAt: entry.at },
+        { version: "1.0.0", commit: "a".repeat(40), minAppVersion: "0.10.0", hostProtocol: "4", publishedAt: entry.at },
       ] }],
     };
     for (const [appVersion, revoked] of [["0.11.0", false], ["0.12.0", true], ["0.13.0", true]] as const) {
@@ -62,7 +62,7 @@ describe("conditional revocation policy", () => {
     }
     expect(snapshot.conditionalRevocations).toEqual([entry]);
     const { formatVersion: _format, conditionalRevocations: _conditional, ...legacy } = snapshot;
-    expect(effectiveRevocations(legacy, "0.14.0")).toEqual([]);
+    expect(effectiveRevocations(legacy, "0.15.0")).toEqual([]);
   });
 });
 

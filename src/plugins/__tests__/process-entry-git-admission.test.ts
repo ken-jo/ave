@@ -45,7 +45,7 @@ const AT = "2026-10-01T00:00:00.000Z";
 const INSTALLATION = "3f1c2b8e-6a4d-4e2f-9b1a-0c5d7e8f9a0b";
 const RELEASE_PATH = "/acme/alpha/releases/download/v1.0.0/alpha-1.0.0.zip";
 
-const authority: PluginAuthority = { capabilities: [], requires: { minAppVersion: "0.14.0", hostProtocol: "3" } };
+const authority: PluginAuthority = { capabilities: [], requires: { minAppVersion: "0.15.0", hostProtocol: "4" } };
 
 function processZip(): Buffer {
   const zip = new AdmZip();
@@ -106,7 +106,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     const zip = processZip();
     server.file(RELEASE_PATH, zip);
     const described = `${JSON.stringify({
-      schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.14.0", hostProtocol: "3",
+      schemaVersion: 2, kind: "plugin", name: "alpha", version: "1.0.0", minAppVersion: "0.15.0", hostProtocol: "4",
       platforms: ["darwin", "linux"],
       payload: { authority, artifact: { release: { repo: "acme/alpha", sha256: sha(zip) } } },
     })}\n`;
@@ -124,7 +124,7 @@ describe("a process entry from a pinned git release (§9.7 P4)", () => {
     expect(await syncer.sync("acme")).toMatchObject({ status: "ok" });
     const snapshot = (await syncer.readSnapshot("acme"))!;
     const [row] = aggregateCatalog([{ sourceId: "acme", sourceOrigin: origin, snapshot }], {
-      appVersion: "0.14.0",
+      appVersion: "0.15.0",
       platform: "darwin",
       canaryOptIn: false,
       installationId: INSTALLATION,

@@ -23,27 +23,23 @@ this app does not serve.
 
 ## What To Declare
 
-The app serves host protocol `"3"` only (the `ave/*` wire). Extensions built
-for protocol 2 are refused before they start. An extension for the
-first release that serves protocol 3 declares:
+The app serves host protocol `"4"` only. Protocol 4 requires host-issued state
+for plugin loopback OAuth callbacks; protocol 3 and older packages are refused
+before activation. The declaration is:
 
 ```jsonc
 "extensions": {
   "ai.agent-connector.ave": {
-    "requires": { "hostProtocol": "3", "minAppVersion": "0.14.0" }
+    "requires": { "hostProtocol": "4", "minAppVersion": "0.15.0" }
   }
 }
 ```
 
-The validator's floor for protocol 3 is `HOST_PROTOCOL_FIRST_APP_VERSION["3"]`
-= `"0.14.0"` in `src/plugins/isolation/host-api-wire.ts`: 0.14.0 is the first
-release that serves protocol 3, and the released 0.13.0 served protocol 2 only.
-A lower `minAppVersion` fails validation.
-
-The protocol 3 migration note is in [`CHANGELOG.md`](../../CHANGELOG.md); the
-field definitions are in [Manifest Basics](./plugin-development.md#manifest-basics).
-A `process` extension has an extra floor; see
-[`entry` or `process`](./plugin-development.md#entry-or-process).
+The validator's floor is `HOST_PROTOCOL_FIRST_APP_VERSION["4"] = "0.15.0"`.
+A lower minimum fails validation. Follow the [OAuth migration](./plugin-development.md#loopback-oauth-with-pkce)
+when re-vendoring from the app release tag. The version decision follows
+[protocol §3.2 and §3.3.1](../design/plugin-hostapi-protocol.md#331-host-validated-loopback-oauth).
+A `process` extension also follows the [entry rules](./plugin-development.md#entry-or-process).
 
 When you start using a contract member that a later app release added, raise
 `minAppVersion` to that release in both `plugin.json` and the package
@@ -69,7 +65,7 @@ into `contract/`:
 
 - `src/plugins/public-contract.ts`
 - `schemas/plugin-manifest.schema.json`
-- `schemas/plugin-host-protocol/3/protocol.schema.json`
+- `schemas/plugin-host-protocol/4/protocol.schema.json`
 
 `contract/sources.json` records the repository, the tag and each file's
 sha256. CI fails when the copy no longer matches those hashes, or when the

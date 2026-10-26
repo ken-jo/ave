@@ -13,6 +13,13 @@
       "sha256": "90d2ad156e5b78eed8da374241d4cc05aa9d92d284a508384fdba6a85e607a94",
       "generatedFrom": "86535a296c85e07a5dcb7e9239b179654ee4b9ad",
       "publishedTag": null
+    },
+    {
+      "protocol": "4",
+      "appVersion": "0.15.0",
+      "sha256": "ecc8a5e35102950d7f2aa188e82ad75d30fd55b95f6210026b4eea43c493baab",
+      "generatedFrom": "46d211d09d12f6e623e28e21ec7dd0e12cf2ce2c",
+      "publishedTag": null
     }
   ],
   "aliases": {}

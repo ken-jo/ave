@@ -56,7 +56,7 @@ interface HostImplementations {
     windowTitle?: string;
   }) => Promise<void>;
   clearAuthPartition: (partition: string) => Promise<void>;
-  authRedirectOpen: () => Promise<{ handle: string; redirectUri: string }>;
+  authRedirectOpen: () => Promise<{ handle: string; redirectUri: string; state: string }>;
   authRedirectWait: (opts: {
     handle: string;
     timeoutMs?: number;
@@ -88,7 +88,7 @@ function defaultImplementations(): HostImplementations {
     clearAuthPartition: async () => {},
     authRedirectOpen: async () => ({
       handle: REDIRECT_HANDLE,
-      redirectUri: "http://localhost:49152",
+      state: "the-state", redirectUri: "http://localhost:49152",
     }),
     authRedirectWait: async () => Object.freeze({ code: "auth-code", state: "xyz" }),
     authRedirectClose: async () => {},
@@ -302,7 +302,7 @@ describe("the group carries exactly the members whose refusal is an answer", () 
       openAuthPartitionViewer: async () => {},
       clearAuthPartition: async () => {},
       authRedirect: {
-        open: async () => ({ handle: REDIRECT_HANDLE, redirectUri: "http://localhost:49152" }),
+        open: async () => ({ handle: REDIRECT_HANDLE, state: "the-state", redirectUri: "http://localhost:49152" }),
         wait: async () => Object.freeze({ code: "auth-code" }),
         close: async () => {},
       },

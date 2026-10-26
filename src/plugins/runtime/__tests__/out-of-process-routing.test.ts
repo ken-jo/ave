@@ -67,7 +67,7 @@ const ENTRY_MANIFEST: PluginManifest = {
   version: "1.0.0",
   entry: "plugin.mjs",
   description: "a plugin used to observe which arm the lifecycle chose",
-  requires: { hostProtocol: "3" },
+  requires: { hostProtocol: "4" },
   tools: [],
 };
 
@@ -76,7 +76,7 @@ const PROCESS_MANIFEST: PluginManifest = {
   name: PLUGIN_ID,
   version: "1.0.0",
   process: { command: "./bin/plugin" },
-  requires: { minAppVersion: "0.13.0", hostProtocol: "3" },
+  requires: { minAppVersion: "0.13.0", hostProtocol: "4" },
   description: "a process plugin used to observe which arm the lifecycle chose",
   tools: [],
 };
