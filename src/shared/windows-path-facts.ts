@@ -83,11 +83,6 @@ function isDescriptor(value: unknown): value is WindowsDacl {
       && (ace.account === undefined || typeof ace.account === "string"));
 }
 
-function sameIdentity(left: WindowsPathComponentFacts, right: WindowsPathComponentFacts): boolean {
-  return left.exists === right.exists && left.volumeSerial === right.volumeSerial && left.fileId === right.fileId
-    && left.canonical === right.canonical && left.attributes === right.attributes && left.reparseTag === right.reparseTag;
-}
-
 function request(paths: readonly string[], mode: "--pin" | "--dacl", flags: readonly string[] = []): WindowsPathFacts[] {
   if (paths.length === 0) return [];
   if (paths.some(path => !isAbsolute(path))) throw new Error("Windows path facts require absolute paths");
@@ -130,19 +125,8 @@ export function pinWindowsPaths(paths: readonly string[]): readonly WindowsPathF
 
 /** Content is read on the descriptor's pinned handle, bounded to one MiB. */
 export function readWindowsDacls(paths: readonly string[], options: { parent?: boolean; content?: boolean } = {}): readonly WindowsDaclFacts[] {
-  if (paths.length === 0) return [];
-  const before = pinWindowsPaths(paths);
-  const rows = request(paths, "--dacl", [...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : [])]) as WindowsDaclFacts[];
-  const after = pinWindowsPaths(paths);
-  for (let index = 0; index < rows.length; ++index) {
-    const row = rows[index]!;
-    const pin = after[index]!;
-    for (const observed of [before[index]!, pin]) {
-      if (!sameIdentity(row, observed) || row.ancestors.length !== observed.ancestors.length
-        || row.ancestors.some((ancestor, position) => !sameIdentity(ancestor, observed.ancestors[position]!))) throw new Error("Windows DACL path identity changed");
-    }
-  }
-  return rows;
+  // The native walk holds non-write/non-delete-shared component handles through DACL capture; separate pins add no snapshot binding.
+  return request(paths, "--dacl", [...(options.parent ? ["--parent"] : []), ...(options.content ? ["--content"] : [])]) as WindowsDaclFacts[];
 }
 
 /** This is the sole admission rule for Windows path pins, including unfamiliar tags. */

@@ -36,7 +36,7 @@ import {
   isShellSandboxRequestedAtBoot,
 } from "./sandbox-capability.js";
 import { defaultHooksDir } from "../hooks/hook-discovery.js";
-import { readWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
+import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenyEvidence, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
 import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
 import { readWindowsDenyAcls, WINDOWS_READ_DENY_MASK, WINDOWS_WRITE_DENY_MASK } from "./windows-deny-acl.js";
 
@@ -1113,8 +1113,7 @@ export function getWindowsProfileReadDenyWarnings(): SandboxWindowsStatusInfo["p
   return [...windowsProfileReadDenyWarnings.values()].map(row => ({ ...row, ...(row.principals ? { principals: [...row.principals] } : {}) }));
 }
 
-function keepWindowsProfileReadDeny(path: string, profile: string, snapshot?: WindowsReadDenySnapshot): boolean {
-  const evidence = windowsReadDenyEvidence(path, snapshot);
+function keepWindowsProfileReadDeny(path: string, profile: string, evidence: WindowsReadDenyEvidence): boolean {
   const key = windowsReadDenyKey(path);
   if (evidence.status === "missing" || evidence.status === "private") {
     windowsProfileReadDenyWarnings.delete(key);
@@ -1220,6 +1219,8 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     ...POSIX_CRON_DENIES,
     ...POSIX_ASRT_TEMP_DENIES,
   ]);
+  const checkedReadEvidence = kind === "read" && readDenyEvidence !== undefined
+    ? recheckWindowsReadDenyEvidence([...expandedPaths.values()], readDenyEvidence) : undefined;
   return paths
     .filter((path) => !posixRooted.has(path))
     .filter((original) => {
@@ -1230,7 +1231,8 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
           .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
         return profile === undefined || !isGrantPathWithin(profile, path)
           || expandedGrants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant))
-          || (kind === "read" && keepWindowsProfileReadDeny(path, profile, readDenyEvidence));
+          || (kind === "read" && keepWindowsProfileReadDeny(path, profile,
+            checkedReadEvidence?.get(windowsReadDenyKey(path)) ?? windowsReadDenyEvidence(path, readDenyEvidence)));
       } catch {
         // An unproven identity must never remove a deny.
         return true;

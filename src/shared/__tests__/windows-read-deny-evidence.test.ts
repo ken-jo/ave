@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, renameSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
@@ -9,7 +9,8 @@ import { win32SystemBinary } from "../ave-home.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { resolve } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
-import { readWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../windows-read-deny-evidence.js";
+import { readWindowsReadDenyEvidence, recheckWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../windows-read-deny-evidence.js";
+import * as windowsPathFacts from "../windows-path-facts.js";
 
 describe.runIf(process.platform === "win32")("Windows read deny native evidence", () => {
   let fixture: string;
@@ -114,6 +115,40 @@ describe.runIf(process.platform === "win32")("Windows read deny native evidence"
     expect(snapshot.get(windowsReadDenyKey(directory))?.identity).toEqual({ volumeSerialNumber: directoryStat.dev.toString(), fileId: directoryStat.ino.toString() });
     expect(windowsReadDenyEvidence(file, snapshot).status).toBe("private");
     expect(windowsReadDenyEvidence(join(fixture, "missing"), snapshot).status).toBe("missing");
+  });
+
+  it("batches descriptor reads and use-time pins without retaining checked verdicts", async () => {
+    const paths = [join(fixture, "control"), join(fixture, "everyone"), join(fixture, "missing")];
+    const reads = vi.spyOn(windowsPathFacts, "readWindowsDacls");
+    const pins = vi.spyOn(windowsPathFacts, "pinWindowsPaths");
+    try {
+      const fresh = await readWindowsReadDenyEvidence(paths);
+      expect(reads).toHaveBeenCalledTimes(1);
+      expect(reads).toHaveBeenCalledWith(paths);
+      const checked = recheckWindowsReadDenyEvidence(paths, fresh);
+      expect(pins).toHaveBeenCalledTimes(1);
+      expect(checked.get(windowsReadDenyKey(paths[0]!))?.status).toBe("private");
+      expect(checked.get(windowsReadDenyKey(paths[1]!))?.status).toBe("readable");
+      expect(checked.get(windowsReadDenyKey(paths[2]!))?.status).toBe("missing");
+      const target = paths[0]!;
+      renameSync(target, target + ".old");
+      try {
+        writeFileSync(target, "replacement");
+        expect(recheckWindowsReadDenyEvidence(paths, fresh).get(windowsReadDenyKey(target))?.status).toBe("error");
+      } finally {
+        fs.unlinkSync(target);
+        renameSync(target + ".old", target);
+      }
+      const mixed = recheckWindowsReadDenyEvidence([target, join(fixture, "invalid|target")], new Map([
+        [windowsReadDenyKey(target), fresh.get(windowsReadDenyKey(target))!],
+        [windowsReadDenyKey(join(fixture, "invalid|target")), fresh.get(windowsReadDenyKey(target))!],
+      ]));
+      expect(mixed.get(windowsReadDenyKey(target))?.status).toBe("private");
+      expect(mixed.get(windowsReadDenyKey(join(fixture, "invalid|target")))?.status).toBe("error");
+    } finally {
+      reads.mockRestore();
+      pins.mockRestore();
+    }
   });
 });
 

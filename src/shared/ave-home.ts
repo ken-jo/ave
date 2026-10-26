@@ -142,9 +142,16 @@ export function readWindowsDirectoryDacls(paths: readonly string[], protect = fa
   }
   if (!refused && paths[1] && existsSync(paths[1])) {
     try {
-      for (const child of readdirSync(paths[1])) {
-        const path = join(paths[1], child);
-        results.push({ ...directoryDescriptor(path, readWindowsDacls([resolve(path)])[0]!), child: true });
+      const children = readdirSync(paths[1]).map(child => join(paths[1]!, child));
+      let rows: readonly WindowsDaclFacts[];
+      try { rows = readWindowsDacls(children.map(path => resolve(path))); }
+      catch {
+        // Preserve the ordered refusal boundary when an enumerated child cannot be read.
+        for (const path of children) results.push({ ...directoryDescriptor(path, readWindowsDacls([resolve(path)])[0]!), child: true });
+        return results;
+      }
+      for (const [index, path] of children.entries()) {
+        results.push({ ...directoryDescriptor(path, rows[index]!), child: true });
       }
     } catch (error) { results.push({ path: paths[1], error: (error as Error).message }); }
   }
