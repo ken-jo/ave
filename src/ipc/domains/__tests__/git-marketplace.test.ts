@@ -21,6 +21,11 @@ import { policyLoad, policySource } from "../../../marketplace/__tests__/fixture
 import { translate } from "../../../i18n/translate.js";
 import { ENTRY_SUBJECT, failureText, warningText } from "../../../ui/renderer/tabs/git-marketplace/labels.js";
 
+vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
+  readAdminPolicyFile: (path: string) => import("node:fs/promises").then(({ readFile }) => readFile(path)),
+}));
+
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 
 const resumeListeners = new Set<() => void>();

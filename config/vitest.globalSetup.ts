@@ -1,12 +1,22 @@
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync } from "node:fs";
 import { readdir, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, userInfo } from "node:os";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { TestProject } from "vitest/node";
 import { claimRunDir, ensureRunTmpRoot, ensureTestTmpRoot, RUN_OWNER_FILE, runTmpRoot, sweepStaleRunDirs } from "../src/__tests__/support/test-run-dirs.js";
 
 const HERE = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+// Capture before redirecting the inherited environment, including across projects.
+const REAL_PROGRAM_DATA = process.platform === "win32" ? process.env.ProgramData ?? "C:\\ProgramData" : null;
+const REAL_ACCOUNT_HOME = (() => {
+  try {
+    return userInfo().homedir;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    return homedir();
+  }
+})();
 
 // Validate every manifest fixture before tests and report all schema failures together.
 // A missing host-owned schema fails closed.
@@ -61,6 +71,8 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   if (existing !== undefined) {
     existing.users += 1;
     project.provide("pluginChildEntryPath", existing.pluginChildEntryPath);
+    project.provide("realProgramData", REAL_PROGRAM_DATA);
+    project.provide("realAccountHome", REAL_ACCOUNT_HOME);
     return () => releaseRunDirs(holder);
   }
 
@@ -84,6 +96,11 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
   process.env.AVE_HOME = aveHomeBase;
   // os.tmpdir() reads TMPDIR on POSIX and TEMP, then TMP, on Windows.
   for (const name of TMP_ENV) process.env[name] = tmpBase;
+  if (process.platform === "win32") {
+    const programData = join(tmpBase, "program-data");
+    mkdirSync(join(programData, "Ave"), { recursive: true });
+    for (const name of ["ProgramData", "PROGRAMDATA", "ALLUSERSPROFILE"]) process.env[name] = programData;
+  }
   try {
     // Owner records keep live runs out of another run's sweep.
     claimRunDir(sandboxBase);
@@ -117,6 +134,8 @@ export async function setup(project: TestProject): Promise<() => Promise<void>> 
     throw error;
   }
   project.provide("pluginChildEntryPath", pluginChildEntryPath);
+  project.provide("realProgramData", REAL_PROGRAM_DATA);
+  project.provide("realAccountHome", REAL_ACCOUNT_HOME);
   holder[RUN_DIRS] = { sandboxBase, aveHomeBase, tmpBase, pluginChildEntryPath, users: 1 };
   return () => releaseRunDirs(holder);
 }
@@ -161,7 +180,7 @@ const TMP_ENV = ["TMPDIR", "TEMP", "TMP"] as const;
 function leftInTmpBase(tmpBase: string): string {
   const counts = new Map<string, number>();
   for (const name of readdirSync(tmpBase)) {
-    if (name === RUN_OWNER_FILE) continue;
+    if (name === RUN_OWNER_FILE || (process.platform === "win32" && name === "program-data")) continue;
     const key = name.replace(/^(.*[-_.])[A-Za-z0-9]{6}$/, "$1*");
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }

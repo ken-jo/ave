@@ -45,6 +45,7 @@ import { setup } from "../../config/vitest.globalSetup.js";
 const RUN_ENV = [
   "HOME", "USERPROFILE", "AVE_HOME", "AVE_TEST_RUN_HOME", "AVE_TEST_SANDBOX_BASE", "TZ", "LC_ALL", "LANG",
   "TMPDIR", "TEMP", "TMP",
+  "ProgramData", "PROGRAMDATA", "ALLUSERSPROFILE",
 ] as const;
 const savedEnv = Object.fromEntries(RUN_ENV.map((name) => [name, process.env[name]]));
 const scratch = useTempDirs("vitest-setup-");
@@ -136,6 +137,9 @@ describe("vitest global setup", () => {
     expect(typeof childEntry).toBe("string");
     expect(existsSync(childEntry as string)).toBe(true);
     expect(jsdomProvided.get("pluginChildEntryPath")).toBe(childEntry);
+    expect(jsdomProvided.get("realProgramData")).toBe(nodeProvided.get("realProgramData"));
+    expect(nodeProvided.get("realAccountHome")).toBeTypeOf("string");
+    expect(jsdomProvided.get("realAccountHome")).toBe(nodeProvided.get("realAccountHome"));
     expect(process.env.AVE_HOME).toBe(process.env.AVE_TEST_RUN_HOME);
     expect(process.env.AVE_TEST_RUN_HOME!.startsWith(join(testTmp, "h-"))).toBe(true);
     for (const name of runDirs(testTmp)) {
@@ -545,6 +549,9 @@ describe("runTmpRoot", () => {
   it.each(["linux", "darwin", "win32"] as const)("is covered by no %s sandbox write floor", async (platform) => {
     const { getDefaultSensitiveWriteDenyPaths, isGrantPathWithin } = await import("../permissions/asrt-sandbox.js");
     const realPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+    const realGetuid = Object.getOwnPropertyDescriptor(process, "getuid");
+    // Platform simulation needs an account identifier even on a host without POSIX APIs.
+    if (realGetuid === undefined) Object.defineProperty(process, "getuid", { value: () => 1000, configurable: true });
     Object.defineProperty(process, "platform", { value: platform, configurable: true });
     try {
       const floor = getDefaultSensitiveWriteDenyPaths();
@@ -553,6 +560,7 @@ describe("runTmpRoot", () => {
       expect(floor.some((denied) => isGrantPathWithin(denied, join(homedir(), ".ssh", "x")))).toBe(true);
     } finally {
       Object.defineProperty(process, "platform", realPlatform);
+      if (realGetuid === undefined) delete process.getuid;
     }
   });
 

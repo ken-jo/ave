@@ -13,6 +13,11 @@ import {
   type ServiceClientOptions,
 } from "../client.js";
 
+vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
+  readAdminPolicyFile: (path: string) => import("node:fs/promises").then(({ readFile }) => readFile(path)),
+}));
+
 const OLD = "https://ave.agent-connector.ai";
 const NEW = "https://ave.example";
 

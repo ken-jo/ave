@@ -18,8 +18,15 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import * as policyHome from "../../shared/policy-home.js";
 
 useVerifiedAveHomePrivacy();
+
+// Simulated win32 on a POSIX host: drive-path math, an empty simulated drive, ASRT resolved on it, and spelling-only stamp pins.
+vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
+vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
@@ -43,7 +50,8 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   },
 }));
 
-vi.mock("node:child_process", () => ({
+vi.mock("node:child_process", async original => ({
+  ...await original<typeof import("node:child_process")>(),
   spawn: h.spawn,
 }));
 
@@ -135,6 +143,7 @@ afterEach(async () => {
   }
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
   for (const root of temporaryRoots.splice(0)) await cleanupTmpDir(root);
 });
@@ -530,18 +539,22 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     }
   });
 
-  it.each(["win32"] as const)(
-    "does not invoke the Linux probe on %s",
-    async (platform) => {
-      setProcessPlatform(platform);
+  it("does not invoke the Linux probe on win32", async () => {
+    setProcessPlatform("win32");
+    const root = mkdtempSync(join(tmpdir(), "asrt-win-probe-"));
+    temporaryRoots.push(root);
+    const profile = ORIGINAL_PLATFORM === "win32" ? join(root, "alice") : "C:\\Users\\alice";
+    if (ORIGINAL_PLATFORM === "win32") mkdirSync(profile);
+    vi.stubEnv("HOME", profile);
+    vi.stubEnv("USERPROFILE", profile);
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
 
-      await initializeAsrtSandbox({ allowedDomains: [] });
+    await initializeAsrtSandbox({ allowedDomains: [] });
 
-      expect(isAsrtSandboxActive()).toBe(true);
-      expect(h.wrapWithSandboxArgv).not.toHaveBeenCalled();
-      expect(h.spawn).not.toHaveBeenCalled();
-    },
-  );
+    expect(isAsrtSandboxActive()).toBe(true);
+    expect(h.wrapWithSandboxArgv).not.toHaveBeenCalled();
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
   it("resets the initialized manager and leaves the adapter inactive when the configured wrapper exits non-zero", async () => {
     h.spawn.mockImplementation(() => childThatCloses(1));
 
@@ -690,9 +703,8 @@ describe.each([
     await initializeAsrtSandbox({ allowedDomains: [], denyRead: [...denyRead] });
   });
 
-  const referenceCovers = (denied: string, canonicalPath: string): boolean => {
-    if (/[\[\]]/.test(denied)) return true;
-    const pattern = canonicalizePathForMatch(expandLeadingTilde(denied));
+  const referenceCovers = (pattern: string, canonicalPath: string): boolean => {
+    if (/[\[\]]/.test(pattern)) return true;
     for (let candidate = canonicalPath; ; candidate = dirname(candidate)) {
       if (globMatch(candidate, pattern) || globMatch(`${candidate}/`, pattern)) return true;
       if (dirname(candidate) === candidate) return false;
@@ -729,11 +741,14 @@ describe.each([
     expect(sessions.denyRead).toEqual(expect.arrayContaining([...denyRead]));
     const privateRoots = appOwnedSandboxPrivateRoots();
     const own = canonicalizePathForMatch(ownHome);
+    // The fixture is immutable during matching; canonicalize each deny once while retaining the per-path, per-ancestor oracle.
+    const patterns = new Map([...sessions.denyRead, ...privateRoots].map(denied => [denied,
+      /[\[\]]/.test(denied) ? denied : canonicalizePathForMatch(expandLeadingTilde(denied))]));
     const expected = [...reads, ...sessions.allowRead].filter((path) => {
       const resolved = canonicalizePathForMatch(path);
-      if (sessions.denyRead.some((denied) => referenceCovers(denied, resolved))) return false;
+      if (sessions.denyRead.some((denied) => referenceCovers(patterns.get(denied)!, resolved))) return false;
       const insideOwnHome = resolved === own || resolved.startsWith(`${own}/`);
-      return insideOwnHome || !privateRoots.some((root) => referenceCovers(root, resolved));
+      return insideOwnHome || !privateRoots.some((root) => referenceCovers(patterns.get(root)!, resolved));
     });
     const policy = getBuiltinShellReadPolicy(reads, homedir(), ownHome);
     expect(policy.allowRead).toEqual(expected);

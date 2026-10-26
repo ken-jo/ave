@@ -674,6 +674,10 @@ jobs:
           src/lib/__tests__/admin-policy-file.test.ts
           src/permissions/__tests__/policy-store-windows.test.ts
           src/shared/__tests__/windows-admin-policy.test.ts
+          src/__tests__/program-data-isolation.test.ts
+          src/permissions/__tests__/asrt-stamp-targets.test.ts
+          src/permissions/__tests__/windows-stamp-targets.test.ts
+          src/permissions/__tests__/filesystem-policy-boundary.test.ts
           src/shared/__tests__/windows-read-deny-evidence.test.ts
           src/shared/__tests__/windows-path-facts.test.ts
           src/shared/__tests__/windows-system-path.test.ts

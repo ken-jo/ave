@@ -3,8 +3,11 @@ import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/suppo
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
-import { join, relative, sep } from "node:path";
+import * as os from "node:os";
+import { join, relative, resolve, sep } from "node:path";
+import { configureHostResources } from "../../main/host-resources.js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";
@@ -32,6 +35,12 @@ import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundle
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
+vi.mock("../../shared/policy-home.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/policy-home.js")>();
+  const os = await import("node:os");
+  return { ...actual, policyHomeAnchors: () => [os.homedir()] };
+});
+
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
   return {
@@ -45,9 +54,38 @@ const SECRET = "user-data-the-child-must-not-read";
 const OWN_TEMP = "own-temp-written";
 const OWN_HOME = "own-home-written";
 
+describe("filesystem expansion admission", () => {
+  afterEach(() => {
+    setProcessPlatform(hostPlatform);
+    vi.restoreAllMocks();
+  });
+
+  const cases = (["linux", "darwin"] as const).flatMap(platform =>
+    ["alice*", "alice[1]", "alice?"].flatMap(home =>
+      (["allowRead", "allowWrite", "denyRead", "denyWrite"] as const).flatMap(field =>
+        (["session", "per-command"] as const).map(config => ({ platform, home, field, config })))));
+
+  it.each(cases)("refuses $home expansion in $platform $config $field before runtime consumption", ({ platform, home, field, config }) => {
+    setProcessPlatform(platform);
+    vi.spyOn(os, "homedir").mockReturnValue(`/tmp/${home}`);
+    const filesystem = { [field]: ["~/project"] };
+    expect(() => config === "session" ? buildSandboxConfig(filesystem) : buildPerCommandSandboxCustomConfig(filesystem))
+      .toThrow(/filesystem-expansion-glob/);
+  });
+
+  it.each(["linux", "darwin"] as const)("keeps braces literal in %s expansions", platform => {
+    setProcessPlatform(platform);
+    vi.spyOn(os, "homedir").mockReturnValue("/tmp/alice{a,b}");
+    const expected = normalizePathForSandbox("~/project");
+    expect(buildSandboxConfig({ allowRead: ["~/project"] }).filesystem.allowRead).toContain(expected);
+    expect(buildPerCommandSandboxCustomConfig({ allowRead: ["~/project"] })?.filesystem?.allowRead).toContain(expected);
+  });
+});
+
 describe("the shared layer withholds grants under the protected floor", () => {
   let root: string;
   beforeAll(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = realpathSync(mkdtempSync(join(tmpdir(), "ave-protected-roots-")));
   });
   afterEach(() => {
@@ -156,10 +194,11 @@ describe("the shared layer withholds grants under the protected floor", () => {
     const sessions = getConfiguredSessionReadPolicy().allowRead;
     expect(sessions).toHaveLength(1);
     const grants = [certs, join(certs, "corp"), ...sessions, join(root, ".ave", "secrets")];
+    for (const grant of grants) mkdirSync(grant, { recursive: true });
     const readFor = (floorPierces?: string[]) => buildPerCommandSandboxCustomConfig({
       allowRead: grants, denyRead: getDefaultSensitiveReadDenyPaths(), ...(floorPierces ? { floorPierces } : {}),
-    })?.filesystem?.allowRead;
-    expect(readFor([...sessions]), "the shell").toEqual([...sessions]);
+    })?.filesystem?.allowRead?.map(entry => typeof entry === "string" ? entry : entry.path);
+    expect(readFor([...sessions]), "the shell").toEqual(sessions.map(path => normalizePathForSandbox(path)));
     expect(readFor([certs]), "a plugin that declared certs").toEqual([certs, join(certs, "corp")]);
     expect(readFor(), "a bundled hook or MCP stdio server").toEqual([]);
     expect(() => readFor([join(root, ".ave", "secrets")])).toThrow(/not a read the host lets re-open/);
@@ -214,8 +253,8 @@ describe("the shared layer withholds grants under the protected floor", () => {
     };
     visit(sourceRoot);
     expect(sites.sort()).toEqual([
-      "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings),_baseReadDenyEvidence,snapshotWindowsLiveGrants(sandboxSession)));",
-      "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings,socketDir),_baseReadDenyEvidence,snapshotWindowsLiveGrants(sandboxSession)));",
+      "permissions/asrt-sandbox.ts: updateConfig(config);",
+      "permissions/asrt-sandbox.ts: updateConfig(config);",
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings),_baseReadDenyEvidence,snapshotWindowsLiveGrants(session)));",
       "permissions/asrt-sandbox.ts: updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings),_baseReadDenyEvidence,snapshotWindowsLiveGrants(session)));",
       "permissions/asrt-sandbox.ts: wrapWithSandboxArgv(ASRT_LINUX_RUNTIME_PROBE_COMMAND,undefined,undefined,abortController.signal,process.cwd(),{commandId:invocation.token,denyUnixSockets:true});",
@@ -268,6 +307,8 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
 
   it("adds nothing without the flag", () => {
     vi.stubEnv("AVE_HOME", join(root, ".ave"));
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("USERPROFILE", root);
     expect(buildPerCommandSandboxCustomConfig({ denyRead: [], denyWrite: [] })?.filesystem?.denyRead).toEqual([]);
   });
 

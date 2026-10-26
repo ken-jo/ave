@@ -2,6 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, symlinkSync, unlinkSync, writeFil
 import { homedir, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ReadFileTool } from "../../tools/file-tools.js";
 import { assertReadableFilePath } from "../../tools/file-read-core.js";
@@ -23,6 +24,7 @@ describe("native host external key path protection", () => {
   let keyPath: string;
 
   beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-runtime-key-paths-")));
     keyPath = join(root, "payload.bin");
     // A synthetic fixture, never a user key; a generic name avoids a static deny.
@@ -66,8 +68,8 @@ describe("native host external key path protection", () => {
     const config = buildSandboxConfig({
       allowedDomains: [], allowRead: [root], allowWrite: [root], denyRead: [], denyWrite: [],
     });
-    expect(config.filesystem.allowRead).toContain(root);
-    expect(config.filesystem.allowWrite).toContain(root);
+    expect(config.filesystem.allowRead?.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(root);
+    expect(config.filesystem.allowWrite.map(entry => typeof entry === "string" ? entry : entry.path)).toContain(root);
     expect(config.filesystem.denyRead).toContain(keyPath);
     expect(config.filesystem.denyWrite).toContain(keyPath);
     expect(config.filesystem.denyRead).not.toContain(join(root, "notes.txt"));

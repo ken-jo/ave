@@ -1674,6 +1674,35 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
   covers only the `srt-win` Rust sources.
 
+Session, per-command, worker, holder, plugin and bundled-process grants enter
+through one filesystem policy admission function. On Windows its order is
+**pin → check pinned → hand off pinned**. Handles resolve every existing
+component. A grant follows supported links one hop at a time (at most 40) and
+checks the resolved target; evidence refuses any reparse point. Ancestor handles
+exclude write and delete sharing while final paths and file identities are read.
+Machine-root checks, control-file deny derivation and private-helper overlap
+checks consume the pinned canonical result. Policy composition retains those
+literal grant objects; it never resolves an admitted grant again. Composed deny
+rows follow the separate deny projection, preserving unprovable identities and
+patterns without applying the grant pin or plain-path grammar. The manager receives
+the same pinned grant objects alongside those deny rows, while
+the direct ACL API receives string arrays whose reads validate the same component
+identities. This validation runs in production as well as isolated tests.
+Each composition expands leading `~` and supported profile environment references
+once; stored settings retain the original diagnostic spelling.
+Thus `~/x` protects the controls inside the actual home subtree on every platform,
+and a Windows whole-home grant cannot evade a refusal by using `~` or `%USERPROFILE%`.
+
+All four filesystem lists use that admission function. On POSIX, expansion that
+introduces `*`, `?`, `[` or `]` is refused with `filesystem-expansion-glob`:
+the runtime has no glob escape syntax, so expanded data cannot become a pattern.
+Braces remain ordinary characters. Windows machine-root writes are refused at
+this entry before narrowing or any native account lookup, including held grants.
+The Windows grant grammar checks intermediate components and expansion prefixes.
+Composed denies retain the deny projection's spelling and identity rules.
+
+On Windows, grant lists are expanded once before runtime handoff; a new glob match created afterward receives no allow ACE from this wrap. Grant junctions and symlinks are followed, and the resolved target must pass every grant check (owner decision 2026-10-26, #253). By design, a grant target's own ACL is not checked: owner and DACL rules apply to policy evidence and private homes, not to arbitrary grant targets. Evidence refuses links and fails closed. Every pinned grant literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` grant forms are refused. The runtime normalizes each grant entry again, so its result must exactly match a checked spelling, with no case folding, before any existence check. A missing grant is dropped. A swap before pinning is resolved and checked like any other link; a replacement between pinning, policy checks and native handoff is refused by the retained identities. After the final identity validation, the native string API can still follow a later swap. Closing that native residual requires calls that consume held handles.
+
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
 On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; machine-root rows retained by the policy filter remain eligible for stamping regardless of absence. Before adding a worker write grant, raw session and earlier-wrap denies plus the pending policy identify every overlapping obligation, including machine read rows and targets created after omission. An overlapping deny glob refuses the grant because a DACL cannot protect future matches. Native target DACLs determine existing deny strength; stamping unions that strength with the obligations so reusing the session holder cannot downgrade its earlier read protection. After stamping, even if it throws, native DACLs must show the sandbox SID's expected deny mask, subtree inheritance for directories, and parent delete-child protection. A missing or unverifiable target refuses the grant, as does any stamp failure; successful stamping alone proves nothing. Grant failures revoke only the grant holder. Worker release leaves session denies until teardown; placeholders remain. These are point-in-time checks: concurrent path or DACL changes and protected descendant DACLs remain limitations. An omitted target created outside write grants while a command is running is not denied until the next wrap or worker/session re-initialization.
 

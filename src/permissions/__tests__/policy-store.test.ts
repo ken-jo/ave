@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { mkdir, open } from "node:fs/promises";
-import { dirname, parse, resolve } from "node:path";
+import { tmpdir } from "node:os";
+import { dirname, join, parse, resolve } from "node:path";
 import { loadPolicy, savePolicy, getAdminPolicyPath } from "../policy-store.js";
 import { isPolicyUserEditable } from "../../shared/policy-editability.js";
 import { makeTestPolicy } from "./test-helpers.js";
@@ -535,7 +536,7 @@ describe("policy-store", () => {
       const original = process.platform;
       const origPD = process.env.ProgramData;
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
-      process.env.ProgramData = "C:\\ProgramData";
+      process.env.ProgramData = join(tmpdir(), "ProgramData");
       try {
         const p = getAdminPolicyPath();
         expect(p).toContain("Ave");
