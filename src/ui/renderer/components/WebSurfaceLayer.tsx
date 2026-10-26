@@ -3,7 +3,6 @@
 import { createElement, useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { createPortal } from "react-dom";
 import { AVE_SIDE_BROWSER_PARTITION } from "../../../shared/side-browser.js";
-import { guestFaviconSource } from "../preview/favicon-source.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { useSurfaceMount } from "../preview/surface-mounts.js";
 import { bindGuestToTab } from "../preview/agent-browser-bridge.js";
@@ -19,7 +18,6 @@ import {
   setWebSurfaceElement,
   forgetWebSurfaceLocation,
   noteWebSurfaceLocation,
-  noteWebSurfaceFavicon,
   setWebSurfaceSlot,
   clearWebSurfaceSlot,
   setWebSurfaceUrl,
@@ -229,25 +227,17 @@ function GuestFrame({ api, surface }: { api: AveApi; surface: WebSurface }) {
       const { url, isMainFrame } = event as Event & { url?: string; isMainFrame?: boolean };
       if (isMainFrame === false || (event.type === "did-navigate-in-page" && isMainFrame !== true)) return;
       if (typeof url === "string") {
-        if (event.type === "did-navigate") noteWebSurfaceFavicon(surface.tabId, null);
         noteWebSurfaceLocation(surface.tabId, url);
       }
     };
     const onAttach = () => forgetWebSurfaceLocation(surface.tabId);
-    const onFavicon = (event: Event) => {
-      const icons = (event as Event & { favicons?: unknown }).favicons;
-      const favicon = Array.isArray(icons) ? icons.find((icon) => guestFaviconSource(icon) !== null) : undefined;
-      noteWebSurfaceFavicon(surface.tabId, guestFaviconSource(favicon));
-    };
     guest.addEventListener("did-attach", onAttach);
-    guest.addEventListener("page-favicon-updated", onFavicon);
     guest.addEventListener("did-navigate", onNavigate);
     guest.addEventListener("did-navigate-in-page", onNavigate);
     return () => {
       guest.removeEventListener("did-attach", onAttach);
       guest.removeEventListener("did-navigate", onNavigate);
       guest.removeEventListener("did-navigate-in-page", onNavigate);
-      guest.removeEventListener("page-favicon-updated", onFavicon);
     };
   }, [surface.tabId]);
 

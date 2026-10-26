@@ -2,7 +2,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { bindGuestToTab, closeBrowserTab, registerBrowserTabHost, navigateBrowserTabAsUser, routeBrowserTabOp, type BrowserTabHost } from "../agent-browser-bridge.js";
 import type { AveApi } from "../../types.js";
-import { setWebSurfaceElement } from "../web-surfaces.js";
+import { noteWebSurfaceFavicon, setWebSurfaceElement, webSurfaceFavicon } from "../web-surfaces.js";
 
 function host(sessionId: string | null, tabs: string[]): BrowserTabHost & { calls: string[] } {
   const calls: string[] = [];
@@ -49,6 +49,22 @@ describe("user browser navigation", () => {
 });
 
 describe("guest binding", () => {
+  it("shares data-only favicon metadata for every bound guest and clears it on main-frame navigation", () => {
+    const guest = Object.assign(document.createElement("webview"), { getWebContentsId: () => 31 });
+    const unbind = bindGuestToTab({ browserTabs: { bindTab: vi.fn().mockResolvedValue({ ok: true }) } } as unknown as AveApi, guest, "browser:icon", undefined);
+    const publish = () => guest.dispatchEvent(Object.assign(new Event("page-favicon-updated"), { favicons: ["https://example.test/icon.png", "data:image/png;base64,YQ=="] }));
+    try {
+      publish();
+      expect(webSurfaceFavicon("browser:icon")).toBe("data:image/png;base64,YQ==");
+      guest.dispatchEvent(Object.assign(new Event("did-navigate"), { isMainFrame: false }));
+      expect(webSurfaceFavicon("browser:icon")).not.toBeNull();
+      guest.dispatchEvent(new Event("did-navigate"));
+      expect(webSurfaceFavicon("browser:icon")).toBeNull();
+      unbind();
+      publish();
+      expect(webSurfaceFavicon("browser:icon")).toBeNull();
+    } finally { unbind(); noteWebSurfaceFavicon("browser:icon", null); }
+  });
   it.each(["refused", "disconnected"])("retries a rejected bind on the next dom-ready and remembers only an accepted guest (%s)", async (failure) => {
     const bindTab = vi.fn().mockResolvedValue({ ok: true });
     if (failure === "refused") bindTab.mockResolvedValueOnce({ ok: false, error: "guest-not-hosted" });

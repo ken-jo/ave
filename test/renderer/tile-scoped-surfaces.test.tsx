@@ -1746,12 +1746,6 @@ describe("opening a conversation while another is mid-turn", () => {
         }
         return made;
       });
-      const projectsTab = await waitFor(() => {
-        const tab = rendered.container.querySelector<HTMLElement>('[data-testid="sidebar-tab-projects"]');
-        expect(tab).not.toBeNull();
-        return tab!;
-      });
-      await act(async () => { fireEvent.mouseDown(projectsTab, { button: 0 }); });
       await waitFor(() => expect(rendered.container.querySelector('[data-testid="sidebar-project-proj-b"]')).not.toBeNull());
       const pendingSend = deferred<{ ok: true }>();
       rendered.api.chatSend.mockImplementationOnce(async () => pendingSend.promise);
@@ -1827,8 +1821,6 @@ describe("opening a conversation while another is mid-turn", () => {
         await submitChatMessage(tile.element, `${index + 1}번째`);
       }
       await waitFor(() => expect(rendered.api.chatSend).toHaveBeenCalledTimes(MAX_CHAT_GROUPS));
-      const projectsTab = rendered.container.querySelector<HTMLElement>('[data-testid="sidebar-tab-projects"]')!;
-      await act(async () => { fireEvent.mouseDown(projectsTab, { button: 0 }); });
       await waitFor(() => expect(folderRow(rendered.container)).not.toBeNull());
 
       await act(async () => { fireEvent.click(folderRow(rendered.container)); });
@@ -1847,12 +1839,6 @@ describe("opening a conversation while another is mid-turn", () => {
 
     it("an idle New Chat main refuses keeps the conversation, the project and says why", async () => {
       const rendered = await renderApp(projectWindow as never);
-      const projectsTab = await waitFor(() => {
-        const tab = rendered.container.querySelector<HTMLElement>('[data-testid="sidebar-tab-projects"]');
-        expect(tab).not.toBeNull();
-        return tab!;
-      });
-      await act(async () => { fireEvent.mouseDown(projectsTab, { button: 0 }); });
       await waitFor(() => expect(folderRow(rendered.container)).not.toBeNull());
       await waitFor(() => expect(rendered.container.textContent).toContain("hello"));
       rendered.api.chatNew.mockResolvedValueOnce({ ok: false, error: "project-not-allowed" } as never);
