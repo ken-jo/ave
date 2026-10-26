@@ -56,7 +56,7 @@ describe.runIf(process.platform === "win32")("Windows stamp path admission", () 
     vi.spyOn(facts, "pinWindowsPaths").mockImplementation(paths => paths.map(path => {
       if (path !== child) return nativePin([path])[0]!;
       return { exists: null, canonical: null, volumeSerial: null, fileId: null,
-        volumeSerialNumber: null, fileIndex: null, attributes: 0, reparseTag: 0, reparseTarget: null, directory: false,
+        volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: 0, reparseTag: 0, reparseTarget: null, directory: false,
         ancestors: [...parent.ancestors, { ...parent, attributes: 0x410, reparseTag: 0x9000001a }],
       };
     }));
@@ -92,7 +92,7 @@ describe.runIf(process.platform === "win32")("Windows stamp path admission", () 
     const ordinary = {
       exists: true, canonical: target, volumeSerial: "0x0000000000000001",
       fileId: "0x00000000000000000000000000000001", volumeSerialNumber: "0x0000000000000001",
-      fileIndex: "0x0000000000000001", attributes: 16, reparseTag: 0, reparseTarget: null, directory: true,
+      fileIndex: "0x0000000000000001", changeTime: "0x0000000000000001", attributes: 16, reparseTag: 0, reparseTarget: null, directory: true,
     };
     const ancestor = { ...ordinary, attributes: 0x410, reparseTag: 0xa0000042 };
     vi.spyOn(facts, "pinWindowsPaths").mockImplementation(paths => paths.map(() => ({ ...ordinary, ancestors: [ancestor] })));
