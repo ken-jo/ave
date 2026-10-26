@@ -1,7 +1,8 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
-import { useTempPaths } from "../../__tests__/test-helpers.js";
+import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";
+import * as policyHome from "../../shared/policy-home.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { assertExtensionStartAllowed, initializeAsrtSandbox, isAsrtSandboxActive, isPluginWorkerConfinementActive, resetAsrtSandbox, wrapWorkerCommand, wrapTerminalCommand, grantWindowsWorkerFilesystemAccess } from "../asrt-sandbox.js";
 import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBootForTest } from "../sandbox-capability.js";
@@ -26,6 +27,11 @@ vi.mock("@anthropic-ai/sandbox-runtime", () => ({
 const ORIGINAL_PLATFORM = process.platform;
 const OWNER_SID = "S-1-5-21-100-200-300-1001";
 const home = useTempPaths("ave-home-confinement-", ".ave");
+const policyFixture = useTempDirs("confinement-stamp-floor-");
+
+beforeEach(() => {
+  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture()]);
+});
 
 afterEach(async () => {
   if (isAsrtSandboxActive()) await resetAsrtSandbox();
@@ -33,6 +39,7 @@ afterEach(async () => {
   __resetSandboxRequestedAtBootForTest();
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
+  vi.restoreAllMocks();
 });
 
 describe("private-directory confinement gate", () => {

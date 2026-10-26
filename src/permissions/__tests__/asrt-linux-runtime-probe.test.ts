@@ -18,6 +18,7 @@ import { openEgressInvocation } from "../egress-invocations.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { isHostGitWorkspaceAvailable } from "../../shared/host-git.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import * as policyHome from "../../shared/policy-home.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -520,18 +521,18 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     }
   });
 
-  it.each(["win32"] as const)(
-    "does not invoke the Linux probe on %s",
-    async (platform) => {
-      setProcessPlatform(platform);
+  it("does not invoke the Linux probe on win32", async () => {
+    setProcessPlatform("win32");
+    const root = mkdtempSync(join(tmpdir(), "asrt-win-probe-"));
+    temporaryRoots.push(root);
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([root]);
 
-      await initializeAsrtSandbox({ allowedDomains: [] });
+    await initializeAsrtSandbox({ allowedDomains: [] });
 
-      expect(isAsrtSandboxActive()).toBe(true);
-      expect(h.wrapWithSandboxArgv).not.toHaveBeenCalled();
-      expect(h.spawn).not.toHaveBeenCalled();
-    },
-  );
+    expect(isAsrtSandboxActive()).toBe(true);
+    expect(h.wrapWithSandboxArgv).not.toHaveBeenCalled();
+    expect(h.spawn).not.toHaveBeenCalled();
+  });
   it("resets the initialized manager and leaves the adapter inactive when the configured wrapper exits non-zero", async () => {
     h.spawn.mockImplementation(() => childThatCloses(1));
 

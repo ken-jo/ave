@@ -138,6 +138,8 @@ describe("vitest global setup", () => {
     expect(existsSync(childEntry as string)).toBe(true);
     expect(jsdomProvided.get("pluginChildEntryPath")).toBe(childEntry);
     expect(jsdomProvided.get("realProgramData")).toBe(nodeProvided.get("realProgramData"));
+    expect(nodeProvided.get("realAccountHome")).toBeTypeOf("string");
+    expect(jsdomProvided.get("realAccountHome")).toBe(nodeProvided.get("realAccountHome"));
     expect(process.env.AVE_HOME).toBe(process.env.AVE_TEST_RUN_HOME);
     expect(process.env.AVE_TEST_RUN_HOME!.startsWith(join(testTmp, "h-"))).toBe(true);
     for (const name of runDirs(testTmp)) {

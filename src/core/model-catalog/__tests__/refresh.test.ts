@@ -2,7 +2,6 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
@@ -21,6 +20,11 @@ import { catalogProviderIds } from "../../../shared/model-catalog/provider-map.j
 import type { ModelCatalogDocument } from "../../../shared/model-catalog/types.js";
 import { activeModelCatalog } from "../../../shared/model-catalog/active.js";
 import { withFileLock } from "../../../lib/with-file-lock.js";
+
+vi.mock("../../../lib/admin-policy-file.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../../lib/admin-policy-file.js")>()),
+  readAdminPolicyFile: (path: string) => import("node:fs/promises").then(({ readFile }) => readFile(path)),
+}));
 
 const lookupMock = vi.fn(async () => [{ address: "93.184.215.14", family: 4 }]);
 vi.mock("node:dns", () => ({ promises: { lookup: () => lookupMock() } }));
@@ -575,12 +579,12 @@ describe("readModelCatalogRefreshPolicy", () => {
   };
 
   it("leaves the decision to the user when the file or the section is absent", async () => {
-    expect(await readModelCatalogRefreshPolicy(join(dir, "absent.json"), readFile)).toBeNull();
-    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ marketplaces: {} })), readFile)).toBeNull();
+    expect(await readModelCatalogRefreshPolicy(join(dir, "absent.json"))).toBeNull();
+    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ marketplaces: {} })))).toBeNull();
   });
 
   it("reads { refresh: off } as off", async () => {
-    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ modelCatalog: { refresh: "off" } })), readFile)).toBe("off");
+    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ modelCatalog: { refresh: "off" } })))).toBe("off");
   });
 
   it.each([
@@ -589,6 +593,6 @@ describe("readModelCatalogRefreshPolicy", () => {
     ["an unknown value", JSON.stringify({ modelCatalog: { refresh: "sometimes" } })],
     ["an unknown key", JSON.stringify({ modelCatalog: { refresh: "off", extra: 1 } })],
   ])("fails closed on %s", async (_label, text) => {
-    expect(await readModelCatalogRefreshPolicy(policy(text), readFile)).toBe("off");
+    expect(await readModelCatalogRefreshPolicy(policy(text))).toBe("off");
   });
 });

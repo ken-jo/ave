@@ -1,6 +1,8 @@
 import net from "node:net";
 import { join } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import * as policyHome from "../../shared/policy-home.js";
+import { useTempDirs } from "../../__tests__/test-helpers.js";
 import { SandboxManager, type ParentProxyRouter, type SandboxAskCallback } from "@anthropic-ai/sandbox-runtime";
 import {
   closeAllEgressConnections,
@@ -17,6 +19,11 @@ import { EgressGrantStore } from "../egress-grants.js";
 const TOKEN = "proxy-only-invocation-token-00001";
 const DESTINATION = { host: "8.8.8.8", port: 443, network: "public" as const };
 const cleanups: Array<() => Promise<void>> = [];
+const policyFixture = useTempDirs("proxy-stamp-floor-");
+
+beforeEach(() => {
+  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture()]);
+});
 
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();

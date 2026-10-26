@@ -27,12 +27,11 @@ export function consentedTelemetryEndpoint(
 export function createServiceClient(
   fetchImpl: typeof fetch,
   stagingBase = readDevelopmentEnvVar("AVE_SERVICE_BASE_URL"),
-  policyBase: () => Promise<string | null> = () => readPolicyServiceBase(getAdminPolicyPath()),
 ): ServiceClient {
   return new ServiceClient({
     fetchImpl,
     buildBase: stagingBase ?? AVE_SERVICE_BASE_URL,
-    policyBase,
+    policyBase: () => readPolicyServiceBase(getAdminPolicyPath()),
     statePath: join(aveHome(), "marketplaces", stagingBase === undefined ? "service.json" : "service.staging.json"),
     appVersion: getAveAppVersion(),
     allowLoopbackHttp: stagingBase !== undefined,

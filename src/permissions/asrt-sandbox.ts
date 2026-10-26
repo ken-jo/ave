@@ -1,7 +1,7 @@
 
 
 import { spawn } from "node:child_process";
-import { containsGlobCharsWin, globPatternBaseDir, normalizePathForSandbox, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { containsGlobCharsWin, globPatternBaseDir, isUncPath, normalizePathForSandbox, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
@@ -11,7 +11,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
-import { checkAdminPolicyPath, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
+import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
@@ -972,7 +972,6 @@ function windowsProfileHome(): string | undefined {
 }
 
 function windowsMachineRoots(): string[] {
-  checkAdminPolicyPath(join(process.env.ProgramData ?? "C:\\ProgramData", "Ave", "policy.json"));
   const drive = process.env.SystemDrive ?? "C:";
   return [
     process.env.ProgramData ?? "C:\\ProgramData",
@@ -1480,12 +1479,24 @@ async function discardFailedAsrtInitialization(
 }
 
 // Initialize once from trusted settings and publish activity only after native execution succeeds. Empty global allow lists plus non-strict mode route each connection to the ask callback; on macOS/Linux accept only listener-vouched identities and literal true allows. Log monitoring defaults off.
+function checkWindowsSandboxStampTargets(filesystem: Partial<FilesystemConfig> | undefined): void {
+  if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || process.platform !== "win32") return;
+  const targets = [
+    ...(filesystem?.denyRead ?? []), ...(filesystem?.denyWrite ?? []),
+    ...(filesystem?.allowWrite ?? []), ...(filesystem?.allowRead ?? []),
+  ].flatMap((entry) => {
+    const raw = typeof entry === "string" ? entry : entry.path;
+    const path = normalizePathForSandbox(raw, typeof entry === "string" ? undefined : { literal: true });
+    return containsGlobCharsWin(path) || isUncPath(path) ? [] : [path];
+  });
+  checkSandboxStampTargets(targets);
+}
+
 export async function initializeAsrtSandbox(
   trustedSettings: TrustedSandboxSettings,
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
 ): Promise<void> {
-  checkAdminPolicyPath(join(process.env.ProgramData ?? "C:\\ProgramData", "Ave", "policy.json"));
   if (trustedSettings.windows?.externalConfinement !== true) {
     assertAveHomePrivacyForConfinement();
   }
@@ -1506,6 +1517,7 @@ export async function initializeAsrtSandbox(
   // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
   SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
   try {
+    checkWindowsSandboxStampTargets(config.filesystem);
     await SandboxManager.initialize(config, askCb, enableLogMonitor);
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
@@ -1563,6 +1575,7 @@ export async function wrapToolCommand(
   const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; });
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
+  checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -1739,6 +1752,7 @@ async function wrapLongLivedCommand(
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
+  checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -1899,6 +1913,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   if (process.platform !== "win32") {
     throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
   }
+  checkWindowsSandboxStampTargets({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
   const {
     getWindowsSandboxUserStatus,
     grantWindowsAcl,
@@ -1927,6 +1942,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   ];
 
   assertPrivateHelperGrants(allowRead, allowWrite);
+  checkWindowsSandboxStampTargets({ allowRead, allowWrite });
 
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {

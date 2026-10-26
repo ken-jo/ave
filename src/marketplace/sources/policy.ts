@@ -415,9 +415,8 @@ async function readPolicy(path: string, platform: NodeJS.Platform, access: Polic
 export async function loadMarketplacePolicy(
   path: string = getAdminPolicyPath(),
   platform: NodeJS.Platform = process.platform,
-  access: PolicyFileAccess = NODE_FILE_ACCESS,
 ): Promise<PolicyLoad> {
-  return (await readPolicy(path, platform, access)).load;
+  return (await readPolicy(path, platform)).load;
 }
 
 export interface PolicyUpdate {

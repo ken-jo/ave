@@ -81,6 +81,7 @@ import { resolveParentProxy } from "@anthropic-ai/sandbox-runtime/dist/sandbox/p
 import { rankWindowsFsAccess } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import * as sensitivePaths from "../sensitive-paths.js";
 import { getDefaultWritePaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 
 useVerifiedAveHomePrivacy();
 
@@ -88,8 +89,9 @@ let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
 let originalHome: string | undefined;
 let isolatedWindowsHome: string | undefined;
+let restoreNativeFixturePolicy: (() => void) | undefined;
 
-beforeAll(() => {
+beforeAll(async () => {
   if (process.platform !== "win32") return;
 
   originalAsrtTestHome = process.env.AVE_ASRT_TEST_HOME;
@@ -99,10 +101,35 @@ beforeAll(() => {
   process.env.AVE_ASRT_TEST_HOME = isolatedWindowsHome;
   process.env.AVE_HOME = join(isolatedWindowsHome, "app");
   process.env.HOME = isolatedWindowsHome;
+  const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+  const nativeInitialize = SandboxManager.initialize.bind(SandboxManager);
+  const nativeWrap = SandboxManager.wrapWithSandboxArgv.bind(SandboxManager);
+  const fixtureFilesystem = <T extends Partial<FilesystemConfig>>(filesystem: T): T => {
+    const withinFixture = (entry: FilesystemPathEntry): boolean => {
+      const path = resolve(typeof entry === "string" ? entry : entry.path).toLowerCase();
+      return [isolatedWindowsHome!, tmpdir()].some((root) => {
+        const base = resolve(root).toLowerCase();
+        return path === base || path.startsWith(base + sep);
+      });
+    };
+    return {
+      ...filesystem,
+      ...(filesystem.denyRead === undefined ? {} : { denyRead: filesystem.denyRead.filter(withinFixture) }),
+      ...(filesystem.denyWrite === undefined ? {} : { denyWrite: filesystem.denyWrite.filter(withinFixture) }),
+      ...(filesystem.allowRead === undefined ? {} : { allowRead: filesystem.allowRead.filter(withinFixture) }),
+      ...(filesystem.allowWrite === undefined ? {} : { allowWrite: filesystem.allowWrite.filter(withinFixture) }),
+    };
+  };
+  const initialize = vi.spyOn(SandboxManager, "initialize").mockImplementation((config, ...args) =>
+    nativeInitialize({ ...config, filesystem: fixtureFilesystem(config.filesystem) }, ...args));
+  const wrap = vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation((command, binShell, config, ...args) =>
+    nativeWrap(command, binShell, config?.filesystem ? { ...config, filesystem: fixtureFilesystem(config.filesystem) } : config, ...args));
+  restoreNativeFixturePolicy = () => { wrap.mockRestore(); initialize.mockRestore(); };
 });
 
 afterAll(async () => {
   if (process.platform !== "win32" || isolatedWindowsHome === undefined) return;
+  restoreNativeFixturePolicy?.();
 
   if (originalHome === undefined) delete process.env.HOME;
   else process.env.HOME = originalHome;

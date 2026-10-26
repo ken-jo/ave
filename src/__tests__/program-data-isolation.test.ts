@@ -9,12 +9,16 @@ import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
 import { readWindowsAdminPolicy } from "../shared/windows-admin-policy.js";
 import { useScratchLinks, useTempDirs } from "./test-helpers.js";
 import { setProcessPlatform } from "./support/process-platform.js";
+import * as policyHome from "../shared/policy-home.js";
 
 const scratch = useTempDirs("program-data-guard-");
 const link = useScratchLinks();
 const refusal = /refusing to access admin policy at .* from a test process; it is under the real /;
 
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => {
+  vi.unstubAllEnvs();
+  vi.restoreAllMocks();
+});
 
 describe.runIf(process.platform === "win32")("machine policy isolation", () => {
   it("inherits the global setup fixture in workers and their child processes", () => {
@@ -61,10 +65,14 @@ describe.runIf(process.platform === "win32")("machine policy isolation", () => {
     }
   });
 
-  it("refuses sandbox initialization before loading the native sandbox", async () => {
+  it("refuses restored machine policy before native sandbox initialization", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../permissions/asrt-sandbox.js");
     vi.stubEnv("ProgramData", inject("realProgramData")!);
-    await expect(initializeAsrtSandbox({})).rejects.toThrow(refusal);
+    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true } })).rejects.toThrow(refusal);
+    expect(initialize).not.toHaveBeenCalled();
   });
 
   it("refuses machine paths in another case and accepts disjoint fixture roots", () => {

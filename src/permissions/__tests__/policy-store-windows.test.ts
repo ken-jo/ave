@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
@@ -12,6 +12,7 @@ import { readWindowsDirectoryDacls, win32SystemBinary, type WindowsDirectoryDacl
 import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sensitivePaths from "../sensitive-paths.js";
+import { createServiceClient } from "../../boot/steps/service-endpoint.js";
 
 describe.skipIf(process.platform !== "win32")("Windows administrative policy trust", () => {
   let root: string;
@@ -45,6 +46,13 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     }
     expect(readWindowsDirectoryDacls([admin])[0].ownerSid).toBe(token.currentUserSid);
   }
+
+  it("keeps production policy readers free of injectable reader parameters", () => {
+    expectTypeOf<Parameters<typeof readPolicyServiceBase>>().toEqualTypeOf<[policyPath: string]>();
+    expectTypeOf<Parameters<typeof readModelCatalogRefreshPolicy>>().toEqualTypeOf<[policyPath: string]>();
+    expectTypeOf<Parameters<typeof loadMarketplacePolicy>>().toEqualTypeOf<[path?: string, platform?: NodeJS.Platform]>();
+    expectTypeOf<Parameters<typeof createServiceClient>>().toEqualTypeOf<[fetchImpl: typeof fetch, stagingBase?: string]>();
+  });
 
   it("omits machine-owned roots from the Windows deny-write set", () => {
     const machine = process.env.ProgramData!;
