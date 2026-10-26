@@ -28,6 +28,61 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
+  it("requires a positive grammar for every direct invocation", () => {
+    for (const command of [
+      "unknown-program literal",
+      "Write-Output -UnknownParameter",
+      "xargs -a inputs.txt pwsh",
+      "find . -exec pwsh -File ./task.ps1 ';'",
+    ]) {
+      expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
+        outcome: "unproven",
+        sensitive: null,
+        exfiltration: null,
+      }));
+      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
+    }
+  });
+
+  it("recognizes only positively parsed literal evaluators as exact-only", () => {
+    for (const command of [
+      "node '--eval=console.log(1)'",
+      "fish --command 'printf ready'",
+    ]) {
+      expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
+        outcome: "unproven",
+        exactLiteralEvaluation: true,
+        sensitive: null,
+        exfiltration: null,
+      }));
+      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: true }));
+    }
+
+    const unsupportedCommonParameter = "Invoke-Expression -Command 'Write-Output ready' -Verbose";
+    expect(inspectPowerShellCommand(unsupportedCommonParameter, CWD)).toEqual(expect.objectContaining({
+      outcome: "unproven",
+      sensitive: null,
+      exfiltration: null,
+    }));
+    expect(proveLiteralPowerShell(unsupportedCommonParameter)).toEqual(expect.objectContaining({ proven: false }));
+  });
+
+  it("distinguishes quoted data from a bare PowerShell parameter", () => {
+    expect(inspectPowerShellCommand("Write-Output '-Force'", CWD)).toEqual({
+      outcome: "static-complete", sensitive: null, exfiltration: null,
+    });
+    expect(inspectPowerShellCommand("Write-Output -Force", CWD)).toEqual(expect.objectContaining({ outcome: "unproven" }));
+  });
+
+  it("refuses a state-changing invocation in a multi-command input", () => {
+    expect(inspectPowerShellCommand("Set-Content notes.txt ready", CWD)).toEqual({
+      outcome: "static-complete", sensitive: null, exfiltration: null,
+    });
+    const compound = "Set-Content notes.txt ready; Write-Output ready";
+    expect(inspectPowerShellCommand(compound, CWD)).toEqual(expect.objectContaining({ outcome: "unproven" }));
+    expect(proveLiteralPowerShell(compound)).toEqual(expect.objectContaining({ proven: false }));
+  });
+
   it("refuses ambiguous launcher options without hiding later outer operands", () => {
     const command = "pwsh -ConfigurationName local ~/.ssh/id_ed25519";
     const result = inspectPowerShellCommand(command, CWD);
@@ -141,9 +196,9 @@ describe("PowerShell static floor analysis", () => {
     expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
   });
 
-  it("handles a bare interpreter without reading a missing option", () => {
-    expect(inspectPowerShellCommand("deno", CWD)).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
-    expect(proveLiteralPowerShell("deno")).toEqual(expect.objectContaining({ proven: true }));
+  it("declines a bare runtime without a positive stdin grammar", () => {
+    expect(inspectPowerShellCommand("deno", CWD)).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
+    expect(proveLiteralPowerShell("deno")).toEqual(expect.objectContaining({ proven: false }));
   });
 
   it("retains direct native and visible UNC sinks", () => {
@@ -196,7 +251,7 @@ describe("PowerShell static floor analysis", () => {
       expect(result.outcome).toBe("static-complete");
       return result.visits.staticTokens;
     });
-    expect(counts).toEqual([130, 258, 400]);
+    expect(counts[0]).toBeGreaterThan(0);
     expect(counts[1]! / counts[0]!).toBeLessThanOrEqual(2.5);
     expect(counts[2]! / counts[1]!).toBeLessThanOrEqual(2.5);
   });

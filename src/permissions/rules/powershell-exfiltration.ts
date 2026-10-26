@@ -6,13 +6,13 @@ import {
   POWERSHELL_ANALYSIS_LIMITS,
   PowerShellAnalysisContext,
   PowerShellStructuralLimitError,
-  powerShellCommandsWithEffect,
 } from "./powershell-command-policy.js";
 import { literalRuleWord } from "./rule-specifier.js";
-import { INTERPRETER_SET, SHELL_SET, isPowerShellLauncher, programName, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
+import { MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { type ShellCommandInput } from "./shell-prefix-policy.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
-import { inspectLiteralShellArgvFacts, literalArgvRuntimeBinding, sensitivePathInArgumentText, sensitivePathInLiteralArgumentText } from "./shell-exfiltration.js";
+import { inspectLiteralShellArgvFacts, sensitivePathInArgumentText, sensitivePathInLiteralArgumentText } from "./shell-exfiltration.js";
+import { proveStaticArgv, type StaticArgvProof } from "./shell-argument-grammar.js";
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 
@@ -426,12 +426,6 @@ function toPipeline(stages: PsCommand[], _budget: PowerShellAnalysisContext): Ps
 
 const RUNTIME_EVALUATION_REASON = "Shell command requires runtime evaluation";
 const HTTP_CMDLETS = new Set(["invoke-webrequest", "invoke-restmethod"]);
-const FILE_WRITE_EFFECT = powerShellCommandsWithEffect("file-write");
-const PROVIDER_WRITE_EFFECT = powerShellCommandsWithEffect("provider-write");
-const CWD_WRITE_EFFECT = powerShellCommandsWithEffect("cwd-write");
-const SHELL_CODE_OPTIONS = new Set(["-c", "-command"]);
-const INTERPRETER_CODE_OPTIONS = new Set(["-c", "-e", "--eval"]);
-const RUNTIME_COMMAND_MUTATORS = new Set(["set-alias", "new-alias", "import-alias", "import-module", "remove-module"]);
 const literalWordValues = new WeakMap<PsWord, string | null>();
 
 function literalWordValue(token: PsToken): string | undefined {
@@ -468,8 +462,7 @@ interface StaticStage {
   name: string | undefined;
   fedByPipeline: boolean;
   pipelineId: number;
-  payloadIndex: number | null;
-  opaquePayloadIndexes: Set<number>;
+  proof: StaticArgvProof;
 }
 
 interface StaticProgram {
@@ -480,73 +473,6 @@ interface StaticProgram {
 }
 
 function optionName(text: string): string { return normalizeDashes(text).toLowerCase(); }
-
-function literalEvaluationPayload(stage: StaticStage): number | null {
-  if (stage.name === "start-process" && stage.visible.length > 5
-    && isPowerShellLauncher(stage.visible[1] ?? "")
-    && optionName(stage.visible[2] ?? "") === "-argumentlist"
-    && SHELL_CODE_OPTIONS.has(optionName(stage.visible[3] ?? ""))
-    && stage.visible[4] === "," && stage.argv[5] !== undefined) return 5;
-  if (stage.argv.some((value) => value === undefined)) return null;
-  const argv = stage.argv as readonly string[];
-  if (stage.name === "invoke-expression") {
-    if (argv.length === 2) return 1;
-    return argv.length === 3 && optionName(argv[1]!) === "-command" ? 2 : null;
-  }
-  const executable = programName(argv[0]!) ?? argv[0]!.toLowerCase();
-  if (argv.length < 2) return null;
-  if ((executable === "deno" || executable === "deno.exe") && optionName(argv[1]!) === "eval") return argv.length === 3 ? 2 : null;
-  if ((executable === "deno" || executable === "deno.exe") && optionName(argv[1]!) === "repl") {
-    const at = argv.findIndex((value, index) => index > 1 && optionName(value) === "--eval");
-    return at > 0 && at + 1 < argv.length ? at + 1 : null;
-  }
-  for (let index = 1; index + 1 < argv.length; index += 1) {
-    const option = optionName(argv[index]!);
-    if (SHELL_SET.has(executable) && SHELL_CODE_OPTIONS.has(option)) return index + 1;
-    if (INTERPRETER_SET.has(executable) && INTERPRETER_CODE_OPTIONS.has(option)) return index + 1;
-    if (isPowerShellLauncher(executable) && index === 1 && SHELL_CODE_OPTIONS.has(option)) return index + 1;
-    // An operand selects a module, script or file; later flags belong to it.
-    if (!option.startsWith("-") || option === "-m" || option === "-file") return null;
-  }
-  return null;
-}
-
-function hasUnsupportedFloorBinding(stage: StaticStage): boolean {
-  if (stage.name === undefined || stage.name.endsWith(".exe")) return false;
-  const policy = POWERSHELL_COMMAND_POLICIES[stage.name];
-  const floorRelevant = HTTP_CMDLETS.has(stage.name) || policy?.destination !== undefined
-    || policy?.credential !== undefined || policy?.sink !== undefined;
-  if (!floorRelevant) return false;
-  const parameters = new Set((policy?.parameters ?? []).map((name) => name.replace(/[?*]$/, "").toLowerCase()));
-  for (let index = 1; index < stage.command.tokens.length; index += 1) {
-    const token = stage.command.tokens[index];
-    if (token?.kind !== "word" || token.quoted) continue;
-    const option = optionName(token.text);
-    if (!option.startsWith("-")) continue;
-    if (!parameters.has(option.slice(1).split(":", 1)[0]!)) return true;
-  }
-  return false;
-}
-
-function hasAmbiguousPowerShellLauncherArguments(stage: StaticStage): boolean {
-  if (stage.argv.some((value) => value === undefined) || stage.argv.length === 0) return false;
-  const argv = stage.argv as readonly string[];
-  const executable = programName(argv[0]!) ?? argv[0]!.toLowerCase();
-  if (!isPowerShellLauncher(executable)) return false;
-  if (argv.length < 2) return false;
-  const firstOption = optionName(argv[1]!);
-  const directCode = argv.length > 2 && SHELL_CODE_OPTIONS.has(firstOption);
-  const directFile = argv.length > 2 && firstOption === "-file" && argv[2] !== "-";
-  if (directCode || directFile) return false;
-  return argv.slice(1).some((value) => /^[-/\u2013-\u2015]|^[\p{Z}\p{C}]|[\p{Z}\p{C}]$/u.test(value));
-}
-
-function mutatesFiles(stage: StaticStage): boolean {
-  if (stage.name === undefined) return false;
-  if (FILE_WRITE_EFFECT.has(stage.name) || PROVIDER_WRITE_EFFECT.has(stage.name)) return true;
-  if (HTTP_CMDLETS.has(stage.name)) return parameterValue(stage.argv, "outfile") !== undefined;
-  return stage.name === "expand-archive" || stage.name === "start-bitstransfer";
-}
 
 function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAnalysisContext): StaticProgram {
   const stages: StaticStage[] = [];
@@ -584,33 +510,20 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
       if (argv.some((value) => value === undefined) || argv.length === 0) dynamic = true;
       if (direct && argv.length > 0) {
         if (ruleArgv(command) === null) dynamic = true;
-        const stage: StaticStage = { command, argv, visible: command.tokens.map((token) => token.kind === "word" ? token.text : undefined),
-          raw: command.tokens.map((token) => token.raw),
+        const raw = command.tokens.map((token) => token.raw);
+        const stage: StaticStage = { command, argv, visible: command.tokens.map((token) => token.kind === "word" ? token.text : undefined), raw,
           name: argv[0] === undefined ? undefined : canonicalName(argv[0]), fedByPipeline: stageIndex > 0, pipelineId,
-          payloadIndex: null, opaquePayloadIndexes: new Set() };
-        stage.payloadIndex = literalEvaluationPayload(stage);
-        if (hasUnsupportedFloorBinding(stage)) dynamic = true;
-        if (hasAmbiguousPowerShellLauncherArguments(stage)) dynamic = true;
-        if (literalArgvRuntimeBinding(stage.argv, sharedWork(analysis))) dynamic = true;
+          proof: proveStaticArgv(argv, "powershell", raw, analysis.visits) };
+        if (stage.proof.kind === "unproven") dynamic = true;
         stages.push(stage);
       }
     }
   }
   analysis.requireAdditionalFrameDepth(maximumDepth - 1);
-  for (let index = 0; index + 1 < stages.length; index += 1) {
-    const source = stages[index]!, evaluator = stages[index + 1]!;
-    const literalPipelinePayload = source.pipelineId === evaluator.pipelineId && evaluator.fedByPipeline
-      && evaluator.name === "invoke-expression" && evaluator.argv.length === 1
-      && source.argv.length === 1 && source.argv[0] !== undefined && source.command.tokens[0]?.kind === "word"
-      && source.command.tokens[0].quoted;
-    if (literalPipelinePayload) { source.opaquePayloadIndexes.add(0); dynamic = true; }
-  }
-  const literalEvaluation = !dynamic && stages.length === 1 && stages[0]!.payloadIndex !== null ? stages[0]! : null;
-  if (stages.some((stage) => stage.payloadIndex !== null)) dynamic = true;
+  const literalEvaluation = !dynamic && stages.length === 1 && stages[0]!.proof.kind === "literal-evaluation" ? stages[0]! : null;
+  if (stages.some((stage) => stage.proof.kind === "literal-evaluation")) dynamic = true;
   if (literalEvaluation !== null) dynamic = true;
-  if (stages.length > 1 && stages.some(mutatesFiles)) dynamic = true;
-  if (stages.length > 1 && stages.some((stage) => stage.name !== undefined && CWD_WRITE_EFFECT.has(stage.name))) dynamic = true;
-  if (stages.length > 1 && stages.some((stage) => stage.name !== undefined && RUNTIME_COMMAND_MUTATORS.has(stage.name))) dynamic = true;
+  if (stages.length > 1 && stages.some((stage) => stage.proof.kind === "static-complete" && stage.proof.changesState)) dynamic = true;
   const encodedReason = encodedPowerShellExecutionReason(stages.flatMap((stage) => stage.argv), stages.flatMap((stage) => stage.raw));
   return { stages, dynamic, literalEvaluation, encodedReason };
 }
@@ -840,8 +753,9 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined)
       const argv = command.tokens.map(literalWordValue);
       if (argv.length === 0 || argv.some((value) => value === undefined)) continue;
       const values = argv as string[];
-      const stage: StaticStage = { command, argv: values, visible: values, raw: command.tokens.map((token) => token.raw), name: canonicalName(values[0]!), fedByPipeline: false, pipelineId: 0, payloadIndex: null, opaquePayloadIndexes: new Set() };
-      stage.payloadIndex = literalEvaluationPayload(stage);
+      const raw = command.tokens.map((token) => token.raw);
+      const stage: StaticStage = { command, argv: values, visible: values, raw, name: canonicalName(values[0]!), fedByPipeline: false, pipelineId: 0,
+        proof: { kind: "unproven" } };
       sensitive ??= visibleSensitive(stage, cwd, work, new Set());
       const native = inspectLiteralShellArgvFacts(values, cwd, work);
       sensitive ??= native.sensitive;
@@ -857,9 +771,7 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined)
   for (let index = 0; index < program.stages.length; index += 1) {
     const stage = program.stages[index]!;
     if (stage.pipelineId !== pipelineId) { pipelineId = stage.pipelineId; pipelineReadsPath = false; }
-    const payload = stage.payloadIndex;
-    const skipped = new Set(stage.opaquePayloadIndexes);
-    if (payload !== null) skipped.add(payload);
+    const skipped = new Set(stage.proof.kind === "literal-evaluation" ? stage.proof.payloadIndexes : []);
     sensitive ??= visibleSensitive(stage, cwd, work, skipped);
     const native = inspectLiteralShellArgvFacts(stage.argv, cwd, work, skipped);
     sensitive ??= native.sensitive;

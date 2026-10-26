@@ -5,26 +5,20 @@ import { analyzeShell, type ShellCommand, type ShellRedirect, type ShellStatemen
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { caseFoldForMatch, foldCanonicalPathSeparators, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { literalRuleWord } from "./rule-specifier.js";
+import { proveStaticArgv } from "./shell-argument-grammar.js";
+import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import { SHELL_FLOOR_BUDGET_REASON, ShellFloorContext, ShellFloorLimitError, isShellFloorLiteralData, shellFloorBudgetSignals, shellFloorFallbackInputExceeded, shellFloorInputExceeded, shellFloorParserBudgetExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
-import { globalOptionsEnd, shellFact, wrapperCommand, type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
-import { RUNNER_COMMAND_PREFIXES, isPowerShellLauncher, literalCommandAfterPrefix, programName as policyProgramName, runnerHasPrefix, runnerName } from "./shell-prefix-values.js";
+import { shellFact, wrapperCommand, type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { RUNNER_COMMAND_PREFIXES, literalCommandAfterPrefix, programName as policyProgramName, runnerHasPrefix, runnerName } from "./shell-prefix-values.js";
 
 export const SHELL_EXFIL_VERDICT_REASON = "shell possible credential exfiltration";
 const PATH_READERS = new Set(["cat", "tac", "base64", "base32", "tar", "gzip", "bzip2", "xz", "zstd", "zip", "xxd", "od", "hexdump", "openssl", "gpg", "head", "tail", "dd", "less", "more", "strings", "cut", "sed", "awk", "jq"]);
 const NETWORK_PROGRAMS = new Set(["curl", "wget", "ssh", "scp", "sftp", "rsync", "nc", "ncat", "netcat", "socat", "telnet", "ftp", "lftp", "tftp", "nslookup", "dig", "host", "http", "https", "aws", "gcloud", "az", "gh", "glab"]);
-const SHELL_CODE_PROGRAMS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
-const INTERPRETER_CODE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = Object.freeze({
-  python: new Set(["-c"]), python2: new Set(["-c"]), python3: new Set(["-c"]),
-  node: new Set(["-e", "--eval", "-p", "--print"]), deno: new Set(["eval"]),
-  bun: new Set(["-e", "--eval", "-p", "--print"]), ruby: new Set(["-e"]), perl: new Set(["-e"]),
-});
-const FILE_MUTATORS = new Set(["cp", "mv", "install", "tee", "touch", "truncate", "ln"]);
 const CURL_DATA = /^(?:-d|--data(?:-ascii|-binary|-raw|-urlencode)?|--json)(?:=|$)/;
 const CURL_FORM = /^(?:-F|--form)(?:=|$)/;
 const CURL_UPLOAD = /^(?:-T|--upload-file|-K|--config)(?:=|$)/;
 const WGET_UPLOAD = /^(?:--post-file|--body-file)(?:=|$)/;
 const CURL_FILE_OPTIONS = Object.freeze(["--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form", "--header", "--proxy-header", "--upload-file", "--config"]);
-const GIT_CALLBACK_FAMILIES = new Set(["rebase", "grep", "submodule"]);
 const NON_FILE_URL = /^(?!file:)[a-z][a-z0-9+.-]*:\/\//i;
 const UNPARSED_UPLOAD = /\b(?:curl|wget)\b[^\n;&|]*\s(?:-[A-Za-z]*[dF]|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|--form|-T|-K|--upload-file|--config|--post-file|--body-file)(?:=|\s+)?["']?[^\s"']*@?/;
 const DYNAMIC_REASON = "Shell command requires runtime evaluation";
@@ -173,17 +167,17 @@ function curlShortFileOption(token: string): { kind: "data" | "form" | "upload" 
   }
   return null;
 }
-export interface LiteralShellArgvFacts { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; runtimeBinding?: true }
-export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set(), evaluation?: LiteralEvaluationResult): LiteralShellArgvFacts {
+export interface LiteralShellArgvFacts { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean }
+export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set(), evaluation?: NativeArgvBoundary): LiteralShellArgvFacts {
   let sensitive: string | null = null, exfiltration: string | null = null;
   let curl = false, wget = false, scp = false, rsync = false, scripted = false, socat = false, network = false, reader = false, readsPath = false;
   let transferOperands = 0, transferDestinationRemote = false;
   let pendingCurlFile: "data" | "form" | "upload" | "header" | undefined;
-  const heads = evaluation ?? literalEvaluationPayload(argv, context);
+  const heads = evaluation ?? literalNativeBoundary(argv, context);
   context.visits.staticViews += 1;
   for (let index = 0; index < argv.length; index += 1) {
     context.visits.staticTokens += 1;
-    if (payloadIndexes.has(index) || inRange(heads.payloadRange, index)) continue;
+    if (payloadIndexes.has(index)) continue;
     const originalToken = argv[index]; if (originalToken === undefined) continue;
     const token: string = curl ? fileTransferOption(originalToken) : originalToken;
     context.visits.staticArguments += 1; context.visits.staticChars += token.length;
@@ -223,41 +217,38 @@ export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)
   }
   if (transferOperands >= 2 && transferDestinationRemote) exfiltration ??= `${scp ? "scp" : "rsync"} to a remote target`;
   if (sensitive && (curl || wget || scp || rsync || scripted)) exfiltration ??= `sensitive path argument (${sensitive})`;
-  return { sensitive, exfiltration, network, readsPath, ...(heads.runtimeBinding ? { runtimeBinding: true as const } : {}) };
+  return { sensitive, exfiltration, network, readsPath };
 }
 export function inspectLiteralShellArgv(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set()): { sensitive: string | null; exfiltration: string | null } {
   const { sensitive, exfiltration } = inspectLiteralShellArgvFacts(argv, cwd, context, payloadIndexes);
   return { sensitive, exfiltration };
 }
 
-interface StaticPass { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; changesCwd?: true; writesFile?: true; unproven?: string; exactLiteralEvaluation?: true }
-function merge(into: StaticPass, value: StaticPass): void { into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.readsPath ||= value.readsPath; into.changesCwd ||= value.changesCwd; into.writesFile ||= value.writesFile; into.unproven ??= value.unproven; }
+interface StaticPass { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; commandCount: number; changesState?: true; unproven?: string; exactLiteralEvaluation?: true }
+function merge(into: StaticPass, value: StaticPass): void { into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.readsPath ||= value.readsPath; into.commandCount += value.commandCount; into.changesState ||= value.changesState; into.unproven ??= value.unproven; }
 interface IndexRange { from: number; to: number }
-interface LiteralEvaluationResult { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; payloadRange?: IndexRange; ambiguous?: true; runtimeBinding?: true }
+interface NativeArgvBoundary { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; ambiguous?: true }
 function inRange(range: IndexRange | undefined, index: number): boolean {
   return range !== undefined && index >= range.from && index < range.to;
 }
-const argvBoundaries = new WeakMap<ShellFloorContext, WeakMap<readonly (string | undefined)[], LiteralEvaluationResult>>();
-function literalEvaluationPayload(argv: readonly (string | undefined)[], context: ShellFloorContext): LiteralEvaluationResult {
+const argvBoundaries = new WeakMap<ShellFloorContext, WeakMap<readonly (string | undefined)[], NativeArgvBoundary>>();
+function literalNativeBoundary(argv: readonly (string | undefined)[], context: ShellFloorContext): NativeArgvBoundary {
   let boundaries = argvBoundaries.get(context);
   if (boundaries === undefined) { boundaries = new WeakMap(); argvBoundaries.set(context, boundaries); }
   const cached = boundaries.get(argv);
   if (cached !== undefined) return cached;
-  const result = inspectLiteralEvaluationBoundary(argv, context);
+  const result = inspectNativeBoundary(argv, context);
   boundaries.set(argv, result);
   return result;
 }
-export function literalArgvRuntimeBinding(argv: readonly (string | undefined)[], context: ShellFloorContext): boolean {
-  return literalEvaluationPayload(argv, context).runtimeBinding === true;
-}
-function inspectLiteralEvaluationBoundary(argv: readonly (string | undefined)[], context: ShellFloorContext): LiteralEvaluationResult {
+function inspectNativeBoundary(argv: readonly (string | undefined)[], context: ShellFloorContext): NativeArgvBoundary {
   const read = (index: number): string | undefined => { context.visits.staticTokens += 1; return argv[index]; };
   const wrapped = wrapperCommand(argv);
   context.visits.staticTokens += Math.max(1, wrapped.index + 1);
   if (wrapped.runtimeArgv) return { headIndexes: new Set(wrapped.index < argv.length ? [wrapped.index] : []), ambiguous: true };
   if (wrapped.nestedDialect) return { headIndexes: new Set([0]) };
   if (wrapped.ordinaryAsk || wrapped.candidateRange) return { headIndexes: new Set(), ...(wrapped.candidateRange ? { headRange: wrapped.candidateRange } : {}), ambiguous: true };
-  if (wrapped.code) return wrapped.index < argv.length ? { headIndexes: new Set([0]), payloadRange: wrapped.code.range } : { headIndexes: new Set(), ambiguous: true };
+  if (wrapped.code) return wrapped.index < argv.length ? { headIndexes: new Set([0]) } : { headIndexes: new Set(), ambiguous: true };
   let programIndex = wrapped.index;
   let forcedInterpreter: string | undefined;
   let packageBoundary = false;
@@ -271,7 +262,7 @@ function inspectLiteralEvaluationBoundary(argv: readonly (string | undefined)[],
     if (nested.nestedDialect) return { headIndexes: new Set([programIndex]) };
     if (nested.ordinaryAsk || nested.candidateRange) return { headIndexes: new Set(), ...(nested.candidateRange ? { headRange: nested.candidateRange } : {}), ambiguous: true };
     if (nested.code) return nested.index < argv.length
-      ? { headIndexes: new Set([programIndex]), payloadRange: nested.code.range }
+      ? { headIndexes: new Set([programIndex]) }
       : { headIndexes: new Set(), ambiguous: true };
     programIndex = nested.index;
     const head = read(programIndex);
@@ -286,9 +277,9 @@ function inspectLiteralEvaluationBoundary(argv: readonly (string | undefined)[],
         if (token === undefined) return { headIndexes: new Set(), ambiguous: true };
         if (token === "--") { cursor += 1; break; }
         if (token === "-c" || token === "--call") return cursor + 1 < argv.length
-          ? { headIndexes: new Set([programIndex]), payloadRange: { from: cursor + 1, to: cursor + 2 } }
+          ? { headIndexes: new Set([programIndex]) }
           : { headIndexes: new Set(), ambiguous: true };
-        if (/^(?:-c|--call)=/.test(token)) return { headIndexes: new Set([programIndex]), payloadRange: { from: cursor, to: cursor + 1 } };
+        if (/^(?:-c|--call)=/.test(token)) return { headIndexes: new Set([programIndex]) };
         if (token === "-p" || token === "--package") { cursor += 2; continue; }
         if (/^(?:-p|--package)=/.test(token) || ["-y", "--yes", "--quiet", "--no-install", "--ignore-existing"].includes(token)) { cursor += 1; continue; }
         // Unknown literal runner options do not prove a command boundary.
@@ -312,7 +303,7 @@ function inspectLiteralEvaluationBoundary(argv: readonly (string | undefined)[],
       const interpreter = prefixes.find((value) => typeof value !== "string" && value[0] === prefix);
       if (interpreter !== undefined) {
         if (prefix === "eval") return first + 1 < argv.length
-          ? { headIndexes: new Set([programIndex]), payloadRange: { from: first + 1, to: first + 2 } } : { headIndexes: new Set(), ambiguous: true };
+          ? { headIndexes: new Set([programIndex]) } : { headIndexes: new Set(), ambiguous: true };
         forcedInterpreter = interpreter[1];
         programIndex = first;
         break;
@@ -346,37 +337,7 @@ function inspectLiteralEvaluationBoundary(argv: readonly (string | undefined)[],
   const headIndexes = new Set([programIndex]);
   const headNames = packageBoundary && name !== undefined ? new Map([[programIndex, name]]) : undefined;
   if (name === undefined) return { headIndexes: new Set(), ambiguous: true };
-  if (name === "git") {
-    const verbIndex = globalOptionsEnd(argv, programIndex);
-    context.visits.staticTokens += Math.max(1, verbIndex - programIndex);
-    if (GIT_CALLBACK_FAMILIES.has(read(verbIndex) ?? "")) {
-      return { headIndexes, ...(headNames ? { headNames } : {}), ambiguous: true, runtimeBinding: true };
-    }
-  }
-  if (isPowerShellLauncher(name)) {
-    const option = read(programIndex + 1);
-    if (option === undefined) return { headIndexes, ...(headNames ? { headNames } : {}) };
-    const normalized = option.toLowerCase();
-    if (normalized === "-c" || normalized === "-command") return programIndex + 2 < argv.length
-      ? { headIndexes, ...(headNames ? { headNames } : {}), payloadRange: { from: programIndex + 2, to: programIndex + 3 } } : { headIndexes, ...(headNames ? { headNames } : {}), ambiguous: true };
-    if (normalized === "-file") {
-      const file = read(programIndex + 2);
-      return file !== undefined && file !== "-" ? { headIndexes, ...(headNames ? { headNames } : {}) } : { headIndexes, ...(headNames ? { headNames } : {}), ambiguous: true };
-    }
-    return /^[-/]/.test(option) ? { headIndexes, ...(headNames ? { headNames } : {}), ambiguous: true } : { headIndexes, ...(headNames ? { headNames } : {}) };
-  }
-  if (name === "eval") return programIndex + 1 < argv.length
-    ? { headIndexes, ...(headNames ? { headNames } : {}), payloadRange: { from: programIndex + 1, to: argv.length } }
-    : { headIndexes, ...(headNames ? { headNames } : {}), ambiguous: true };
-  for (let index = programIndex + 1; index < argv.length; index += 1) {
-    const option = read(index);
-    if (option === undefined) return { headIndexes, ambiguous: true };
-    const shellCode = SHELL_CODE_PROGRAMS.has(name) && /^-[^-]*c[^-]*$/.test(option);
-    const interpreterCode = INTERPRETER_CODE_OPTIONS[name]?.has(option);
-    if (shellCode || interpreterCode) return index + 1 < argv.length
-      ? { headIndexes, ...(headNames ? { headNames } : {}), payloadRange: { from: index + 1, to: index + 2 } } : { headIndexes, ...(headNames ? { headNames } : {}), ambiguous: true };
-    if (!option.startsWith("-") && !(name === "deno" && option === "eval")) break;
-  }
+
   return { headIndexes, ...(headNames ? { headNames } : {}) };
 }
 function inspectWord(word: ShellWord, cwd: string | undefined, context: ShellFloorContext, pass: StaticPass, scanPath = true, knownLiteral: string | undefined | null = null): string | undefined {
@@ -396,49 +357,44 @@ function inspectRedirect(redirect: ShellRedirect, cwd: string | undefined, conte
     pass.unproven ??= DYNAMIC_REASON;
   }
   if (redirect.effect === "read" && redirect.target !== undefined) pass.readsPath = true;
-  if (redirect.effect === "write") pass.writesFile = true;
+  if (redirect.effect === "write") pass.changesState = true;
 }
 function inspectCommand(command: ShellCommand, cwd: string | undefined, context: ShellFloorContext, singleOuter: boolean): StaticPass {
-  const pass: StaticPass = { sensitive: null, exfiltration: null, network: false, readsPath: false };
+  const pass: StaticPass = { sensitive: null, exfiltration: null, network: false, readsPath: false, commandCount: 1 };
   const argv = command.words.map((word) => literalShellWord(word));
+  const raw = command.words.map((word) => word.source.raw);
   if (argv.some((word) => word === undefined)) pass.unproven = DYNAMIC_REASON;
   for (const assignment of command.assignments) { inspectWord(assignment.value, cwd, context, pass); for (const element of assignment.elements ?? []) inspectWord(element, cwd, context, pass); pass.unproven ??= DYNAMIC_REASON; }
   for (const redirect of command.redirects) inspectRedirect(redirect, cwd, context, pass);
-  const evaluation = literalEvaluationPayload(argv, context);
-  const payload = pass.unproven === undefined && command.assignments.length === 0 && command.redirects.length === 0
-    ? evaluation.payloadRange : undefined;
-  if (evaluation.ambiguous) pass.unproven ??= DYNAMIC_REASON;
-  if (payload) {
+  const proof = proveStaticArgv(argv, "bash", raw, context.visits);
+  const evaluation = literalNativeBoundary(argv, context);
+  const eligibleLiteralEvaluation = pass.unproven === undefined && command.assignments.length === 0 && command.redirects.length === 0;
+  const payload = proof.kind === "literal-evaluation" ? new Set(proof.payloadIndexes) : undefined;
+  if (proof.kind === "unproven") pass.unproven ??= DYNAMIC_REASON;
+  else if (proof.kind === "static-complete" && proof.changesState) pass.changesState = true;
+  else if (proof.kind === "literal-evaluation") {
     pass.unproven = DYNAMIC_REASON;
-    if (singleOuter) pass.exactLiteralEvaluation = true;
+    if (singleOuter && eligibleLiteralEvaluation) pass.exactLiteralEvaluation = true;
   }
-  for (let index = 0; index < command.words.length; index += 1) if (!inRange(payload, index) && argv[index] === undefined) {
+  for (let index = 0; index < command.words.length; index += 1) if (!payload?.has(index) && argv[index] === undefined) {
     inspectWord(command.words[index]!, cwd, context, pass, true, argv[index]);
   }
-  const native = inspectLiteralShellArgvFacts(argv, cwd, context, new Set(), evaluation); pass.sensitive ??= native.sensitive; pass.exfiltration ??= native.exfiltration;
+  const native = inspectLiteralShellArgvFacts(argv, cwd, context, payload, evaluation); pass.sensitive ??= native.sensitive; pass.exfiltration ??= native.exfiltration;
   pass.network = native.network; pass.readsPath ||= native.readsPath;
   if (pass.network && pass.readsPath) pass.exfiltration ??= "network command reads a file";
-  const name = programName(argv[0]);
-  if (name === "cd" || name === "pushd" || name === "popd") pass.changesCwd = true;
-  if ((name === "cd" && argv[1] === "-")
-    || (name === "pushd" && /^[-+]\d+$/.test(argv[1] ?? ""))
-    || name === "popd") pass.unproven ??= DYNAMIC_REASON;
-  if (name !== undefined && FILE_MUTATORS.has(name)) pass.writesFile = true;
   return pass;
 }
 function inspectStatement(statement: ShellStatement, cwd: string | undefined, context: ShellFloorContext, singleOuter = false): StaticPass {
   context.visits.staticNodes += 1;
   if (statement.kind === "command") return inspectCommand(statement, cwd, context, singleOuter);
-  const pass: StaticPass = { sensitive: null, exfiltration: null, network: false, readsPath: false }, child = (value: ShellStatement): void => merge(pass, inspectStatement(value, cwd, context));
+  const pass: StaticPass = { sensitive: null, exfiltration: null, network: false, readsPath: false, commandCount: 0 }, child = (value: ShellStatement): void => merge(pass, inspectStatement(value, cwd, context));
   switch (statement.kind) {
     case "sequence":
       for (const value of statement.statements) child(value);
-      if (statement.statements.length > 1 && (pass.changesCwd || pass.writesFile)) pass.unproven ??= DYNAMIC_REASON;
       break;
     case "pipeline": { let read = false; for (const value of statement.statements) { const stage = inspectStatement(value, cwd, context); if (read && stage.network) stage.exfiltration ??= "network command fed from a file"; merge(pass, stage); read ||= stage.readsPath; } break; }
     case "and": case "or":
       child(statement.left); child(statement.right);
-      if (pass.changesCwd || pass.writesFile) pass.unproven ??= DYNAMIC_REASON;
       break;
     case "subshell": case "background": child(statement.body); pass.unproven ??= DYNAMIC_REASON; break;
     case "negate": child(statement.body); break;
@@ -482,7 +438,11 @@ export function inspectShellCommand(input: ShellCommandInput, cwd?: string, supp
       }
       const root = parsed.analysis.program, single = root.kind === "command" || (root.kind === "sequence" && root.statements.length === 1 && root.statements[0]?.kind === "command");
       const statement = root.kind === "sequence" && root.statements.length === 1 ? root.statements[0]! : root;
-      const pass = inspectStatement(statement, cwd, context, single); if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
+      const pass = inspectStatement(statement, cwd, context, single);
+      const encodedReason = encodedPowerShellExecutionReason([parsed.command]);
+      if (encodedReason !== null) { pass.unproven = encodedReason; pass.exactLiteralEvaluation = undefined; }
+      if (pass.commandCount > 1 && pass.changesState) pass.unproven ??= DYNAMIC_REASON;
+      if (pass.sensitive && pass.network) pass.exfiltration ??= `sensitive path (${pass.sensitive}) with a network transport`;
       const visible = pass.sensitive !== null || pass.exfiltration !== null;
       return { outcome: visible ? "visible-floor" : pass.unproven ? "unproven" : "static-complete", sensitive: pass.sensitive, exfiltration: pass.exfiltration, ...(pass.unproven ? { ordinaryAsk: pass.unproven } : {}), ...(pass.exactLiteralEvaluation ? { exactLiteralEvaluation: true as const } : {}) };
     });

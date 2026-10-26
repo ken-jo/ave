@@ -159,12 +159,14 @@ describe("argv-aware destructive floor (review of PR #77)", () => {
   });
 
   it.each([
-    ["Bash(rm *)", "rm notes.txt"],
-    ["Bash(chmod +x *)", "chmod +x build.sh"],
-    ["Bash(find *)", "find . -name x"],
-    ["Bash(rm *)", "rm -- -r"],
-  ])("%s still matches the non-destructive %s", (pattern, command) => {
-    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
+    ["Bash(rm *)", "rm notes.txt", true],
+    ["Bash(chmod +x *)", "chmod +x build.sh", false],
+    ["Bash(find *)", "find . -name x", false],
+    ["Bash(rm *)", "rm -- -r", true],
+  ] as const)("%s applies positive proof to the non-destructive %s", (pattern, command, allowProven) => {
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe(allowProven ? "allow" : null);
+    expect(evaluateShellRules(command, rules({ ask: [pattern] })).decision).toBe("ask");
+    expect(evaluateShellRules(command, rules({ deny: [pattern] })).decision).toBe("deny");
   });
 
 });
@@ -215,8 +217,10 @@ describe("irreversible commands never become allow rules (owner decision 2026-10
     ["Bash(chmod 0755 *)", "chmod 0755 build.sh"],
     ["Bash(chmod go-w *)", "chmod go-w shared"],
     ["Bash(chmod u+x *)", "chmod u+x build.sh"],
-  ])("control: %s still matches the harmless %s", (pattern, command) => {
-    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
+  ])("control: %s keeps restrictions but does not positively prove the harmless %s", (pattern, command) => {
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBeNull();
+    expect(evaluateShellRules(command, rules({ ask: [pattern] })).decision).toBe("ask");
+    expect(evaluateShellRules(command, rules({ deny: [pattern] })).decision).toBe("deny");
   });
 
   it.each([
@@ -261,10 +265,10 @@ describe("AST shell matcher", () => {
   });
 
   it.each([
-    ["npx prettier --write src", "Bash(npx prettier *)", true],
-    ["npm exec prettier --write src", "Bash(npm exec prettier *)", true],
-    ["pnpm dlx prettier --write src", "Bash(pnpm dlx prettier *)", true],
-    ["corepack pnpm dlx prettier src", "Bash(corepack pnpm dlx prettier *)", true],
+    ["npx prettier --write src", "Bash(npx prettier *)", false],
+    ["npm exec prettier --write src", "Bash(npm exec prettier *)", false],
+    ["pnpm dlx prettier --write src", "Bash(pnpm dlx prettier *)", false],
+    ["corepack pnpm dlx prettier src", "Bash(corepack pnpm dlx prettier *)", false],
     ["npx --future value -- prettier src", "Bash(npx --future value -- prettier *)", false],
   ] as const)("checks a complete runner prefix and its boundary: %s", (command, pattern, allowed) => {
     expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [] });
@@ -290,33 +294,33 @@ describe("AST shell matcher", () => {
 
   it("keeps existing nonrunner and wrapper allow-rule behavior", () => {
     expect(evaluateShellRules("git status", rules({ allow: ["Bash(git *)"] })).decision).toBe("allow");
-    expect(evaluateShellRules("env A=1 npm test", rules({ allow: ["Bash(env A=1 npm *)"] })).decision).toBe("allow");
+    const pattern = "Bash(env A=1 npm *)";
+    expect(evaluateShellRules("env A=1 npm test", rules({ allow: [pattern] })).decision).toBeNull();
+    expect(evaluateShellRules("env A=1 npm test", rules({ ask: [pattern] })).decision).toBe("ask");
+    expect(evaluateShellRules("env A=1 npm test", rules({ deny: [pattern] })).decision).toBe("deny");
   });
 
   it.each([
-    ["python -c 'print(1)'", "python"],
-    ["perl -e 'print 1'", "perl"],
-    ["node -e 'console.log(1)'", "node"],
-    ["node x.js", "node"],
-    ["python x.py", "python"],
-    ["bash -c ls", "bash"],
-    ["pwsh -c Get-Date", "pwsh"],
-    ["GIT_SSH_COMMAND='ssh -v' git status", "git"],
-    ["env PATH=/tmp/tools git status", "env"],
-    ["export PAGER=cat", "export"],
-  ])("allows literal visible code and keeps assignment syntax unproven: %s", (command, program) => {
+    ["python -c 'print(1)'", "python", "literal-evaluation"],
+    ["perl -e 'print 1'", "perl", "literal-evaluation"],
+    ["node -e 'console.log(1)'", "node", "literal-evaluation"],
+    ["node x.js", "node", "static-complete"],
+    ["python x.py", "python", "static-complete"],
+    ["bash -c ls", "bash", "literal-evaluation"],
+    ["pwsh -c Get-Date", "pwsh", "literal-evaluation"],
+    ["GIT_SSH_COMMAND='ssh -v' git status", "git", "unproven"],
+    ["env PATH=/tmp/tools git status", "env", "unproven"],
+    ["export PAGER=cat", "export", "unproven"],
+  ] as const)("maps visible code and state syntax independently: %s", (command, program, proof) => {
     const shape = analyzeShellForRules(command);
     expect(shape).toMatchObject({ ok: true });
     if (!shape.ok) throw new Error("Expected a parsed shell command");
-    const assignment = command.startsWith("GIT_SSH_COMMAND=") || command.startsWith("export ");
     expect(shape.hidden).toEqual([]);
-    const literalEvaluation = !assignment && !["node x.js", "python x.py", "env PATH=/tmp/tools git status"].includes(command);
-    if (assignment || literalEvaluation) expect(shape.ordinaryAsk).toEqual(expect.any(String));
+    if (proof !== "static-complete") expect(shape.ordinaryAsk).toEqual(expect.any(String));
     else expect(shape.ordinaryAsk).toBeUndefined();
-    const literal = !assignment;
-    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBe(literal && !literalEvaluation ? "allow" : null);
-    if (literalEvaluation) expect(evaluateShellRules(command, rules({ allow: [`Bash(${command})`] })).decision).toBe("allow");
-    expect(proveLiteralShell(command)).toMatchObject({ proven: literal });
+    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBe(proof === "static-complete" ? "allow" : null);
+    if (proof === "literal-evaluation") expect(evaluateShellRules(command, rules({ allow: [`Bash(${command})`] })).decision).toBe("allow");
+    expect(proveLiteralShell(command)).toMatchObject({ proven: proof !== "unproven" });
     for (const restriction of [{ deny: ["Bash(rm *)"] }, { ask: ["Bash(rm *)"] }]) {
       expect(evaluateShellRules(command, rules(restriction)).decision).toBeNull();
     }
@@ -342,9 +346,11 @@ describe("AST shell matcher", () => {
   it.each([
     ["npx@10 helper", "Bash(npx@10 helper *)"],
     ["npm@10 exec helper", "Bash(npm@10 exec helper *)"],
-  ])("keeps versioned runner prefixes ordinary and grantable: %s", (command, pattern) => {
+  ])("keeps versioned runner prefixes visible but not allow-proven: %s", (command, pattern) => {
     expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [], ordinaryAsk: "opaque runner prefix" });
-    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBeNull();
+    expect(evaluateShellRules(command, rules({ ask: [pattern] })).decision).toBe("ask");
+    expect(evaluateShellRules(command, rules({ deny: [pattern] })).decision).toBe("deny");
     expect(evaluateShellRules(command, rules({ allow: ["Bash(helper *)"] })).decision).toBeNull();
   });
 
@@ -466,7 +472,9 @@ describe("AST shell matcher", () => {
     expect(evaluateShellRules("node scripts/build.mjs", set)).toMatchObject({ decision: "allow" });
     expect(evaluateShellRules("node scripts/build.mjs", rules({ allow: ["Bash(node scripts/build.mjs)"] })).decision).toBe("allow");
     expect(analyzeShellForRules("node --version")).toMatchObject({ ok: true, hidden: [] });
-    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBe("allow");
+    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(rm *)"], allow: ["Bash(bun run build)"] })).decision).toBeNull();
+    expect(evaluateShellRules("bun run build", rules({ ask: ["Bash(bun run build)"] })).decision).toBe("ask");
+    expect(evaluateShellRules("bun run build", rules({ deny: ["Bash(bun run build)"] })).decision).toBe("deny");
   });
 });
 
@@ -517,9 +525,11 @@ describe("bounded prefix suggestions", () => {
   ])("retains the complete bounded argv for %j", (argv, expected) => {
     expect(suggestShellPrefix(argv)).toEqual(expected);
   });
-  it.each(["git log --ext-diff", "rg --hostname-bin=./helper term src", "find . -fprint output", "kubectl --context dev get pods", "npm run build --script-shell=./shell"])("matches an escape rule without an option catalog: %s", (command) => {
+  it.each(["git log --ext-diff", "rg --hostname-bin=./helper term src", "find . -fprint output", "kubectl --context dev get pods", "npm run build --script-shell=./shell"])("keeps an uncatalogued escape under restrictions without allow proof: %s", (command) => {
     const head = command.split(" ")[0]!;
     const pattern = head === "git" ? "Bash(git log *)" : `Bash(${head} *)`;
-    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ allow: [pattern] })).decision).toBeNull();
+    expect(evaluateShellRules(command, rules({ ask: [pattern] })).decision).toBe("ask");
+    expect(evaluateShellRules(command, rules({ deny: [pattern] })).decision).toBe("deny");
   });
 });

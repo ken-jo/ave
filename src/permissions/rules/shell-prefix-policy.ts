@@ -92,7 +92,7 @@ export function wrapperCommand(argv: readonly (string | undefined)[], maxDepth =
     // `eval` / `source` / `.` run a string or file: they are code carriers, not transparent wrappers.
     if (!WRAPPER_SET.has(program) || program === "eval" || program === "source" || program === ".") return finish(index);
     index += 1;
-    const declared = WRAPPER_GRAMMAR[program];
+    const declared = Object.hasOwn(WRAPPER_GRAMMAR, program) ? WRAPPER_GRAMMAR[program] : undefined;
     const grammar = declared ?? {};
     runtimeArgv ||= grammar.runtimeArgv === true;
     let operand = grammar.operand;
@@ -205,7 +205,7 @@ export function globalOptionsEnd(argv: readonly (string | undefined)[], start = 
   const head = argv[start];
   if (head === undefined) return start + 1;
   const program = programName(head);
-  const valueOptions = GLOBAL_VALUE_OPTIONS[program];
+  const valueOptions = Object.hasOwn(GLOBAL_VALUE_OPTIONS, program) ? GLOBAL_VALUE_OPTIONS[program] : undefined;
   if (!valueOptions) return start + 1;
   let ends = suffixes?.get(program);
   if (suffixes !== undefined && ends === undefined) { ends = new Map(); suffixes.set(program, ends); }

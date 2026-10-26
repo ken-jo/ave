@@ -24,19 +24,25 @@ describe("literal rule semantic identity", () => {
     expect(canonicalRuleSpecifier(pattern)).toBe(pattern);
   });
 
-  it.each(["Get-ChildItem", "Microsoft.PowerShell.Management\\Get-ChildItem", "custom-function", "Custom.Module\\custom-function"])("retains quoted parameter roles for %s", (head) => {
+  it.each([
+    ["Get-ChildItem", true],
+    ["Microsoft.PowerShell.Management\\Get-ChildItem", true],
+    ["custom-function", false],
+    ["Custom.Module\\custom-function", false],
+  ] as const)("retains quoted parameter roles for %s", (head, knownGrammar) => {
     for (const parameter of ["-Force", "–Force", "—Force", "―Force"]) {
+      const knownBareParameter = knownGrammar && parameter === "-Force";
       const quoted = `${head} '${parameter}'`;
       const bare = `${head} ${parameter}`;
       const quotedRule = canonicalRuleSpecifier(`PowerShell(${quoted})`);
       const bareRule = canonicalRuleSpecifier(`PowerShell(${bare})`);
       expect(quotedRule).not.toBe(bareRule);
       expect(parseRuleSpecifier(quotedRule)).toMatchObject({ tokens: [expect.any(String), `'${parameter}'`] });
-      expect(powerShellAllow(quotedRule, quoted)).toBe("allow");
+      expect(powerShellAllow(quotedRule, quoted)).toBe(knownGrammar ? "allow" : "ask");
       expect(powerShellAllow(quotedRule, bare)).not.toBe("allow");
-      expect(powerShellAllow(bareRule, bare)).toBe("allow");
+      expect(powerShellAllow(bareRule, bare)).toBe(knownBareParameter ? "allow" : "ask");
       expect(powerShellAllow(bareRule, quoted)).not.toBe("allow");
-      expect(buildShellRuleApproval("powershell", quoted, CWD, { allow: true, deny: true }).exactRule).toBe(quotedRule);
+      expect(buildShellRuleApproval("powershell", quoted, CWD, { allow: true, deny: true }).exactRule).toBe(knownGrammar ? quotedRule : null);
     }
   });
 

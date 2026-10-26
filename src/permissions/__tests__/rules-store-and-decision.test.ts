@@ -215,7 +215,7 @@ describe("decision path", () => {
     const ctx = (command: string) => ({ ...shell(command), projectRulesCwd: project });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log --all x"))).toMatchObject({ decision: "deny", layer: 1 });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log -5"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     pm.setMode("allow");
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", forceModal: true });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git log --all x"))).toMatchObject({ decision: "deny" });
@@ -757,8 +757,8 @@ describe("sensitive reads through searches, browser stores, /proc and git object
 
   it("does not let catalog find cover a search the floor stops", () => {
     expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find ~/.ssh -name id_ed25519", project)).toBe(false);
-    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(true);
-    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(true);
+    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(false);
   });
 
   it.each([
