@@ -3,9 +3,13 @@ import { literalRuleWord } from "./rule-specifier.js";
 import { wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { isPowerShellLauncher } from "./shell-prefix-values.js";
 
-const DISPLAY_ENCODED_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
+const DISPLAY_ENCODED_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::(.*))?$/is;
 const DISPLAY_SCRIPT_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
 const DISPLAY_VALUE_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:workingdirectory|configurationname|configurationfile|custompipename|executionpolicy|inputformat|outputformat|settingsfile|version|windowstyle)$/i;
+
+// Reject the complement of the positive literal alphabet before reading option prefixes.
+const UNPROVEN_ARGUMENT_CHARACTER_RE = /[^\p{L}\p{N}\p{P}\p{S} ]/u;
+const LAUNCHER_WORD_RE = /[^ "'`;|&()<>{},=\p{Z}\p{C}]+/gu;
 
 // Value and raw-word streams preserve both joined literal words and boundaries inside quoted command text.
 export function encodedPowerShellExecutionReason(
@@ -16,10 +20,14 @@ export function encodedPowerShellExecutionReason(
     let launcherSeen = false;
     for (const value of words) {
       if (value == null) continue;
-      for (const match of value.matchAll(/[^\s"'`;|&()<>{},=]+/g)) {
+      if (launcherSeen && UNPROVEN_ARGUMENT_CHARACTER_RE.test(value)) return "unproven PowerShell argument characters";
+      for (const match of value.matchAll(LAUNCHER_WORD_RE)) {
         const word = match[0];
-        if (launcherSeen && word.trim().replace(/^[-/–—―]+/, "").toLowerCase().startsWith("e")) return "encoded PowerShell argument exclusion";
-        if (isPowerShellLauncher(word)) launcherSeen = true;
+        if (launcherSeen && word.replace(/^[-/–—―]+/, "").toLowerCase().startsWith("e")) return "encoded PowerShell argument exclusion";
+        if (!launcherSeen && isPowerShellLauncher(word)) {
+          launcherSeen = true;
+          if (UNPROVEN_ARGUMENT_CHARACTER_RE.test(value.slice(match.index + word.length))) return "unproven PowerShell argument characters";
+        }
       }
     }
   }
@@ -51,7 +59,7 @@ export function decodePowerShellEncodedCommands(input: ShellCommandInput, dialec
 }
 
 function decodeLiteralOperand(operand: string): string | null {
-  const encoded = operand.replace(/\s+/g, "");
+  const encoded = operand.replace(/[\t\n\v\f\r ]+/g, "");
   if (!/^[A-Za-z0-9+/]+={0,2}$/.test(encoded) || encoded.replace(/=+$/, "").length % 4 === 1) return null;
   const bytes = Buffer.from(encoded, "base64");
   if (bytes.length % 2 !== 0) return null;
@@ -89,7 +97,7 @@ function displayArgv(command: string, dialect: ShellRuleDialect): (string | unde
       continue;
     }
     if (char === ";" || char === "|" || char === "&" || char === "\n" || char === "\r") { stage(); continue; }
-    if (/\s/.test(char)) { word(); continue; }
+    if (" \t\v\f".includes(char)) { word(); continue; }
     raw += char;
   }
   if (quote !== undefined) return null;

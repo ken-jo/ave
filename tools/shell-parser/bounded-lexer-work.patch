@@ -1,0 +1,76 @@
+--- a/syntax/parser.go
++++ b/syntax/parser.go
+@@ -477,6 +477,8 @@
+ // Parser holds the internal state of the parsing mechanism of a
+ // program.
+ type Parser struct {
++	lexerWork, lexerWorkLimit, commandWordsLimit int
++
+ 	callDepth int
+ 
+ 	src io.Reader
+@@ -565,6 +567,7 @@
+ const bufSize = 1 << 10
+ 
+ func (p *Parser) reset() {
++	p.lexerWork = 0
+ 	p.continuations = &continuationMap{}
+ 	p.literalContinuations = false
+ 	if p.readBuf == nil {
+@@ -3017,6 +3020,10 @@
+ 			}
+ 			p.unexpectedInCallExpr(ce)
+ 		}
++		if p.commandWordsLimit > 0 && len(ce.Args) > p.commandWordsLimit {
++			p.curErr("shell command word limit exceeded")
++			break
++		}
+ 	}
+ 	if len(ce.Args) == 0 {
+ 		ce.Args = nil
+@@ -3060,3 +3067,23 @@
+ }
+ 
+ func (p *Parser) leaveCall() { p.callDepth-- }
++
++// WorkLimits bounds actual lexer advances and actual argv word records. Zero
++// disables the corresponding permission-specific bound for general parsing.
++func WorkLimits(lexerSteps, commandWords int) ParserOption {
++	return func(p *Parser) {
++		p.lexerWorkLimit = lexerSteps
++		p.commandWordsLimit = commandWords
++	}
++}
++
++func (p *Parser) LexerWork() int { return p.lexerWork }
++
++func (p *Parser) lexerStep() bool {
++	p.lexerWork++
++	if p.lexerWorkLimit > 0 && p.lexerWork > p.lexerWorkLimit {
++		p.curErr("shell lexer work limit exceeded")
++		return false
++	}
++	return p.err == nil
++}
+--- a/syntax/lexer.go
++++ b/syntax/lexer.go
+@@ -62,6 +62,9 @@
+ )
+ 
+ func (p *Parser) rune() rune {
++	if !p.lexerStep() {
++		return runeEOF
++	}
+ 	if p.r == '\n' || p.r == escNewl {
+ 		// p.r instead of b so that newline
+ 		// character positions don't have col 0.
+@@ -237,6 +240,9 @@
+ }
+ 
+ func (p *Parser) next() {
++	if !p.lexerStep() {
++		return
++	}
+ 	if !p.enterCall() {
+ 		return
+ 	}

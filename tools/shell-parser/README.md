@@ -70,3 +70,11 @@ The one callback and runtime intentionally live for that module's lifetime;
 per-call trees, copied brace words and serialization buffers are reclaimed by the
 runtime. Missing assets, integrity failure or a runtime trap are initialization
 or internal failures, never permission to fall back to a second parser.
+
+`bounded-lexer-work.patch` adds opt-in limits to the existing lexer and command
+parser. Permission inspection counts actual rune/token advances and each real
+command's argument records before JSON serialization. Nested substitutions retain
+the outer command's count, and heredoc extent remains owned by the grammar. The
+bridge returns actual lexer steps so nested analysis consumes the same host work
+budget. General structural parsing leaves these permission limits disabled.
+Remove this patch when equivalent lexer and command limits are available upstream.

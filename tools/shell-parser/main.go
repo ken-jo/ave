@@ -20,8 +20,12 @@ const outputBytes = 67_108_864
 
 var parser = syntax.NewParser(syntax.Variant(syntax.LangBash), syntax.KeepComments(true))
 
-func failure(message string) string {
-	result, _ := json.Marshal(map[string]string{"error": message})
+func failure(message string, steps ...int) string {
+	work := 0
+	if len(steps) > 0 {
+		work = steps[0]
+	}
+	result, _ := json.Marshal(map[string]any{"error": message, "lexerSteps": work})
 	return string(result)
 }
 
@@ -35,24 +39,44 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func parse(_ js.Value, args []js.Value) (result any) {
+	lexerStarted := false
+	fail := func(message string) string {
+		if lexerStarted {
+			return failure(message, parser.LexerWork())
+		}
+		return failure(message)
+	}
 	defer func() {
 		if recover() != nil {
-			result = failure("Shell parser failed")
+			result = fail("Shell parser failed")
 		}
 	}()
-	if len(args) != 1 || args[0].Type() != js.TypeString {
-		return failure("Invalid shell parser input")
+	if (len(args) != 1 && len(args) != 2) || args[0].Type() != js.TypeString {
+		return fail("Invalid shell parser input")
 	}
+	lexerSteps, commandWords := 0, 0
+	if len(args) == 2 {
+		if args[1].Type() != js.TypeObject {
+			return fail("Invalid shell parser limits")
+		}
+		lexerSteps = args[1].Get("lexerSteps").Int()
+		commandWords = args[1].Get("commandWords").Int()
+		if lexerSteps < 0 || commandWords < 0 {
+			return fail("Invalid shell parser limits")
+		}
+	}
+	syntax.WorkLimits(lexerSteps, commandWords)(parser)
 	source := args[0].String()
 	if len(source) > sourceBytes {
-		return failure("Shell analysis source limit exceeded")
+		return fail("Shell analysis source limit exceeded")
 	}
 	if strings.IndexByte(source, 0) >= 0 {
-		return failure("Shell command contains a NUL byte")
+		return fail("Shell command contains a NUL byte")
 	}
+	lexerStarted = true
 	file, err := parser.Parse(strings.NewReader(source), "")
 	if err != nil {
-		return failure(err.Error())
+		return fail(err.Error())
 	}
 	count, depth := 0, 0
 	excessive := false
@@ -124,25 +148,26 @@ func parse(_ js.Value, args []js.Value) (result any) {
 		return true
 	})
 	if excessive {
-		return failure("Shell analysis syntax limit exceeded")
+		return fail("Shell analysis syntax limit exceeded")
 	}
 	if annotationError != nil {
-		return failure(annotationError.Error())
+		return fail(annotationError.Error())
 	}
 	var output boundedBuffer
 	if err := typedjson.Encode(&output, file); err != nil {
-		return failure(err.Error())
+		return fail(err.Error())
 	}
 	resultBytes, err := json.Marshal(struct {
 		Tree           json.RawMessage   `json:"tree"`
+		LexerSteps     int               `json:"lexerSteps"`
 		BraceWords     [][2]uint         `json:"braceWords"`
 		EscapedStrings map[string]string `json:"escapedStrings"`
-	}{json.RawMessage(output.Bytes()), braceWords, escapedStrings})
+	}{json.RawMessage(output.Bytes()), parser.LexerWork(), braceWords, escapedStrings})
 	if err != nil {
-		return failure(err.Error())
+		return fail(err.Error())
 	}
 	if len(resultBytes) > outputBytes {
-		return failure("Shell syntax output limit exceeded")
+		return fail("Shell syntax output limit exceeded")
 	}
 	return string(resultBytes)
 }

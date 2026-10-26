@@ -363,10 +363,11 @@ export const SENSITIVE_PATH_PATTERNS: readonly string[] = Object.freeze([
 // Public helpers
 
 // Resolve once, walk existing ancestors with a bounded realpath lookup, normalize separators/Unicode/case and pass the frozen string to all policy layers; resolving again admits symlink TOCTOU. If no ancestor resolves within the bound, treat the resolved path as opaque and deny it in allowed-scope checks.
-export function canonicalizePathForMatch(rawPath: string): string {
+export function canonicalizePathForMatch(rawPath: string, spend?: () => void): string {
   let canonical = pathResolve(rawPath);
 
   // Step 2 — realpath walk-up. Try the path itself first; if missing, walk up to the nearest existing ancestor and compose the unresolved tail.
+  spend?.();
   try {
     canonical = realpathSync.native(canonical);
   } catch {
@@ -376,6 +377,7 @@ export function canonicalizePathForMatch(rawPath: string): string {
       const next = pathResolve(parent, "..");
       if (next === parent) break; // hit filesystem root
       parent = next;
+      spend?.();
       try {
         const realParent = realpathSync.native(parent);
         // Compose: realpath'd ancestor + remainder of original path.
@@ -515,7 +517,7 @@ export function isSensitivePath(absPath: string, effect: PathEffect = "write"): 
 }
 
 // Snapshot policy roots and compiled globs once for one permission decision.
-export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPath: string) => string | null {
+export function createSensitivePathMatcher(effect: PathEffect = "write", spend?: () => void): (absPath: string) => string | null {
   const platformCaseInsensitive = process.platform === "darwin" || process.platform === "win32";
   const patterns = SENSITIVE_PATH_PATTERNS.map((pattern) => ({
     pattern,
@@ -540,6 +542,7 @@ export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPa
     if (roots.keys.some((path) => candidates.includes(path))) return "runtime-secret-key";
     for (const candidate of candidates) {
       for (const { pattern, expression, readOnly } of patterns) {
+        spend?.();
         if (!(canReadSession && readOnly) && expression.test(candidate)) return pattern;
       }
     }

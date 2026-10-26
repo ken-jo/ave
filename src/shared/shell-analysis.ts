@@ -1,4 +1,4 @@
-import { ShellAnalysisError, parseShellSyntax, type ShellSyntaxNode } from "./shell-parser.js";
+import { ShellAnalysisError, parseShellSyntax, type ShellSyntaxNode, type ShellParserWorkLimits } from "./shell-parser.js";
 
 export interface ShellSpan { start: number; end: number; raw: string }
 export type ShellWordPart =
@@ -18,6 +18,7 @@ export interface ShellRedirect {
   target?: ShellWord;
   data?: ShellWord;
   descriptor: boolean;
+  heredocQuoted?: boolean;
 }
 export interface ShellCommand {
   kind: "command";
@@ -121,9 +122,9 @@ function span(node: ShellSyntaxNode, source: ShellSource): ShellSpan {
 function unsupported(node: ShellSyntaxNode, source: ShellSource): ShellStatement {
   return { kind: "unsupported", source: span(node, source), reason: `Unsupported shell syntax: ${node.Type ?? "statement"}` };
 }
-export function analyzeShell(command: string, dialect: "bash" | "posix" = "bash"): ShellAnalysis {
+export function analyzeShell(command: string, dialect: "bash" | "posix" = "bash", workLimits?: ShellParserWorkLimits): ShellAnalysis {
   try {
-    const file = parseShellSyntax(command);
+    const file = parseShellSyntax(command, workLimits);
     const braceWords = file.BraceWords;
     if (!Array.isArray(braceWords) || braceWords.some((range) => !Array.isArray(range)
       || range.length !== 2 || !range.every((offset) => Number.isSafeInteger(offset)))) throw new Error("Invalid shell brace annotations");
@@ -244,10 +245,11 @@ function lowerRedirect(node: ShellSyntaxNode, source: ShellSource): ShellRedirec
   const location = span(node, source);
   const operator = value(node, "Op");
   const word = lowerWord(child(node, "Word"), source);
-  if (node.Hdoc) {
+  if (operator === "<<" || operator === "<<-") {
     const quoted = children(child(node, "Word"), "Parts").some((part) => part.Type !== "Lit" || value(part, "Value").includes("\\"));
     return { source: location, effect: "read", descriptor: false,
-      data: lowerWord(child(node, "Hdoc"), source, quoted ? "literal" : "heredoc") };
+      heredocQuoted: quoted,
+      data: node.Hdoc ? lowerWord(child(node, "Hdoc"), source, quoted ? "literal" : "heredoc") : literalWord("", location) };
   }
   if (operator === "<<<") {
     if (source.dialect !== "bash") throw new ShellAnalysisError("Unsupported non-POSIX here-string");

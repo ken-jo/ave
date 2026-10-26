@@ -2,10 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { canonicalizePathForMatch } from "../sensitive-paths.js";
 import { PermissionManager } from "../permission-manager.js";
 import { ShellFloorWorkBudget, SHELL_FLOOR_WORK_LIMITS } from "../rules/shell-floor-work-budget.js";
 import * as shellAnalysis from "../../shared/shell-analysis.js";
-import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+import { parseShellSyntax, SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import * as shellFloors from "../rules/shell-exfiltration.js";
 import { inspectPowerShellCommand, inspectPowerShellVisibleText, _inspectPowerShellForTest, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, SHELL_FLOOR_INPUT_LIMIT, shellFloorInputExceeded } from "../rules/shell-floor-policy.js";
@@ -76,8 +77,11 @@ describe("bounded visible floor inspection", () => {
     expect(shellFloors.inspectShellCommand(command, CWD)).toMatchObject({ analysisLimited: true, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON });
   });
 
-  it.each(["wsl ls *.txt", `${"env ".repeat(17)}git status`])("marks real exhaustion separately from opacity in %s", (command) => {
-    expect(_inspectPowerShellForTest(command, CWD)).toMatchObject({ analysisLimited: true, exhausted: true, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON });
+  it.each(["wsl ls *.txt", `${"env ".repeat(17)}git status`])("does not charge delegated analysis for work it did not perform in %s", (command) => {
+    const result = _inspectPowerShellForTest(command, CWD);
+    expect(result.exhausted).toBe(false);
+    expect(result.analysisLimited).toBeUndefined();
+    expect(result.ordinaryAsk).not.toBe(SHELL_FLOOR_BUDGET_REASON);
   });
 
   it("scans fallback path spans without overlapping source ranges", () => {
@@ -117,19 +121,96 @@ describe("bounded visible floor inspection", () => {
     } finally { bash.mockRestore(); powershell.stop(); }
   });
 
-  it("reserves syntax materialization before invoking the native parser", () => {
-    const source = `printf ${Array.from({ length: 300 }, (_, index) => `p${index}`).join(" ")}`;
-    expect(source.length).toBeLessThan(2_000);
-    const parser = vi.spyOn(shellAnalysis, "analyzeShell");
+  it("charges the characters actually inspected, preserving spaces inside quoted data", () => {
+    const source = `git commit -m '${"short ".repeat(245)}message'`;
     const budget = new ShellFloorWorkBudget();
-    try {
-      expect(() => shellFloors.parseShellFloorCommand(source, budget)).toThrow();
-      expect(budget.exhausted).toBe(true);
-      expect(parser).not.toHaveBeenCalled();
-    } finally { parser.mockRestore(); }
+    expect(shellFloors.parseShellFloorCommand(source, budget).analysis.ok).toBe(true);
+    expect(budget.exhausted).toBe(false);
+    expect(budget.steps).toBeLessThan(source.length * 4);
   });
 
-  it("reuses the reserved parsed command without charging its source twice", () => {
+  it("bounds emitted command records independently of spaces inside quoted words", () => {
+    for (const quoted of [false, true]) {
+      const source = `printf ${Array.from({ length: SHELL_FLOOR_WORK_LIMITS.commandTokens - 1 }, () => quoted ? "'two words'" : "word").join(" ")}`;
+      const budget = new ShellFloorWorkBudget();
+      expect(shellFloors.parseShellFloorCommand(source, budget).analysis.ok).toBe(true);
+      expect(() => shellFloors.parseShellFloorCommand(source + " another", new ShellFloorWorkBudget())).toThrow();
+    }
+  });
+
+  it("resets command token records at pipeline and statement boundaries", () => {
+    const stage = "printf " + "word ".repeat(SHELL_FLOOR_WORK_LIMITS.commandTokens - 1);
+    for (const separator of [" | ", "; ", "\n"]) {
+      const source = stage + separator + stage;
+      expect(shellFloors.parseShellFloorCommand(source, new ShellFloorWorkBudget()).analysis.ok).toBe(true);
+      expect(inspectPowerShellCommand(source, CWD).analysisLimited).toBeUndefined();
+    }
+  });
+
+  it("propagates exhausted path work without retrying the filesystem walk", () => {
+    const spent = new Error("spent work");
+    const charge = vi.fn(() => { throw spent; });
+    expect(() => canonicalizePathForMatch("/not-a-real-root/not-a-real-file", charge)).toThrow(spent);
+    expect(charge).toHaveBeenCalledTimes(1);
+  });
+
+  it("charges the actual native lexer count without a second source reader", () => {
+    const source = "printf 'one two three'";
+    const count = vi.fn();
+    parseShellSyntax(source, { commandWords: 64, lexerSteps: 16_384, onLexerSteps: count });
+    const budget = new ShellFloorWorkBudget();
+    expect(shellFloors.parseShellFloorCommand(source, budget).analysis.ok).toBe(true);
+    expect(count).toHaveBeenCalledTimes(1);
+    expect(budget.steps).toBe(count.mock.calls[0]![0]);
+    expect(budget.chars).toBe(source.length);
+  });
+
+  it("charges actual lexer work for syntax refusal and for successful parsing", () => {
+    for (const command of ["printf '" + "word ".repeat(900), "printf '" + "word ".repeat(900) + "'"]) {
+      const budget = new ShellFloorWorkBudget();
+      const result = shellFloors.parseShellFloorCommand(command, budget);
+      expect(result.analysis.ok).toBe(command.endsWith("'"));
+      expect(budget.steps).toBeGreaterThan(4_000);
+      expect(budget.exhausted).toBe(false);
+    }
+  });
+
+  it("charges failed parsing against remaining work without poisoning later parses", () => {
+    const command = "printf '" + "word ".repeat(900);
+    const count = vi.fn();
+    expect(() => parseShellSyntax(command, { commandWords: 64, lexerSteps: 16_384, onLexerSteps: count })).toThrow(/without closing quote/);
+    expect(count).toHaveBeenCalledTimes(1);
+    expect(count.mock.calls[0]![0]).toBeGreaterThan(4_000);
+    const budget = new ShellFloorWorkBudget();
+    budget.enterSource(command);
+    budget.spend(command.length * SHELL_FLOOR_WORK_LIMITS.stepsPerChar - 2);
+    expect(() => shellFloors.parseShellFloorCommand(command, budget)).toThrow();
+    expect(budget.exhausted).toBe(true);
+    const spent = new Error("caller spent after refusal");
+    expect(() => parseShellSyntax(command, { commandWords: 64, lexerSteps: 16_384, onLexerSteps: () => { throw spent; } })).toThrow(spent);
+    expect(shellAnalysis.analyzeShell("printf ready").ok).toBe(true);
+  });
+
+  it("keeps native lexer refusal and caller exhaustion separate from runtime integrity", () => {
+    expect(() => parseShellSyntax("printf ready", { commandWords: 64, lexerSteps: 1 })).toThrow(/lexer work limit/);
+    const spent = new Error("caller budget spent");
+    expect(() => parseShellSyntax("printf ready", { commandWords: 64, lexerSteps: 16_384, onLexerSteps: () => { throw spent; } })).toThrow(spent);
+    expect(shellAnalysis.analyzeShell("printf ready").ok).toBe(true);
+  });
+
+  it.each([
+    "cat <<'EOF'\nbody\nEOF\n" + "printf " + "word ".repeat(64),
+    "cat <<< data\n" + "printf " + "word ".repeat(64),
+    "printf " + "word ".repeat(40) + "$(printf x) " + "word ".repeat(40),
+  ])("uses each original command's records through redirects and substitutions: %s", (command) => {
+    const analysis = shellAnalysis.analyzeShell(command);
+    expect(analysis.ok).toBe(true);
+    expect(() => shellFloors.parseShellFloorCommand(command, new ShellFloorWorkBudget())).toThrow();
+    const parsed = { command, analysis, facts: new Map() };
+    expect(() => shellFloors.parseShellFloorCommand(parsed, new ShellFloorWorkBudget())).toThrow();
+  });
+
+  it("reuses the parsed command without charging its source twice", () => {
     const budget = new ShellFloorWorkBudget();
     const parsed = shellFloors.parseShellFloorCommand("printf ready", budget);
     const before = { steps: budget.steps, chars: budget.chars };
