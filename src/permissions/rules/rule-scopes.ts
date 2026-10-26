@@ -1,11 +1,12 @@
 // Load project rules before synchronous permission evaluation; evaluating an unloaded scope is a contract violation and throws.
+import { isCurrentShellRule, withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { stat } from "node:fs/promises";
 import { capturePersistedPolicyVersion, isPersistedPolicyVersionCurrent, persistedPolicyVersionForContent, type PersistedPolicyVersion } from "../persisted-policy-version.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { sha256Hex } from "../../lib/hex-digest-equal.js";
 import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
-import { canonicalPowerShellRuleTokens, isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
+import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 import { powerShellRuleShape } from "./powershell-exfiltration.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
@@ -91,10 +92,11 @@ export class ProjectRuleScopes {
   }
 
   async addRule(projectCwd: string, rule: PermissionRule): Promise<void> {
-    const validated = validatePermissionRule(rule);
+    const validated = validatePermissionRule(withCurrentShellRuleVersion(rule));
     const location = projectRulesLocation(this.baseDir, projectCwd);
     const file = await updateProjectRulesFile(location, (current) => {
-      const exists = current.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action);
+      const exists = current.rules.some((r) => r.pattern === validated.pattern && r.action === validated.action && isCurrentShellRule(r));
+      if (!exists) current.rules = current.rules.filter((r) => !(r.pattern === validated.pattern && r.action === validated.action));
       if (!exists) {
         // Deny first so a reader scanning in order sees restrictions first; precedence does not depend on order (deny > ask > allow).
         if (validated.action === "allow") current.rules.push(validated);
@@ -129,7 +131,7 @@ function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>
   const allow: ShellRuleInput[] = [];
   for (const rules of scopes) {
     for (const rule of rules) {
-      if (rule.source || !isRuleSpecifier(rule.pattern)) continue;
+      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule)) continue;
       const spec = parseRuleSpecifier(rule.pattern);
       if (spec.kind !== "bash") continue;
       if (storedRuleInvalidReason(rule) !== null) continue;
@@ -157,7 +159,7 @@ function collectPowerShellRules(...scopes: ReadonlyArray<readonly PermissionRule
   const allow: PowerShellRuleInput[] = [];
   for (const rules of scopes) {
     for (const rule of rules) {
-      if (rule.source || !isRuleSpecifier(rule.pattern)) continue;
+      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule)) continue;
       const spec = parseRuleSpecifier(rule.pattern);
       if (spec.kind !== "powershell") continue;
       (rule.action === "deny" ? deny : rule.action === "ask" ? ask : allow).push({ pattern: rule.pattern, spec });
@@ -184,12 +186,12 @@ function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
   const base = head.slice(Math.max(head.lastIndexOf("\\"), head.lastIndexOf("/")) + 1).replace(/\.+$/, "").replace(/\.(?:exe|com|cmd|bat)$/i, "").replace(/\.+$/, "");
   const name = canonicalPowerShellName(base.length > 0 ? base : head);
   const policy = POWERSHELL_COMMAND_POLICIES[name];
-  return canonicalPowerShellRuleTokens([name as T, ...values.slice(1).map((token) => {
+  return [name as T, ...values.slice(1).map((token) => {
     if (typeof token !== "string") return token as T;
     const normalized = token.replace(/[\u2013-\u2015]/g, "-");
     const parameter = policy !== undefined && policy.native === undefined ? /^(-[A-Za-z][A-Za-z0-9]*)(:[\s\S]*)?$/.exec(normalized) : null;
     return (parameter ? parameter[1]!.toLowerCase() + (parameter[2] ?? "") : normalized) as T;
-  })]);
+  })];
 }
 
 function matchesPowerShellRestriction(spec: PowerShellRuleSpecifier, argv: readonly (string | null)[]): boolean {

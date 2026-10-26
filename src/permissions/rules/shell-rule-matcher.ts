@@ -127,8 +127,6 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
         }
         if (statement.assignments.length > 0) blockers.push("command-scoped environment assignment");
         const argv = statement.words.map((word) => staticShellWord(word));
-        const encoded = encodedPowerShellExecutionReason(argv);
-        if (encoded !== null) blockers.push(encoded);
         ordinaryAsk ??= wrapperCommand(argv).ordinaryAsk ?? opaqueRunnerReason(argv) ?? undefined;
         if (argv[0] === undefined) {
           hidden.push("dynamic program name");
@@ -207,6 +205,8 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   };
 
   visit(analysis.program);
+  const encoded = encodedPowerShellExecutionReason(commands.flatMap((command) => command.argv), commands.flatMap((command) => command.rawWords));
+  if (encoded !== null) globalBlockers.push(encoded);
   ordinaryAsk ??= shellScanOrdinaryAsk(parsed, cwd) ?? undefined;
   return { ok: true, commands, hidden, ...(ordinaryAsk ? { ordinaryAsk } : {}), allowBlockers: globalBlockers };
 }

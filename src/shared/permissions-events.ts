@@ -1,5 +1,6 @@
 /** Shared event payloads for `PERMISSIONS.*` IPC channels. Single source of truth for the wire shapes that cross the main↔renderer boundary on the permissions domain. Keeping these types in one module prevents drift
  * between the emitter (`permission-manager.ts`), the preload bridge (`preload.ts`), and any future renderer typings (`ui/renderer/types.ts`). Issue: #802 (code-reviewer LOW finding; inline duplicates across 3+ sites). */
+import type { ShellRuleVersion } from "./shell-rule-version.js";
 import type { RiskLevel } from "./permission-review-status.js";
 
 
@@ -18,7 +19,7 @@ export interface ScopedPermissionRuleError {
 export type StoredRuleInvalidReason = "wildcard-not-allowlisted";
 
 /** Rule-store row with its host-owned persistence scope. */
-export interface ScopedPermissionRule {
+export interface ScopedPermissionRule extends ShellRuleVersion {
   pattern: string;
   action: "allow" | "deny" | "ask";
   source?: string;

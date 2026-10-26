@@ -14,6 +14,7 @@ import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 import { normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { validatePermissionRule } from "../rules/rule-files.js";
 import { SHELL_FLOOR_BUDGET_REASON } from "../rules/shell-floor-policy.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import {
   __resetSessionStoreForTest,
   canonicalStringify,
@@ -69,12 +70,12 @@ const ENCODED_CASES: readonly EncodedCase[] = [
   { name: "alternate executable from a structured shell", dialect: "powershell", command: `pwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: `pwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}` },
   { name: "nested encoded script from a command shell", dialect: "bash", command: `pwsh -enc ${DOUBLE_PAYLOAD}`, allowBody: `pwsh -enc ${DOUBLE_PAYLOAD}` },
   { name: "nested encoded script from a structured shell", dialect: "powershell", command: `pwsh -enc ${DOUBLE_PAYLOAD}`, allowBody: `pwsh -enc ${DOUBLE_PAYLOAD}` },
-  { name: "conditional launcher from a command shell", exactAllowed: true, dialect: "bash", command: `cmd /c if 1==1 ${INNER_COMMAND}`, allowBody: `cmd /c if 1==1 ${INNER_COMMAND}` },
-  { name: "conditional launcher from a structured shell", exactAllowed: true, dialect: "powershell", command: `cmd /c if 1==1 ${INNER_COMMAND}`, allowBody: `cmd /c if 1==1 ${INNER_COMMAND}` },
-  { name: "alternate shell long command option from a command shell", exactAllowed: true, dialect: "bash", command: `fish --command '${INNER_COMMAND}'`, allowBody: "fish *" },
-  { name: "alternate shell long command option from a structured shell", exactAllowed: true, dialect: "powershell", command: `fish --command '${INNER_COMMAND}'`, allowBody: "fish *" },
-  { name: "alternate shell initialization option from a command shell", exactAllowed: true, dialect: "bash", command: `fish -C '${INNER_COMMAND}'`, allowBody: "fish *" },
-  { name: "alternate shell initialization option from a structured shell", exactAllowed: true, dialect: "powershell", command: `fish -C '${INNER_COMMAND}'`, allowBody: "fish *" },
+  { name: "conditional launcher from a command shell", dialect: "bash", command: `cmd /c if 1==1 ${INNER_COMMAND}`, allowBody: `cmd /c if 1==1 ${INNER_COMMAND}` },
+  { name: "conditional launcher from a structured shell", dialect: "powershell", command: `cmd /c if 1==1 ${INNER_COMMAND}`, allowBody: `cmd /c if 1==1 ${INNER_COMMAND}` },
+  { name: "alternate shell long command option from a command shell", dialect: "bash", command: `fish --command '${INNER_COMMAND}'`, allowBody: "fish *" },
+  { name: "alternate shell long command option from a structured shell", dialect: "powershell", command: `fish --command '${INNER_COMMAND}'`, allowBody: "fish *" },
+  { name: "alternate shell initialization option from a command shell", dialect: "bash", command: `fish -C '${INNER_COMMAND}'`, allowBody: "fish *" },
+  { name: "alternate shell initialization option from a structured shell", dialect: "powershell", command: `fish -C '${INNER_COMMAND}'`, allowBody: "fish *" },
   { name: "glued split-string launcher from a command shell", exactAllowed: true, dialect: "bash", command: `env -Spwsh -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: `env -Spwsh -enc ${DESTRUCTIVE_PAYLOAD}` },
   { name: "glued split-string launcher from a structured shell", exactAllowed: true, dialect: "powershell", command: `env -Spwsh -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: `env -Spwsh -enc ${DESTRUCTIVE_PAYLOAD}` },
   { name: "attached executable parameter with an argument array", dialect: "powershell", command: `Start-Process -FilePath:pwsh -ArgumentList @('-enc','${DESTRUCTIVE_PAYLOAD}')`, allowBody: "start-process *" },
@@ -84,31 +85,31 @@ const ENCODED_CASES: readonly EncodedCase[] = [
 
 // All payloads below are literal UTF-16LE Base64, including nested encodings.
 const COMPOSED_CASES: readonly EncodedCase[] = [
-  { name: "versioned shell executable", dialect: "bash", exactAllowed: true, command: `ksh93 -c '${INNER_COMMAND}'`, allowBody: "ksh93 *" },
-  { name: "alternate shell with startup files disabled", exactAllowed: true, dialect: "bash", command: `tcsh -f -c '${INNER_COMMAND}'`, allowBody: "tcsh *" },
-  { name: "glued long command option", exactAllowed: true, dialect: "bash", command: `fish --command='${INNER_COMMAND}'`, allowBody: "fish *" },
-  { name: "glued long initialization option", exactAllowed: true, dialect: "bash", command: `fish --init-command='${INNER_COMMAND}' -c exit`, allowBody: "fish *" },
-  { name: "runner with an attached command-string option", exactAllowed: true, dialect: "bash", command: `npm exec --call='${INNER_COMMAND}'`, allowBody: "npm exec *" },
+  { name: "versioned shell executable", dialect: "bash", command: `ksh93 -c '${INNER_COMMAND}'`, allowBody: "ksh93 *" },
+  { name: "alternate shell with startup files disabled", dialect: "bash", command: `tcsh -f -c '${INNER_COMMAND}'`, allowBody: "tcsh *" },
+  { name: "glued long command option", dialect: "bash", command: `fish --command='${INNER_COMMAND}'`, allowBody: "fish *" },
+  { name: "glued long initialization option", dialect: "bash", command: `fish --init-command='${INNER_COMMAND}' -c exit`, allowBody: "fish *" },
+  { name: "runner with an attached command-string option", dialect: "bash", command: `npm exec --call='${INNER_COMMAND}'`, allowBody: "npm exec *" },
   { name: "runner composing an attached split-string launcher", exactAllowed: true, dialect: "bash", command: `npm exec --call='env -Spwsh -enc ${DESTRUCTIVE_PAYLOAD}'`, allowBody: "npm exec *" },
   { name: "triple encoded script from a command shell", dialect: "bash", command: `pwsh -enc ${TRIPLE_PAYLOAD}`, allowBody: `pwsh -enc ${TRIPLE_PAYLOAD}` },
   { name: "triple encoded script from a structured shell", dialect: "powershell", command: `pwsh -enc ${TRIPLE_PAYLOAD}`, allowBody: `pwsh -enc ${TRIPLE_PAYLOAD}` },
   { name: "payload assembled from adjacent quoted fragments", dialect: "bash", command: `pwsh -enc '${PAYLOAD_LEFT}'"${PAYLOAD_RIGHT}"`, allowBody: `pwsh -enc ${DESTRUCTIVE_PAYLOAD}` },
   { name: "encoded script with a byte-order mark", dialect: "bash", command: `pwsh -enc ${UTF16LE_BOM_PAYLOAD}`, allowBody: `pwsh -enc ${UTF16LE_BOM_PAYLOAD}` },
-  { name: "nested encoded script behind a quoted split-string launcher", exactAllowed: true, dialect: "bash", command: `env -S 'pwsh -enc ${DOUBLE_PAYLOAD}'`, allowBody: "env *" },
+  { name: "nested encoded script behind a quoted split-string launcher", dialect: "bash", command: `env -S 'pwsh -enc ${DOUBLE_PAYLOAD}'`, allowBody: "env *" },
   { name: "literal encoded operand containing ignored whitespace from a command shell", dialect: "bash", command: `pwsh -enc '${SPACED_PAYLOAD}'`, allowBody: "pwsh *" },
   { name: "literal encoded operand containing ignored whitespace from a structured shell", dialect: "powershell", command: `pwsh -enc '${SPACED_PAYLOAD}'`, allowBody: "pwsh *" },
   { name: "mostly ASCII encoded script with a Korean literal from a command shell", dialect: "bash", command: `pwsh -enc ${encodeScript(KOREAN_SCRIPT)}`, allowBody: `pwsh -enc ${encodeScript(KOREAN_SCRIPT)}`, decodedScript: KOREAN_SCRIPT },
   { name: "mostly ASCII encoded script with a Korean literal from a structured shell", dialect: "powershell", command: `pwsh -enc ${encodeScript(KOREAN_SCRIPT)}`, allowBody: `pwsh -enc ${encodeScript(KOREAN_SCRIPT)}`, decodedScript: KOREAN_SCRIPT },
 ];
 
-const UTF16_DATA_CASES = [
+const UTF16_DATA_CASES: readonly Omit<EncodedCase, "dialect">[] = [
   { name: "UTF-16LE payload as a print argument", command: `printf %s ${DESTRUCTIVE_PAYLOAD}`, allowBody: `printf %s ${DESTRUCTIVE_PAYLOAD}`, decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "UTF-16LE payload inside a commit message", command: `git commit -m 'snapshot ${DESTRUCTIVE_PAYLOAD}'`, allowBody: "git commit *", decodedScript: DESTRUCTIVE_SCRIPT },
-  { name: "UTF-16LE payload inside quoted data passed through a wrapper", command: `env printf %s '${INNER_COMMAND}'`, allowBody: "env *", decodedScript: DESTRUCTIVE_SCRIPT },
+  { name: "UTF-16LE payload inside quoted data passed through a wrapper", exactAllowed: false, command: `env printf %s '${INNER_COMMAND}'`, allowBody: "env *", decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "UTF-16LE Base64 run inside a larger data token", command: `printf %s 'data:${DESTRUCTIVE_PAYLOAD}:end'`, allowBody: "printf *", decodedScript: DESTRUCTIVE_SCRIPT },
   { name: "UTF-16LE payload decoding to a benign script", command: `printf %s ${encodeScript("Get-Date")}`, allowBody: `printf %s ${encodeScript("Get-Date")}`, decodedScript: "Get-Date" },
   { name: "mostly ASCII UTF-16LE payload with a Korean literal", command: `printf %s ${encodeScript(KOREAN_SCRIPT)}`, allowBody: `printf %s ${encodeScript(KOREAN_SCRIPT)}`, decodedScript: KOREAN_SCRIPT },
-] as const;
+];
 
 const LITERAL_TEXT_CASES = [
   { name: "exactly ninety percent ASCII-range units", script: "Write-Output '한글'; #" },
@@ -138,8 +139,8 @@ const UNRESOLVED_OPERAND_CASES: readonly EncodedCase[] = [
   { name: "distribution wrapper with an inner variable operand", dialect: "bash", command: "wsl pwsh -enc $X", allowBody: "wsl *" },
   { name: "environment wrapper with an inner variable operand", dialect: "bash", command: "env pwsh -enc $X", allowBody: "env *" },
   { name: "dynamic called program with a variable operand", dialect: "powershell", command: "& $p -enc $X", allowBody: "pwsh *" },
-  { name: "an earlier matching name in ordinary data from a command shell", exactAllowed: true, dialect: "bash", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
-  { name: "an earlier matching name in ordinary data from a structured shell", exactAllowed: true, dialect: "powershell", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
+  { name: "an earlier matching name in ordinary data from a command shell", dialect: "bash", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
+  { name: "an earlier matching name in ordinary data from a structured shell", dialect: "powershell", command: "printf %s pwsh -enc 'not-base64!'", allowBody: "printf *" },
 ];
 
 const PIPELINE_CASES: readonly EncodedCase[] = [
@@ -158,8 +159,8 @@ const BOUNDED_AND_NESTED_CASES: readonly EncodedCase[] = [
   { name: "powershell: scan budget", dialect: "powershell", command: `# ${SCAN_NOISE}\npwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: `pwsh-preview -enc ${DESTRUCTIVE_PAYLOAD}` },
   { name: "powershell: double-dash encoded flag", dialect: "powershell", command: "pwsh --enc $env:PAYLOAD", allowBody: "pwsh *" },
   { name: "bash: double-dash encoded flag", dialect: "bash", command: 'pwsh --enc "$PAYLOAD"', allowBody: "pwsh *" },
-  { name: "bash: dynamic child program", exactAllowed: true, dialect: "bash", command: "pwsh -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh *" },
-  { name: "powershell: dynamic child program", exactAllowed: true, dialect: "powershell", command: "pwsh -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh *" },
+  { name: "bash: dynamic child program", dialect: "bash", command: "pwsh -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh *" },
+  { name: "powershell: dynamic child program", dialect: "powershell", command: "pwsh -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh *" },
   { name: "powershell: dynamic cmd child", dialect: "powershell", command: "cmd /c $env:TARGET -enc $env:PAYLOAD", allowBody: "cmd *" },
   { name: "bash: sh stdin after --", exactAllowed: true, offerAllowed: false, allowCommands: [`printf %s ${DESTRUCTIVE_UTF8_PAYLOAD}`, "base64 -d", "sh -s -- -c ignored"], dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh -s -- -c ignored`, allowBody: "sh *" },
   { name: "bash: bash stdin after --", exactAllowed: true, offerAllowed: false, allowCommands: [`printf %s ${DESTRUCTIVE_UTF8_PAYLOAD}`, "base64 -d", "bash -s -- -c ignored"], dialect: "bash", command: `printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | bash -s -- -c ignored`, allowBody: "bash *" },
@@ -171,12 +172,12 @@ const BOUNDED_AND_NESTED_CASES: readonly EncodedCase[] = [
   { name: "powershell: input over the hard cap", dialect: "powershell", command: OVER_CAP_COMMAND, allowBody: "echo *" },
   { name: "bash: lex budget exhausted", dialect: "bash", command: LEX_BUDGET_COMMAND, allowBody: "pwsh *" },
   { name: "powershell: lex budget exhausted", dialect: "powershell", command: LEX_BUDGET_COMMAND, allowBody: "pwsh *" },
-  { name: "bash: alternate launcher with a dynamic child", exactAllowed: true, dialect: "bash", command: "pwsh-preview -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh-preview *" },
-  { name: "powershell: alternate launcher with a dynamic child", exactAllowed: true, dialect: "powershell", command: "pwsh-preview -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh-preview *" },
+  { name: "bash: alternate launcher with a dynamic child", dialect: "bash", command: "pwsh-preview -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh-preview *" },
+  { name: "powershell: alternate launcher with a dynamic child", dialect: "powershell", command: "pwsh-preview -Command '& $env:TARGET -enc $env:PAYLOAD'", allowBody: "pwsh-preview *" },
   { name: "bash: glued long option feeds a pipeline", exactAllowed: true, dialect: "bash", command: `fish --command='printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh'`, allowBody: "fish *" },
   { name: "powershell: glued long option feeds a pipeline", dialect: "powershell", command: `fish --command='printf %s ${DESTRUCTIVE_UTF8_PAYLOAD} | base64 -d | sh'`, allowBody: "fish *" },
-  { name: "bash: glued cmd slash option carries encoded code", exactAllowed: true, dialect: "bash", command: 'cmd /c"pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
-  { name: "powershell: spaced cmd slash option carries encoded code", exactAllowed: true, dialect: "powershell", command: 'cmd /c "pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
+  { name: "bash: glued cmd slash option carries encoded code", dialect: "bash", command: 'cmd /c"pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
+  { name: "powershell: spaced cmd slash option carries encoded code", dialect: "powershell", command: 'cmd /c "pwsh -enc %PAYLOAD%"', allowBody: "cmd *" },
 ];
 
 const WHITESPACE_PAYLOAD_CASES: readonly EncodedCase[] = [
@@ -243,7 +244,7 @@ function requireLaneBehavior(fixture: EncodedCase): void {
   expect.soft(card.sessionAllowed).toBe(offerAllowed);
   expect.soft(card.persistentAllowed).toBe(offerAllowed);
   for (const saved of [false, true]) {
-    // The legacy snapshot also tests rules saved before literal proof existed.
+    // Seed current-format rules independently of the card proposal.
     const rules: PermissionRule[] = saved ? [
       { pattern: dialect, action: "allow" },
       ...(fixture.allowCommands === undefined
@@ -251,7 +252,7 @@ function requireLaneBehavior(fixture: EncodedCase): void {
         : fixture.allowCommands.map((command) => storedAllowPattern({ ...fixture, command })))
         .map((pattern): PermissionRule => ({ pattern, action: "allow" })),
     ] : [];
-    manager.setRules(rules);
+    manager.setRules(rules.map(withCurrentShellRuleVersion));
     const ordinary = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
     expect.soft(ordinary.decision, `unsandboxed, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "ask");
     expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision, `headless, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "deny");
@@ -267,7 +268,7 @@ function requireLaneBehavior(fixture: EncodedCase): void {
 const CARRIER_AND_DATA_CASES: readonly EncodedCase[] = [
   ...ENCODED_CASES,
   ...COMPOSED_CASES,
-  ...UTF16_DATA_CASES.flatMap((fixture) => (["bash", "powershell"] as const).map((dialect) => ({ ...fixture, dialect, exactAllowed: true }))),
+  ...UTF16_DATA_CASES.flatMap((fixture) => (["bash", "powershell"] as const).map((dialect) => ({ ...fixture, dialect, exactAllowed: fixture.exactAllowed ?? true }))),
   ...UNRESOLVED_OPERAND_CASES,
   ...PIPELINE_CASES,
   ...BOUNDED_AND_NESTED_CASES,
@@ -281,8 +282,8 @@ describe("literal proof and execution lanes", () => {
 const OPAQUE_CARRIER_CASES: readonly EncodedCase[] = [
   { name: "redirect with a variable operand", dialect: "bash", command: "pwsh -enc $env:PAYLOAD > out.txt", allowBody: "pwsh *" },
   { name: "redirect with a backtick escaped operand", dialect: "powershell", command: "pwsh -enc cgBtACAALQBy`AGYAIAAvAA== > out.txt", allowBody: "pwsh *" },
-  { name: "caret escape inside a command string", exactAllowed: true, dialect: "powershell", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
-  { name: "caret escape inside a command string from bash", exactAllowed: true, dialect: "bash", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
+  { name: "caret escape inside a command string", dialect: "powershell", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
+  { name: "caret escape inside a command string from bash", dialect: "bash", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
   { name: "nine padding chunks before a stdin carrier", exactAllowed: true, offerAllowed: false, allowCommands: [`printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}`, "pwsh -Command -"], dialect: "bash", command: `printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD} | pwsh -Command -`, allowBody: "pwsh *" },
   { name: "two hundred fifty-six padding chunks in an encoded operand", floorLimited: true, dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
   { name: "one hundred kilobyte input", dialect: "bash", command: `echo ${"a".repeat(100_000)}`, allowBody: "echo *" },
@@ -501,10 +502,10 @@ describe("raw numeric argument identity", () => {
     const bare = `Write-Output ${value}`;
     const quotedCard = buildShellRuleApproval("powershell", quoted, cwd, { allow: true, deny: true }, SESSION_ID);
     const bareCard = buildShellRuleApproval("powershell", bare, cwd, { allow: true, deny: true }, SESSION_ID);
-    expect(quotedCard.exactRule).toBe(`PowerShell(write-output '${value}')`);
-    expect(bareCard.exactRule).toBe(`PowerShell(write-output ${value})`);
+    expect(quotedCard.exactRule).toBe(`PowerShell(Write-Output '${value}')`);
+    expect(bareCard.exactRule).toBe(`PowerShell(Write-Output ${value})`);
     for (const [approved, other, pattern] of [[quoted, bare, quotedCard.exactRule], [bare, quoted, bareCard.exactRule]] as const) {
-      manager.setRules([{ pattern: pattern!, action: "allow" }]);
+      manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: pattern!, action: "allow" })]);
       expect(checkShellPermission(manager, cwd, SESSION_ID, approved, "powershell", false)).toMatchObject({ decision: "allow", layer: 3 });
       expect(checkShellPermission(manager, cwd, SESSION_ID, other, "powershell", false)).toMatchObject({ decision: "ask", layer: 6 });
     }
@@ -524,7 +525,7 @@ describe("shell rule deny precedence", () => {
     const subjects = [
       {
         command: dialect === "bash" ? "printf ready" : "Get-ChildItem src",
-        exact: dialect === "bash" ? "Bash(printf ready)" : "PowerShell(get-childitem src)",
+        exact: dialect === "bash" ? "Bash(printf ready)" : "PowerShell(Get-ChildItem src)",
         deny: dialect === "bash" ? "Bash(printf *)" : "PowerShell(get-childitem *)",
         encoded: false,
       },
@@ -537,10 +538,10 @@ describe("shell rule deny precedence", () => {
     ];
     // Denial precedes both confinement and remembered exact allows.
     for (const { command, exact, deny, encoded } of subjects) {
-      manager.setRules([{
+      manager.setRules([withCurrentShellRuleVersion<PermissionRule>({
         pattern: denyScope === "global" ? deny : encoded ? dialect : exact,
         action: denyScope === "global" ? "deny" : "allow",
-      }]);
+      })]);
       if (!encoded || denyScope === "project") {
         await manager.addRulePersist({
           pattern: denyScope === "project" ? deny : exact,

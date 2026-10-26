@@ -1,3 +1,4 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { maskSensitiveData } from "../../audit/dlp-filter.js";
 import type { ShellRuleApproval, ShellRuleDialect } from "../../shared/permissions-events.js";
 import { analyzeShellForRules, evaluateShellRules, proveLiteralShell } from "./shell-rule-matcher.js";
@@ -114,7 +115,7 @@ function suggestionCovers(dialect: ShellRuleDialect, pattern: string, action: "a
 // Reuse the strict store validator and matcher for a rule a card saves: true when `pattern` is a storable rule of the call's own shell dialect and, as `action`, decides this command (an allow covers it, a deny refuses it). Throws RuleSpecifierError for text outside the rule language.
 export function shellRuleCoversCommand(dialect: ShellRuleDialect, pattern: string, action: "allow" | "deny", command: string, cwd: string): boolean {
   if (maskSensitiveData(pattern).masked !== pattern) return false;
-  const rule = validatePermissionRule({ pattern, action });
+  const rule = validatePermissionRule(withCurrentShellRuleVersion({ pattern, action }));
   const spec = parseRuleSpecifier(pattern);
   if (dialect === "bash") {
     if (spec.kind !== "bash") return false;

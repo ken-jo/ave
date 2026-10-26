@@ -3,7 +3,8 @@ import { checkShellPermission, distinctPathArguments } from "../../__tests__/sup
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { PermissionManager } from "../permission-manager.js";
+import { PermissionManager, type PermissionRule } from "../permission-manager.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 import * as shellPolicy from "../rules/shell-prefix-policy.js";
 import * as powerShellPolicy from "../rules/powershell-exfiltration.js";
@@ -56,7 +57,7 @@ describe("complete manager timing", () => {
       expect(elapsed).toBeLessThan(5_000);
       if (!runsSandboxed) expect(result).toMatchObject({ decision: "ask", layer: 6 });
       if (MAX_LITERAL_COMMAND_LENGTH === LITERAL_INPUT_LIMIT) {
-        expect(spies).toHaveLength(9);
+        expect(spies).toHaveLength(10);
         for (const spy of spies) expect(spy).not.toHaveBeenCalled();
         expect(elapsed).toBeLessThan(250);
         if (runsSandboxed) expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
@@ -69,7 +70,7 @@ describe("complete manager timing", () => {
 
 function analysisSpies() {
   const spies = [
-    vi.spyOn(shellPolicy, "parseShellCommand"),
+    vi.spyOn(shellFloors, "parseShellFloorCommand"),
     vi.spyOn(powerShellPolicy, "inspectPowerShellCommand"),
     vi.spyOn(powerShellPolicy, "powerShellRuleShape"),
     vi.spyOn(powerShellPolicy, "inspectPowerShellVisibleText"),
@@ -77,6 +78,7 @@ function analysisSpies() {
     vi.spyOn(shellFloors, "shellSensitivePathSignal"),
     vi.spyOn(riskClassifier, "isDestructiveShellText"),
     vi.spyOn(shellDirectory, "captureShellWorkingDirectoryIdentity"),
+    vi.spyOn(shellPolicy, "parseShellCommand"),
   ];
   if ("inspectShellCommand" in shellFloors) spies.push(vi.spyOn(shellFloors, "inspectShellCommand"));
   return spies;
@@ -90,7 +92,7 @@ function seedExactAllow(command: string, dialect: ShellRuleDialect): void {
   const kind = dialect === "bash" ? "Bash" : "PowerShell";
   manager.setRules([
     { pattern: dialect, action: "allow" },
-    { pattern: normalizeRuleSpecifierInput(`${kind}(${command})`), action: "allow" },
+    withCurrentShellRuleVersion<PermissionRule>({ pattern: normalizeRuleSpecifierInput(`${kind}(${command})`), action: "allow" }),
   ]);
 }
 
@@ -141,18 +143,40 @@ describe.each(["bash", "powershell"] as const)("sandbox floor bounds (%s)", (dia
 });
 
 describe.each(["bash", "powershell"] as const)("floor work exhaustion (%s)", (dialect) => {
-  it.each([false, true])("requires a modal despite stored allows when sandboxed=%s", (runsSandboxed) => {
+  it.each([false, true])("stops analysis despite stored allows when sandboxed=%s", (runsSandboxed) => {
     const command = "printf ready";
     seedExactAllow(command, dialect);
     const inspect = dialect === "bash"
       ? vi.spyOn(shellFloors, "inspectShellCommand")
       : vi.spyOn(powerShellPolicy, "inspectPowerShellCommand");
-    inspect.mockReturnValue({ sensitive: null, exfiltration: null, analysisLimited: true });
+    const bashParse = vi.spyOn(shellPolicy, "parseShellCommand");
+    const floorParse = vi.spyOn(shellFloors, "parseShellFloorCommand");
+    const powerShellShape = vi.spyOn(powerShellPolicy, "powerShellRuleShape");
+    const destructive = vi.spyOn(riskClassifier, "isDestructiveShellText");
+    let parsesBeforeBudget = 0;
+    let floorParsesBeforeBudget = 0;
+    inspect.mockImplementation(() => {
+      parsesBeforeBudget = bashParse.mock.calls.length;
+      floorParsesBeforeBudget = floorParse.mock.calls.length;
+      return { sensitive: null, exfiltration: null, analysisLimited: true };
+    });
     try {
-      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
-      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 2 });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(runsSandboxed
+        ? { decision: "ask", layer: 2, forceModal: true }
+        : { decision: "ask", layer: 6 });
+      expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
+      expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
+      if (!runsSandboxed) expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 6 });
+      expect(bashParse).toHaveBeenCalledTimes(parsesBeforeBudget);
+      expect(floorParse).toHaveBeenCalledTimes(floorParsesBeforeBudget);
+      expect(powerShellShape).not.toHaveBeenCalled();
+      expect(destructive).not.toHaveBeenCalled();
     } finally {
       inspect.mockRestore();
+      bashParse.mockRestore();
+      floorParse.mockRestore();
+      powerShellShape.mockRestore();
+      destructive.mockRestore();
     }
   });
 });
