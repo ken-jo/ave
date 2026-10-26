@@ -1,16 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { Session } from "node:inspector";
 import { PermissionManager } from "../permission-manager.js";
 import { checkShellPermission } from "../../__tests__/support/permission-lane.js";
+import { permissionDecisionCostTargetMs } from "../../__tests__/support/permission-decision-cost.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
-const DECISION_COST_TARGET_MS = 40;
+
 let cwd: string;
 let stateRoot: string;
 let manager: PermissionManager;
@@ -104,34 +104,8 @@ const CASES: readonly TimingCase[] = [
   { name: "admitted-pipeline", command: pipelineCommand(100, 8_000), dialect: "bash", runsSandboxed: true, allowed: true, executableChars: 8_000, words: 400 },
 ];
 
-async function profileCommand(name: string, command: string, dialect: TimingCase["dialect"], runsSandboxed: boolean): Promise<void> {
-  const directory = process.env.AVE_DECISION_PROFILE_DIR;
-  if (directory === undefined) return;
-  const names = (process.env.AVE_DECISION_PROFILE_CASES ?? "plain,quoted-data").split(",");
-  if (!names.includes(name)) return;
-  const observations = Number(process.env.AVE_DECISION_PROFILE_OBSERVATIONS ?? 3);
-  if (!Number.isSafeInteger(observations) || observations < 1) throw new Error("Invalid profile observation count");
-  const session = new Session();
-  session.connect();
-  const post = (method: string, params: Record<string, unknown> = {}) => new Promise<Record<string, unknown>>((resolve, reject) => {
-    session.post(method, params, (error, result) => error === null ? resolve((result ?? {}) as Record<string, unknown>) : reject(error));
-  });
-  try {
-    await post("Profiler.enable");
-    await post("Profiler.setSamplingInterval", { interval: 100 });
-    await post("Profiler.start");
-    for (let observation = 0; observation < observations; observation += 1) {
-      checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-    }
-    const result = await post("Profiler.stop");
-    writeFileSync(join(directory, `${name}.cpuprofile`), JSON.stringify(result.profile));
-  } finally {
-    session.disconnect();
-  }
-}
-
 describe("bounded complete decision cost", () => {
-  it.each(CASES)("$name", async ({ name, command, dialect, runsSandboxed, allowed, words, executableChars, dataBytes }) => {
+  it.each(CASES)("$name", ({ name, command, dialect, runsSandboxed, allowed, words, executableChars, dataBytes }) => {
     expect(command.length).toBe(executableChars + (dataBytes ?? 0));
     const samples: number[] = [];
     const results = [];
@@ -142,12 +116,11 @@ describe("bounded complete decision cost", () => {
       results.push(result);
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
-    process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, executableChars, dataBytes, words, samples, median, target: DECISION_COST_TARGET_MS, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
+    process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, executableChars, dataBytes, words, samples, median, target: permissionDecisionCostTargetMs, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
     for (const result of results) expect(result).toMatchObject(allowed
       ? { decision: "allow", layer: 3 }
       : runsSandboxed ? { decision: "ask", layer: 2, forceModal: true } : { decision: "ask", layer: 6 });
-    await profileCommand(name, command, dialect, runsSandboxed);
-    expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
+    expect(median).toBeLessThan(permissionDecisionCostTargetMs);
   }, 60_000);
 
   it.each([false, true])("counts records across command boundaries nested=%s", (nested) => {
@@ -193,6 +166,6 @@ describe("bounded complete decision cost", () => {
     for (const result of results) expect(result).toMatchObject(allowed
       ? { decision: "allow", layer: 3 }
       : { decision: "ask", layer: 2, forceModal: true });
-    expect(median).toBeLessThan(DECISION_COST_TARGET_MS);
+    expect(median).toBeLessThan(permissionDecisionCostTargetMs);
   });
 });
