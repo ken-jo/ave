@@ -3,7 +3,7 @@ import type { Locale } from "@/lib/i18n";
 import { pkg } from "@/lib/marketplace";
 import { doc, more, page, type NavLink } from "@/lib/nav";
 import { Footer, Header } from "./chrome";
-import { HelloStage } from "./hello";
+import { FilesTab, HelloStage } from "./hello";
 import { DownloadGlyph } from "./icons";
 import { Frame } from "./media";
 
@@ -111,14 +111,14 @@ function Connectors({ locale }: { locale: Locale }) {
 
 /**
  * The work panel's Files tab, built at fidelity because no capture of it
- * exists yet (web/DESIGN.md, "Built fragments"). It shows the captures'
- * change: the json case added to src/export.js.
+ * exists yet (web/DESIGN.md, "Built fragments"): the session's files with
+ * what was done to each, and the captures' change opened below it.
  */
 function FilesFragment({ locale }: { locale: Locale }) {
   const label =
     locale === "ko"
-      ? "작업 패널의 파일 탭: src/export.js가 선택돼 있고 추가된 json 분기 줄이 강조된 모습"
-      : "The work panel's Files tab: src/export.js selected, the added json case highlighted";
+      ? "작업 패널의 파일 탭: 세션의 파일 src/export.js에 읽음과 씀이 표시되고, 아래에 추가된 json 분기 줄이 강조된 모습"
+      : "The work panel's Files tab: the session's file src/export.js marked Read and Written, with the added json case highlighted below";
   return (
     <div className="files-window" role="img" aria-label={label}>
       <div className="hw-tabs" aria-hidden="true">
@@ -127,21 +127,8 @@ function FilesFragment({ locale }: { locale: Locale }) {
         <span>Browser</span>
         <span>Terminal</span>
       </div>
-      <div className="files-frag" aria-hidden="true">
-        <ul>
-          <li>src/</li>
-          <li data-sel="">export.js</li>
-          <li>parse.js</li>
-          <li>test/</li>
-          <li>package.json</li>
-        </ul>
-        <pre>
-          {'switch (format) {\n  case "csv": return toCsv(trails);\n  case "md": return toTable(trails);\n'}
-          <span className="hw-add" data-on="">
-            {'  case "json": return JSON.stringify(trails);'}
-          </span>
-          {"}"}
-        </pre>
+      <div className="files-body" aria-hidden="true">
+        <FilesTab />
       </div>
     </div>
   );

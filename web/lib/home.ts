@@ -172,7 +172,7 @@ const en: HomeCopy = {
     {
       id: "connect",
       title: "Bring in mail, calendars and meetings",
-      body: "Connect Gmail, Calendar, Docs and Sheets, Microsoft 365, Slack, Notion or Todoist, and your agent can read them. Plugins add more, like recording and summarizing meetings.",
+      body: "Connect Gmail, Calendar, Docs and Sheets, Microsoft 365, Slack, Notion or Todoist, and your agent can read them. Plugins add more, like recording and summarizing meetings, or finding your own documents.",
       pic: { k: "marketplace-add", alt: "The Marketplace tab’s Add menu: Add marketplace, Install from Git URL or folder, Add MCP server, Create a plugin, Install from file" },
     },
   ],

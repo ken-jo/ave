@@ -244,8 +244,8 @@ soon as one exists.
 
 | Fragment | Where | Replaced by |
 | --- | --- | --- |
-| The hello workspace (sidebar, conversation, the Files, Preview and Terminal tabs of the work panel) | Home hero, `components/hello.tsx` | Not replaced: it is the performed demo. A Korean-UI capture set would let the Korean page show Korean labels. |
-| The Files tab with `src/export.js` | Home files section ("See every file it touched"), `components/home.tsx` | A capture of the work panel's Files tab |
+| The hello workspace (sidebar, one tile with its header and side panel button, conversation, the Files, Browser and Terminal tabs of the work panel) | Home hero, `components/hello.tsx` | Not replaced: it is the performed demo. A Korean-UI capture set would let the Korean page show Korean labels. |
+| The Files tab: the session's file `src/export.js` marked Read and Written (`chatPreviewRail.fileOperation`), opened below | Home files section ("See every file it touched"), `components/home.tsx` | A capture of the work panel's Files tab |
 
 ## Motion
 
@@ -260,10 +260,17 @@ soon as one exists.
     - **The hello workspace** (`HelloStage`) plays while at least a quarter of
       it is on screen, then loops:
       1. `hello` is typed and Ave answers.
-      2. The task is typed and the Work toggle opens the work panel.
-      3. Each tool call (`browser_snapshot`, Edit file, Terminal command)
-         switches the panel's tab and acts in it. Preview rows are read, the
-         json line is wiped in, and the test lines print.
+      2. The task is typed. The tile header's side panel button lights and
+         the work panel opens, docked beside the transcript when the tile has
+         room and floating over it inside the tile when it has not. The app
+         is one responsive shell (#255), so there is no chat/work mode
+         switch; `test/scripts/web-site-contract.test.ts` keeps the retired
+         mode names and the switch out of every component.
+      3. Each tool call switches the panel's tab and acts in it. The calls
+         carry the app's display names: "browser snapshot" in Browser,
+         "Edit file" in Files, and "terminal run" in Terminal. The trail rows
+         are read, the json line is wiped in and the file is marked Written,
+         and the test lines print.
       4. The group collapses to "Work complete" and Ave's report.
 
       Entrances use 460 ms `cubic-bezier(.32,.72,0,1)` and the panel uses
@@ -272,8 +279,8 @@ soon as one exists.
 
     Without script, and with reduced motion, the workspace shows the finished
     session. On narrow screens the finished
-    workspace shows the conversation; while it plays, the work panel takes
-    the column.
+    workspace shows the conversation; while it plays, the work panel floats over
+    the transcript.
 
 ## Copy
 
