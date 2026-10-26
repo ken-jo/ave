@@ -1660,6 +1660,14 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
   covers only the `srt-win` Rust sources.
 
+Session and per-command grants enter policy through the same runtime normalizer.
+Each policy composition expands leading `~` and, on Windows, supported profile
+environment references once before deriving control-file denies, filtering grants,
+or checking machine-root and private-helper overlaps. Downstream policy uses the
+expanded absolute paths; stored settings retain the original diagnostic spelling.
+Thus `~/x` protects the controls inside the actual home subtree on every platform,
+and a Windows whole-home grant cannot evade a refusal by using `~` or `%USERPROFILE%`.
+
 On Windows, filesystem lists are expanded once before runtime handoff: denies cover both the alias and the canonical target present at expansion, while grants cover only that target; a new glob match created after that expansion is not stamped by this wrap. Every pinned literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` forms are refused. The runtime normalizes each entry again (environment references, `~`, prefix, realpath), so an entry is handed off only when the normalized string, before any existence check, exactly matches a spelling Ave checked, with no case folding; otherwise the configuration is refused whether or not the target exists. A grant whose target is missing is dropped. After handoff, the runtime's realpath and the native ACL write both follow a link swapped in later; Ave cannot close that without identity-carrying native calls.
 
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.

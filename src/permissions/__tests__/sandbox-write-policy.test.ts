@@ -5,7 +5,7 @@ import { dirname, join, sep } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildMandatorySandboxWritePolicy, findNonRepositoryWriteRoots, isGrantPathWithin, isSandboxGitMetadataEntry, SANDBOX_GIT_SCAN_DEPTH, snapshotSandboxGitControls } from "../sandbox-write-policy.js";
 import { PROTECTED_ROOT_ENTRIES } from "../sensitive-paths.js";
-import { getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
+import { buildPerCommandSandboxCustomConfig, buildSandboxConfig, getDefaultSensitiveWriteDenyPaths } from "../asrt-sandbox.js";
 import { permissionSettingsPath } from "../permission-settings-store.js";
 import { egressGrantFilePath } from "../egress-grants.js";
 import { userApprovalFilePath } from "../user-approval-store.js";
@@ -54,6 +54,21 @@ describe("mandatory sandbox control-file writes", () => {
       if (entry === ".git" && process.platform === "linux") expect(denies).not.toContain(join(base, entry));
       else expect(denies).toContain(join(base, entry));
     }
+  });
+
+  it.each(["darwin", "linux"] as const)("expands home grants before deriving controls on %s", (platform) => {
+    withPlatform(platform, () => {
+      const project = join(root, "project");
+      const policies = [
+        buildSandboxConfig({ allowWrite: ["~/project"] }).filesystem,
+        buildPerCommandSandboxCustomConfig({ allowWrite: ["~/project"] })!.filesystem!,
+      ];
+      for (const policy of policies) {
+        expect(policy.allowWrite).toEqual([project]);
+        expect(policy.denyWrite).toContain(join(project, ".bashrc"));
+        expect(policy.denyWrite).not.toContain(join("~", "project", ".bashrc"));
+      }
+    });
   });
 
   it("hands only the .git marker and its children to the Git control policy", () => {

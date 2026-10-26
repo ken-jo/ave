@@ -155,7 +155,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
-      allowWrite: [join(process.env.HOME!, ".stamp-fixture")],
+      allowWrite: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture"],
       denyRead: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture", glob],
     })).rejects.toThrow("Fixture initialization reached");
     expect(initialize).toHaveBeenCalledOnce();
@@ -166,14 +166,30 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(paths).not.toContain(glob);
   });
 
-  it("refuses a home-spelled write grant whose control-file denies would not be plain drive paths", async () => {
+  it("accepts a home-spelled write grant with control-file denies under the fixture home", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Fixture initialization reached"));
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await expect(initializeAsrtSandbox({
+      windows: { externalConfinement: true },
+      allowWrite: ["~/.stamp-fixture"],
+    })).rejects.toThrow("Fixture initialization reached");
+    expect(initialize).toHaveBeenCalledOnce();
+    const filesystem = initialize.mock.calls[0]![0].filesystem;
+    const controls = runtimeDenyWrite(filesystem);
+    expect(controls).toContain(join(process.env.HOME!, ".stamp-fixture", ".bashrc"));
+    expect(controls).not.toContain(resolve("~/.stamp-fixture", ".bashrc"));
+  });
+
+  it.each(["%UNEXPANDED%", "PROGRA~1", "CON", "document."])("refuses a home grant whose expanded control paths still contain %s", async (component) => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
-      allowWrite: ["~/.stamp-fixture"],
+      allowWrite: [`~/.stamp-fixture/${component}`],
     })).rejects.toThrow(/not a plain drive path/);
     expect(initialize).not.toHaveBeenCalled();
   });

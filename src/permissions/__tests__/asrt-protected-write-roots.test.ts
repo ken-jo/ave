@@ -5,6 +5,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpath
 import { tmpdir, userInfo } from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import { derivePluginChildEnvelope } from "../../plugins/isolation/out-of-process-plugin.js";
@@ -159,7 +160,7 @@ describe("the shared layer withholds grants under the protected floor", () => {
     const readFor = (floorPierces?: string[]) => buildPerCommandSandboxCustomConfig({
       allowRead: grants, denyRead: getDefaultSensitiveReadDenyPaths(), ...(floorPierces ? { floorPierces } : {}),
     })?.filesystem?.allowRead;
-    expect(readFor([...sessions]), "the shell").toEqual([...sessions]);
+    expect(readFor([...sessions]), "the shell").toEqual(sessions.map(path => normalizePathForSandbox(path)));
     expect(readFor([certs]), "a plugin that declared certs").toEqual([certs, join(certs, "corp")]);
     expect(readFor(), "a bundled hook or MCP stdio server").toEqual([]);
     expect(() => readFor([join(root, ".ave", "secrets")])).toThrow(/not a read the host lets re-open/);

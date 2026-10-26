@@ -1774,10 +1774,12 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
-  it.each(["~", "~/.config/project", "~\\.config\\project"])("Windows: raw home grant %s keeps the parent deny", (grant) => {
+  it.each(["~/.config/project", "~\\.config\\project"])("Windows: expanded home grant %s keeps the parent deny", (grant) => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-windeny-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("HOME", profile);
     setProcessPlatform("win32");
     try {
       const target = join(profile, ".config");
@@ -1794,6 +1796,59 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.runIf(ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32").each(["~/x", "%USERPROFILE%\\x"])("Windows: expanded write grant %s protects home controls", (grant) => {
+    const profile = homedir();
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("HOME", profile);
+    try {
+      const root = join(profile, "x");
+      const configs = [
+        buildSandboxConfig({ windows: { externalConfinement: true }, allowWrite: [grant], allowRead: [grant] }).filesystem,
+        buildPerCommandSandboxCustomConfig({ allowWrite: [grant], allowRead: [grant] })!.filesystem!,
+      ];
+      for (const config of configs) {
+        expect(config.allowWrite).toEqual([root]);
+        expect(bare(config.allowRead ?? []).map(path => resolve(path))).toEqual([root]);
+        const denies = bare(config.denyWrite ?? []);
+        expect(denies).toContain(join(root, ".bashrc"));
+        expect(denies).not.toContain(join(grant, ".bashrc"));
+        expect(denies).not.toContain(resolve(grant, ".bashrc"));
+      }
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.runIf(ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32").each(["~", "%USERPROFILE%"])("Windows: a whole-home write grant %s is refused before narrowing", (grant) => {
+    const profile = homedir();
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("HOME", profile);
+    vi.stubEnv("ProgramData", join(profile, "machine-root"));
+    try {
+      expect(() => buildSandboxConfig({ windows: { externalConfinement: true }, allowWrite: [grant] }))
+        .toThrow(/Windows write grant .* contains machine root/);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it.runIf(ORIGINAL_PLATFORM_FOR_DENY_TEST === "win32").each(["allowRead", "allowWrite"] as const)("Windows: expanded %s cannot overlap a private helper image", (access) => {
+    buildSandboxConfig({});
+    const directory = srtWinPrivateDirectories()[0]!;
+    const profile = dirname(directory);
+    const home = vi.spyOn(os, "homedir").mockReturnValue(profile);
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("HOME", profile);
+    try {
+      expect(() => buildSandboxConfig({ [access]: [`~/${basename(directory)}`] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
+    } finally {
+      home.mockRestore();
+      vi.unstubAllEnvs();
     }
   });
 
