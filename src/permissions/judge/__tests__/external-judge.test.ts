@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -186,8 +186,12 @@ describe.skipIf(process.platform === "win32")("ExternalJudge — command transpo
     const controller = new AbortController();
     const pending = new ExternalJudge({ command: [path] }).judge(judgeRequest(), controller.signal);
     const pidFile = join(dir, "child.pid");
-    for (let i = 0; i < 100 && !existsSync(pidFile); i++) await new Promise((r) => setTimeout(r, 20));
-    const grandchild = Number(readFileSync(pidFile, "utf8").trim());
+    // The redirection creates the file before echo writes it; wait for a positive PID.
+    const grandchild = await vi.waitFor(() => {
+      const pid = Number(existsSync(pidFile) ? readFileSync(pidFile, "utf8").trim() : "");
+      expect(Number.isInteger(pid) && pid > 0).toBe(true);
+      return pid;
+    }, { timeout: 2_000 });
     controller.abort(new Error("stop"));
     await expect(pending).rejects.toThrow("stop");
     let alive = true;
