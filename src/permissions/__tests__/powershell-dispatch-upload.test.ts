@@ -43,7 +43,7 @@ describe("static dispatch and remote-write boundaries", () => {
   ])("declines runtime dispatch without inspecting its payload: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
     if (command.includes("~/.ssh/config")) expect(result).toMatchObject({ outcome: "visible-floor" });
-    else if (command === "npm exec helper" || command === "bash script.sh") {
+    else if (command === "bash script.sh") {
       expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
     } else expect(result).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
@@ -97,8 +97,7 @@ describe("static dispatch and remote-write boundaries", () => {
     "Export-Custom UnknownProvider::out",
   ])("declines an unresolved destination: %s", (command) => {
     const result = inspectPowerShellCommand(command, CWD);
-    if (command.includes("UnknownProvider::")) expect(result.outcome).toBe("static-complete");
-    else expect(result).toMatchObject({ outcome: "unproven" });
+    expect(result).toMatchObject({ outcome: "unproven" });
   });
 
   it.each([
@@ -117,7 +116,7 @@ describe("static dispatch and remote-write boundaries", () => {
     if (command === String.raw`Copy-Item '\\host\share\notes.txt' notes.txt`) {
       expect(result).toMatchObject({ outcome: "visible-floor", sensitive: expect.stringMatching(/UNC/i) });
     } else if (command.includes("$_") || command.includes("$env:") || command.includes("(('a','b')")
-      || command.startsWith("'hello' |")) expect(result.outcome).toBe("unproven");
+      || command.startsWith("'hello' |") || ["dotnet build", "cargo test", "Unknown-Helper", "robocopy . backup notes.txt", "xcopy notes.txt backup.txt"].includes(command)) expect(result.outcome).toBe("unproven");
     else expect(result).toMatchObject({ outcome: "static-complete", sensitive: null, exfiltration: null });
   });
 

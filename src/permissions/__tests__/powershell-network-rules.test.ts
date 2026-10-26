@@ -149,12 +149,14 @@ describe("PowerShell rule identity keeps native arguments and command names lite
     ["git log -s", "git log -S"],
     ["java -Dfoo=SAFE Main", "java -Dfoo=safe Main"],
     ["java -Dfoo=SAFE Main", "java -dfoo=SAFE Main"],
-  ])("a rule for %s does not run %s", (allowed, other) => {
-    const rule = buildShellRuleApproval("powershell", allowed, dir, { allow: true, deny: true }).exactRule;
-    expect(rule).toBe(`PowerShell(${allowed})`);
-    manager.setRules(([{ pattern: rule!, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expect(powershell(allowed, false)).toMatchObject({ decision: "allow", layer: 3 });
-    expect(powershell(other, false)).toMatchObject({ decision: "ask" });
+  ])("keeps %s and %s as distinct raw keys but proves neither unsupported argv", (allowed, other) => {
+    const rule = `PowerShell(${allowed})`;
+    expect(normalizeRuleSpecifierInput(rule)).toBe(rule);
+    expect(normalizeRuleSpecifierInput(`PowerShell(${other})`)).not.toBe(rule);
+    expect(buildShellRuleApproval("powershell", allowed, dir, { allow: true, deny: true }).exactRule).toBeNull();
+    manager.setRules(([{ pattern: rule, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
+    expect(powershell(allowed, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(powershell(other, false)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it("preserves a known cmdlet's parameter text and the value after the colon", () => {
