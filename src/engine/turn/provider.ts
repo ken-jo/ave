@@ -90,14 +90,17 @@ export function providerMatchesActiveChatRuntime(
   return provider.subscriptionRuntime?.provider === activeChatRuntime.provider;
 }
 
-export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
+export function buildProvider(
+  deps: ConversationLoopDeps,
+  { fallbackEnabled = true }: { fallbackEnabled?: boolean } = {},
+): LLMProvider | null {
     const llmSettings = deps.settingsService.get("llm");
     const activeChatRuntime = llmSettings.activeChatRuntime;
     if (activeChatRuntime?.kind === "subscription") {
       try {
         const selection = selectionWithModelOverride(activeChatRuntime, deps.modelOverride);
-        // Validate profile candidates against the live subscription catalog; retain only the parent selection as fallback.
-        const fallbackSelection = selection.model === activeChatRuntime.model
+        // Validate model candidates against the live catalog; the caller controls parent-model fallback.
+        const fallbackSelection = !fallbackEnabled || selection.model === activeChatRuntime.model
           ? undefined
           : activeChatRuntime;
         const candidate = fallbackSelection
@@ -187,7 +190,7 @@ export function buildProvider(deps: ConversationLoopDeps): LLMProvider | null {
         ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
         ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
       });
-      const chain = llmSettings.fallbackChain
+      const chain = (fallbackEnabled ? llmSettings.fallbackChain : [])
         .filter((e) =>
           e.provider &&
           e.model &&

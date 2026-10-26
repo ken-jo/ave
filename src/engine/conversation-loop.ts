@@ -331,7 +331,8 @@ export class ConversationLoop {
     if (!modelOverride) {
       return this.generateText(prompt, systemPrompt, abortSignal, { ...options, modelOverride: this.deps.modelOverride });
     }
-    const provider = buildProvider({ ...this.deps, modelOverride });
+    // Explicit recap selection permits retries, but never substitution by a chat fallback route.
+    const provider = buildProvider({ ...this.deps, modelOverride }, { fallbackEnabled: false });
     return generateText(provider, this.deps.settingsService, prompt, systemPrompt, abortSignal, { ...options, modelOverride });
   }
 

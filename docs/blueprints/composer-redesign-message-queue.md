@@ -26,7 +26,7 @@ full-width band above the composer in `ChatComposerDock.tsx` (main chat) and
 ## Message queue semantics
 
 The queue is a pool of messages the user typed while a turn was running. It is
-not a task list: items have no progress state. Each composer surface owns its
+not a task list: rows show only their delivery state. Each composer surface owns its
 own `MessageQueueStore` (`src/ui/renderer/state/message-queue-store.ts`); the
 behavior is wired by `useMessageQueue` (`src/ui/renderer/hooks/use-message-queue.ts`).
 
@@ -40,7 +40,7 @@ Store rules:
 - The store is in memory and is cleared when the session changes.
 - Item actions in the panel: toggle selection, edit (double-click; empty text
   removes the row), move up/down, send now, remove. Moves preserve selection,
-  identity and expiration, and cannot cross a handed-off row.
+  identity and expiration, and cannot cross a reserved or handed-off row.
 
 `formatQueueInject` turns items into one user message: a single item is sent as
 is; two or more are wrapped as a header line (`messageQueueStore.queueInjectHeader`)
@@ -60,9 +60,13 @@ On each `tool_end` of the current turn, surfaces with a guide channel (the
 main chat) hand all pending items to the engine through the guide inject
 path:
 
-- Items stay on screen until delivery is confirmed. On success they are marked
-  handed-off (`markHandedOff`, matched by id and text so a row edited during
-  the call stays pending).
+- Before awaiting acceptance, `reservePending` assigns the current batch a
+  request-owned reservation. Reserved rows stay visible with a sending indicator;
+  editing, removal, selection changes, reordering and send-now are disabled.
+- Acceptance marks only that reservation's rows handed-off. Refusal or error
+  releases only the matching reservation; a late reply cannot claim rows in a
+  replacement session. Reservation and release preserve identity, order,
+  selection and expiration.
 - `guidance_injected` clears the delivered rows (`clearDelivered`, containment
   match because the engine may merge several hand-offs into one block).
 - `guidance_dropped` returns handed-off rows to pending (`releaseHandedOff`) so
@@ -77,7 +81,7 @@ The side chat has no guide channel; its queue drains only at turn end.
 
 ### Turn-end auto-send
 
-On `done` for the current turn, pending (not handed-off) items are removed and
+On `done` for the current turn, pending (neither reserved nor handed-off) items are removed and
 sent as a new turn with `inputOrigin: "queue-auto"`:
 
 - A re-entrancy guard (`queueAutoInflightRef`) ignores further `done` events

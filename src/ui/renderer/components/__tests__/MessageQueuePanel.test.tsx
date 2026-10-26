@@ -121,3 +121,42 @@ describe("MessageQueuePanel colour contract", () => {
     expect(onSendNow).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("MessageQueuePanel guide reservation", () => {
+  it("shows progress before acceptance and prevents pointer and keyboard mutation", () => {
+    const { store, onSendNow } = renderQueuePanel();
+    let reservation!: NonNullable<ReturnType<MessageQueueStore["reservePending"]>>;
+    act(() => { reservation = store.reservePending()!; });
+    const rows = screen.getAllByTestId("message-queue-row");
+    expect(screen.getAllByTestId("message-queue-row-handoff-in-progress")).toHaveLength(2);
+    expect(screen.queryByTestId("message-queue-row-handed-off")).toBeNull();
+    expect(screen.queryByTestId("message-queue-row-send-now-button")).toBeNull();
+    expect(screen.queryByTestId("message-queue-row-move-up")).toBeNull();
+    expect(rows[0]).toHaveAttribute("aria-busy", "true");
+    fireEvent.keyDown(rows[0], { key: "ArrowDown", altKey: true });
+    fireEvent.keyDown(rows[0], { key: "Delete" });
+    fireEvent.keyDown(rows[0], { key: " " });
+    fireEvent.doubleClick(screen.getAllByTestId("message-queue-row-text")[0]);
+    expect(screen.queryByTestId("message-queue-row-edit")).toBeNull();
+    expect(store.getItems().map((item) => item.text)).toEqual(["first queued message", "second queued message"]);
+    expect(store.hasSelected()).toBe(false);
+    expect(onSendNow).not.toHaveBeenCalled();
+    act(() => store.settleReservation(reservation.id));
+    expect(screen.queryByTestId("message-queue-row-handoff-in-progress")).toBeNull();
+    expect(screen.getAllByTestId("message-queue-row-send-now-button")).toHaveLength(2);
+  });
+
+  it("keeps a pending neighbour from crossing a reservation and changes the badge only after acceptance", () => {
+    const { store } = renderQueuePanel();
+    const second = store.takeOne(store.getItems()[1].id)!;
+    let reservation!: NonNullable<ReturnType<MessageQueueStore["reservePending"]>>;
+    act(() => {
+      reservation = store.reservePending()!;
+      store.add(second.text);
+    });
+    expect(screen.getByTestId("message-queue-row-move-up")).toBeDisabled();
+    act(() => store.settleReservation(reservation.id, "first queued message"));
+    expect(screen.queryByTestId("message-queue-row-handoff-in-progress")).toBeNull();
+    expect(screen.getByTestId("message-queue-row-handed-off")).toBeVisible();
+  });
+});
