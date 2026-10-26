@@ -1,4 +1,3 @@
-import { protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
 import { isDocumentOpenMode, type DocumentSettings } from "../shared/document-settings.js";
 import {
   DEFAULT_CORP_CA_COMMON_NAME,
@@ -922,7 +921,6 @@ export class SettingsService {
     const dir = resolve(options.userDataPath);
     mkdirSync(dir, { recursive: true });
     this.settingsPath = settingsFilePath(options.userDataPath);
-    protectRuntimeSettingsPath(this.settingsPath);
     this.secretsPath = resolve(dir, "ave-secrets.json");
     this.secretStore = new SecretDocumentStore({
       path: this.secretsPath,

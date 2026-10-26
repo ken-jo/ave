@@ -23,7 +23,7 @@ beforeEach(() => {
   parser.parse.mockReset().mockResolvedValue({ format: "csv", sheetNames: ["Sheet1"], totalSheets: 1,
     sheetsTruncated: false, sheet: { index: 0, name: "Sheet1", rows: [["a", "b"], ["c", "d"]],
       firstRow: 0, firstColumn: 0, totalRows: 2, totalColumns: 2,
-      rowsTruncated: false, columnsTruncated: false, cellsTruncated: false,
+      rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [],
       sourceRange: { firstRow: 0, firstColumn: 0, totalsExact: true } } });
   parser.release.mockReset();
   parser.acquire.mockReset().mockImplementation(async (_owner: string, controller: AbortController) => ({

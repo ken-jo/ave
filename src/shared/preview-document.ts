@@ -138,6 +138,8 @@ export interface PreviewTableSheet {
   columnsTruncated: boolean;
   /** At least one cell was cut to `maxCellChars`. */
   cellsTruncated: boolean;
+  /** Absolute source coordinates of returned cells shortened by the parser. */
+  clippedCells: { row: number; column: number }[];
 }
 
 export interface PreviewTableDocument {

@@ -24,6 +24,17 @@ afterAll(async () => { await cleanupTmpDir(directory); await cleanupTmpDir(runti
 const context = () => ({ cwd: directory, extraAllowedDirectories: [], headless: true, metadata: { sessionId: "document-runtime" } });
 
 describe("registered document reader child integration", () => {
+  it.each([{ suffix: "😀tail", clipped: true }, { suffix: "…", clipped: false }])(
+    "retains cell clipping provenance through the actual child ($clipped)", async ({ suffix, clipped }) => {
+      const path = join(directory, "clipping.csv");
+      writeFileSync(path, `h\n${"a".repeat(1999)}${suffix}`);
+      const result = await new ReadDocumentTool().execute({ path, selection: {
+        kind: "sheet", rowOffset: 1, columnOffset: 0, rowCount: 1, columnCount: 1,
+      } }, context());
+      expect(result.isError).toBe(false);
+      const value = JSON.parse(result.output);
+      expect(value.truncation.clippedCells).toEqual(clipped ? [{ row: 1, column: 0 }] : []);
+    });
   it("reads a distant delimited window through the child and preserves complete model context", async () => {
     const path = join(directory, "records.csv");
     writeFileSync(path, Array.from({ length: 10020 }, (_, row) => `${row},"cell,${row}"`).join("\n"));

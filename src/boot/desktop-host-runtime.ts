@@ -20,9 +20,11 @@ import { peekFloatingDock } from "./steps/plugin-runtime/host-api-factory.js";
 import { pickFoldersForPlugin } from "../main/host-api/pick-folders.js";
 import type { BootHost } from "./host-runtime.js";
 import { relaunchDesktopHost } from "./desktop-relaunch.js";
+import { settingsFilePath } from "../data/settings-store.js";
+import { protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
 
 export function createDesktopBootHost(projectRoot: string): BootHost {
-  return {
+  const host: BootHost = {
     userDataPath: app.getPath("userData"),
     resourcePath: app.isPackaged ? process.resourcesPath : join(projectRoot, "resources"),
     systemLocale: app.getPreferredSystemLanguages()[0] ?? "en",
@@ -91,4 +93,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
       },
     },
   };
+  const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));
+  host.close = async () => { releaseSettingsPath(); };
+  return host;
 }

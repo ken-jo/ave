@@ -9,7 +9,7 @@ import { formatDocumentToolOutput } from "../document-tool-output.js";
 function table(rows: string[][], firstRow = 0, firstColumn = 0): PreviewTableDocument {
   return { format: "xlsx", sheetNames: ["Sheet"], totalSheets: 1, sheetsTruncated: false,
     sheet: { index: 0, name: "Sheet", rows, firstRow, firstColumn, totalRows: rows.length,
-      totalColumns: rows[0]?.length ?? 0, rowsTruncated: false, columnsTruncated: false, cellsTruncated: false } };
+      totalColumns: rows[0]?.length ?? 0, rowsTruncated: false, columnsTruncated: false, cellsTruncated: false, clippedCells: [] } };
 }
 
 function page(text: string): PreviewPageDocument {
@@ -115,6 +115,7 @@ describe("document context output", () => {
   it("keeps empty windows successful and records parser clipping separately", () => {
     const document = table([[`${"a".repeat(2000)}…`]]);
     document.sheet.cellsTruncated = true;
+    document.sheet.clippedCells = [{ row: 0, column: 0 }];
     const value = JSON.parse(formatDocumentToolOutput("/book.xlsx", document).output);
     expect(value.truncation).toMatchObject({ context: false, parser: true, clippedCells: [{ row: 0, column: 0 }] });
     const empty = JSON.parse(formatDocumentToolOutput("/book.xlsx", document,

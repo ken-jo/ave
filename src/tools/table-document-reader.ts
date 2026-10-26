@@ -125,7 +125,7 @@ async function parseDelimited(
 ): Promise<PreviewTableSheet> {
   const firstRow = window?.rowOffset ?? 0;
   const firstColumn = window?.columnOffset ?? 0;
-  const kept: { cells: string[]; clipped: boolean }[] = [];
+  const kept: { cells: string[]; clippedColumns: number[] }[] = [];
   let totalRows = 0;
   let totalColumns = 0;
   let totalsExact = true;
@@ -243,13 +243,13 @@ async function parseDelimited(
             return;
           }
           if (totalRows <= firstRow) return;
-          let clipped = false;
-          const cells = row.slice(firstColumn, firstColumn + (window?.columnCount ?? limits.maxColumns)).map((cell) => {
+          const clippedColumns: number[] = [];
+          const cells = row.slice(firstColumn, firstColumn + (window?.columnCount ?? limits.maxColumns)).map((cell, column) => {
             const value = clipCell(cell, limits);
-            clipped ||= value.clipped;
+            if (value.clipped) clippedColumns.push(firstColumn + column);
             return value.text;
           });
-          kept.push({ cells, clipped });
+          kept.push({ cells, clippedColumns });
         },
         complete: () => finish(),
         error: (error) => finish(error),
@@ -260,6 +260,8 @@ async function parseDelimited(
   });
   const width = window ? Math.min(window.columnCount, Math.max(0, totalColumns - firstColumn)) : Math.min(totalColumns, limits.maxColumns);
   const rows = (width === 0 ? [] : kept).map(({ cells }) => (cells.length < width ? [...cells, ...Array<string>(width - cells.length).fill("")] : cells));
+  const clippedCells = kept.slice(0, rows.length).flatMap(({ clippedColumns }, row) =>
+    clippedColumns.map((column) => ({ row: firstRow + row, column })));
   return {
     index: 0,
     name: format.toUpperCase(),
@@ -271,7 +273,8 @@ async function parseDelimited(
     totalColumns,
     rowsTruncated: totalRows > rows.length,
     columnsTruncated: totalColumns > (rows.length === 0 ? 0 : width),
-    cellsTruncated: kept.some((row) => row.clipped),
+    cellsTruncated: clippedCells.length > 0,
+    clippedCells,
   };
 }
 
@@ -328,7 +331,7 @@ function parseWorkbook(
   let firstColumn = window?.columnOffset ?? 0;
   let totalRows = 0;
   let totalColumns = 0;
-  let cellsTruncated = false;
+  const clippedCells: PreviewTableSheet["clippedCells"] = [];
   let sourceRange = { firstRow: 0, firstColumn: 0, totalsExact: true };
   let returnedWidth = 0;
   if (shown && full) {
@@ -362,12 +365,12 @@ function parseWorkbook(
       blankrows: true,
       range,
     }) : [];
-    rows = raw.map((row) => {
+    rows = raw.map((row, r) => {
       const cells: string[] = [];
       for (let c = 0; c < width; c += 1) {
         const value = row[c];
         const clipped = clipCell(value === undefined || value === null ? "" : String(value), limits);
-        cellsTruncated ||= clipped.clipped;
+        if (clipped.clipped) clippedCells.push({ row: firstRow + r, column: firstColumn + c });
         cells.push(clipped.text);
       }
       return cells;
@@ -388,7 +391,8 @@ function parseWorkbook(
       ...(window ? { sourceRange } : {}),
       rowsTruncated: totalRows > rows.length,
       columnsTruncated: totalColumns > (rows.length === 0 ? 0 : returnedWidth),
-      cellsTruncated,
+      cellsTruncated: clippedCells.length > 0,
+      clippedCells,
     },
   };
 }

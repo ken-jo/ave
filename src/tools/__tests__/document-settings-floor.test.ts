@@ -9,9 +9,15 @@ import { unavailableSecretEncryption } from "../../__tests__/support/host-runtim
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { validateShellCommandPathPolicy } from "../shell-path-policy.js";
 import { shellQuote } from "../../lib/shell-resolver.js";
+import { createSensitivePathMatcher, protectRuntimeSettingsPath } from "../../permissions/sensitive-paths.js";
 
 let directory: string;
 let path: string;
+const releases: Array<() => void> = [];
+function protect(path: string): void {
+  const release = protectRuntimeSettingsPath(path);
+  if (typeof release === "function") releases.push(release);
+}
 const original = JSON.stringify({ documents: { openMode: "link" }, chat: { autoCompact: true } });
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), "document-settings-floor-"));
@@ -20,7 +26,10 @@ beforeEach(() => {
   path = join(userDataPath, "ave-settings.json");
   writeFileSync(path, original);
 });
-afterEach(async () => { await cleanupTmpDir(directory); });
+afterEach(async () => {
+  for (const release of releases.splice(0)) release();
+  await cleanupTmpDir(directory);
+});
 
 describe("document settings user-only write floor", () => {
   it("protects the entire file with the existing sensitive-path policy", () => {
@@ -55,6 +64,7 @@ describe("document settings user-only write floor", () => {
     const settings = new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
     await settings.patch({ documents: { openMode: "link" } });
     const relocated = settingsFilePath(userDataPath);
+    protect(relocated);
     const before = readFileSync(relocated, "utf8");
     const context = { cwd: directory, extraAllowedDirectories: [], metadata: {} };
     expect(ensureFileAccess(relocated, context, "read")).toBeNull();
@@ -76,6 +86,49 @@ describe("document settings user-only write floor", () => {
     const edited = await new EditFileTool().execute({ path: relocated, oldText: '"link"', newText: '"direct"' }, context);
     expect(edited).toMatchObject({ isError: true, output: expect.stringContaining("Sensitive path:") });
     expect(readFileSync(relocated, "utf8")).toBe(before);
+  });
+
+  it("protects only the settings file and its immediate directory", () => {
+    const parent = join(directory, "profile");
+    const settingsPath = settingsFilePath(parent);
+    mkdirSync(parent);
+    protect(settingsPath);
+    const context = { cwd: directory, extraAllowedDirectories: [], metadata: {} };
+    expect(ensureFileAccess(directory, context, "write")).toBeNull();
+    expect(ensureFileAccess(parent, context, "write")).toMatchObject({ isError: true });
+    expect(ensureFileAccess(settingsPath, context, "write")).toMatchObject({ isError: true });
+    expect(ensureFileAccess(join(parent, "sibling.txt"), context, "write")).toBeNull();
+    for (const command of ["cp a.txt .", "mkdir newdir", "rm -rf ./build", "git clean -fdx"]) {
+      expect(validateShellCommandPathPolicy(command, directory, directory, [], false,
+        { dialect: "bash", environment: { HOME: directory, PWD: directory } })).toBeNull();
+    }
+  });
+
+  it("does not register protection when constructing standalone settings stores", () => {
+    const userDataPath = join(directory, "standalone-profile");
+    new SettingsService({ userDataPath, encryption: unavailableSecretEncryption });
+    expect(ensureFileAccess(settingsFilePath(userDataPath),
+      { cwd: directory, extraAllowedDirectories: [], metadata: {} }, "write")).toBeNull();
+  });
+
+  it("releases scoped registrations without releasing another live owner", () => {
+    const settingsPath = settingsFilePath(join(directory, "scoped-profile"));
+    const match = createSensitivePathMatcher("write");
+    const first = protectRuntimeSettingsPath(settingsPath);
+    const second = protectRuntimeSettingsPath(settingsPath);
+    if (typeof first === "function") releases.push(first);
+    if (typeof second === "function") releases.push(second);
+    expect(typeof first).toBe("function");
+    expect(typeof second).toBe("function");
+    expect(match(settingsPath)).toBe("runtime-settings-file");
+    const context = { cwd: directory, extraAllowedDirectories: [], metadata: {} };
+    first();
+    first();
+    expect(ensureFileAccess(settingsPath, context, "write")).toMatchObject({ isError: true });
+    second();
+    expect(match(settingsPath)).toBeNull();
+    expect(ensureFileAccess(settingsPath, context, "write")).toBeNull();
+    expect(ensureFileAccess(join(directory, "scoped-profile"), context, "write")).toBeNull();
   });
 
 });

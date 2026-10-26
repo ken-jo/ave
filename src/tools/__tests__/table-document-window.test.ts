@@ -17,6 +17,19 @@ function sparseWorkbook(bookType: XLSX.BookType): Buffer {
 }
 
 describe("source table windows", () => {
+  it.each(["xlsx", "biff8", "ods"] as const)("tracks clipped workbook coordinates in %s", async (bookType) => {
+    const maxCellChars = 20;
+    const book = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(book, XLSX.utils.aoa_to_sheet([
+      ["header"], ["unchanged", `${"a".repeat(maxCellChars)}tail`, "a".repeat(maxCellChars)],
+    ]), "Cells");
+    const bytes = XLSX.write(book, { type: "buffer", bookType }) as Buffer;
+    const window = { rowOffset: 1, columnOffset: 1, rowCount: 1, columnCount: 2 };
+    const document = await parseTableDocument(bytes, bookType === "biff8" ? "xls" : bookType, 0,
+      { ...PREVIEW_DOCUMENT_LIMITS, maxCellChars }, window);
+    expect(document.sheet.clippedCells).toEqual([{ row: 1, column: 1 }]);
+    expect(readDocumentResponse(document, window)).toBe(document);
+  });
   it.each(["xlsx", "biff8", "ods"] as const)("reads late rows and columns from %s with the used-range origin", async (bookType) => {
     const format = bookType === "biff8" ? "xls" : bookType;
     const document = await parseTableDocument(sparseWorkbook(bookType), format, 0, PREVIEW_DOCUMENT_LIMITS,

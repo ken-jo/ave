@@ -36,7 +36,7 @@ export function isDocumentParseError(value: unknown): value is Exclude<ParseErro
 const DOCUMENT_FIELDS = ["format", "sheetNames", "totalSheets", "sheetsTruncated", "sheet"] as const;
 const SHEET_FIELDS = [
   "index", "name", "rows", "firstRow", "firstColumn", "totalRows", "totalColumns",
-  "rowsTruncated", "columnsTruncated", "cellsTruncated",
+  "rowsTruncated", "columnsTruncated", "cellsTruncated", "clippedCells",
 ] as const;
 
 function hasExactFields(value: unknown, fields: readonly string[]): value is Record<string, unknown> {
@@ -105,6 +105,17 @@ export function readDocumentResponse(value: unknown, window?: PreviewTableWindow
   for (const row of sheet.rows) {
     if (!Array.isArray(row) || row.length !== width) invalidResponse();
     for (const cell of row) if (!isDisplayString(cell)) invalidResponse();
+  }
+  if (!Array.isArray(sheet.clippedCells) || sheet.clippedCells.length > sheet.rows.length * width
+      || sheet.cellsTruncated !== (sheet.clippedCells.length > 0)) invalidResponse();
+  const clippedCoordinates = new Set<string>();
+  for (const cell of sheet.clippedCells) {
+    if (!hasExactFields(cell, ["row", "column"]) || !isCount(cell.row) || !isCount(cell.column)
+        || cell.row < sheet.firstRow || cell.row - sheet.firstRow >= sheet.rows.length
+        || cell.column < sheet.firstColumn || cell.column - sheet.firstColumn >= width) invalidResponse();
+    const key = `${cell.row}:${cell.column}`;
+    if (clippedCoordinates.has(key)) invalidResponse();
+    clippedCoordinates.add(key);
   }
   return value as unknown as PreviewTableDocument;
 }

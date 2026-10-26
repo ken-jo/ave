@@ -53,6 +53,7 @@ function remainingWindows(window: DocumentWindow, rows: number, columns: number)
 
 function formatSheet(path: string, document: PreviewTableDocument, selection: Extract<ReadDocumentSelection, { kind: "sheet" }>): ToolExecutionResult {
   const sheet = document.sheet;
+  const parserClippedCells = new Set(sheet.clippedCells.map(({ row, column }) => `${row}:${column}`));
   const source = sheet.sourceRange ?? { firstRow: sheet.firstRow, firstColumn: sheet.firstColumn };
   const delimited = document.format === "csv" || document.format === "tsv";
   const totalsExact = sheet.sourceRange?.totalsExact ?? !(delimited && (sheet.rowsTruncated || sheet.columnsTruncated));
@@ -78,7 +79,7 @@ function formatSheet(path: string, document: PreviewTableDocument, selection: Ex
     const cells = Array.from({ length: rows }, (_, r) => Array.from({ length: columns }, (_, c) => {
       const cell = sheet.rows[rowOffset - sheet.firstRow + r]![columnOffset - sheet.firstColumn + c]!;
       const end = safeEnd(cell, Math.min(cell.length, cellLimit));
-      const clipped = end < cell.length || (sheet.cellsTruncated && cell.length > PREVIEW_DOCUMENT_LIMITS.maxCellChars);
+      const clipped = end < cell.length || parserClippedCells.has(`${rowOffset + r}:${columnOffset + c}`);
       if (end < cell.length) contextClipped = true;
       if (clipped) clippedCells.push({ row: rowOffset + r, column: columnOffset + c });
       return end < cell.length ? `${cell.slice(0, end)}…` : cell;
