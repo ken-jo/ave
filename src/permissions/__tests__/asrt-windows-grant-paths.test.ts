@@ -1,11 +1,12 @@
-import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, renameSync, rmdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { dirname, join, parse, resolve } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import { initializeAveHomeFixture, useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
+import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import { aveHome, readWindowsDirectoryDacls } from "../../shared/ave-home.js";
 import { readWindowsAdminPolicy } from "../../shared/windows-admin-policy.js";
@@ -120,7 +121,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const granted = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [link, other] });
     try {
       const expected = [realpathSync.native(target), realpathSync.native(other)];
-      expect(pin.mock.calls.slice(-2)).toEqual([[expected], [expected]]);
+      expect(pin.mock.calls.filter(([paths]) => paths.some(path => expected.includes(path))).slice(-2)).toEqual([[expected], [expected]]);
       expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ read: expected, write: expected }));
     } finally { granted.release(); }
   });
@@ -191,7 +192,7 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
       try {
         expect(grant.allowRead).toEqual(ordered);
         expect(runtime.grantWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ read: ordered, write: [canonical] }));
-        expect(pin.mock.calls.slice(-2)).toEqual([[ordered], [ordered]]);
+        expect(pin.mock.calls.filter(([paths]) => paths.includes(canonical)).slice(-2)).toEqual([[ordered], [ordered]]);
       } finally { grant.release(); }
     }
   });
@@ -233,7 +234,12 @@ describe.runIf(process.platform === "win32")("Windows worker grant target identi
     const root = join(ancestor, "repo");
     mkdirSync(root, { recursive: true });
     if (kind === "project") vi.spyOn(defaultWorkspace, "getDefaultWorkspaceRoot").mockReturnValue(root);
-    else writeFileSync(permissionSettingsPath(), JSON.stringify({ permissions: { additionalDirectories: [root] } }));
+    else {
+      setFixtureOwner(fixture);
+      rmdirSync(aveHome());
+      await initializeAveHomeFixture(aveHome());
+      writeFileSync(permissionSettingsPath(), JSON.stringify({ permissions: { additionalDirectories: [root] } }));
+    }
     const link = join(fixture, "ancestor-link");
     symlinkSync(ancestor, link, "junction");
     await initializeAsrtSandbox({});

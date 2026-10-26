@@ -1,6 +1,6 @@
 import { mkdtempSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import { createBootHostFixture } from "../../../__tests__/support/host-runtime.js";
@@ -14,6 +14,8 @@ describe("judge configured provider wiring", () => {
   it("constructs an explicitly selected configured model independently of the active reviewer transport", async () => {
     const directory = mkdtempSync(join(tmpdir(), "judge-provider-wiring-"));
     vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const provider: LLMProvider = { vendor: "openai-compatible", async *streamTurn() {} };
     const createProvider = vi.fn((_options: unknown) => provider);
     const wireReviewerAgent = vi.fn(() => ({}));
@@ -171,6 +173,8 @@ describe("judge configured provider wiring", () => {
   it("resolves an unset reviewer model to the chat model on every re-wire, and a selected one to itself", async () => {
     const directory = mkdtempSync(join(tmpdir(), "reviewer-model-wiring-"));
     vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const provider: LLMProvider = { vendor: "claude", async *streamTurn() {} };
     const createProvider = vi.fn((_options: unknown) => provider);
     const wireReviewerAgent = vi.fn((_deps: unknown) => ({}));

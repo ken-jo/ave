@@ -37,6 +37,8 @@ beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), i
 it.each(["linux", "darwin"] as const)("never rechecks native Windows evidence on a captured %s host after platform simulation", async platform => {
   const original = process.platform;
   vi.resetModules();
+  const resources = await import("../../main/host-resources.js");
+  resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
   setProcessPlatform(platform);
   try {
     const sandbox = await import("../asrt-sandbox.js");
@@ -1567,6 +1569,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it.each(["linux", "darwin", "win32"] as const)("Windows: profile read denies retain exposed targets and evidence failures on a captured %s host", async host => {
     vi.resetModules();
+    const resources = await import("../../main/host-resources.js");
+    resources.configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     setProcessPlatform(host);
     const sandbox = await import("../asrt-sandbox.js");
     const previousHome = process.env.AVE_ASRT_TEST_HOME;

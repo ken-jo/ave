@@ -191,54 +191,6 @@ public static class HomeDirectoryDacl {
       Check(NtSetInformationFile(handle, out io, memory, (uint)size, 10), "Repair rename failed");
     } finally { Marshal.FreeHGlobal(memory); GC.KeepAlive(parent); }
   }
-  [StructLayout(LayoutKind.Sequential)]
-  private struct ConfigurationIdentity {
-    public uint Attributes;
-    public System.Runtime.InteropServices.ComTypes.FILETIME Created, Accessed, Written;
-    public uint Volume, SizeHigh, SizeLow, Links, IndexHigh, IndexLow;
-  }
-  [DllImport("kernel32.dll", SetLastError = true)]
-  private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out ConfigurationIdentity identity);
-  [StructLayout(LayoutKind.Sequential)]
-  private struct ConfigurationBasicInformation {
-    public long Created, Accessed, Written, Changed;
-    public uint Attributes;
-  }
-  [DllImport("kernel32.dll", SetLastError = true)]
-  private static extern bool GetFileInformationByHandleEx(SafeFileHandle handle, int infoClass, out ConfigurationBasicInformation information, uint size);
-  private static string ConfigurationDirectoryIdentity(SafeFileHandle handle, bool daclRelied = true) {
-    ConfigurationIdentity identity;
-    ConfigurationBasicInformation basic;
-    if (!GetFileInformationByHandle(handle, out identity) || !GetFileInformationByHandleEx(handle, 0, out basic, 40)) throw new Win32Exception(Marshal.GetLastWin32Error());
-    if ((identity.Attributes & 0x410) != 0x10) throw new InvalidOperationException("Configuration boundary is not a regular directory");
-    ulong index = ((ulong)identity.IndexHigh << 32) | identity.IndexLow;
-    long changed = checked((basic.Changed - 116444736000000000L) * 100L);
-    return identity.Volume.ToString() + ":" + index.ToString() + (daclRelied ? ":" + changed.ToString() : "");
-  }
-  public static string ConfigurationReadBoundary(string directory, string homePath, bool protectedDirectory, SecurityIdentifier user, bool elevated, string[] ancestors) {
-    var handles = new System.Collections.Generic.List<SafeFileHandle>();
-    var identities = new System.Collections.Generic.List<string>();
-    try {
-      foreach (string ancestor in ancestors) {
-        var handle = CreateFile(ancestor, 0x80, 7, IntPtr.Zero, 3, 0x02200000, IntPtr.Zero);
-        handles.Add(handle);
-        if (handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-        identities.Add(ConfigurationDirectoryIdentity(handle, false));
-      }
-      string ancestry = "|" + String.Join("|", identities.ToArray());
-    using (var root = OpenHome(String.IsNullOrEmpty(homePath) ? directory : homePath, user, false, true)) {
-      if (root == null) throw new InvalidOperationException("Configuration home is missing");
-      var security = Read(root);
-      if (!String.IsNullOrEmpty(homePath) && !RootSafe(security, user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
-      string rootIdentity = ConfigurationDirectoryIdentity(root);
-      if (!protectedDirectory) return rootIdentity + ancestry;
-      using (var parent = OpenRelative(root, "config", user, 1, true, true, true, true, 7)) {
-        if (parent == null || !OwnerOnly(Read(parent), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
-        return rootIdentity + "|" + ConfigurationDirectoryIdentity(parent) + ancestry;
-      }
-    }
-    } finally { foreach (var handle in handles) handle.Dispose(); }
-  }
   private static bool Delete(SafeFileHandle handle, SecurityIdentifier user) {
     long attributes = Attributes(handle);
     if ((attributes & 0x410) == 0x10) {

@@ -14,6 +14,10 @@ vi.mock("node:fs", async (importOriginal) => {
   const actual = await importOriginal<typeof import("node:fs")>();
   return {
     ...actual,
+    openSync: (...args: unknown[]) => {
+      if (readFailure.path === String(args[0])) throw Object.assign(new Error("Settings read denied"), { code: "EACCES" });
+      return Reflect.apply(actual.openSync, undefined, args);
+    },
     lstatSync: (...args: unknown[]) => {
       if (readFailure.path === String(args[0])) throw Object.assign(new Error("Settings read denied"), { code: "EACCES" });
       return Reflect.apply(actual.lstatSync, undefined, args);

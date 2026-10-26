@@ -102,7 +102,12 @@ describe("ensureAveHomePrivate", () => {
     expect(aveHomeConfigurationDirectory(dir)).toBe(join(dir, "config"));
     expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
     expect(aveHomeConfigurationDirectory(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "config"));
-    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(2);
+    const requests = vi.mocked(execFileSync).mock.calls.slice(before);
+    expect(requests.filter(([, args]) => args?.[0] === "--dacl")).toHaveLength(2);
+    for (const [executable, args] of requests) {
+      expect(String(executable)).toMatch(/ave-path-kind\.exe$/);
+      expect(["--pin", "--dacl"]).toContain(args?.[0]);
+    }
   });
   function check(change: (entry: WindowsDirectoryDacl, index: number) => WindowsDirectoryDacl = (entry) => entry) {
     const dir = home();

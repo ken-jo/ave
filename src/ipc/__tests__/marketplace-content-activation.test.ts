@@ -32,6 +32,7 @@ import { installedFontStack } from "../../shared/installed-content.js";
 import { marketplaceProviderPresetSecretKey } from "../../shared/marketplace-package-assets.js";
 import { DEFAULT_BUNDLE_ID } from "../../shared/theme-bundles.js";
 import { AveHomeConfigurationUntrustedError } from "../../shared/ave-home.js";
+import * as configurationAccess from "../../shared/ave-home-configuration-access.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import type { IpcDeps } from "../types.js";
 import { createContentActivation, legacyContentSettings, removeAgentPluginData } from "../domains/marketplace-content.js";
@@ -182,16 +183,17 @@ describe("createContentActivation", () => {
 
   it("preserves a saved key and its provider when the configuration boundary is untrusted", async () => {
     const activation = createContentActivation(deps);
-    await activation.activate({ kind: "provider", vendor: { providerId: "azure-foundry" } }, entry("provider", "azure-foundry"), null, false);
-    await settingsService.setSecret("llm.apiKey.azure-foundry", "sk-user");
+    await activation.activate({ kind: "provider", preset }, entry("provider", preset.providerId), null, false);
+    const key = marketplaceProviderPresetSecretKey(preset.providerId);
+    await settingsService.setSecret(key, "sk-user");
     const failure = new AveHomeConfigurationUntrustedError(join(userDataPath, "ave-secrets.json"), "Unverified boundary");
-    const read = vi.spyOn(settingsService, "getSecret").mockImplementationOnce(() => { throw failure; });
+    const read = vi.spyOn(configurationAccess, "readAveHomeConfigurationFile").mockImplementationOnce(() => { throw failure; });
     const remove = vi.spyOn(settingsService, "deleteSecret");
     try {
-      await expect(activation.deactivate(entry("provider", "azure-foundry"), null)).rejects.toBe(failure);
+      await expect(activation.deactivate(entry("provider", preset.providerId), null)).rejects.toBe(failure);
       expect(remove).not.toHaveBeenCalled();
-      expect(settingsService.get("marketplace").installedProviderIds).toContain("azure-foundry");
-      expect(settingsService.getSecret("llm.apiKey.azure-foundry")).toBe("sk-user");
+      expect(settingsService.get("marketplace").installedProviderPresets).toContainEqual(preset);
+      expect(settingsService.getSecret(key)).toBe("sk-user");
     } finally {
       read.mockRestore();
       remove.mockRestore();

@@ -2,7 +2,7 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from "vitest";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
 import {
   wireReviewerAgent,
@@ -699,6 +699,8 @@ describe("Permission policy P4 reviewer-wiring", () => {
 describe("wireReviewerAndPermissions marketplace preset endpoint binding", () => {
   it("uses the installed preset endpoint when building the reviewer provider", async () => {
     vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const networkGuard = await import("../../../core/network-guard.js");
     const fetchPublicHttpResponse = vi
       .spyOn(networkGuard, "fetchPublicHttpResponse")
@@ -845,6 +847,8 @@ describe("wireReviewerAndPermissions marketplace preset endpoint binding", () =>
 describe("wireReviewerAndPermissions self-hosted direct endpoint binding", () => {
   it("builds the reviewer provider with a guarded model-provider fetch for a saved self-hosted endpoint", async () => {
     vi.resetModules();
+    const { configureHostResources } = await import("../../../main/host-resources.js");
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     const networkGuard = await import("../../../core/network-guard.js");
     const fetchPublicHttpResponse = vi
       .spyOn(networkGuard, "fetchPublicHttpResponse")

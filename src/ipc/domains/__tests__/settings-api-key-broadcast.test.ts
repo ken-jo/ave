@@ -3,7 +3,7 @@ import { writePermissionSettingsFixture } from "../../../__tests__/support/permi
  * ave:settings:set-api-key - ave:settings:delete-api-key - ave:settings:set-web-api-key - ave:settings:delete-web-api-key - ave:settings:marketplace:set-api-key - ave:settings:marketplace:delete-api-key */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { mkdirSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { SETTINGS } from "../../../shared/ipc-channels.js";
 import { makeAppIpcInvoker } from "./test-helpers.js";
 import { useTempPaths } from "../../../__tests__/test-helpers.js";
@@ -93,11 +93,13 @@ function makeDeps(appWindows: ReturnType<typeof makeWindow>[], vendorBaseUrl?: s
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   handlers.clear();
   listLlmModelsFromSettingsMock.mockReset();
   listLlmModelsFromSettingsMock.mockResolvedValue({ ok: true, models: [], endpoint: "", fetchedAt: "" });
   vi.resetModules();
+  const { configureHostResources } = await import("../../../main/host-resources.js");
+  configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
 });
 
 describe("set-api-key broadcast (M3)", () => {

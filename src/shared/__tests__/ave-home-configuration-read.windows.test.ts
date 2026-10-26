@@ -10,8 +10,7 @@ import { readAveHomeConfigurationFile, withAveHomeConfigurationWrite } from "../
 import { writeUtf8FileAtomicSync } from "../../lib/atomic-file.js";
 import { migrateAveHomeConfiguration } from "../ave-home-configuration.js";
 import { AveHomeConfigurationUntrustedError, ensureAveHomePrivate, isAveHomeConfigurationRefused, win32SystemBinary, _resetAveHomePrivacyForTest } from "../ave-home.js";
-import { windowsPowerShellEnv } from "../windows-powershell-env.js";
-import { WINDOWS_HOME_BOUNDARY_SOURCE } from "../windows-home-boundary.js";
+import { pinWindowsPaths, windowsObjectKey } from "../windows-path-facts.js";
 import { readJudgeStoredModels, writePermissionSettings } from "../../permissions/permission-settings-store.js";
 
 beforeAll(() => { configureHostResources({ resourcePath: resolve("resources"), isPackaged: false }); });
@@ -36,9 +35,13 @@ function fixture(): { home: string; path: string } {
   return { home, path: join(home, "settings.json") };
 }
 
-function expectNoSpawns(): void {
+function expectOnlyNativePins(): void {
   for (const name of ["exec", "execSync", "execFile", "execFileSync", "spawn", "spawnSync", "fork"] as const) {
-    expect(childProcess[name], name).not.toHaveBeenCalled();
+    if (name !== "execFileSync") expect(childProcess[name], name).not.toHaveBeenCalled();
+  }
+  for (const [executable, args] of vi.mocked(childProcess.execFileSync).mock.calls) {
+    expect(String(executable)).toMatch(/ave-path-kind\.exe$/);
+    expect(args?.[0]).toBe("--pin");
   }
 }
 
@@ -46,25 +49,32 @@ function weaken(path: string): void {
   childProcess.execFileSync(win32SystemBinary("icacls"), [path, "/grant", "*S-1-1-0:(OI)(CI)W", "/q"], { windowsHide: true, stdio: "pipe" });
 }
 
-function nativeChangeTime(home: string): bigint {
-  const extra = `public static class DirectoryChangeTime {
-    [System.Runtime.InteropServices.StructLayout(System.Runtime.InteropServices.LayoutKind.Sequential)]
-    private struct Basic { public long Created, Accessed, Written, Changed; public uint Attributes; }
-    [System.Runtime.InteropServices.DllImport("kernel32.dll", SetLastError=true)]
-    private static extern bool GetFileInformationByHandleEx(Microsoft.Win32.SafeHandles.SafeFileHandle h, int c, out Basic b, uint n);
-    public static string Read(Microsoft.Win32.SafeHandles.SafeFileHandle h) {
-      Basic b; if (!GetFileInformationByHandleEx(h, 0, out b, 40)) throw new System.ComponentModel.Win32Exception();
-      return ((b.Changed - 116444736000000000L) * 100L).ToString();
-    }
-  }`;
-  const script = `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'\n${WINDOWS_HOME_BOUNDARY_SOURCE}\n${extra}\n'@\n$u=[System.Security.Principal.WindowsIdentity]::GetCurrent().User;
-    $h=[HomeDirectoryDacl]::OpenHome($env:AVE_DACL_REQUEST,$u,$false,$true); try { [DirectoryChangeTime]::Read($h) } finally { $h.Dispose() }`;
-  return BigInt(childProcess.execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
-    ["-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64")],
-    { input: script, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: home }) }).trim());
-}
-
 describe.runIf(process.platform === "win32")("configuration handle reads", () => {
+  it.each(["home", "config"])("revalidates every read when the pinned %s ChangeTime is zero", (target) => {
+    const { home, path } = fixture();
+    const pinned = pinWindowsPaths([target === "home" ? home : join(home, "config")])[0]!;
+    const execute = vi.mocked(childProcess.execFileSync).getMockImplementation()!;
+    vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
+      const result = Reflect.apply(execute, undefined, args);
+      if (!Array.isArray(args[1]) || !["--pin", "--dacl"].includes(String(args[1][0]))) return result;
+      const rows = JSON.parse(String(result));
+      for (const row of rows) {
+        for (const component of [row, ...row.ancestors]) {
+          if (component.volumeSerial === pinned.volumeSerial && component.fileId === pinned.fileId) component.changeTime = "0x0000000000000000";
+        }
+      }
+      return JSON.stringify(rows);
+    });
+    try {
+      for (let index = 0; index < 2; index++) {
+        vi.clearAllMocks();
+        expect(readAveHomeConfigurationFile(path)).toBeDefined();
+        expect(vi.mocked(childProcess.execFileSync).mock.calls.filter(([, args]) =>
+          Array.isArray(args) && args[0] === "--dacl" && args.includes(dirname(resolve(path))))).toHaveLength(1);
+      }
+    } finally { vi.mocked(childProcess.execFileSync).mockImplementation(execute); }
+  });
+
   it("refuses a recognized non-refused unprotected home for document and stored judge reads", () => {
     const home = paths();
     mkdirSync(home);
@@ -95,11 +105,13 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     const execute = vi.mocked(childProcess.execFileSync).getMockImplementation()!;
     const principal = "*S-1-1-0";
     let denyApplied = false;
-    vi.mocked(childProcess.execFileSync).mockImplementationOnce((...args) => {
+    vi.mocked(childProcess.execFileSync).mockImplementation((...args) => {
       const result = Reflect.apply(execute, undefined, args);
-      Reflect.apply(execute, undefined, [win32SystemBinary("icacls"),
-        [dirname(home), "/deny", `${principal}:(OI)(CI)(DC)`, "/q"], { windowsHide: true, stdio: "pipe" }]);
-      denyApplied = true;
+      if (!denyApplied && Array.isArray(args[1]) && args[1][0] === "--dacl") {
+        Reflect.apply(execute, undefined, [win32SystemBinary("icacls"),
+          [dirname(home), "/deny", `${principal}:(OI)(CI)(DC)`, "/q"], { windowsHide: true, stdio: "pipe" }]);
+        denyApplied = true;
+      }
       return result;
     });
     try {
@@ -115,16 +127,17 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
       const acl = childProcess.execFileSync(win32SystemBinary("icacls"), [home], { windowsHide: true, encoding: "utf8" });
       expect(acl).toContain("(I)(OI)(CI)(DENY)(DC)");
     } finally {
+      vi.mocked(childProcess.execFileSync).mockImplementation(execute);
       if (denyApplied) childProcess.execFileSync(win32SystemBinary("icacls"), [dirname(home), "/remove:d", principal, "/q"], { windowsHide: true, stdio: "pipe" });
     }
   });
 
-  it("does not spawn a child process during steady state reads", () => {
+  it("uses only shared native pins during steady state reads", () => {
     const { path } = fixture();
     expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
     vi.clearAllMocks();
     for (let i = 0; i < 20; i++) expect(readAveHomeConfigurationFile(path)?.toString()).toBe('{"permissions":{}}');
-    expectNoSpawns();
+    expectOnlyNativePins();
   });
 
   it.each(["config", "home"])("invalidates a warm boundary after an in place %s DACL weakening", (target) => {
@@ -132,7 +145,7 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     readAveHomeConfigurationFile(path);
     vi.clearAllMocks();
     readAveHomeConfigurationFile(path);
-    expectNoSpawns();
+    expectOnlyNativePins();
     weaken(target === "home" ? home : join(home, "config"));
     expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
   });
@@ -162,7 +175,7 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     writeFileSync(join(dirname(home), "unrelated.log"), "entry");
     vi.clearAllMocks();
     expect(readAveHomeConfigurationFile(path)).toBeDefined();
-    expectNoSpawns();
+    expectOnlyNativePins();
   });
 
   it("keeps reads immediately after owner settings writes warm and measures the sequence", async () => {
@@ -176,7 +189,7 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     const coldSpawns = vi.mocked(childProcess.execFileSync).mock.calls.length;
     vi.clearAllMocks();
     for (let i = 0; i < 20; i++) readAveHomeConfigurationFile(path);
-    expectNoSpawns();
+    expectOnlyNativePins();
     for (let i = 0; i < 3; i++) {
       await writePermissionSettings({ additionalDirectories: [] }, path);
       readAveHomeConfigurationFile(path);
@@ -186,7 +199,7 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     }).sort((a, b) => a - b);
     console.log(JSON.stringify({ bootMs, coldMs, coldSpawns, ownerWrites: 3, warmReads: 43,
       warmSpawns: vi.mocked(childProcess.execFileSync).mock.calls.length, warmMedianMs: (samples[9]! + samples[10]!) / 2 }));
-    expectNoSpawns();
+    expectOnlyNativePins();
   });
 
   it.each(["config", "home"])("refuses foreign %s DACL weakening immediately after an owner write", async (target) => {
@@ -208,18 +221,21 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     expect(() => readAveHomeConfigurationFile(path)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
   });
 
-  it("maps directory ctime to native ChangeTime and advances it after a security descriptor change", () => {
-    const { home } = fixture();
+  it("invalidates a cached certificate when pinned ChangeTime changes with the DACL", () => {
+    const { home, path } = fixture();
     const directory = join(home, "config");
-    const before = lstatSync(directory, { bigint: true });
-    expect(before.ctimeNs).toBe(nativeChangeTime(directory));
+    readAveHomeConfigurationFile(path);
+    const before = pinWindowsPaths([directory])[0]!;
+    expect(lstatSync(directory, { bigint: true }).ctimeNs).toBe((BigInt(before.changeTime!) - 116444736000000000n) * 100n);
     weaken(directory);
-    const after = lstatSync(directory, { bigint: true });
-    expect(after.dev).toBe(before.dev);
-    expect(after.ino).toBe(before.ino);
-    expect(after.ctimeNs).toBe(nativeChangeTime(directory));
-    expect(after.ctimeNs).toBeGreaterThan(before.ctimeNs);
-    console.log(`directory ChangeTime: ${before.ctimeNs} -> ${after.ctimeNs}; volume=${after.dev}; file=${after.ino}`);
+    const after = pinWindowsPaths([directory])[0]!;
+    expect(windowsObjectKey(after)).toBe(windowsObjectKey(before));
+    expect(BigInt(after.changeTime!)).toBeGreaterThan(BigInt(before.changeTime!));
+    expect(lstatSync(directory, { bigint: true }).ctimeNs).toBe((BigInt(after.changeTime!) - 116444736000000000n) * 100n);
+    vi.clearAllMocks();
+    expect(() => readAveHomeConfigurationFile(path)).toThrowError(AveHomeConfigurationUntrustedError);
+    expect(vi.mocked(childProcess.execFileSync).mock.calls.filter(([, args]) =>
+      Array.isArray(args) && args[0] === "--dacl" && args.includes(home))).toHaveLength(1);
   });
 
   it("refuses a file replaced by a junction between reads", () => {
@@ -241,6 +257,6 @@ describe.runIf(process.platform === "win32")("configuration handle reads", () =>
     const samples = Array.from({ length: 20 }, () => {
       const start = performance.now(); readAveHomeConfigurationFile(path); return performance.now() - start;
     }).sort((a, b) => a - b);
-    console.log(`configuration read latency ms: cold=${cold.toFixed(3)} warm-median-20=${((samples[9]! + samples[10]!) / 2).toFixed(3)}`);
+    process.stdout.write(`configuration read latency ms: cold=${cold.toFixed(3)} warm-median-20=${((samples[9]! + samples[10]!) / 2).toFixed(3)}\n`);
   });
 });

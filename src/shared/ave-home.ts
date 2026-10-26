@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
-import { admitWindowsReparse, isOwnerOnlyDacl, mapWindowsGenericRights, readWindowsDacls, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
+import { admitWindowsReparse, isOwnerOnlyDacl, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, type WindowsDaclFacts } from "./windows-path-facts.js";
 import { TOOL_TIMEOUT_POLICY } from "./tool-timeout-policy.js";
 import { win32SystemBinary, windowsSystemRoot } from "./windows-system-path.js";
 export { win32SystemBinary } from "./windows-system-path.js";
@@ -48,6 +48,7 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const key = configurationKey(root);
   const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
+    if (process.platform === "win32") return windowsConfigurationDirectory(root, config, key);
     let directory;
     try { directory = lstatSync(config, { bigint: true }); }
     catch (error) {
@@ -56,14 +57,14 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
       verifiedConfigurationIdentities.delete(key);
       return root;
     }
-    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Configuration directory is a link or is not a directory");
+    if (!directory.isDirectory()) throw new Error("Configuration directory is a link or is not a directory");
     const identity = fileIdentityKey(directory);
     let marker;
     try { marker = lstatSync(join(config, AVE_HOME_CONFIGURATION_MARKER), { bigint: true }); }
     catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    if (marker !== undefined && (!marker.isFile() || marker.isSymbolicLink())) throw new Error("Configuration marker is not a regular file");
+    if (marker !== undefined && !marker.isFile()) throw new Error("Configuration marker is not a regular file");
     if (verifiedConfigurationIdentities.get(key) !== identity) {
       verifyAveHomeConfiguration(root);
       if (fileIdentityKey(lstatSync(config, { bigint: true })) !== identity) throw new Error("Configuration directory changed during verification");
@@ -85,6 +86,39 @@ export function aveHomeConfigurationDirectory(home = aveHome()): string {
   }
 }
 
+function windowsConfigurationDirectory(root: string, config: string, key: string): string {
+  const paths = [config, join(config, AVE_HOME_CONFIGURATION_MARKER)];
+  const [directory, marker] = pinWindowsPaths(paths);
+  if (!admitWindowsReparse(directory!, "evidence")) throw new Error("Configuration directory is a link or is not a directory");
+  if (directory!.exists === false) {
+    if (committedConfigurationHomes.has(key)) throw new Error("Committed configuration directory is missing");
+    verifiedConfigurationIdentities.delete(key);
+    return root;
+  }
+  if (!directory!.directory) throw new Error("Configuration directory is a link or is not a directory");
+  if (!admitWindowsReparse(marker!, "evidence") || (marker!.exists && marker!.directory)) throw new Error("Configuration marker is not a regular file");
+  const identity = `${windowsObjectKey(directory!)}|${marker!.exists ? `${windowsObjectKey(marker!)}:${marker!.changeTime}` : "missing"}`;
+  const cacheable = marker!.exists === true && marker!.changeTime !== null && BigInt(marker!.changeTime) !== 0n;
+  if (!cacheable || verifiedConfigurationIdentities.get(key) !== identity) {
+    const committed = inspectWindowsConfiguration(root, false);
+    const [afterDirectory, afterMarker] = pinWindowsPaths(paths);
+    if (!admitWindowsReparse(afterDirectory!, "evidence") || !admitWindowsReparse(afterMarker!, "evidence")
+      || afterDirectory!.exists !== true || windowsObjectKey(afterDirectory!) !== windowsObjectKey(directory!)
+      || afterMarker!.exists !== marker!.exists || (marker!.exists && (windowsObjectKey(afterMarker!) !== windowsObjectKey(marker!)
+        || afterMarker!.changeTime !== marker!.changeTime)) || committed !== marker!.exists) {
+      throw new Error("Configuration directory changed during verification");
+    }
+    if (cacheable) verifiedConfigurationIdentities.set(key, identity);
+    else verifiedConfigurationIdentities.delete(key);
+  }
+  if (marker!.exists === false) {
+    if (committedConfigurationHomes.has(key)) throw new Error("Configuration commit marker is missing");
+    return root;
+  }
+  committedConfigurationHomes.add(key);
+  return config;
+}
+
 export function configurationHomeForFile(path: string): string | undefined {
   const candidate = configurationKey(path);
   for (const home of new Set([aveHome(), ...configurationHomes])) {
@@ -98,9 +132,9 @@ export function configurationHomeForFile(path: string): string | undefined {
 export function verifyAveHomeConfiguration(home: string, recoverInvalidMarker: boolean | "boundary" = false): boolean {
   const config = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
-    try {
+    if (process.platform !== "win32") try {
       const directory = lstatSync(config);
-      if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Configuration directory is a link or is not a directory");
+      if (!directory.isDirectory()) throw new Error("Configuration directory is a link or is not a directory");
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
@@ -182,10 +216,10 @@ function inspectWindowsConfiguration(home: string, boundaryOnly: boolean): boole
   }
   if (boundaryOnly) return false;
   const marker = readWindowsDacls([resolve(config, AVE_HOME_CONFIGURATION_MARKER)], { content: true })[0]!;
-  if (!admitWindowsReparse(marker, "evidence")) throw new Error("Configuration marker is not a regular file");
-  if (marker.exists === false) return false;
-  if (marker.directory || typeof marker.contentHex !== "string"
-    || Buffer.from(marker.contentHex, "hex").toString("utf8") !== AVE_HOME_CONFIGURATION_MARKER_CONTENT) {
+  if (!admitWindowsReparse(marker!, "evidence")) throw new Error("Configuration marker is not a regular file");
+  if (marker!.exists === false) return false;
+  if (marker!.directory || typeof marker!.contentHex !== "string"
+    || Buffer.from(marker!.contentHex, "hex").toString("utf8") !== AVE_HOME_CONFIGURATION_MARKER_CONTENT) {
     throw new Error("Configuration marker content is invalid");
   }
   return true;
