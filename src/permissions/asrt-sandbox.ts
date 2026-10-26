@@ -21,6 +21,7 @@ import { canonicalizePathForMatch, caseFoldForMatch, getConfiguredSessionReadPol
 import { hardenLinuxSandboxWrap } from "./linux-sandbox-wrap.js";
 import { hardenMacSandboxGitMetadata } from "./macos-sandbox-wrap.js";
 import { prepareSandboxBareRepositoryCleanup } from "./sandbox-bare-repository-cleanup.js";
+import { captureDenyPlaceholders, cleanupDenyPlaceholders, snapshotMissingDenyPaths, type DenyPlaceholder } from "./windows-deny-placeholders.js";
 import { createLogger } from "../lib/logger.js";
 import { errorMessage } from "../shared/error-message.js";
 import { t } from "../i18n/index.js";
@@ -284,6 +285,7 @@ function completeBareRepositoryCleanup(pending: PendingGitCleanup): void {
 
 // A released token's listener refuses every further connection from then on. On macOS the ended port stays bound for a quarantine, longer while the invocation's process group still has a process in it.
 onEgressInvocationReleased((token, { processGroup }) => {
+  finishWindowsCommandPlaceholders(token);
   const pending = bareRepositoryCleanups.get(token);
   if (pending) {
     bareRepositoryCleanups.delete(token);
@@ -711,6 +713,71 @@ async function loadSandboxManager() {
 
 // Whether initializeAsrtSandbox has run to completion in this process. This is the host-tool spawn path's gate: tool code (bash.ts/powershell.ts) asks THIS module — not the settings service — whether to route through ASRT, so the gate is decided once at boot and cannot be re-evaluated mid-run. That preserves the seal-after-boot security property the registry had: there is no runtime channel to flip the sandbox on/off after boot. Set to `true` only on a successful `initialize`; stays `false` after resetAsrtSandbox.
 let active = false;
+const windowsPlaceholders = new Map<string, DenyPlaceholder>();
+const warnedWindowsPlaceholders = new WeakSet<DenyPlaceholder>();
+const windowsCommandSnapshots = new Map<string, { paths: string[]; owned: boolean }>();
+let windowsPlaceholderExitCleanup: (() => void) | undefined;
+
+function rememberWindowsPlaceholders(paths: readonly string[]): void {
+  for (const entry of captureDenyPlaceholders(paths)) {
+    const key = entry.path.toLowerCase();
+    if (!windowsPlaceholders.has(key)) windowsPlaceholders.set(key, entry);
+  }
+}
+
+function cleanupWindowsPlaceholders(): void {
+  if (windowsCommandSnapshots.size > 0) return;
+  const entries = [...windowsPlaceholders.values()];
+  windowsPlaceholders.clear();
+  const byPath = new Map(entries.map(entry => [entry.path, entry]));
+  cleanupDenyPlaceholders(entries, path => warnKeptWindowsPlaceholder(byPath.get(path)!));
+  if (windowsPlaceholderExitCleanup) {
+    process.removeListener("exit", windowsPlaceholderExitCleanup);
+    windowsPlaceholderExitCleanup = undefined;
+  }
+}
+
+function warnKeptWindowsPlaceholder(entry: DenyPlaceholder): void {
+  if (warnedWindowsPlaceholders.has(entry)) return;
+  warnedWindowsPlaceholders.add(entry);
+  log.warn(`Kept sandbox deny placeholder: ${entry.path}`);
+}
+
+function registerWindowsPlaceholderExitCleanup(SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>): void {
+  if (process.platform !== "win32" || windowsPlaceholderExitCleanup) return;
+  // Release ACEs synchronously before earlier executable-disposal handlers run.
+  windowsPlaceholderExitCleanup = () => {
+    void SandboxManager.reset().catch(error => log.warn(`Sandbox exit teardown failed: ${errorMessage(error)}`));
+    if (windowsCommandSnapshots.size > 0) {
+      for (const snapshot of windowsCommandSnapshots.values()) rememberWindowsPlaceholders(snapshot.paths);
+      for (const entry of windowsPlaceholders.values()) warnKeptWindowsPlaceholder(entry);
+      return;
+    }
+    cleanupWindowsPlaceholders();
+  };
+  process.prependOnceListener("exit", windowsPlaceholderExitCleanup);
+}
+
+function trackWindowsCommandPlaceholders(wrapped: SandboxWrapResult, commandId: string): void {
+  if (process.platform !== "win32" || windowsExternalConfinement) return;
+  const targets: string[] = [];
+  for (let index = 1; index < wrapped.argv.length && wrapped.argv[index] !== "--"; index++) {
+    if (wrapped.argv[index] === "--deny-read" || wrapped.argv[index] === "--deny-write") {
+      const path = wrapped.argv[++index];
+      if (path !== undefined) targets.push(path);
+    } else if (wrapped.argv[index] === "--env") index++;
+  }
+  const paths = snapshotMissingDenyPaths(targets);
+  if (paths.length > 0) windowsCommandSnapshots.set(commandId, { paths, owned: egressInvocationOwner(commandId) !== undefined });
+}
+
+function finishWindowsCommandPlaceholders(commandId: string): void {
+  const snapshot = windowsCommandSnapshots.get(commandId);
+  if (!snapshot) return;
+  rememberWindowsPlaceholders(snapshot.paths);
+  windowsCommandSnapshots.delete(commandId);
+  if (!active) cleanupWindowsPlaceholders();
+}
 // Set with `active` when boot initialized ASRT as the Windows proxy only.
 let windowsExternalConfinement = false;
 
@@ -1466,15 +1533,17 @@ async function verifyAsrtRuntime(
 // Forget a just-initialized ASRT singleton after the runtime probe fails. `active` is not set until after the probe, but the manager may already own proxy/helper state; reset it best-effort without masking the typed failure.
 async function discardFailedAsrtInitialization(
   SandboxManager: Awaited<ReturnType<typeof loadSandboxManager>>,
-): Promise<void> {
+): Promise<boolean> {
   active = false;
   loadedSandboxManagerForRelease = undefined;
   _baseTrustedSettings = undefined;
   _workerUnixSocketDirs.clear();
   try {
     await SandboxManager.reset();
+    return true;
   } catch {
     // The caller must still receive the probe error and boot must remain degraded; a reset failure cannot make the capability verified.
+    return false;
   }
 }
 
@@ -1503,12 +1572,21 @@ export async function initializeAsrtSandbox(
   noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
   // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
   SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
+  const missingDenyPaths = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
+    ? snapshotMissingDenyPaths([...(config.filesystem?.denyRead ?? []), ...(config.filesystem?.denyWrite ?? [])]
+      .map(entry => typeof entry === "string" ? entry : entry.path)) : [];
   try {
-    await SandboxManager.initialize(config, askCb, enableLogMonitor);
+    try {
+      await SandboxManager.initialize(config, askCb, enableLogMonitor);
+    } finally {
+      rememberWindowsPlaceholders(missingDenyPaths);
+      registerWindowsPlaceholderExitCleanup(SandboxManager);
+    }
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
   } catch (error) {
-    await discardFailedAsrtInitialization(SandboxManager);
+    if (await discardFailedAsrtInitialization(SandboxManager)) cleanupWindowsPlaceholders();
+    else for (const entry of windowsPlaceholders.values()) warnKeptWindowsPlaceholder(entry);
     throw error;
   }
   windowsExternalConfinement =
@@ -1570,6 +1648,7 @@ export async function wrapToolCommand(
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  trackWindowsCommandPlaceholders(result, options.commandId);
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
@@ -1746,6 +1825,7 @@ async function wrapLongLivedCommand(
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
+  trackWindowsCommandPlaceholders(result, options.commandId);
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
 }
@@ -1974,6 +2054,9 @@ function assertPrivateHelperGrants(read: readonly string[], write: readonly stri
 export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
   const SandboxManager = await loadSandboxManager();
   SandboxManager.cleanupAfterCommand();
+  for (const [commandId, snapshot] of windowsCommandSnapshots) {
+    if (!snapshot.owned) finishWindowsCommandPlaceholders(commandId);
+  }
 }
 
 // Full teardown pass-through (`SandboxManager.reset`). Stops proxy servers and clears state.
@@ -1982,6 +2065,7 @@ export async function resetAsrtSandbox(): Promise<void> {
   await SandboxManager.reset();
   // The host owns the processes. Their invocation release, after termination, still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
+  cleanupWindowsPlaceholders();
   loadedSandboxManagerForRelease = undefined;
   windowsExternalConfinement = false;
   // Reset base settings and live socket holders so reinitialization cannot inherit stale allowances.
