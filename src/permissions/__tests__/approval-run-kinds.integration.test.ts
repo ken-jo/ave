@@ -29,7 +29,7 @@ import { makeWriteProbeTool } from "../../tools/__tests__/approval-memory-test-f
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import { ToolRegistry } from "../../tools/registry.js";
 import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
-import { approvalSurfaceRegistry } from "../approval-surface-registry.js";
+import { approvalSurfaceRegistry, updateApprovalSurface } from "../approval-surface-registry.js";
 import { PermissionManager } from "../permission-manager.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { PermissionTestResources } from "./test-resources.js";
@@ -193,7 +193,7 @@ async function setup() {
   closers.push(async () => {
     gate.disposeAll();
     await Promise.allSettled(pending);
-    for (const session of sessions) approvalSurfaceRegistry.release(session);
+    for (const session of sessions) updateApprovalSurface({ kind: "release", sessionId: session });
     await audit.close();
   });
   const start = (loop: ConversationLoop) => {
@@ -308,7 +308,7 @@ describe("production run construction approval ownership", () => {
       case "runResume": {
         const originSessionId = randomUUID();
         f.sessions.add(originSessionId);
-        approvalSurfaceRegistry.register(originSessionId, f.owner as unknown as WebContents);
+        updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: f.owner as unknown as WebContents });
         const childMemory = new MemoryManager({ aveDir: join(f.root, "subagent") });
         childMemory.load();
         const runner = new SubAgentRunner({ parentDeps: f.deps, toolRegistry: f.registry, subAgentMemoryManager: childMemory });
@@ -347,7 +347,7 @@ describe("production run construction approval ownership", () => {
     const f = await setup();
     const originSessionId = randomUUID();
     f.sessions.add(originSessionId);
-    if (registered) approvalSurfaceRegistry.register(originSessionId, f.owner as unknown as WebContents);
+    if (registered) updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: f.owner as unknown as WebContents });
     const childMemory = new MemoryManager({ aveDir: join(f.root, "background-child") });
     childMemory.load();
     const runner = new SubAgentRunner({ parentDeps: f.deps, toolRegistry: f.registry, subAgentMemoryManager: childMemory });

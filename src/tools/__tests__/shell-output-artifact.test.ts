@@ -11,7 +11,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { ConversationLoop } from "../../engine/conversation-loop.js";
 import { makeConversationLoopDeps } from "../../engine/__tests__/conversation-loop-test-helpers.js";
-import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import type { GenericMessage } from "../../engine/llm/types.js";
 import { MemoryManager } from "../../memory/memory-manager.js";
 import { normalizeToolOutputArtifactInfo } from "../../shared/tool-output-artifact.js";
@@ -25,7 +25,7 @@ const dirs: string[] = [];
 const loops: ConversationLoop[] = [];
 afterEach(async () => {
   for (const loop of loops.splice(0)) {
-    approvalSurfaceRegistry.release(loop.sessionId);
+    updateApprovalSurface({ kind: "release", sessionId: loop.sessionId });
     await loop.auditLogger.close();
   }
   for (const dir of dirs.splice(0)) await cleanupTmpDir(dir);

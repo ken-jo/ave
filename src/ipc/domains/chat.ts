@@ -23,7 +23,7 @@ import { isValidSessionId, MAX_SESSION_FILE_BYTES } from "../../memory/memory-ma
 import { CHANNELS } from "../../contract/app-contract.js";
 import type { IpcDeps } from "../types.js";
 import { sendToWebContents } from "../safe-send.js";
-import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import {
   getMainWindows,
   getPrimaryMainWindow,
@@ -679,7 +679,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const contents = groupTargetContents(group.owner);
     // Only the host's registered app window may own this group's approvals.
     const window = contents && mainWindowForContents(contents);
-    approvalSurfaceRegistry.register(group.loop.getSessionId(), window?.webContents ?? null);
+    updateApprovalSurface({ kind: "attach", sessionId: group.loop.getSessionId(), surface: window?.webContents ?? null });
   };
   setSessionContentsLookup((sessionId) => {
     const holder = groupHolding(sessionId);
@@ -696,7 +696,12 @@ export function registerChatHandlers(deps: IpcDeps): void {
   ): ChatGroupContext => {
     const chatGroupId = scopedGroupKey(owner, rendererGroupId);
     const cached = groupContexts.get(chatGroupId);
-    if (cached) return cached;
+    if (cached) {
+      // Adopting a cached conversation attaches it to the current host surface,
+      // including a replacement primary window after the original one closes.
+      registerGroupApprovalOwner(cached);
+      return cached;
+    }
     const isMain = chatGroupId === MAIN_CHAT_GROUP_ID;
     // Unknown groups fail instead of falling back to another tile's loop.
     if (!isMain && (!deps.resolveChatGroupLoop || !deps.releaseChatGroupLoop)) {
@@ -829,7 +834,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return await context.loop.runSessionTransition("chat-group-release", async (lease) => {
         await context.loop.cleanupSession(lease);
         context.unsubscribeStream();
-        approvalSurfaceRegistry.release(context.loop.getSessionId());
+        updateApprovalSurface({ kind: "release", sessionId: context.loop.getSessionId() });
         groupContexts.delete(id);
         deps.releaseChatGroupLoop?.(id);
         return true;

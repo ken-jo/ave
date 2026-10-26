@@ -56,7 +56,7 @@ import { endTurnScript } from "./conversation-loop-test-helpers.js";
 import type { PromptMemorySource } from "../../memory/memory-manager.js";
 import { makePromptMemorySource } from "../../prompts/__tests__/test-helpers.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
-import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { authorizationRequiredStateForOutput } from "../../shared/authorization-required.js";
 import { SkillOverlay } from "../../main/skill-overlay.js";
 import { checkpointFileMutation, restoreCodeCheckpoint, withCodeCheckpoint } from "../../memory/code-checkpoints.js";
@@ -121,11 +121,11 @@ describe("SubAgentRunner approval-owner setup", () => {
       expect(result.ok).toBe(false);
       expect(result.error).toContain("child initialization rejected");
       expect(temporarySessionId).toBeTypeOf("string");
-      expect(() => approvalSurfaceRegistry.move(temporarySessionId!, "replacement-child"))
+      expect(() => updateApprovalSurface({ kind: "move", previousSessionId: temporarySessionId!, sessionId: "replacement-child" }))
         .toThrow("approval-surface: unregistered outgoing session");
     } finally {
       initialize.mockRestore();
-      if (temporarySessionId) approvalSurfaceRegistry.release(temporarySessionId);
+      if (temporarySessionId) updateApprovalSurface({ kind: "release", sessionId: temporarySessionId });
     }
   });
 });

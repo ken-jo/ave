@@ -9,7 +9,7 @@ import { ConversationLoop, type ConversationLoopDeps } from "./conversation-loop
 import { trackCodeCheckpointChild } from "../memory/code-checkpoints.js";
 import { endShellSession } from "../tools/shell-tools.js";
 import { canonicalizePathForMatch } from "../permissions/sensitive-paths.js";
-import { approvalSurfaceRegistry } from "../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../permissions/approval-surface-registry.js";
 import type {
   TurnCallbacks,
   TurnInputRequired,
@@ -1791,7 +1791,7 @@ export class SubAgentRunner {
     const active = this.activeChildren.get(childSessionId);
     if (active?.lease !== lease) return;
     this.activeChildren.delete(childSessionId);
-    approvalSurfaceRegistry.release(childSessionId);
+    updateApprovalSurface({ kind: "release", sessionId: childSessionId });
     // The child shares the parent's SkillOverlay keyed by its own session id, and no `newConversation` ever fires for a child loop. Drop its entries here so a finished
     // run does not leave its skill_read authorization (and the map slot) behind for the rest of the app's life. A later resume re-establishes it with a fresh `skill_load`.
     this.deps.parentDeps.skillOverlay?.clear(childSessionId);
@@ -2539,7 +2539,7 @@ export class SubAgentRunner {
         child.sessionId = childSessionId;
         // A live parent link follows a host ownership transfer for already
         // running children; no surface is inferred from persisted ancestry.
-        approvalSurfaceRegistry.inherit(childSessionId, input.originSessionId);
+        updateApprovalSurface({ kind: "inherit", sessionId: childSessionId, parentSessionId: input.originSessionId });
         child.sessionKind = "subagent";
         child.rebindTracer();
         return { ok: true as const, modeResult, cappedRounds, grantedScope, child };
@@ -2549,7 +2549,7 @@ export class SubAgentRunner {
     })();
 
     if (!setupResult.ok) {
-      if (childForAbort) approvalSurfaceRegistry.release(childForAbort.sessionId);
+      if (childForAbort) updateApprovalSurface({ kind: "release", sessionId: childForAbort.sessionId });
       trackedRun.initialMetadataFailed = true;
       const interrupted = cancellation.signal.aborted;
       const message = interrupted
@@ -3337,7 +3337,7 @@ export class SubAgentRunner {
     const unregisterResumeChild = (): void => {
       const lease = activeLease;
       if (!lease) {
-        if (child) approvalSurfaceRegistry.release(child.sessionId);
+        if (child) updateApprovalSurface({ kind: "release", sessionId: child.sessionId });
         return;
       }
       const active = this.activeChildren.get(resumeId);
@@ -3566,7 +3566,7 @@ export class SubAgentRunner {
 
     child = new ConversationLoop(childDeps);
     child.sessionId = resumeId;
-    approvalSurfaceRegistry.inherit(resumeId, originSessionId);
+    updateApprovalSurface({ kind: "inherit", sessionId: resumeId, parentSessionId: originSessionId });
     child.sessionKind = "subagent";
     child.rebindTracer();
     if (!child.hasProvider()) {

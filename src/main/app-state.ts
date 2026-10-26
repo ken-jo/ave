@@ -2,7 +2,7 @@
 import type { BrowserWindow, Tray, WebContents } from "electron";
 import type { AppServices } from "../boot.js";
 import { terminalOwnerWindowId } from "./terminal/pty-manager.js";
-import { approvalSurfaceRegistry } from "../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../permissions/approval-surface-registry.js";
 import { bootInstallNoticeIsEmpty, type BootInstallNoticeView, type GitMarketplaceDeepLink } from "../shared/git-marketplace.js";
 
 // Broadcast only to live main windows, never all windows, which includes remote-content viewers.
@@ -20,9 +20,10 @@ function recordFocus(id: number): void {
   if (index >= 0) focusHistory.splice(index, 1);
   focusHistory.push(id);
   focusedMainWindowId = id;
-  approvalSurfaceRegistry.registerUnattributed(
-    mainWindows.find((win) => win.id === id)?.webContents ?? null,
-  );
+  updateApprovalSurface({
+    kind: "attach-unattributed",
+    surface: mainWindows.find((win) => win.id === id)?.webContents ?? null,
+  });
 }
 
 function liveMainWindows(): BrowserWindow[] {
@@ -60,7 +61,7 @@ export function registerMainWindow(win: BrowserWindow, role: MainWindowRole): vo
 export function unregisterMainWindow(win: BrowserWindow): void {
   // Revoking the owner never approves or settles an outstanding card. Without
   // a turn abort, it remains pending until the normal five-minute deny timeout.
-  approvalSurfaceRegistry.releaseOwner(win.webContents);
+  updateApprovalSurface({ kind: "release-owner", surface: win.webContents });
   const index = mainWindows.indexOf(win);
   if (index >= 0) mainWindows.splice(index, 1);
   const historyIndex = focusHistory.indexOf(win.id);
@@ -71,7 +72,7 @@ export function unregisterMainWindow(win: BrowserWindow): void {
     focusedMainWindowId = [...focusHistory].reverse().find((id) => liveIds.has(id)) ?? null;
   }
   if (primaryMainWindowId === win.id) primaryMainWindowId = null;
-  approvalSurfaceRegistry.registerUnattributed(getMainWindow()?.webContents ?? null);
+  updateApprovalSurface({ kind: "attach-unattributed", surface: getMainWindow()?.webContents ?? null });
 }
 
 export function markMainWindowFocused(win: BrowserWindow): void {
@@ -128,8 +129,8 @@ export function sideChatOwnerWindow(): BrowserWindow | null {
 
 // @internal test-only reset for isolated module-state tests.
 export function resetMainWindowsForTests(): void {
-  for (const window of mainWindows) approvalSurfaceRegistry.releaseOwner(window.webContents);
-  approvalSurfaceRegistry.registerUnattributed(null);
+  for (const window of mainWindows) updateApprovalSurface({ kind: "release-owner", surface: window.webContents });
+  updateApprovalSurface({ kind: "attach-unattributed", surface: null });
   mainWindows.length = 0;
   focusHistory.length = 0;
   focusedMainWindowId = null;

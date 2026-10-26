@@ -9,7 +9,7 @@ import { isActiveSandboxFilesystemContainedForPluginEffects } from "../permissio
 import { baseAllowedDirectories } from "../permissions/base-allowed-directories.js";
 import { registerWorkspaceDirectorySource } from "../permissions/workspace-authorized-roots.js";
 import { getWorkspaceRootLifecycle } from "../permissions/workspace-root-lifecycle.js";
-import { approvalSurfaceRegistry } from "../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../permissions/approval-surface-registry.js";
 import { HookRunner } from "../hooks/hook-runner.js";
 import type { LifecycleHookEvent } from "../hooks/script-hook-types.js";
 import {
@@ -123,7 +123,7 @@ export class ConversationLoop {
     return this.approvalSessionId;
   }
   set sessionId(sessionId: string) {
-    approvalSurfaceRegistry.move(this.approvalSessionId, sessionId);
+    updateApprovalSurface({ kind: "move", previousSessionId: this.approvalSessionId, sessionId });
     this.approvalSessionId = sessionId;
   }
   /** Monotonic host generation; increments on every active-session replacement. */
@@ -215,7 +215,7 @@ export class ConversationLoop {
     registerWorkspaceDirectorySource(this);
     // Hosts bind a trusted surface before starting an interactive run. A run
     // created without one has no surface for manual approval.
-    approvalSurfaceRegistry.register(this.sessionId, null);
+    updateApprovalSurface({ kind: "attach", sessionId: this.sessionId, surface: null });
   }
 
   get permissionManager(): import("../permissions/permission-manager.js").PermissionManager | undefined {
@@ -561,7 +561,7 @@ export class ConversationLoop {
       }
       this.deps.closeRationaleSession?.(ownedLease.sessionId);
       this.deps.pluginRuntime?.clearSessionActivated?.(ownedLease.sessionId);
-      approvalSurfaceRegistry.release(ownedLease.sessionId);
+      updateApprovalSurface({ kind: "release", sessionId: ownedLease.sessionId });
     };
     if (lease !== undefined) return cleanup(lease);
     return this.runSessionTransition("session-cleanup", cleanup);

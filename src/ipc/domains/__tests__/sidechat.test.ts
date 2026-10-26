@@ -39,7 +39,7 @@ vi.mock("../../../main/app-state.js", async (importOriginal) => {
 
 import { registerSideChatHandlers } from "../sidechat.js";
 import { setSideChatOwnerContents } from "../../../main/app-state.js";
-import { approvalSurfaceRegistry } from "../../../permissions/approval-surface-registry.js";
+import { approvalSurfaceRegistry, updateApprovalSurface } from "../../../permissions/approval-surface-registry.js";
 import { ApprovalGate, type ApprovalRequest } from "../../../permissions/approval-gate.js";
 import { browserTabRegistry } from "../../../main/browser/browser-tab-registry.js";
 const terminalOwners = new Map<string, number>();
@@ -200,7 +200,7 @@ describe("side-chat IPC domain", () => {
     } finally {
       gate.disposeAll();
       await turn;
-      approvalSurfaceRegistry.release(loop.getSessionId());
+      updateApprovalSurface({ kind: "release", sessionId: loop.getSessionId() });
     }
   });
 

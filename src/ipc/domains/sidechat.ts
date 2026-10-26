@@ -6,7 +6,7 @@ import { CHANNELS } from "../../contract/app-contract.js";
 import { validateHostRendererSender, UNAUTHORIZED_FRAME, auditUnauthorized } from "../gated.js";
 import { sendToWebContents } from "../safe-send.js";
 import { mainWindowForContents, setSideChatOwnerContents } from "../../main/app-state.js";
-import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { browserTabRegistry } from "../../main/browser/browser-tab-registry.js";
 import { parseActiveSurface } from "./browser.js";
 import { terminalTabOwnerWindow } from "../../main/terminal/pty-manager.js";
@@ -135,7 +135,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       ? owner : null;
   };
   const registerApprovalOwner = (loop: ConversationLoop, contents: WebContents): void => {
-    approvalSurfaceRegistry.register(loop.getSessionId(), contents);
+    updateApprovalSurface({ kind: "attach", sessionId: loop.getSessionId(), surface: contents });
   };
 
   // Keep turn bookkeeping per loop so pane and rail turns cannot block or cancel one another.
@@ -192,7 +192,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
       sender.removeListener("did-navigate", releaseAll);
       sender.removeListener("destroyed", releaseAll);
       for (const { tabId, loop } of panes.inWindow(windowId)) {
-        approvalSurfaceRegistry.release(loop.getSessionId());
+        updateApprovalSurface({ kind: "release", sessionId: loop.getSessionId() });
         panes.release(windowId, tabId);
       }
       browserTabRegistry.releaseWindow(windowId);
@@ -205,7 +205,7 @@ export function registerSideChatHandlers(deps: IpcDeps): void {
     const loop = panes.get(windowId, tabId);
     const sessionId = loop && turnsOf(loop).restored ? loop.getSessionId() : storedPaneSession(windowId, tabId);
     if (loop) {
-      approvalSurfaceRegistry.release(loop.getSessionId());
+      updateApprovalSurface({ kind: "release", sessionId: loop.getSessionId() });
       panes.release(windowId, tabId);
       await abortTurnOf(loop);
     }

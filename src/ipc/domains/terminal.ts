@@ -10,7 +10,7 @@ import {
 import { getWindowTerminalBlockTracker, getWindowTerminalBlockSession } from "../../main/terminal/terminal-blocks.js";
 import { isTerminalLane, isTerminalSessionRef } from "../../shared/terminal-session.js";
 import type { IpcDeps } from "../types.js";
-import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 
 const log = createLogger("terminal-ipc");
 
@@ -49,7 +49,7 @@ export function registerTerminalHandlers(deps: IpcDeps): void {
       return { ok: false, reason: "unauthorized-frame", message: "sender is not an app window main frame" };
     }
     if (!terminalOwnedBy(payload.tabId, ownerWindowId)) return { ok: false, reason: "not-owner", message: "terminal belongs to another window" };
-    approvalSurfaceRegistry.registerTerminal(payload.tabId, event.sender);
+    updateApprovalSurface({ kind: "attach-terminal", tabId: payload.tabId, surface: event.sender });
     return spawnTerminal({ tabId: payload.tabId, lane: payload.lane, ownerWindowId,
       ...(payload.cwd !== undefined ? { cwd: payload.cwd } : {}),
       ...(payload.cols !== undefined ? { cols: payload.cols } : {}),

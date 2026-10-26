@@ -827,7 +827,7 @@ describe("ave:chat:* across several main windows", () => {
       ? { sender: owner, senderFrame: { url: owner.mainFrame.url } }
       : { sender: unregistered, senderFrame: unregistered.mainFrame };
     const native = { sender: owner, senderFrame: owner.mainFrame };
-    const registration = vi.spyOn(approvalSurfaceRegistry, "register");
+    const registration = vi.spyOn(await import("../../../permissions/approval-surface-registry.js"), "updateApprovalSurface");
     try {
       expect(handlers.get(CHANNELS.chat.hasProvider)!(invalid, "new-group")).toBe(false);
       expect(handlers.get(CHANNELS.chat.getHistory)!(invalid, "new-group")).toEqual([]);
@@ -842,10 +842,16 @@ describe("ave:chat:* across several main windows", () => {
         expect(auditLogger.log).toHaveBeenCalledWith(expect.objectContaining({ type: "warn", input: expect.stringContaining(channel) }));
       }
       expect(approvalSurfaceRegistry.resolve(main.getSessionId())).toBe(owner);
-      // Cached native reads have no registration side effect either.
+      // A native surface adopting a cached conversation refreshes delivery.
       expect(handlers.get(CHANNELS.chat.hasProvider)!(native, MAIN_CHAT_GROUP_ID)).toBe(false);
       expect(handlers.get(CHANNELS.chat.getHistory)!(native, MAIN_CHAT_GROUP_ID)).toMatchObject({ sessionId: main.getSessionId() });
-      expect(registration).not.toHaveBeenCalled();
+      expect(registration).toHaveBeenCalledTimes(2);
+      expect(registration).toHaveBeenNthCalledWith(1, {
+        kind: "attach", sessionId: main.getSessionId(), surface: owner,
+      });
+      expect(registration).toHaveBeenNthCalledWith(2, {
+        kind: "attach", sessionId: main.getSessionId(), surface: owner,
+      });
     } finally {
       registration.mockRestore();
     }

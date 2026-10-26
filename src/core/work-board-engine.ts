@@ -1,7 +1,7 @@
 /** Sequence isolated plan and execution children around per-run approval; persist their output and execution session id on the board. */
 import { randomUUID } from "node:crypto";
 import type { WebContents } from "electron";
-import { approvalSurfaceRegistry } from "../permissions/approval-surface-registry.js";
+import { updateApprovalSurface } from "../permissions/approval-surface-registry.js";
 import {
   exactToolScope,
   PARENT_ALL_TOOL_SCOPE,
@@ -366,12 +366,12 @@ export function createWorkBoardEngine(
     }
     inFlight.add(itemId);
     const originSessionId = workBoardOriginSessionId(itemId);
-    approvalSurfaceRegistry.register(originSessionId, opts.approvalSurface ?? null);
+    updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: opts.approvalSurface ?? null });
     try {
       return await runItemGuarded(itemId, item, opts);
     } finally {
       inFlight.delete(itemId);
-      approvalSurfaceRegistry.release(originSessionId);
+      updateApprovalSurface({ kind: "release", sessionId: originSessionId });
     }
   }
 
@@ -593,7 +593,7 @@ export function createWorkBoardEngine(
     }
     briefingInFlight.add(kind);
     const originSessionId = `work-board-briefing:${kind}`;
-    approvalSurfaceRegistry.register(originSessionId, opts.approvalSurface ?? null);
+    updateApprovalSurface({ kind: "attach", sessionId: originSessionId, surface: opts.approvalSurface ?? null });
     try {
       const runner = getRunner();
       if (!runner) {
@@ -646,7 +646,7 @@ export function createWorkBoardEngine(
       return { status: "error", kind, reason };
     } finally {
       briefingInFlight.delete(kind);
-      approvalSurfaceRegistry.release(originSessionId);
+      updateApprovalSurface({ kind: "release", sessionId: originSessionId });
     }
   }
 

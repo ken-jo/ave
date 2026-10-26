@@ -16,7 +16,7 @@ function requireSurface(owner: WebContents | null): void {
   }
 }
 
-/** Host registrations are the sole authority for approval delivery and native consent. */
+/** Store explicit delivery attachments without borrowing another run's surface. */
 export class ApprovalSurfaceRegistry {
   private readonly sessions = new Map<string, ApprovalOwner>();
   private readonly terminals = new Map<string, WebContents | null>();
@@ -83,6 +83,8 @@ export class ApprovalSurfaceRegistry {
 
   /** Revocation never settles a pending card: without turn abort it waits for the normal deny timeout. */
   releaseOwner(owner: WebContents): void {
+    requireSurface(owner);
+    if (owner === null) throw new Error("approval-surface: invalid owner release");
     for (const [sessionId, registered] of this.sessions) {
       if ("surface" in registered && registered.surface === owner) this.register(sessionId, null);
     }
@@ -119,4 +121,54 @@ export class ApprovalSurfaceRegistry {
   }
 }
 
-export const approvalSurfaceRegistry = new ApprovalSurfaceRegistry();
+export type ApprovalSurfaceUpdate =
+  | { kind: "attach"; sessionId: string; surface: WebContents | null }
+  | { kind: "inherit"; sessionId: string; parentSessionId: string | undefined }
+  | { kind: "move"; previousSessionId: string; sessionId: string }
+  | { kind: "release"; sessionId: string }
+  | { kind: "attach-terminal"; tabId: string; surface: WebContents | null }
+  | { kind: "release-terminal"; tabId: string }
+  | { kind: "attach-unattributed"; surface: WebContents | null }
+  | { kind: "release-owner"; surface: WebContents };
+
+const registeredApprovalSurfaces = new ApprovalSurfaceRegistry();
+
+/** Read-only delivery lookup; all attachment and lifecycle updates use one host function. */
+export const approvalSurfaceRegistry: Readonly<Pick<ApprovalSurfaceRegistry, "resolve">> = Object.freeze({
+  resolve: (sessionId: string | undefined, terminalTabId?: string) =>
+    registeredApprovalSurfaces.resolve(sessionId, terminalTabId),
+});
+
+/**
+ * App windows are one trust level; a defense against a compromised app renderer
+ * would need a trusted-chrome approval surface (main-process-drawn prompt plus
+ * native input proof), which is out of scope for this PR.
+ * User-driven attachment may transfer delivery ownership. Host-only provenance,
+ * remote origin and parent adjudication remain host-authored; registration never
+ * supplies the signed native card answer required to resume paused automation.
+ */
+export function updateApprovalSurface(update: ApprovalSurfaceUpdate): void {
+  if (update === null || typeof update !== "object") {
+    throw new Error("approval-surface: invalid update operation");
+  }
+  switch (update.kind) {
+    case "attach":
+      return registeredApprovalSurfaces.register(update.sessionId, update.surface);
+    case "inherit":
+      return registeredApprovalSurfaces.inherit(update.sessionId, update.parentSessionId);
+    case "move":
+      return registeredApprovalSurfaces.move(update.previousSessionId, update.sessionId);
+    case "release":
+      return registeredApprovalSurfaces.release(update.sessionId);
+    case "attach-terminal":
+      return registeredApprovalSurfaces.registerTerminal(update.tabId, update.surface);
+    case "release-terminal":
+      return registeredApprovalSurfaces.releaseTerminal(update.tabId);
+    case "attach-unattributed":
+      return registeredApprovalSurfaces.registerUnattributed(update.surface);
+    case "release-owner":
+      return registeredApprovalSurfaces.releaseOwner(update.surface);
+    default:
+      throw new Error("approval-surface: invalid update operation");
+  }
+}

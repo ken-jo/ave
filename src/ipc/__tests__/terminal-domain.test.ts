@@ -2,7 +2,7 @@ import { terminalSessionFixture } from "../../__tests__/support/terminal-session
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { IpcMainInvokeEvent } from "electron";
 import type { TerminalEmit } from "../../main/terminal/pty-manager.js";
-import { approvalSurfaceRegistry } from "../../permissions/approval-surface-registry.js";
+import { approvalSurfaceRegistry, updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 
 const handlers = new Map<string, (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown>();
 const fromWebContents = vi.fn();
@@ -71,7 +71,7 @@ describe("terminal IPC between two windows", () => {
     owners.set(tabId, 1);
     expect(await spawn(from(windowTwo), { tabId, lane: "manual" })).toMatchObject({ ok: false, reason: "not-owner" });
     expect(approvalSurfaceRegistry.resolve(undefined, tabId)).toBe(windowOne.webContents);
-    approvalSurfaceRegistry.releaseTerminal(tabId);
+    updateApprovalSurface({ kind: "release-terminal", tabId });
   });
 
   it("never registers a terminal approval owner from a trusted-URL subframe", async () => {

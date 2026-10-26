@@ -1,12 +1,55 @@
 import type { WebContents } from "electron";
 import { describe, expect, it } from "vitest";
-import { ApprovalSurfaceRegistry } from "../approval-surface-registry.js";
+import { ApprovalSurfaceRegistry, approvalSurfaceRegistry, updateApprovalSurface } from "../approval-surface-registry.js";
 
 function surface() {
   return { isDestroyed: () => false } as WebContents;
 }
 
 describe("approval surface registrations", () => {
+  it("routes attachment, inheritance and lifecycle changes through the common update function", () => {
+    const first = surface();
+    const second = surface();
+    const root = "common-update-root";
+    const child = "common-update-child";
+    const moved = "common-update-moved";
+    const tab = "terminal:common-update";
+    try {
+      updateApprovalSurface({ kind: "attach", sessionId: root, surface: first });
+      updateApprovalSurface({ kind: "inherit", sessionId: child, parentSessionId: root });
+      updateApprovalSurface({ kind: "attach-terminal", tabId: tab, surface: first });
+      updateApprovalSurface({ kind: "attach-unattributed", surface: first });
+      expect(approvalSurfaceRegistry.resolve(child)).toBe(first);
+      expect(approvalSurfaceRegistry.resolve(undefined, tab)).toBe(first);
+      expect(approvalSurfaceRegistry.resolve(undefined)).toBe(first);
+      updateApprovalSurface({ kind: "attach", sessionId: root, surface: second });
+      updateApprovalSurface({ kind: "move", previousSessionId: child, sessionId: moved });
+      expect(approvalSurfaceRegistry.resolve(child)).toBeNull();
+      expect(approvalSurfaceRegistry.resolve(moved)).toBe(second);
+      updateApprovalSurface({ kind: "release-owner", surface: second });
+      expect(approvalSurfaceRegistry.resolve(root)).toBeNull();
+      expect(approvalSurfaceRegistry.resolve(moved)).toBeNull();
+      updateApprovalSurface({ kind: "release-terminal", tabId: tab });
+      expect(approvalSurfaceRegistry.resolve(undefined, tab)).toBeNull();
+      updateApprovalSurface({ kind: "release", sessionId: root });
+      updateApprovalSurface({ kind: "release-owner", surface: first });
+      expect(approvalSurfaceRegistry.resolve(undefined)).toBeNull();
+    } finally {
+      for (const sessionId of [root, child, moved]) updateApprovalSurface({ kind: "release", sessionId });
+      updateApprovalSurface({ kind: "release-terminal", tabId: tab });
+      updateApprovalSurface({ kind: "attach-unattributed", surface: null });
+    }
+  });
+
+  it("rejects malformed common updates instead of silently ignoring contract violations", () => {
+    expect(() => updateApprovalSurface({ kind: "unknown" } as never)).toThrow("invalid update operation");
+    expect(() => updateApprovalSurface(undefined as never)).toThrow("invalid update operation");
+    expect(() => updateApprovalSurface(null as never)).toThrow("invalid update operation");
+    expect(() => updateApprovalSurface({ kind: "attach", sessionId: "", surface: null })).toThrow("empty identity");
+    expect(() => updateApprovalSurface({ kind: "release-owner", surface: undefined as never })).toThrow("invalid owner registration");
+    expect(() => updateApprovalSurface({ kind: "release-owner", surface: null as never })).toThrow("invalid owner release");
+  });
+
   it("has no owner until a host explicitly registers one", () => {
     const registry = new ApprovalSurfaceRegistry();
     const owner = surface();

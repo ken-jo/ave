@@ -2009,26 +2009,41 @@ remembered approvals, reviewer and parent decisions, and sealed rationale
 receipts do not establish fresh human consent.
 Fresh native consent is a gate-verified response to the current signed approval
 card, [consumed once by the host](../../src/permissions/judge/manual-approval.ts).
-The responder must be a registered application window's exact main frame and
-the live owner of the card's session or terminal. The host explicitly registers
-approval ownership when it creates a main chat, side panel, work pane or Work
-Board item run. Sub-agent children register a live link to their parent run's
-owner, including resumed children. Scheduled and background runs register their
-available trusted surface or explicitly register no surface. The approval
-resolver reads only this registry; chat holders, persisted ancestry and window
-focus cannot supply missing approval authority.
-Listing pending cards and answering them both read the current registration;
-moving the session or terminal updates it and transfers authority immediately,
-including to existing children. A valid card signature does not authorize a
-foreign window. Missing or foreign ownership rejects and audits the answer
-without settling the pending card or minting fresh consent. A new approval
-request with no registered live surface follows the headless deny path and
-explicitly names `no approval surface`.
+The renderer supplies the answer; the host verifies an allow answer and mints
+the one-use consent provenance. Rules, peers, agents and headless outcomes cannot
+resume a paused breaker. Renderers never author host-only provenance,
+`remoteControllerOrigin` or parent-adjudication facts, as defined by the
+[sub-agent approval chain](architecture.md#sub-agent-approval-chain-three-tiers).
+Only a registered application window's exact main frame can answer a card.
+Subframes, webviews, plugin, `render_html`, MCP-app and other non-app origins
+or partitions are rejected.
+
+The explicit owner registry controls delivery: the card reaches the surface
+currently hosting its session or terminal. Every attachment and lifecycle
+update uses `updateApprovalSurface`; the exported registry view only resolves
+owners. Main chat adoption and restore, side-panel load, tab detachment, work
+panes and Work Board runs register their current surface. Fresh and resumed
+sub-agents register live parent links; scheduled and background runs register
+their trusted surface or no surface. The resolver never infers a missing owner
+from chat holders, persisted ancestry or focused windows.
+Listing and answers use the current registration. A user-driven attach may
+transfer it to another app window, including when a replacement primary adopts
+a cached conversation; existing children follow their parent's registration.
+An answer from a currently unattached window is rejected and audited without
+settling the card or minting fresh consent. A new request with no registered
+live surface follows the headless deny path and names `no approval surface`.
+
+App windows are one trust level. An app renderer may perform an allowed attach
+and then answer that session's card, so per-window delivery binding does not
+defend against a compromised app renderer. That defense would need a
+trusted-chrome approval surface: a main-process-drawn prompt plus native input
+proof. The current approval surface does not provide that protection.
 If an owner closes without aborting the turn, an already pending card remains
 pending until the normal five-minute deny timeout. Losing its owner never
 auto-approves it; a registered replacement owner can answer before timeout.
 Remembering exact approvals or shell rules and requesting scope proposals use
-the same frame and live-owner checks; knowing a card id grants neither operation.
+the same registered-frame and current-delivery checks; knowing a card id grants
+neither operation.
 After all asynchronous hooks and route admission, one synchronous final gate
 rechecks cancellation, required audit integrity and writability, the shared
 breaker and plugin/remote authority immediately before entering the handler.

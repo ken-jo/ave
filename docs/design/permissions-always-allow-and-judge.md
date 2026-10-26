@@ -300,24 +300,38 @@ Every allow remains automated for pause checks unless the host has consumed
 verified fresh native human consent for that exact action. Policy grants,
 remembered approvals, reviewer decisions, parent decisions and sealed rationale
 receipts do not establish that provenance.
-Native approval requires a registered application window's exact main frame
-and live ownership of the card's session or terminal. Approval ownership is an
-explicit host registration for main chat, side panel, work pane and Work Board
-item runs. Sub-agent children, including resumed children, register live parent
-links; scheduled and background runs register their trusted surface or no
-surface. The resolver reads only the registry, without inferring authority from
-chat holders, persisted ancestry or focused windows.
-Pending-card listing and answers read the current registration, so ownership
-updates transfer authority immediately and existing children follow their
-parent. A valid signature never authorizes a foreign window. A rejected answer
-is audited, leaves the card pending for its owner and creates no fresh consent.
-A new request with no registered live surface denies with `no approval surface`
-under the headless semantics. If an owner closes without a turn abort, an
-already pending card stays pending until its normal five-minute deny timeout
-and is never auto-approved. A registered replacement owner can answer it before
-timeout.
+Only a verified allow answer to the current signed card from a registered
+application window's exact main frame can establish fresh consent and resume
+the paused breaker. Rules, peers, agents and headless outcomes cannot do so.
+The renderer supplies the answer; the host alone mints its provenance and supplies
+`remoteControllerOrigin` and parent-adjudication facts. Subframes, webviews,
+plugin, `render_html`, MCP-app and other non-app origins or partitions remain
+rejected.
+
+The explicit owner registry provides delivery correctness. Every attachment
+and lifecycle update goes through `updateApprovalSurface`; readers receive a
+resolve-only registry view. Main chat adoption and restore, side-panel load,
+tab detachment, work pane and Work Board attachments register their current
+surface. Fresh and resumed children register live parent links; scheduled and
+background runs register their trusted surface or no surface. The resolver
+never infers a missing owner from chat holders, persisted ancestry or focus.
+User-driven attachments legitimately transfer registration between app
+windows, including a replacement primary adopting a cached conversation, and
+existing children follow their parent. A currently unattached window's answer
+is rejected and audited without settling the card or creating fresh consent.
+
+App windows are one trust level. A renderer that can perform an allowed attach
+can then answer that conversation's card; delivery binding is not isolation
+against a compromised app renderer. Defending against that requires a
+trusted-chrome approval surface with a main-process-drawn prompt plus native
+input proof, which the current design does not provide.
+A new request without a registered live surface denies with
+`no approval surface` under the headless semantics. Owner closure without a
+turn abort leaves an already pending card until the normal five-minute deny
+timeout; it never auto-approves. A registered replacement owner can answer
+before timeout.
 Remembered grants and scope proposals share this
-[live-owner boundary](../architecture/permission-policy-design.md#automated-judge-chain).
+[delivery and registered-frame contract](../architecture/permission-policy-design.md#automated-judge-chain).
 One synchronous final gate runs immediately before the tool handler, after all
 asynchronous hooks and route admission. It rechecks cancellation, required audit
 integrity and writability, breaker state and plugin/remote authority, with no
