@@ -1665,6 +1665,15 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
 On Windows, an absent deny target outside every write grant is not stamped, while one a write grant can reach is still materialized and stamped so the sandbox cannot create it; machine-root rows retained by the policy filter remain eligible for stamping regardless of absence. Before adding a worker write grant, raw session and earlier-wrap denies plus the pending policy identify every overlapping obligation, including machine read rows and targets created after omission. An overlapping deny glob refuses the grant because a DACL cannot protect future matches. Native target DACLs determine existing deny strength; stamping unions that strength with the obligations so reusing the session holder cannot downgrade its earlier read protection. After stamping, even if it throws, native DACLs must show the sandbox SID's expected deny mask, subtree inheritance for directories, and parent delete-child protection. A missing or unverifiable target refuses the grant, as does any stamp failure; successful stamping alone proves nothing. Grant failures revoke only the grant holder. Worker release leaves session denies until teardown; placeholders remain. These are point-in-time checks: concurrent path or DACL changes and protected descendant DACLs remain limitations. An omitted target created outside write grants while a command is running is not denied until the next wrap or worker/session re-initialization.
 
+Grant proof uses the shipped path helper's synchronous handle-based DACL mode.
+It pins non-reparse path components and reads target and parent descriptors
+from those handles. Only leading explicit deny ACEs count; inherited denies or
+denies after an allow supply no proof. Obligation capture through native grant
+and publication contains no await. An obligation revision and session/seal
+check guard the effect boundary; asynchronous wraps recheck their captured
+session and seal immediately before entering the native wrapper. Reset
+invalidates admission before its first await.
+
 A failed native deny verification seals the session against further wraps and
 worker grants until reset. Confinement stays marked active so callers cannot
 fall back to host execution. Previously issued commands are not revoked by this

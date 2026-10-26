@@ -18,6 +18,8 @@
 #include <string>
 #include <vector>
 
+#include "deny-acl.h"
+
 namespace {
 
 bool is_drive(const wchar_t* text) {
@@ -42,6 +44,7 @@ bool write_utf8(const std::wstring& text) {
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
+  if (argc >= 2 && std::wstring(argv[1]) == L"--deny-acls") return print_deny_acls(argc, argv);
   if (argc != 2 || !is_drive(argv[1])) {
     std::fputs("usage: ave-path-kind.exe X:\n", stderr);
     return 2;

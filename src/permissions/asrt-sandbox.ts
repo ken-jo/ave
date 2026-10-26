@@ -321,6 +321,7 @@ interface AsrtSandboxSession {
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
   readonly windowsWrapDenyRead: Set<string>;
   readonly windowsWrapDenyWrite: Set<string>;
+  windowsDenyRevision: number;
   windowsDenyFailure?: Error;
 }
 
@@ -335,6 +336,17 @@ function assertWindowsDenyProtection(): void {
   if (sandboxSession?.windowsDenyFailure !== undefined) throw sandboxSession.windowsDenyFailure;
 }
 
+function assertWindowsSession(session: AsrtSandboxSession | undefined, revision?: number): void {
+  if (process.platform !== "win32") return;
+  if (session === undefined || sandboxSession !== session || !active) {
+    throw new Error("Windows sandbox session was reset");
+  }
+  assertWindowsDenyProtection();
+  if (revision !== undefined && session.windowsDenyRevision !== revision) {
+    throw new Error("Windows deny obligations changed");
+  }
+}
+
 function snapshotWindowsLiveGrants(session: AsrtSandboxSession | undefined): WindowsLiveGrantSnapshot {
   const entries = [...(session?.windowsLiveGrants ?? [])];
   return {
@@ -346,8 +358,14 @@ function snapshotWindowsLiveGrants(session: AsrtSandboxSession | undefined): Win
 // Deny ACEs affect the shared principal, including earlier wraps; retain their raw policy until session teardown.
 function rememberWindowsWrapDenies(filesystem: PerCommandFilesystem | undefined): void {
   if (process.platform !== "win32" || sandboxSession === undefined) return;
-  for (const path of filesystem?.denyRead ?? []) sandboxSession.windowsWrapDenyRead.add(path);
-  for (const path of filesystem?.denyWrite ?? []) sandboxSession.windowsWrapDenyWrite.add(path);
+  for (const [paths, retained] of [[filesystem?.denyRead, sandboxSession.windowsWrapDenyRead], [filesystem?.denyWrite, sandboxSession.windowsWrapDenyWrite]] as const) {
+    for (const path of paths ?? []) {
+      if (!retained.has(path)) {
+        retained.add(path);
+        sandboxSession.windowsDenyRevision += 1;
+      }
+    }
+  }
 }
 
 // Refcount shared socket directories across overlapping generations; one release must not remove another holder's allowance. Resolve registration only after config update and pair every successful register with unregister; Linux socket permission is path-blind.
@@ -1709,7 +1727,7 @@ export async function initializeAsrtSandbox(
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
-  sandboxSession = { windowsLiveGrants: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set() };
+  sandboxSession = { windowsLiveGrants: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set(), windowsDenyRevision: 0 };
   windowsProfileReadDenyWarnings.clear();
   windowsReadDenyWarnings.clear();
   windowsAbsentDenyWarnings.clear();
@@ -1774,6 +1792,7 @@ export async function wrapToolCommand(
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
   rememberWindowsWrapDenies(options.filesystem);
+  const session = sandboxSession;
   assertCommandId("wrapToolCommand", options.commandId);
   const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
@@ -1784,6 +1803,7 @@ export async function wrapToolCommand(
   const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence, snapshotWindowsLiveGrants(sandboxSession));
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
+  assertWindowsSession(session);
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -1953,6 +1973,7 @@ async function wrapLongLivedCommand(
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, caller);
   rememberWindowsWrapDenies(options.filesystem);
+  const session = sandboxSession;
   assertCommandId(caller, options.commandId);
   const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, caller, options.commandId);
@@ -1964,6 +1985,7 @@ async function wrapLongLivedCommand(
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
+  assertWindowsSession(session);
   const wrapped = await SandboxManager.wrapWithSandboxArgv(
     command,
     options.binShell,
@@ -2110,7 +2132,7 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
 }
 
 // Windows worker grants name a dedicated holder PID. Apply session denies before access, then publish the logical config; use one verified binary descriptor throughout.
-// Grants read native masks across awaits; overlapping read-stamp-verify turns could let a write-only restamp replace a read deny.
+// Each turn captures obligations and reads, stamps, verifies and grants without yielding.
 const windowsGrantTurns = createSerialQueue();
 
 export function grantWindowsWorkerFilesystemAccess(opts: {
@@ -2173,6 +2195,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
   assertPrivateHelperGrants(allowRead, allowWrite);
 
   const settings = withWorkerUnixSockets(_baseTrustedSettings);
+  const revision = session.windowsDenyRevision;
   const liveGrants = snapshotWindowsLiveGrants(session);
   const pending = buildSandboxConfig(settings, _baseReadDenyEvidence, {
     allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
@@ -2197,8 +2220,8 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
   }
   const rows = [...obligations.values()];
   const targets = rows.map(row => row.path);
-  const previous = await readWindowsDenyAcls(targets, sandboxUserSid);
-  if (sandboxSession !== session || !active) throw new Error("Windows filesystem grant session was reset");
+  const previous = readWindowsDenyAcls(targets, sandboxUserSid);
+  assertWindowsSession(session, revision);
   const denyRead = rows.filter((row, index) => row.read || (previous[index]!.denyMask & ~WINDOWS_WRITE_DENY_MASK) !== 0).map(row => row.path);
   const denyWrite = targets;
   if (targets.length > 0) {
@@ -2211,7 +2234,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
     }
     // Verify even after a partial stamp. Never release the session holder on failure.
     try {
-      const native = await readWindowsDenyAcls(targets, sandboxUserSid);
+      const native = readWindowsDenyAcls(targets, sandboxUserSid);
       const readTargets = new Set(denyRead);
       for (const [index, row] of rows.entries()) {
         const state = native[index]!;
@@ -2229,6 +2252,7 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
     if (stampFailure !== undefined) throw stampFailure;
   }
 
+  assertWindowsSession(session, revision);
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {
       grantWindowsAcl({
@@ -2303,8 +2327,6 @@ export async function cleanupAsrtSandboxAfterCommand(): Promise<void> {
 
 // Full teardown pass-through (`SandboxManager.reset`). Stops proxy servers and clears state.
 export async function resetAsrtSandbox(): Promise<void> {
-  const SandboxManager = await loadSandboxManager();
-  await SandboxManager.reset();
   // The host owns the processes. Their invocation release, after termination, still owns bare-layout cleanup even if the runtime is reset first.
   active = false;
   loadedSandboxManagerForRelease = undefined;
@@ -2319,6 +2341,10 @@ export async function resetAsrtSandbox(): Promise<void> {
   windowsAbsentDenyWarnings.clear();
   windowsDenyStatWarnings.clear();
   _workerUnixSocketDirs.clear();
+  // Invalidate admission before the first await; pending wraps must not reach
+  // the native runtime once teardown has been requested.
+  const SandboxManager = await loadSandboxManager();
+  await SandboxManager.reset();
   // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
   const { clearWrappedMcpServers, clearWrappedPluginWorkers, clearConfinedPluginChildren } =
     await import("./sandbox-capability.js");

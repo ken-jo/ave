@@ -1,17 +1,18 @@
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
-import { join, relative, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { initializeRequiredSandbox } from "../../__tests__/support/native-sandbox.js";
-import { checkAsrtDependencies, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
+import { checkAsrtDependencies, getVendoredSrtWinExePath, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { windowsSandboxCanSpawn } from "./test-helpers.js";
 import { holdWindowsFilesystemGrant } from "../windows-acl-grant-holder.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -21,9 +22,32 @@ vi.mock("node:os", async (importOriginal) => ({
 
 describe.runIf(process.platform === "win32")("Windows absent deny native enforcement", () => {
   let root: string;
+  let container: string;
+  let ancestorAces: string | undefined;
+
+  function readAncestorAces(): string {
+    const ancestors: string[] = [];
+    for (let path = dirname(container); ; path = dirname(path)) {
+      ancestors.push(path);
+      if (dirname(path) === path) break;
+    }
+    const sid = runtime.getWindowsSandboxUserStatus({ srtWin: runtime.resolveSrtWin({ path: getVendoredSrtWinExePath() }) }).sid;
+    if (!sid) throw new Error("Sandbox SID is required for ancestor verification");
+    return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), ["-NoProfile", "-NonInteractive", "-Command",
+      `$ErrorActionPreference='Stop'; foreach($p in @(${ancestors.map(path => `'${path.replace(/'/g, "''")}'`).join(",")})) {
+        $acl=Get-Acl -LiteralPath $p;
+        foreach($ace in $acl.GetAccessRules($true,$true,[Security.Principal.SecurityIdentifier])) {
+          if($ace.IdentityReference.Value -eq '${sid}') { $p; $ace.ToString(); [string]$ace.FileSystemRights; [string]$ace.InheritanceFlags; [string]$ace.PropagationFlags; [string]$ace.IsInherited }
+        }
+      }`], { encoding: "utf8", env: windowsPowerShellEnv(), windowsHide: true });
+  }
 
   beforeEach(async (context) => {
-    root = mkdtempSync(join(os.tmpdir(), "deny-absent-native-"));
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    container = mkdtempSync(join(os.tmpdir(), "deny-absent-native-"));
+    root = join(container, "root");
+    mkdirSync(root);
+    ancestorAces = undefined;
     vi.stubEnv("HOME", root);
     vi.stubEnv("USERPROFILE", root);
     vi.spyOn(os, "homedir").mockReturnValue(root);
@@ -39,6 +63,7 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
       if (process.env.CI) throw new Error("Native Windows sandbox cannot spawn on the provisioned runner");
       context.skip("Native Windows sandbox cannot spawn on this host; see capability warning");
     }
+    ancestorAces = readAncestorAces();
     const manager = runtime.SandboxManager;
     const initialize = manager.initialize.bind(manager);
     const wrap = manager.wrapWithSandboxArgv.bind(manager);
@@ -59,10 +84,19 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
   });
 
   afterEach(async () => {
-    if (isAsrtSandboxActive()) await resetAsrtSandbox();
-    vi.restoreAllMocks();
-    vi.unstubAllEnvs();
-    rmSync(root, { recursive: true, force: true });
+    try {
+      // Check while session stamps are still live, as well as after teardown.
+      if (ancestorAces !== undefined) expect(readAncestorAces()).toBe(ancestorAces);
+    } finally {
+      try {
+        if (isAsrtSandboxActive()) await resetAsrtSandbox();
+        if (ancestorAces !== undefined) expect(readAncestorAces()).toBe(ancestorAces);
+      } finally {
+        vi.restoreAllMocks();
+        vi.unstubAllEnvs();
+        rmSync(container, { recursive: true, force: true });
+      }
+    }
   });
 
   it("does not materialize a missing git leaf outside write grants during native initialization and reset", async () => {
@@ -95,7 +129,9 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
     await initializeRequiredSandbox({ allowRead: [root], denyRead: [target], denyWrite: [target] });
     const earlier = await wrapToolCommand(`echo unsafe > "${target}"`, { commandId: TEST_COMMAND_ID });
     expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+    const started = performance.now();
     const held = await holdWindowsFilesystemGrant({ label: "absent-deny-native", allowRead: [], allowWrite: [workspace] });
+    console.log(`GRANT_LATENCY_MS=${(performance.now() - started).toFixed(2)}`);
     try {
       expect(lstatSync(target, { throwIfNoEntry: false })).toBeDefined();
       const allowed = await wrapToolCommand(`echo allowed > "${sibling}"`, { commandId: TEST_COMMAND_ID });

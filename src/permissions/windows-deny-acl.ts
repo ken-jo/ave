@@ -1,12 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { lstatSync } from "node:fs";
 import { resolve } from "node:path";
-import { promisify } from "node:util";
-import { win32SystemBinary } from "../shared/ave-home.js";
+import { resolveWindowsPathKindHelper } from "../main/windows-path-kind-launcher.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
-import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
-
-const execFileAsync = promisify(execFile);
 
 export const WINDOWS_READ_DENY_MASK = 0x1f01ff;
 export const WINDOWS_WRITE_DENY_MASK = 0x10116;
@@ -18,63 +14,17 @@ export interface WindowsDenyAcl {
   readonly directory: boolean;
 }
 
-const READ_DENY_ACL_COMMAND = `
-$ErrorActionPreference = 'Stop'
-[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$request = ConvertFrom-Json ([Console]::In.ReadToEnd())
-$sid = [Security.Principal.SecurityIdentifier]::new($request.sid)
-function Read-DenyMasks($path) {
-  $acl = Get-Acl -LiteralPath $path
-  if (!$acl.AreAccessRulesCanonical) { throw 'Noncanonical DACL' }
-  $mask = 0L; $inheritable = 0L
-  foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
-    if ($rule.IdentityReference -ne $sid -or $rule.AccessControlType -ne 'Deny') { continue }
-    if (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0) { continue }
-    $rights = [long]$rule.FileSystemRights -band 0xffffffffL
-    $mask = $mask -bor $rights
-    if (($rule.InheritanceFlags -band 3) -eq 3 -and $rule.PropagationFlags -eq 0) {
-      $inheritable = $inheritable -bor $rights
-    }
-  }
-  return @{ mask = $mask; inheritable = $inheritable }
-}
-$rows = @(foreach ($path in $request.paths) {
-  $cursor = $path
-  while ($cursor) {
-    try { $item = Get-Item -LiteralPath $cursor -Force }
-    catch [System.Management.Automation.ItemNotFoundException] { $item = $null }
-    if ($item -and ($item.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw 'Reparse path cannot prove deny protection' }
-    $cursor = [IO.Path]::GetDirectoryName($cursor)
-  }
-  if (!(Test-Path -LiteralPath $path)) {
-    @{ denyMask = 0; inheritableMask = 0; parentMask = 0; directory = $false }
-    continue
-  }
-  $target = Get-Item -LiteralPath $path -Force
-  $masks = Read-DenyMasks $path
-  $parent = Read-DenyMasks ([IO.Path]::GetDirectoryName($path))
-  @{ denyMask = $masks.mask; inheritableMask = $masks.inheritable;
-     parentMask = $parent.mask; directory = [bool]$target.PSIsContainer }
-})
-ConvertTo-Json -InputObject $rows -Compress
-`;
-
-// Read-only evidence is refreshed for every grant; a successful stamp is not proof.
-// Async: one PowerShell start costs about 2 s, too long to hold the host event loop.
-export async function readWindowsDenyAcls(paths: readonly string[], sandboxUserSid: string): Promise<readonly WindowsDenyAcl[]> {
+// One short native call keeps obligation capture through publication in the same
+// event-loop turn. No child-process binding is evaluated on import.
+export function readWindowsDenyAcls(paths: readonly string[], sandboxUserSid: string): readonly WindowsDenyAcl[] {
   if (paths.length === 0) return [];
   const targets = paths.map(path => resolve(path));
   const identities = targets.map(path => lstatSync(path, { bigint: true, throwIfNoEntry: false }));
   try {
-    const pending = execFileAsync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
-      ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", READ_DENY_ACL_COMMAND], {
-        encoding: "utf8", windowsHide: true,
-        timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 2 * 1024 * 1024,
-        env: windowsPowerShellEnv(),
-      });
-    pending.child.stdin?.end(JSON.stringify({ paths: targets, sid: sandboxUserSid }));
-    const { stdout: output } = await pending;
+    const output = execFileSync(resolveWindowsPathKindHelper(), ["--deny-acls", sandboxUserSid, ...targets], {
+      encoding: "utf8", windowsHide: true,
+      timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs, maxBuffer: 2 * 1024 * 1024,
+    });
     const rows: unknown = JSON.parse(output);
     if (!Array.isArray(rows) || rows.length !== paths.length) throw new Error("Invalid deny DACL response");
     return rows.map((row: WindowsDenyAcl, index) => {
