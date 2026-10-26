@@ -1,3 +1,4 @@
+import "../../__tests__/support/trusted-powershell.js";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -29,7 +30,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return {
     ...await importOriginal<typeof import("node:child_process")>(),
     spawn: vi.fn((executable: string) => {
-      if (executable !== "pwsh") throw new Error("Unexpected fixture subprocess");
+      if (executable !== "/opt/microsoft/powershell/7/pwsh") throw new Error("Unexpected fixture subprocess");
       const parser = Object.assign(new EventEmitter(), {
         stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
       });
