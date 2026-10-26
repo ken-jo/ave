@@ -45,6 +45,7 @@ vi.mock("../../../main/terminal/pty-manager.js", () => ({
 }));
 import { CHANNELS } from "../../../contract/app-contract.js";
 import { deferred } from "../../../__tests__/test-helpers.js";
+import * as shellTasks from "../../../tools/shell-tools.js";
 
 function rendererContents(senderId = 1): EventEmitter & { id: number } {
   return Object.assign(new EventEmitter(), { id: senderId });
@@ -808,6 +809,26 @@ describe("pane chats are their own conversations", () => {
     handlers.get(CHANNELS.sidechat.send)!(ev("file:///index.html", 1, sender), payload);
   const endPane = (tab: { tabId: string }, reason: string) =>
     handlers.get(CHANNELS.sidechat.endPaneChat)!(ev("file:///index.html"), { tabId: tab.tabId, reason });
+
+  it("binds command controls to the exact side session and its renderer owner", async () => {
+    const { rail, pane } = setup();
+    await sendFrom({ input: "rail" });
+    await sendFrom({ input: "pane", surface: PANE_A });
+    const paneSessionId = pane(PANE_A)!.getSessionId();
+    const list = vi.spyOn(shellTasks, "listShellTasks").mockReturnValue([]);
+    const control = vi.spyOn(shellTasks, "controlShellTask").mockReturnValue({ ok: true, shellId: "owned-shell" });
+    try {
+      expect(handlers.get(CHANNELS.sidechat.listShellTasks)!(ev("file:///index.html"), RAIL_SESSION)).toEqual([]);
+      expect(list).toHaveBeenCalledWith(RAIL_SESSION);
+      expect(handlers.get(CHANNELS.sidechat.controlShellTask)!(ev("file:///index.html"), paneSessionId, "background")).toEqual({ ok: true, shellId: "owned-shell" });
+      expect(control).toHaveBeenCalledWith(paneSessionId, "background", undefined);
+      expect(handlers.get(CHANNELS.sidechat.controlShellTask)!(ev("file:///index.html", 2), paneSessionId, "background")).toEqual({ ok: false, error: "session-changed" });
+      expect(handlers.get(CHANNELS.sidechat.controlShellTask)!(ev("file:///index.html", 2), RAIL_SESSION, "background")).toEqual({ ok: false, error: "session-changed" });
+      rail.getSessionId.mockReturnValue(OTHER_RAIL_SESSION);
+      expect(handlers.get(CHANNELS.sidechat.controlShellTask)!(ev("file:///index.html"), RAIL_SESSION, "background")).toEqual({ ok: false, error: "session-changed" });
+      expect(control).toHaveBeenCalledTimes(1);
+    } finally { list.mockRestore(); control.mockRestore(); }
+  });
 
   it("runs a pane's turn on that pane's own loop, binds it to the pane and records the pane on its row", async () => {
     const { rail, store, pane } = setup();
