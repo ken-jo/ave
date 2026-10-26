@@ -180,8 +180,8 @@ afterEach(async () => {
 });
 
 // Strip the directory marker only for comparisons with the literal floor.
-function bare(paths: readonly unknown[]): string[] {
-  return paths.map((path) => String(path).replace(/[\\/]$/, ""));
+function bare(paths: readonly FilesystemPathEntry[]): string[] {
+  return paths.map(path => (typeof path === "string" ? path : path.path).replace(/[\\/]$/, ""));
 }
 
 // Expected rows for the absent, ungranted profile targets in these config-only tests.
@@ -738,9 +738,9 @@ describe.runIf(process.platform === "win32")("asrt-sandbox — session read evid
       await wrapTerminalCommand("echo covered", { commandId: TEST_COMMAND_ID, ownTty: "/dev/ttys000",
         filesystem: { denyRead: [target] } });
       expect(wrap).toHaveBeenCalledTimes(3);
-      expect(wrap.mock.calls[0]?.[2]?.filesystem?.denyRead).toContain(target);
-      expect(wrap.mock.calls[1]?.[2]?.filesystem?.denyRead).toContain(target);
-      expect(wrap.mock.calls[2]?.[2]?.filesystem?.denyRead).toContain(target);
+      expect(bare(wrap.mock.calls[0]?.[2]?.filesystem?.denyRead ?? [])).toContain(realpathSync.native(target));
+      expect(bare(wrap.mock.calls[1]?.[2]?.filesystem?.denyRead ?? [])).toContain(realpathSync.native(target));
+      expect(bare(wrap.mock.calls[2]?.[2]?.filesystem?.denyRead ?? [])).toContain(realpathSync.native(target));
       expect(reader).not.toHaveBeenCalled();
     } finally {
       rmSync(target);

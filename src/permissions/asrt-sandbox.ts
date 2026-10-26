@@ -2,7 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { containsGlobCharsWin, globPatternBaseDir, isUncPath, normalizePathForSandbox, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
-import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { pinWindowsFilesystemConfig } from "./windows-stamp-targets.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
@@ -1545,11 +1545,10 @@ async function discardFailedAsrtInitialization(
 // Initialize once from trusted settings and publish activity only after native execution succeeds. Empty global allow lists plus non-strict mode route each connection to the ask callback; on macOS/Linux accept only listener-vouched identities and literal true allows. Log monitoring defaults off.
 function checkWindowsSandboxStampTargets(filesystem: Partial<FilesystemConfig> | undefined): void {
   if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || process.platform !== "win32") return;
-  // Expand as the runtime does before it stamps, so each glob match is checked; deny mode also keeps missing literals.
-  const targets = expandWindowsFsPaths([
+  const targets = [
     ...(filesystem?.denyRead ?? []), ...(filesystem?.denyWrite ?? []),
     ...(filesystem?.allowWrite ?? []), ...(filesystem?.allowRead ?? []),
-  ], { mode: "deny" }).filter((path) => !isUncPath(path));
+  ].map(entry => typeof entry === "string" ? entry : entry.path).filter(path => !isUncPath(path));
   checkSandboxStampTargets(targets);
 }
 
@@ -1577,6 +1576,7 @@ export async function initializeAsrtSandbox(
     useAppOwnedSandboxTempRoot();
     _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
     const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings), _baseReadDenyEvidence);
+    config.filesystem = pinWindowsFilesystemConfig(config.filesystem);
     assertNoLocalBinding(config);
     noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
     // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
@@ -1639,6 +1639,7 @@ export async function wrapToolCommand(
   const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
     : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
   const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence);
+  if (customConfig) customConfig.filesystem = pinWindowsFilesystemConfig(customConfig.filesystem);
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
@@ -1650,6 +1651,7 @@ export async function wrapToolCommand(
     undefined,
     { commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
+  checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
@@ -1817,6 +1819,7 @@ async function wrapLongLivedCommand(
   const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
     : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
   const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence);
+  if (customConfig) customConfig.filesystem = pinWindowsFilesystemConfig(customConfig.filesystem);
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
@@ -1829,6 +1832,7 @@ async function wrapLongLivedCommand(
     undefined,
     { ...wrapOptions, commandId: options.commandId, denyUnixSockets: options.denyUnixSockets },
   );
+  checkWindowsSandboxStampTargets(customConfig?.filesystem);
   const result = applySandboxFilesystemPolicy(wrapped, customConfig?.filesystem, () => SandboxManager.cleanupAfterCommand());
   return trackBareRepositoryCleanup({ ...result, ...(gitControlSnapshot ? { gitControlSnapshot } : {}), ...(customConfig?.filesystem ? { filesystemPolicy: customConfig.filesystem } : {}), ...(notices.length ? { notices: Object.freeze(notices) } : {}) }, options.commandId, cleanupBare,
     () => invocation !== undefined && egressInvocationOwner(options.commandId) === undefined);
@@ -1937,7 +1941,10 @@ export async function registerWorkerUnixSocketDir(socketDir: string, holder: obj
       throw new Error("Socket directory registration was released before acquisition completed");
     }
     // Other pending dirs belong to their own push. Including them here could retain an allowance after that dir's push fails and its holders reject.
-    SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir), _baseReadDenyEvidence));
+    const config = buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir), _baseReadDenyEvidence);
+    config.filesystem = pinWindowsFilesystemConfig(config.filesystem);
+    checkWindowsSandboxStampTargets(config.filesystem);
+    SandboxManager.updateConfig(config);
     entry.registered = true;
   } catch (error) {
     // Every holder of this entry — this caller and any waiter — sees the throw, treats the dir as not registered, and will not release it.
@@ -1961,9 +1968,10 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
   if (!active || _baseTrustedSettings === undefined) return;
   const SandboxManager = await loadSandboxManager();
   if (!active || _baseTrustedSettings === undefined) return;
-  SandboxManager.updateConfig(
-    buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence),
-  );
+  const config = buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence);
+  config.filesystem = pinWindowsFilesystemConfig(config.filesystem);
+  checkWindowsSandboxStampTargets(config.filesystem);
+  SandboxManager.updateConfig(config);
 }
 
 // Windows worker grants require a dedicated holder PID; per-exec allow lists and live config filesystem changes are unsupported. Thread one explicitly resolved verified binary descriptor through status, grant, rollback and release.
@@ -1981,12 +1989,13 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   if (process.platform !== "win32") {
     throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
   }
-  checkWindowsSandboxStampTargets({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
+  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets([...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]);
+  const pinned = pinWindowsFilesystemConfig<Partial<FilesystemConfig>>({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
+  checkWindowsSandboxStampTargets(pinned);
   const {
     getWindowsSandboxUserStatus,
     grantWindowsAcl,
     revokeWindowsAcl,
-    expandWindowsFsPaths,
     resolveSrtWin,
   } = await import("@anthropic-ai/sandbox-runtime");
 
@@ -1999,18 +2008,14 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
     );
   }
 
-  const allowWrite = [
-    ...new Set(expandWindowsFsPaths([...(opts.allowWrite ?? [])])),
-  ];
-  const allowRead = [
-    ...new Set(expandWindowsFsPaths([
-      ...(opts.allowRead ?? []),
-      ...allowWrite,
-    ])),
-  ];
+  const allowWrite = [...new Set((pinned.allowWrite ?? []).map(entry => typeof entry === "string" ? entry : entry.path))];
+  const allowRead = [...new Set([
+    ...(pinned.allowRead ?? []).map(entry => typeof entry === "string" ? entry : entry.path),
+    ...allowWrite,
+  ])];
 
   assertPrivateHelperGrants(allowRead, allowWrite);
-  checkWindowsSandboxStampTargets({ allowRead, allowWrite });
+  checkWindowsSandboxStampTargets(pinned);
 
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {

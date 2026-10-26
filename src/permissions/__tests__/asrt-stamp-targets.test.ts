@@ -1,11 +1,23 @@
-import { writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { FilesystemConfig, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import * as homeGuard from "../../shared/ave-home-test-guard.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { useScratchLinks, useTempDirs } from "../../__tests__/test-helpers.js";
 import * as policyHome from "../../shared/policy-home.js";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+
+vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => {
+  const actual = await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>();
+  return {
+    ...actual,
+    getWindowsSandboxUserStatus: vi.fn(actual.getWindowsSandboxUserStatus),
+    grantWindowsAcl: vi.fn(actual.grantWindowsAcl),
+    revokeWindowsAcl: vi.fn(actual.revokeWindowsAcl),
+  };
+});
 
 useVerifiedAveHomePrivacy();
 const scratch = useTempDirs("stamp-targets-");
@@ -25,6 +37,10 @@ async function initializeFixtureSandbox() {
   const sandbox = await import("../asrt-sandbox.js");
   await sandbox.initializeAsrtSandbox({ windows: { externalConfinement: true } });
   return { SandboxManager, sandbox };
+}
+
+function runtimeDenyWrite(filesystem: Partial<FilesystemConfig> | undefined): string[] {
+  return expandWindowsFsPaths(filesystem?.denyWrite ?? [], { mode: "deny" }).map(path => resolve(path));
 }
 
 describe.runIf(process.platform === "win32")("sandbox stamp target isolation", () => {
@@ -190,5 +206,285 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       holderPid: process.pid,
       allowRead: [join(inject("realAccountHome"), ".curlrc")],
     })).rejects.toThrow(refusal);
+  });
+
+  it("pins session glob matches before the runtime's asynchronous lookups", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const existing = join(process.env.USERPROFILE!, "existing.stamp-fixture");
+    const late = join(process.env.USERPROFILE!, "late.stamp-fixture");
+    const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
+    writeFileSync(existing, "");
+    vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      writeFileSync(late, "");
+      const paths = runtimeDenyWrite(config.filesystem);
+      expect(paths).toContain(existing);
+      expect(paths).not.toContain(late);
+      expect(config.filesystem.denyWrite).not.toContain(glob);
+    });
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await initializeAsrtSandbox({ windows: { externalConfinement: true }, denyWrite: [glob] });
+  });
+
+  it("pins tool glob matches before the runtime's asynchronous lookups", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const existing = join(process.env.USERPROFILE!, "existing.stamp-fixture");
+    const late = join(process.env.USERPROFILE!, "late.stamp-fixture");
+    const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
+    writeFileSync(existing, "");
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      writeFileSync(late, "");
+      const paths = runtimeDenyWrite(config?.filesystem);
+      expect(paths).toContain(existing);
+      expect(paths).not.toContain(late);
+      expect(config?.filesystem?.denyWrite).not.toContain(glob);
+      return { argv: ["fixture"], env: {} };
+    });
+    await sandbox.wrapToolCommand("echo fixture", { commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [glob] } });
+  });
+
+  it("pins a session junction glob to its canonical fixture before re-pointing", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const target = scratch();
+    const existing = join(target, "existing.stamp-fixture");
+    writeFileSync(existing, "");
+    const alias = link(target, join(scratch(), "alias"));
+    vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      rmdirSync(alias);
+      link(inject("realAccountHome"), alias);
+      runtimeDenyWrite(config.filesystem);
+    });
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, denyWrite: [join(alias, "*.stamp-fixture")] }))
+      .rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
+  it("pins a tool junction literal and its missing tail before re-pointing", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const target = scratch();
+    const alias = link(target, join(scratch(), "alias"));
+    const canonical = join(realpathSync.native(target), "missing", "leaf");
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      expect(runtimeDenyWrite(config?.filesystem)).toContain(canonical);
+      rmdirSync(alias);
+      link(inject("realAccountHome"), alias);
+      runtimeDenyWrite(config?.filesystem);
+      return { argv: ["fixture"], env: {} };
+    });
+    await expect(sandbox.wrapToolCommand("echo fixture", {
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(alias, "missing", "leaf")] },
+    })).rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
+  it("keeps both the fixture junction spelling and canonical target in deny lists", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const target = scratch();
+    const alias = link(target, join(scratch(), "alias"));
+    vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      for (const entries of [config.filesystem.denyRead, config.filesystem.denyWrite]) {
+        expect(entries.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
+        expect(expandWindowsFsPaths(entries, { mode: "deny" }).map(path => resolve(path)))
+          .toEqual(expect.arrayContaining([alias, realpathSync.native(target)]));
+      }
+    });
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await initializeAsrtSandbox({ windows: { externalConfinement: true }, denyRead: [alias], denyWrite: [alias] });
+  });
+
+  it("refuses both deny spellings when a fixture junction is re-pointed before consumption", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const target = scratch();
+    const alias = link(target, join(scratch(), "alias"));
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      const entries = (config?.filesystem?.denyWrite ?? []).filter(entry => {
+        const path = typeof entry === "string" ? entry : entry.path;
+        return path === alias || path === realpathSync.native(target);
+      });
+      expect(entries.map(entry => typeof entry === "string" ? entry : entry.path))
+        .toEqual([alias, realpathSync.native(target)]);
+      rmdirSync(alias);
+      link(scratch(), alias);
+      for (const entry of entries) {
+        expect(() => typeof entry === "string" ? entry : entry.path).toThrow(/Sandbox stamp target identity changed/);
+      }
+      runtimeDenyWrite(config?.filesystem);
+      return { argv: ["fixture"], env: {} };
+    });
+    await expect(sandbox.wrapToolCommand("echo fixture", {
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [alias] },
+    })).rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
+  it("keeps only the canonical fixture junction target in grant lists", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const target = scratch();
+    const alias = link(target, join(scratch(), "alias"));
+    vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      rmdirSync(alias);
+      link(scratch(), alias);
+      for (const entries of [config.filesystem.allowRead ?? [], config.filesystem.allowWrite]) {
+        expect(entries.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
+        expect(expandWindowsFsPaths(entries, { mode: "grant" }).map(path => resolve(path)))
+          .toEqual([realpathSync.native(target)]);
+      }
+    });
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await initializeAsrtSandbox({ windows: { externalConfinement: true }, allowRead: [alias], allowWrite: [alias] });
+  });
+
+  it("refuses a deny with a missing tail when an intermediate junction target is re-pointed", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const intermediate = link(scratch(), join(scratch(), "intermediate"));
+    const alias = link(intermediate, join(scratch(), "alias"));
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      rmdirSync(intermediate);
+      link(inject("realAccountHome"), intermediate);
+      runtimeDenyWrite(config?.filesystem);
+      return { argv: ["fixture"], env: {} };
+    });
+    await expect(sandbox.wrapToolCommand("echo fixture", {
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(alias, "missing", "leaf")] },
+    })).rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
+  it("refuses a replaced literal when the runtime consumes the pinned session list", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const target = join(scratch(), "target");
+    writeFileSync(target, "original");
+    vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      renameSync(target, target + "-original");
+      writeFileSync(target, "replacement");
+      runtimeDenyWrite(config.filesystem);
+    });
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await expect(initializeAsrtSandbox({ windows: { externalConfinement: true }, denyWrite: [target] }))
+      .rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
+  it("refuses a replaced ancestor when the runtime consumes a pinned tool list", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const target = join(scratch(), "target");
+    mkdirSync(target);
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      renameSync(target, target + "-original");
+      link(inject("realAccountHome"), target);
+      runtimeDenyWrite(config?.filesystem);
+      return { argv: ["fixture"], env: {} };
+    });
+    await expect(sandbox.wrapToolCommand("echo fixture", {
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(target, "missing")] },
+    })).rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
+  it("pins rebuilt session configs on worker registration and release", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const updates: SandboxRuntimeConfig[] = [];
+    vi.spyOn(SandboxManager, "updateConfig").mockImplementation(config => { updates.push(config); });
+    const holder = {};
+    const socketDir = scratch();
+    await sandbox.registerWorkerUnixSocketDir(socketDir, holder);
+    await sandbox.unregisterWorkerUnixSocketDir(socketDir, holder);
+    expect(updates).toHaveLength(2);
+    for (const config of updates) {
+      for (const entries of [config.filesystem.denyRead, config.filesystem.denyWrite, config.filesystem.allowRead, config.filesystem.allowWrite]) {
+        expect(entries?.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
+      }
+    }
+  });
+
+  it("preserves grant and deny expansion modes and missing directory markers", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const root = scratch();
+    const readable = join(root, "readable");
+    const writable = join(root, "writable");
+    const missingGrant = join(root, "missing-grant");
+    const missingDeny = join(root, "missing-deny");
+    writeFileSync(readable, "");
+    writeFileSync(writable, "");
+    vi.spyOn(SandboxManager, "initialize").mockImplementation(async config => {
+      const filesystem = config.filesystem;
+      expect(expandWindowsFsPaths(filesystem.allowRead ?? [], { mode: "grant" }).map(path => resolve(path))).toEqual([readable]);
+      expect(expandWindowsFsPaths(filesystem.allowWrite, { mode: "grant" }).map(path => resolve(path))).toEqual([writable]);
+      expect(expandWindowsFsPaths(filesystem.denyRead, { mode: "deny" }).map(path => resolve(path))).toContain(missingDeny);
+      const entries = filesystem.denyWrite.map(entry => typeof entry === "string" ? entry : entry.path);
+      expect(entries).toContain(missingDeny + "\\");
+      for (const list of [filesystem.allowRead, filesystem.allowWrite, filesystem.denyRead, filesystem.denyWrite]) {
+        expect(list?.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
+      }
+    });
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await initializeAsrtSandbox({
+      windows: { externalConfinement: true },
+      allowRead: [readable, missingGrant], allowWrite: [writable, missingGrant],
+      denyRead: [missingDeny], denyWrite: [missingDeny + "\\"],
+    });
+  });
+
+  it("pins worker and terminal wrap lists before the runtime reads them", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const target = join(scratch(), "target");
+    writeFileSync(target, "");
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      const entries = config?.filesystem?.denyWrite ?? [];
+      expect(entries.every(entry => typeof entry !== "string" && entry.literal === true)).toBe(true);
+      expect(runtimeDenyWrite(config?.filesystem)).toContain(realpathSync.native(target));
+      return { argv: ["fixture"], env: {} };
+    });
+    await sandbox.wrapWorkerCommand("echo fixture", { commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [target] } });
+    await sandbox.wrapTerminalCommand("echo fixture", { commandId: TEST_COMMAND_ID, ownTty: "/dev/ttys000", filesystem: { denyWrite: [target] } });
+    expect(SandboxManager.wrapWithSandboxArgv).toHaveBeenCalledTimes(2);
+  });
+
+  it("refuses a literal replaced after runtime expansion before wrap return", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const target = join(scratch(), "target");
+    writeFileSync(target, "original");
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      expect(runtimeDenyWrite(config?.filesystem)).toContain(target);
+      renameSync(target, target + "-original");
+      writeFileSync(target, "replacement");
+      return { argv: ["fixture"], env: {} };
+    });
+    await expect(sandbox.wrapToolCommand("echo fixture", {
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [target] },
+    })).rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
+  it("grants exactly the canonical matches checked before account lookup", async () => {
+    const { sandbox } = await initializeFixtureSandbox();
+    const runtime = await import("@anthropic-ai/sandbox-runtime");
+    const integrity = await import("../srt-win-integrity.js");
+    const target = scratch();
+    const existing = join(target, "existing.stamp-fixture");
+    const late = join(target, "late.stamp-fixture");
+    writeFileSync(existing, "");
+    const alias = link(target, join(scratch(), "alias"));
+    const executable = join(scratch(), "fixture.exe");
+    writeFileSync(executable, "fixture");
+    vi.spyOn(integrity, "prepareSrtWinExecutable").mockReturnValue(executable);
+    vi.spyOn(runtime, "getWindowsSandboxUserStatus").mockImplementation(() => {
+      writeFileSync(late, "");
+      rmdirSync(alias);
+      link(inject("realAccountHome"), alias);
+      return {
+        provisioned: true, credPresent: true, sid: "S-1-5-21-100-200-300-1001",
+        groupExists: true, inBuiltinUsers: false, inSandboxGroup: true, hiddenFromLogon: true,
+        realUserSid: "S-1-5-21-100-200-300-1002",
+      };
+    });
+    const grant = vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
+    vi.spyOn(runtime, "revokeWindowsAcl").mockImplementation(() => {});
+    const checked = vi.spyOn(homeGuard, "checkSandboxStampTargets");
+    const held = await sandbox.grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowWrite: [join(alias, "*.stamp-fixture")] });
+    expect(held.allowWrite).toEqual([realpathSync.native(existing)]);
+    expect(held.allowRead).toEqual(held.allowWrite);
+    expect(new Set(checked.mock.calls[1]![0])).toEqual(new Set(held.allowRead));
+    expect(grant).toHaveBeenCalledWith(expect.objectContaining({ read: held.allowRead, write: held.allowWrite }));
+    held.release();
   });
 });
