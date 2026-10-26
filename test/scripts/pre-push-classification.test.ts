@@ -77,6 +77,20 @@ function classify(entries: ReturnType<typeof modified>[], options: Classificatio
 }
 
 describe("pre-push classification precedence", () => {
+  it("selects the app icon asset suite for a test-only push", () => {
+    const path = "src/main/__tests__/app-icon-assets.test.ts";
+    expect(selectTargetedAveAppVitestFiles([modified(path)])).toMatchObject({
+      eligible: true, files: [path],
+    });
+    expect(classify([modified(path)])).toMatchObject({
+      testOnly: true, testFiles: [path],
+    });
+    for (const name of ["desktop-packaging", "tray-icon"]) {
+      expect(selectTargetedAveAppVitestFiles([modified(`src/main/__tests__/${name}.test.ts`)]).eligible)
+        .toBe(false);
+    }
+  });
+
   it.each([
     ["an orphan branch", { baseFailure: "no common base with a remote default or integration branch" }],
     ["a failed remote lookup", { baseFailure: "git ls-remote failed" }],

@@ -8,6 +8,7 @@ import { PAGE_PREVIEW_LIMITS, type PreviewPageDocument, type PreviewPageFormat }
 import { TableDocumentError } from "./table-document-error.js";
 import { CFB_MAGIC } from "./workbook-container.js";
 import { verifyZipInflateLimits } from "./zip-inflate-guard.js";
+import { isUnicodeBoundary } from "../shared/bounded-tool-output.js";
 
 const RELATIONSHIP_BASES = [
   "http://schemas.openxmlformats.org/officeDocument/2006/relationships/",
@@ -114,7 +115,8 @@ function boundedParagraphs(values: Iterable<string>): { paragraphs: string[]; te
       textTruncated = true;
       break;
     }
-    const shown = text.slice(0, PAGE_PREVIEW_LIMITS.maxTextChars - characters);
+    const limit = Math.min(text.length, PAGE_PREVIEW_LIMITS.maxTextChars - characters);
+    const shown = text.slice(0, isUnicodeBoundary(text, limit) ? limit : limit - 1);
     paragraphs.push(shown);
     characters += shown.length;
     if (shown.length !== text.length) { textTruncated = true; break; }
