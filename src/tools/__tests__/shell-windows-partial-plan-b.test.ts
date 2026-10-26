@@ -185,6 +185,7 @@ const SHELLS = [
 
 describe("builtin shell - Windows partial Plan-B native execution", () => {
   beforeEach(() => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     __resetShellResolverCache();
     childProcessMock.spawn.mockReset();
     childProcessMock.execFileSync.mockReset();
@@ -203,6 +204,7 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
     __resetShellResolverCache();
@@ -289,6 +291,8 @@ describe.each(["darwin", "linux", "win32"] as const)(
   "builtin shell - requested-unavailable %s native execution",
   (platform) => {
     beforeEach(() => {
+      // The win32 group resolves Windows shells on POSIX runners too, which needs SystemRoot.
+      vi.stubEnv("SystemRoot", "C:\\Windows");
       __resetShellResolverCache();
       childProcessMock.spawn.mockReset();
       childProcessMock.execFileSync.mockReset();
@@ -306,6 +310,7 @@ describe.each(["darwin", "linux", "win32"] as const)(
     });
 
     afterEach(() => {
+      vi.unstubAllEnvs();
       __resetActiveSandboxCapabilityForTest();
       __resetSandboxRequestedAtBootForTest();
       __resetShellResolverCache();

@@ -1,5 +1,6 @@
 // A host-owned holder PID keeps explicit filesystem grants alive; release revokes them and crash recovery prunes dead holders. All confined processes share one account, so concurrent plugins can reach each other's held grants: this provides no inter-plugin isolation (docs/design/plugin-hostapi-protocol.md).
 import { spawn, type ChildProcess } from "node:child_process";
+import { win32SystemBinary, windowsSystemRoot } from "../shared/windows-system-path.js";
 
 import { terminateChildProcess } from "../tools/terminate-child-process.js";
 import {
@@ -10,19 +11,6 @@ import {
   grantWindowsWorkerFilesystemAccess,
   type WindowsWorkerFilesystemGrant,
 } from "./asrt-sandbox.js";
-
-function windowsSystemRoot(): string {
-  const root = process.env.SystemRoot ?? process.env.WINDIR;
-  if (root === undefined || root.trim().length === 0) {
-    throw new Error("[windows-acl-grant-holder] cannot start Windows ACL grant holder: SystemRoot is unset");
-  }
-  return root.replace(/[\\/]+$/, "");
-}
-
-function windowsSystem32Path(fileName?: string): string {
-  const system32 = `${windowsSystemRoot()}\\System32`;
-  return fileName === undefined ? system32 : `${system32}\\${fileName}`;
-}
 
 function windowsHolderEnv(): NodeJS.ProcessEnv {
   const root = windowsSystemRoot();
@@ -47,9 +35,9 @@ export function terminateChildBestEffort(child: ChildProcess): void {
 
 // Start the holder process a grant is refcounted against: a pinned System32 binary, never resolved through `PATH`, that does nothing but stay alive until its stdin is closed or it is terminated.
 export function startWindowsAclGrantHolder(label: string): ChildProcess {
-  const system32 = windowsSystem32Path();
+  const system32 = win32SystemBinary("");
   assertManagedChildProcessAdmissionOpen(label);
-  const child = spawn(windowsSystem32Path("more.com"), [], {
+  const child = spawn(win32SystemBinary("more.com"), [], {
     cwd: system32,
     stdio: ["pipe", "ignore", "ignore"],
     shell: false,

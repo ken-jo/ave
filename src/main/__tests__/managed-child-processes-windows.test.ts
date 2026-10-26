@@ -27,6 +27,7 @@ function makeChild() {
 }
 
 beforeEach(() => {
+  vi.stubEnv("SystemRoot", "C:\\Windows");
   Object.defineProperty(process, "platform", { value: "win32" });
   vi.useFakeTimers();
   runners = [];
@@ -39,6 +40,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   __resetManagedChildProcessesForTest();
   Object.defineProperty(process, "platform", originalPlatform);
   vi.useRealTimers();

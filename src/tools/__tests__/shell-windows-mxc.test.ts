@@ -114,6 +114,7 @@ function context(toolUseId: string): ToolExecutionContext {
 
 describe("builtin shell — Windows MXC containers", () => {
   beforeEach(() => {
+    vi.stubEnv("SystemRoot", "C:\\Windows");
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
       args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
@@ -129,6 +130,7 @@ describe("builtin shell — Windows MXC containers", () => {
   });
 
   afterEach(() => {
+    vi.unstubAllEnvs();
     __resetActiveSandboxCapabilityForTest();
     __resetSandboxRequestedAtBootForTest();
     __resetWindowsSandboxSubstrateForTest();
@@ -217,6 +219,23 @@ describe("builtin shell — Windows MXC containers", () => {
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
     expect(result.output).toContain("the sandbox proxy is not running");
     expect(childProcessMock.spawn.mock.calls.some((call) => call[0] === WXC_EXEC)).toBe(false);
+  });
+
+  it("refuses a missing system root before preparing or spawning a container", async () => {
+    bootMxcShells();
+    const roots = ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"];
+    const previous = roots.map(key => process.env[key]);
+    try {
+      for (const key of roots) vi.stubEnv(key, undefined);
+      const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("missing-system-root"));
+      expect(result.isError).toBe(true);
+      expect(result.output).toMatch(/system root/i);
+      expect(mxcLaunchMock.prepare).not.toHaveBeenCalled();
+      expect(childProcessMock.spawn.mock.calls.some(call => call[0] === WXC_EXEC)).toBe(false);
+    } finally {
+      vi.unstubAllEnvs();
+      roots.forEach((key, index) => { if (previous[index] !== undefined) process.env[key] = previous[index]; });
+    }
   });
 
   it("releases the listener when the launcher fails to spawn and never closes", async () => {

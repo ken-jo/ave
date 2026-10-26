@@ -1,10 +1,15 @@
 // Assert whether lookup ran as well as its answer: null means local disk, while rejection means lookup failure.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { useTempDirs } from "../../../__tests__/test-helpers.js";
 import {
   InvalidDriveLetterError,
   resolveMappedDriveRoot,
   type MappedDriveRootDeps,
 } from "../mapped-drive-root.js";
+
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 function stubDeps(
   platform: NodeJS.Platform,
@@ -22,6 +27,22 @@ function stubDeps(
 }
 
 describe("resolveMappedDriveRoot", () => {
+  const temporaryDirectory = useTempDirs("mapped-drive-shell-");
+  it.runIf(process.platform === "win32")("uses the absolute system shell despite a planted PATH entry", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const planted = temporaryDirectory();
+    writeFileSync(join(planted, "powershell.exe"), "invalid executable");
+    vi.stubEnv("PATH", planted);
+    // A successful lookup proves the invalid PATH image was never executed.
+    await expect(resolveMappedDriveRoot("Z:")).resolves.toSatisfy(value => value === null || typeof value === "string");
+  });
+
+  it("refuses lookup without an absolute local system root before spawning", async () => {
+    vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    for (const key of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(key, undefined);
+    await expect(resolveMappedDriveRoot("Z:")).rejects.toThrow(/system root/i);
+  });
+
   it.each(["Z", "ZZ:", "Z:\\", "", "Z:;whoami", "1:"])(
     "refuses %o without running anything",
     async (bad) => {

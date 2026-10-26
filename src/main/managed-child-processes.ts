@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess, type SpawnOptions } from "node:child_process";
-import { win32 } from "node:path";
+import { win32SystemBinary } from "../shared/windows-system-path.js";
 import { createLogger } from "../lib/logger.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { errorMessage } from "../shared/error-message.js";
@@ -399,10 +399,6 @@ function processGroupExists(processGroupId: number): boolean {
 
 const TASKKILL_PROCESS_NOT_FOUND = 128;
 
-function windowsTaskkillPath(): string {
-  return win32.join(process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows", "System32", "taskkill.exe");
-}
-
 interface TreeKillResult {
   exitCode: number | null;
   signal: NodeJS.Signals | null;
@@ -422,7 +418,7 @@ function runWindowsTreeKill(pid: number): Promise<TreeKillResult> {
       resolve({ exitCode, signal, elapsedMs: Date.now() - startedAt, budgetExceeded });
     };
     try {
-      const runner = spawn(windowsTaskkillPath(), ["/PID", String(pid), "/T", "/F"], {
+      const runner = spawn(win32SystemBinary("taskkill"), ["/PID", String(pid), "/T", "/F"], {
         stdio: "ignore", windowsHide: true, shell: false,
       });
       runner.once("error", () => finish(null, null));
@@ -490,7 +486,7 @@ function forceKillProcessTreeSync(
   if (process.platform === "win32") {
     // One pass only, within the remaining emergency sweep budget.
     const startedAt = Date.now();
-    const result = spawnSync(windowsTaskkillPath(), ["/PID", String(pid), "/T", "/F"], {
+    const result = spawnSync(win32SystemBinary("taskkill"), ["/PID", String(pid), "/T", "/F"], {
       stdio: "ignore", windowsHide: true, shell: false,
       timeout: windowsTimeoutMs,
     });

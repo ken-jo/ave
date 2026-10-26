@@ -543,6 +543,15 @@ describe("spawnConfinedChild's cmd.exe rendering on Windows", () => {
     expect(options.binShell).toEqual({ exe: "C:\\Windows\\System32\\cmd.exe", args: ["/d", "/v:off", "/s", "/c"] });
   });
 
+  it("refuses wrapping and spawning without an absolute system root", async () => {
+    for (const key of ["SystemRoot", "SYSTEMROOT", "windir", "WINDIR"]) vi.stubEnv(key, undefined);
+    try {
+      await expect(spawnCmd("C:\\app.exe", [])).rejects.toThrow(/system root/i);
+      expect(wrapWorkerCommandMock).not.toHaveBeenCalled();
+      expect(spawnMock).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
+  });
+
   it("doubles a trailing backslash run so the target does not read the closing quote as escaped", async () => {
     await spawnCmd("C:\\app.exe", ["C:\\dir\\", "C:\\two\\\\"]);
     expect(wrapWorkerCommandMock.mock.calls[0]![0]).toBe('"C:\\app.exe" "C:\\dir\\\\" "C:\\two\\\\\\\\"');

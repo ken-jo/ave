@@ -31,6 +31,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { createBootHostFixture, stationaryLeaseState } from "../../../__tests__/support/host-runtime.js";
 import { createHostApiFactory } from "../../../boot/steps/plugin-runtime/host-api-factory.js";
+import { configureHostResources } from "../../../main/host-resources.js";
 import { initializeAsrtSandbox, isAsrtSandboxActive, resetAsrtSandbox } from "../../../permissions/asrt-sandbox.js";
 import {
   __resetSandboxRequestedAtBootForTest,
@@ -173,6 +174,8 @@ beforeAll(async () => {
   previousAveHome = process.env.AVE_HOME;
   // Children and workers are confined only when worker confinement is enabled.
   setPluginWorkerConfinementRequestedAtBoot(true);
+  // The Windows grant pins paths with the bundled helper, which boot locates.
+  configureHostResources({ resourcePath: fileURLToPath(new URL("../../../../resources/", import.meta.url)), isPackaged: false });
   // Use a short POSIX root so worker sockets fit the kernel sun_path limit.
   const root = mkdtempSync(join(process.platform === "darwin" ? "/private/tmp" : process.platform === "win32" ? tmpdir() : "/tmp", "adv-"));
   stagedRoot = root;

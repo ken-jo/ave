@@ -3,7 +3,7 @@ import type { ChildProcess, SpawnOptions } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve, win32 } from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { makeRecordedSpawn } from "../../__tests__/test-helpers.js";
 import {
   AcpSubscriptionRuntimeClient,
@@ -18,6 +18,9 @@ import {
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 
 type Spawn = NonNullable<AcpSubscriptionRuntimeClientOptions["spawn"]>;
+
+beforeEach(() => { vi.stubEnv("SystemRoot", "C:\\Windows"); });
+afterEach(() => { vi.unstubAllEnvs(); });
 
 
 interface LoginHarness {
@@ -586,6 +589,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
       runtimeHome,
       {
         HOME: "C:\\Users\\outside-home",
+        SystemRoot: "C:\\Windows",
         GROK_MANAGED_CONFIG: "true",
         GROK_AGENT: "C:\\attacker\\profile.md",
         GROK_REQUIRED_MINIMUM_VERSION: "0.0.1",

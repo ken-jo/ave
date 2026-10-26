@@ -1,5 +1,6 @@
 // Keep version-sensitive calls in this adapter. Incomplete machine credentials leave confinement inactive until idempotent installation repairs them; installation also seals ambient writable roots. Every helper needs the explicit verified binary descriptor, and status/install probes stay async so elevation cannot freeze the UI.
 import { windowsPowerShellEnv } from "../shared/windows-powershell-env.js";
+import { win32SystemBinary } from "../shared/windows-system-path.js";
 import type {
   SandboxWindowsInstallResult,
   SandboxWindowsStatusInfo,
@@ -9,7 +10,7 @@ import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
 import { prepareSrtWinExecutable, SrtWinIntegrityError } from "./srt-win-integrity.js";
 import { createRequire } from "node:module";
-import { dirname, win32 as win32Path } from "node:path";
+import { dirname } from "node:path";
 import {
   DEFAULT_WINDOWS_PROXY_PORT_RANGE,
   getWindowsProfileReadDenyWarnings,
@@ -121,14 +122,6 @@ const ELEVATED_ACL_ENCODED_COMMAND = Buffer.from(ELEVATED_ACL_SCRIPT, "utf16le")
   "base64",
 );
 
-function resolveWindowsSystemRoot(override?: string): string {
-  return override ?? process.env.SystemRoot ?? process.env.WINDIR ?? String.raw`C:\Windows`;
-}
-
-function resolveWindowsSystemBinary(systemRoot: string, ...segments: string[]): string {
-  return win32Path.join(systemRoot, "System32", ...segments);
-}
-
 function resolveAsrtWindowsAclTarget(
   packageRoot: string,
   pathExists: (path: string) => boolean,
@@ -177,14 +170,9 @@ export async function grantAsrtWindowsBackendAcl(
   const pathExists = dependencies.pathExists ?? existsSync;
   const resolvePackageRoot =
     dependencies.resolvePackageRoot ?? resolveAsrtPackageRoot;
-  const systemRoot = resolveWindowsSystemRoot(dependencies.systemRoot);
-  const icaclsPath = resolveWindowsSystemBinary(systemRoot, "icacls.exe");
-  const powershellPath = resolveWindowsSystemBinary(
-    systemRoot,
-    "WindowsPowerShell",
-    "v1.0",
-    "powershell.exe",
-  );
+  const environment = dependencies.systemRoot === undefined ? process.env : { SystemRoot: dependencies.systemRoot };
+  const icaclsPath = win32SystemBinary("icacls", environment);
+  const powershellPath = win32SystemBinary("WindowsPowerShell/v1.0/powershell", environment);
   const warn = dependencies.warn ?? console.warn;
 
   try {
