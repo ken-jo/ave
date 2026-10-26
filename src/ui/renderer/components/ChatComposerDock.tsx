@@ -37,6 +37,8 @@ type InputStatusRow = React.ComponentProps<typeof ComposerStatusRow>["statusRow"
 
 export interface ChatComposerDockProps {
   dockColumnClass: string;
+  /** Next-send notices belong inside the composer's reading column, above its frame. */
+  notices?: React.ReactNode;
   /** Empty work-mode conversation: offer the new-chat project selector. The composer itself stays bottom-docked whether or
    * not the conversation is empty — there is no centered placement and no descent on first send. */
   emptyConversation?: boolean;
@@ -241,6 +243,7 @@ export function resolveComposerRuntimeGates({
  */
 export function ChatComposerDock({
   dockColumnClass,
+  notices,
   emptyConversation = false,
   workflowApi,
   api,
@@ -360,6 +363,7 @@ export function ChatComposerDock({
           onSendNow={onMessageQueueSendNow}
           heldByApproval={pendingApprovals.length > 0}
         />
+        {notices}
       </div>
       <div className={`${dockColumnClass} flex flex-col overflow-x-hidden pb-1`}>
         {/* This conversation's notices — an attachment the composer refused,

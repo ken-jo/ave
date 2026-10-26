@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type React from "react";
 import { useTranslation } from "../../../i18n/react.js";
+import { chatSurface } from "./chat-surface.js";
 import ReactMarkdown from "react-markdown";
 import { MARKDOWN_REMARK_PLUGINS } from "../utils/markdown-plugins.js";
 import { parseStagedEnvelope } from "../../../shared/staged-origins.js";
@@ -857,14 +858,14 @@ export function SummaryToast({ summary }: { summary: string }) {
   return (
     <details
       data-testid="summary-toast"
-      className="group w-full min-w-0 max-w-full border-l-2 border-action-compact/(--opacity-medium) bg-action-compact/(--opacity-faint) px-4 py-2.5 mb-3 rounded-r"
+      className={`${chatSurface({ edge: "quiet", elevation: "flat" })} group mb-3 w-full min-w-0 max-w-full px-3 py-2 text-foreground`}
     >
-      <summary className="cursor-pointer list-none text-[10px] uppercase tracking-wider text-action-compact/(--opacity-intense) font-medium marker:hidden">
-        <span className="mr-1 inline-block transition-transform group-open:rotate-90">▸</span>
-        {t("summaryToast.previousSummary")}
+      <summary className="flex min-w-0 cursor-pointer list-none items-center gap-2 rounded-lg text-xs font-medium normal-case tracking-normal text-muted-foreground marker:hidden focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <ChevronRight className="h-3.5 w-3.5 shrink-0 transition-transform duration-(--motion-fast) ease-(--motion-ease-out) group-open:rotate-90 motion-reduce:transition-none" aria-hidden="true" />
+        <span className="inline-block lowercase first-letter:uppercase">{t("summaryToast.previousSummary")}</span>
       </summary>
       <div
-        className="prose prose-sm ave-prose mt-2 max-w-none break-words text-sm text-muted-foreground [overflow-wrap:anywhere]"
+        className="prose prose-sm ave-prose mt-2 max-w-none break-words text-xs text-muted-foreground [overflow-wrap:anywhere]"
         data-testid="summary-toast-body"
       >
         <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS}>
@@ -1091,10 +1092,10 @@ export function CheckpointDivider({
       data-compact-num={compactNum}
       className="my-2 flex flex-col gap-1.5 py-2"
     >
-      <div className="flex items-center gap-2">
+      <div className="flex min-w-0 items-center gap-2">
         <span className={`h-px flex-1 ${variant.lineCls}`} />
-        <span className={`text-[10px] ${variant.textCls} font-medium`}>
-          {"───"} {variant.icon} {t("checkpointDivider.checkpoint")}{compactNum !== undefined ? ` #${compactNum}` : ""} · {t(variant.label)} ({t("checkpointDivider.messageCount", { count: messageCount })}) {"───"}
+        <span className={`min-w-0 text-center text-xs ${variant.textCls} font-medium`}>
+          {t("checkpointDivider.checkpoint")}{compactNum !== undefined ? ` #${compactNum}` : ""} · {t(variant.label)} ({t("checkpointDivider.messageCount", { count: messageCount })})
         </span>
         <span className={`h-px flex-1 ${variant.lineCls}`} />
       </div>

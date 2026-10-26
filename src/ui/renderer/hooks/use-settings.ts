@@ -102,6 +102,7 @@ export interface UseSettingsResult {
   /** The active route's prompt cap, when one is stated below the window (`resolveContextWindowForRoute(...).inputLimit`). The
    * ring's usable budget is bounded by it, as the engine's compaction threshold is. */
   llmInputLimit: number | undefined;
+  autoCompactEnabled: boolean | undefined;
   /** The active route's endpoint and the prices its own `/models` answer reported, for the pre-send estimate
    * (`resolveModelPricing`'s route), so it prices a request as the engine records it. */
   llmRoutePricing: ModelPricingRoute;
@@ -164,6 +165,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
   const [llmContextWindow, setLlmContextWindow] = useState<number>(0);
   const [llmOutputTokenLimit, setLlmOutputTokenLimit] = useState<ResolvedOutputTokenLimit>(INITIAL_OUTPUT_TOKEN_LIMIT);
   const [llmInputLimit, setLlmInputLimit] = useState<number | undefined>(undefined);
+  const [autoCompactEnabled, setAutoCompactEnabled] = useState<boolean | undefined>(undefined);
   const [llmRoutePricing, setLlmRoutePricing] = useState<ModelPricingRoute>({});
   const [llmRouteModalities, setLlmRouteModalities] = useState<UseSettingsResult["llmRouteModalities"]>(undefined);
   const [enableThinkingChat, setEnableThinkingChat] = useState<boolean>(true);
@@ -233,6 +235,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
         settings.chat.processingDisplayLevel ?? DEFAULT_PROCESSING_DISPLAY_LEVEL,
       );
       setLlmReadyWithoutApiKey(canUseSettingsWithoutApiKey(settings, provider));
+      setAutoCompactEnabled(settings.chat.autoCompact);
       const retiredRoute = isLlmRouteRetirement(settings.llm.retiredProvider) ? settings.llm.retiredProvider : null;
       setRetiredLlmProvider(retiredRoute);
       // The deprecated tier is the catalog's word alone; a listing that lands mid-session is judged by the next load, which may
@@ -387,6 +390,7 @@ export function useSettings(api: AveApi): UseSettingsResult {
     llmContextWindow,
     llmOutputTokenLimit,
     llmInputLimit,
+    autoCompactEnabled,
     llmRoutePricing,
     llmRouteModalities,
     enableThinkingChat,
