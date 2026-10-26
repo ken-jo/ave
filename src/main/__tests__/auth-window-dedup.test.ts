@@ -3,6 +3,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
 import { shell, session, type Cookie } from "electron";
 import { t } from "../../i18n/index.js";
+import { en } from "../../i18n/messages/en.js";
+import { ko } from "../../i18n/messages/ko.js";
 import { SYSTEM_BROWSER_OAUTH_ENDPOINTS } from "../oauth-browser-policy.js";
 import { AuthRedirectCatchers } from "../auth-redirect-catcher.js";
 import { createLogger } from "../../lib/logger.js";
@@ -302,6 +304,19 @@ describe("host OAuth auth window", () => {
     return popup;
   }
 
+  function shellState(win: FakeBrowserWindow) {
+    const html = decodeURIComponent(win.loadURL.mock.calls.at(-1)![0]);
+    const listeners = new Map<string, (event: Record<string, unknown>) => void>();
+    const uri = { value: "" };
+    const security = { textContent: "", dataset: { security: "" } };
+    const view = { setAttribute: vi.fn(), addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => listeners.set(name, callback) };
+    const context = {
+      document: { title: "", getElementById: (id: string) => ({ "auth-view": view, "oauth-uri": uri, "oauth-security": security })[id] },
+    };
+    runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], context);
+    return { uri, security, listeners, context };
+  }
+
   describe.each(["oauth", "cookie"] as const)("shared %s window", lane => {
     function start() {
       let complete!: () => void;
@@ -311,20 +326,8 @@ describe("host OAuth auth window", () => {
         : openAuthWindow(parent(), { url: "https://auth.example.test/authorize", completionUrlPatterns: [COMPLETION], cookieHosts: [COOKIE_HOST], persistPartition: "plugin-auth:sampleportal" });
       return { pending, finish: async () => { complete(); constructed[0].close(); await pending.catch(() => undefined); } };
     }
-    function shellState(win: FakeBrowserWindow) {
-      const html = decodeURIComponent(win.loadURL.mock.calls.at(-1)![0]);
-      const listeners = new Map<string, (event: Record<string, unknown>) => void>();
-      const uri = { value: "" };
-      const security = { textContent: "", dataset: { security: "" } };
-      const view = { setAttribute: vi.fn(), addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => listeners.set(name, callback) };
-      const context = {
-        document: { title: "", getElementById: (id: string) => ({ "auth-view": view, "oauth-uri": uri, "oauth-security": security })[id] },
-      };
-      runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], context);
-      return { uri, security, listeners, context };
-    }
 
-    it("keeps the committed identity through starts, redirects, aborts and failed loads", async () => {
+    it("keeps the committed identity through starts, redirects, aborts and subframe failures", async () => {
       const attempt = start();
       try {
         const { uri, security, listeners } = shellState(constructed[0]);
@@ -337,12 +340,76 @@ describe("host OAuth auth window", () => {
           expect(uri.value).toBe(committed);
           expect(security.dataset.security).toBe("http");
         }
-        for (const errorCode of [-3, -105, -202]) {
-          listeners.get("did-fail-load")!({ validatedURL: "https://trusted.example.test/", errorCode, isMainFrame: true });
+        for (const [errorCode, isMainFrame] of [[-3, true], [-105, false], [-202, false]]) {
+          listeners.get("did-fail-load")!({ validatedURL: "https://trusted.example.test/", errorCode, isMainFrame });
           expect(uri.value).toBe(committed);
           expect(security.dataset.security).toBe("http");
         }
       } finally { await attempt.finish(); }
+    });
+
+    it.each([-202, -105])("replaces the shell identity on a main-frame error-page commit (%s)", async errorCode => {
+      const attempt = start();
+      try {
+        const { uri, security, listeners } = shellState(constructed[0]);
+        listeners.get("did-navigate")!({ url: "https://identity.example.test/login", isMainFrame: true });
+        const failedUrl = "https://failed.example.test/login";
+        listeners.get("did-start-navigation")!({ url: failedUrl, isMainFrame: true });
+        listeners.get("did-fail-load")!({ validatedURL: failedUrl, errorCode, isMainFrame: true });
+        expect(uri.value).toBe(failedUrl);
+        expect(security.dataset.security).toBe(errorCode === -202 ? "certificate-error" : "load-error");
+        expect(security.textContent).toBe(t(errorCode === -202 ? "oauthWindow.certificateError" : "oauthWindow.loadError"));
+        listeners.get("did-navigate-in-page")!({ url: failedUrl + "#details", isMainFrame: true });
+        expect(security.dataset.security).not.toBe("https");
+        listeners.get("did-navigate")!({ url: "https://recovered.example.test/", isMainFrame: true });
+        expect(security.dataset.security).toBe("https");
+      } finally { await attempt.finish(); }
+    });
+
+    it.each([
+      ["main", "certificate-error"], ["main", -202], ["main", -105],
+      ["popup", "certificate-error"], ["popup", -202], ["popup", -105],
+    ] as const)("replaces the %s guest identity when an error page commits (%s)", async (target, failure) => {
+      const attempt = start();
+      void attempt.pending.catch(() => undefined);
+      try {
+        const guest = new FakeWebContents();
+        const win = constructed.at(-1)!;
+        win.webContents.emit("did-attach-webview", {}, guest);
+        const chrome = target === "popup" ? openPopup(guest) : win;
+        const page = target === "popup" ? popupContents(chrome) : guest;
+        const state = shellState(chrome);
+        chrome.webContents.executeJavaScript.mockImplementation(async (script: string) => runInNewContext(script, state.context));
+        const read = () => target === "popup" ? shellState(chrome) : state;
+        const committed = "https://identity.example.test/login";
+        page.emit("did-navigate", {}, committed, true);
+        if (target === "main") state.listeners.get("did-navigate")!({ url: committed, isMainFrame: true });
+        const failedUrl = "https://failed.example.test/login";
+        page.emit("did-start-navigation", {}, failedUrl, false, true);
+        // A subframe certificate or load failure must leave the main identity alone.
+        const rejectSubframe = vi.fn();
+        page.emit("certificate-error", { preventDefault: vi.fn() }, failedUrl, "Certificate failed", {}, rejectSubframe, false);
+        page.emit("did-fail-load", {}, -202, "Certificate failed", failedUrl, false);
+        page.emit("did-fail-load", {}, -105, "Name not resolved", failedUrl, false);
+        expect(read().uri.value).toBe(committed);
+        expect(read().security.dataset.security).toBe("https");
+        if (failure === "certificate-error") {
+          const rejectCertificate = vi.fn();
+          page.emit("certificate-error", { preventDefault: vi.fn() }, failedUrl, "Certificate failed", {}, rejectCertificate, true);
+          expect(rejectCertificate).toHaveBeenCalledWith(false);
+        } else {
+          page.emit("did-fail-load", {}, failure, "Navigation failed", failedUrl, true);
+        }
+        expect(read().uri.value, String(failure)).toBe(failedUrl);
+        expect(read().security.dataset.security).toBe(failure === -105 ? "load-error" : "certificate-error");
+        expect(read().security.textContent).toBe(t(failure === -105 ? "oauthWindow.loadError" : "oauthWindow.certificateError"));
+        expect(page.executeJavaScript).not.toHaveBeenCalled();
+      } finally { await attempt.finish(); }
+    });
+
+    it.each([["en", en], ["ko", ko]] as const)("ships the load-error label in %s", (_locale, catalog) => {
+      expect(catalog).toHaveProperty("oauthWindow.loadError");
+      expect((catalog as Record<string, string>)["oauthWindow.loadError"]).toBeTruthy();
     });
 
     it("renders only main-frame commits and retains document TLS state across in-page navigation", async () => {
@@ -384,17 +451,20 @@ describe("host OAuth auth window", () => {
         commit(committed);
         expect(read().security.dataset.security).toBe("https");
         page.emit("did-start-navigation", {}, "https://trusted.example.test/", false, true);
-        page.emit("did-redirect-navigation", {}, "https://trusted.example.test/next", false, true);
-        page.emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://trusted.example.test/next", true);
+        page.emit("did-fail-provisional-load", {}, -202, "Certificate failed", "https://trusted.example.test/", true);
         expect(read().uri.value).toBe(committed);
         expect(read().security.dataset.security).toBe("https");
-        page.emit("did-fail-load", {}, -202, "Certificate failed", "https://uncommitted.example.test/", true);
+        page.emit("did-redirect-navigation", {}, "https://trusted.example.test/next", false, true);
+        page.emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://trusted.example.test/next", true);
         expect(read().uri.value).toBe(committed);
         expect(read().security.dataset.security).toBe("https");
         const rejectCertificate = vi.fn();
         page.emit("certificate-error", { preventDefault: vi.fn() }, committed.split("#", 1)[0], "Certificate failed", {}, rejectCertificate, true);
         await flush(1);
         expect(rejectCertificate).toHaveBeenCalledWith(false);
+        expect(read().uri.value).toBe(committed.split("#", 1)[0]);
+        expect(read().security.dataset.security).toBe("certificate-error");
+        commit(committed);
         expect(read().uri.value).toBe(committed);
         expect(read().security.dataset.security).toBe("certificate-error");
         commit(committed + "#step", true);
@@ -511,14 +581,13 @@ describe("host OAuth auth window", () => {
       const page = popupContents(popup);
       const location = "http://127.0.0.1:12345/callback?code=private";
       page.emit("did-navigate", {}, location);
-      let html = decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0]);
+      const html = decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0]);
       expect(html).toContain('id="oauth-uri" readonly');
       expect(html).toContain(location);
       expect(html).not.toContain("<webview");
       page.emit("did-navigate", {}, "https://invalid.example.test/");
       page.emit("did-fail-load", {}, -202, "ERR_CERT_AUTHORITY_INVALID", "https://invalid.example.test/", true);
-      html = decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0]);
-      expect(html).toContain("let certificateError = true");
+      expect(shellState(popup).security.dataset.security).toBe("certificate-error");
       expect(page.executeJavaScript).not.toHaveBeenCalled();
       expect(page.preferences).not.toHaveProperty("preload");
     } finally { complete(); await pending; }

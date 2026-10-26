@@ -11,6 +11,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "oauthWindow.secure": "보안 연결 (HTTPS)",
   "oauthWindow.insecure": "암호화되지 않은 연결 (HTTP / 루프백)",
   "oauthWindow.certificateError": "인증서 오류",
+  "oauthWindow.loadError": "페이지를 불러올 수 없습니다",
   "mainToolbar.hideSidebar": "사이드바 숨기기",
   "mainToolbar.showSidebar": "사이드바 표시",
   "sidebar.generalLabel": "일반",

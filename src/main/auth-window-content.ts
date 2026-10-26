@@ -23,6 +23,8 @@ function getErudaSource(): string | null {
   }
 }
 
+type AuthDocumentError = "" | "certificate-error" | "load-error";
+
 export function buildAuthWindowShellHtml(input: {
   title: string;
   url: string;
@@ -33,7 +35,7 @@ export function buildAuthWindowShellHtml(input: {
   devConsole?: boolean;
   nativeFrame?: boolean;
   chromeOnly?: boolean;
-  certificateError?: boolean;
+  errorState?: AuthDocumentError;
 }): string {
   const platform: NodeJS.Platform = input.platform ?? process.platform;
   const title = JSON.stringify(input.title);
@@ -68,26 +70,24 @@ export function buildAuthWindowShellHtml(input: {
     const uri = document.getElementById("oauth-uri");
     const security = document.getElementById("oauth-security");
     let committedUrl = ${input.chromeOnly ? "url" : '""'};
-    let certificateError = ${input.certificateError === true};
+    let errorState = ${JSON.stringify(input.errorState ?? "")};
     const certificateErrors = new Set();
     const updateLocation = () => {
       if (!uri || !security) return;
       uri.value = committedUrl;
-      const secure = committedUrl.startsWith("https:") && !certificateError;
-      security.textContent = certificateError ? ${JSON.stringify(t("oauthWindow.certificateError"))} : secure ? ${JSON.stringify(t("oauthWindow.secure"))} : ${JSON.stringify(t("oauthWindow.insecure"))};
-      security.dataset.security = certificateError ? "certificate-error" : secure ? "https" : "http";
+      const secure = committedUrl.startsWith("https:") && !errorState;
+      security.textContent = errorState === "certificate-error" ? ${JSON.stringify(t("oauthWindow.certificateError"))} : errorState === "load-error" ? ${JSON.stringify(t("oauthWindow.loadError"))} : secure ? ${JSON.stringify(t("oauthWindow.secure"))} : ${JSON.stringify(t("oauthWindow.insecure"))};
+      security.dataset.security = errorState || (secure ? "https" : "http");
     };
-    const recordCertificateError = failedUrl => {
-      const documentUrl = failedUrl.split("#", 1)[0];
-      certificateErrors.add(documentUrl);
-      if (documentUrl === committedUrl.split("#", 1)[0]) {
-        certificateError = true;
-        updateLocation();
-      }
+    const recordFailure = (failedUrl, certificateFailure) => {
+      committedUrl = failedUrl;
+      errorState = certificateFailure ? "certificate-error" : "load-error";
+      if (certificateFailure) certificateErrors.add(failedUrl.split("#", 1)[0]);
+      updateLocation();
     };
     const commitLocation = (currentUrl, sameDocument) => {
       committedUrl = currentUrl;
-      if (!sameDocument) certificateError = certificateErrors.has(currentUrl.split("#", 1)[0]);
+      if (!sameDocument) errorState = certificateErrors.has(currentUrl.split("#", 1)[0]) ? "certificate-error" : "";
       updateLocation();
     };
     updateLocation();
@@ -98,7 +98,8 @@ export function buildAuthWindowShellHtml(input: {
       view.addEventListener("did-navigate", e => { if (e.isMainFrame !== false) commitLocation(e.url, false); });
       view.addEventListener("did-navigate-in-page", e => { if (e.isMainFrame !== false) commitLocation(e.url, true); });
       view.addEventListener("did-fail-load", e => {
-        if (e.isMainFrame !== false && e.errorCode <= -200 && e.errorCode >= -299) recordCertificateError(e.validatedURL);
+        // A non-aborted main-frame failure commits an error document without did-navigate.
+        if (e.isMainFrame && e.errorCode !== -3) recordFailure(e.validatedURL, e.errorCode <= -200 && e.errorCode >= -299);
       });
       view.setAttribute("partition", partition);
       view.setAttribute("src", url);
@@ -169,9 +170,9 @@ export function attachAuthWindowContent(input: {
     popups.clear();
   };
   window.on("closed", closePopups);
-  const updateLocation = (popup: BrowserWindow, url: string, certificateError = false): void => {
+  const updateLocation = (popup: BrowserWindow, url: string, errorState: AuthDocumentError = ""): void => {
     if (popup.isDestroyed()) return;
-    const html = buildAuthWindowShellHtml({ title, url, partition, nativeFrame: true, chromeOnly: true, certificateError });
+    const html = buildAuthWindowShellHtml({ title, url, partition, nativeFrame: true, chromeOnly: true, errorState });
     void popup.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(error => {
       if (error && typeof error === "object" && "code" in error && error.code === "ERR_ABORTED") return;
       if (!popup.isDestroyed()) popup.destroy();
@@ -179,25 +180,25 @@ export function attachAuthWindowContent(input: {
   };
   const attachGuest = (contents: WebContents, depth = 0, popup?: BrowserWindow): void => {
     let committedUrl = "";
-    let certificateError = false;
+    let errorState: AuthDocumentError = "";
     const certificateErrors = new Set<string>();
-    const recordCertificateError = (url: string): void => {
-      const documentUrl = url.split("#", 1)[0];
-      certificateErrors.add(documentUrl);
-      const isCommittedDocument = documentUrl === committedUrl.split("#", 1)[0];
-      if (isCommittedDocument) certificateError = true;
+    const recordFailure = (url: string, certificateFailure: boolean): void => {
+      if (!input.active()) return;
+      committedUrl = url;
+      errorState = certificateFailure ? "certificate-error" : "load-error";
+      if (certificateFailure) certificateErrors.add(url.split("#", 1)[0]);
       if (popup) {
-        if (isCommittedDocument) updateLocation(popup, committedUrl, certificateError);
+        updateLocation(popup, committedUrl, errorState);
       } else if (!window.isDestroyed()) {
         // Only the trusted local chrome receives this status; remote documents are never scripted.
-        void window.webContents.executeJavaScript(`recordCertificateError(${JSON.stringify(url)})`).catch(() => undefined);
+        void window.webContents.executeJavaScript(`recordFailure(${JSON.stringify(url)}, ${certificateFailure})`).catch(() => undefined);
       }
     };
     const commitLocation = (url: string, sameDocument: boolean): void => {
       if (!input.active()) return;
       committedUrl = url;
-      if (!sameDocument) certificateError = certificateErrors.has(url.split("#", 1)[0]);
-      if (popup) updateLocation(popup, committedUrl, certificateError);
+      if (!sameDocument) errorState = certificateErrors.has(url.split("#", 1)[0]) ? "certificate-error" : "";
+      if (popup) updateLocation(popup, committedUrl, errorState);
     };
     markAsAuthOwned(contents);
     contents.setWindowOpenHandler(({ url }) => {
@@ -285,23 +286,22 @@ export function attachAuthWindowContent(input: {
     contents.on("certificate-error", (event, url, _error, _certificate, callback, isMainFrame) => {
       event.preventDefault();
       callback(false);
-      if (isMainFrame) recordCertificateError(url);
+      if (isMainFrame) recordFailure(url, true);
     });
-    const onFailure = (event: Electron.Event, code: number, description: string, url: string, isMainFrame: boolean): void => {
+    const onFailure = (documentReplaced: boolean) => (event: Electron.Event, code: number, description: string, url: string, isMainFrame: boolean): void => {
       const details = event as unknown as Partial<AuthNavigationFailure>;
       const failure: AuthNavigationFailure = {
         errorCode: details.errorCode ?? code, errorDescription: details.errorDescription ?? description,
         validatedURL: details.validatedURL ?? url, isMainFrame: details.isMainFrame ?? isMainFrame,
       };
       if (!failure.isMainFrame) return;
-      if (failure.errorCode <= -200 && failure.errorCode >= -299) {
-        recordCertificateError(failure.validatedURL);
-        return;
-      }
+      const certificateFailure = failure.errorCode <= -200 && failure.errorCode >= -299;
+      if (documentReplaced && failure.errorCode !== -3) recordFailure(failure.validatedURL, certificateFailure);
+      if (certificateFailure) return;
       input.onFailure(failure);
     };
-    contents.on("did-fail-load", onFailure);
-    contents.on("did-fail-provisional-load", onFailure);
+    contents.on("did-fail-load", onFailure(true));
+    contents.on("did-fail-provisional-load", onFailure(false));
     if (input.devConsole) {
       contents.on("did-finish-load", () => {
         const src = getErudaSource();

@@ -82,11 +82,14 @@ function parseRedirectParams(requestUrl: string, base: string): AuthRedirectPara
   if (entries.length === 0) return null;
   if (entries.length > MAX_QUERY_PARAMS) return null;
   const out: Record<string, string> = {};
+  const seen = new Set<string>();
   for (const [name, value] of entries) {
     if (name.length > MAX_PARAM_NAME_LENGTH) return null;
     if (value.length > MAX_PARAM_VALUE_LENGTH) return null;
-    if (Object.hasOwn(out, name)) return null;
-    out[name] = value;
+    if (seen.has(name)) return null;
+    seen.add(name);
+    // Define own data properties so prototype-named parameters cannot invoke inherited setters.
+    Object.defineProperty(out, name, { value, enumerable: true, writable: true, configurable: true });
   }
   return Object.freeze(out);
 }

@@ -102,6 +102,18 @@ describe("the listener it binds", () => {
 });
 
 describe("what it accepts", () => {
+  it("round-trips a prototype-named parameter as an own frozen data property", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const { handle, redirectUri } = await open(catchers);
+    expect((await hit(redirectUri, "/?state=xyz&__proto__=x")).status).toBe(303);
+    const params = await catchers.wait(OWNER, handle);
+    expect(Object.hasOwn(params, "__proto__")).toBe(true);
+    expect(params["__proto__"]).toBe("x");
+    expect(Object.getPrototypeOf(params)).toBe(Object.prototype);
+    expect(Object.isFrozen(params)).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(params, "__proto__")).toEqual({ value: "x", writable: false, enumerable: true, configurable: false });
+  });
+
   it("resolves the wait with the redirect's query parameters", async () => {
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
@@ -157,6 +169,18 @@ describe("what it accepts", () => {
 });
 
 describe("what it refuses", () => {
+  it.each(["__proto__", "constructor"])("refuses duplicate %s parameters without consuming the callback", async name => {
+    const catchers = new AuthRedirectCatchers();
+    const { handle, redirectUri } = await open(catchers);
+    let completed = false;
+    const waiting = catchers.wait(OWNER, handle);
+    void waiting.then(() => { completed = true; }, () => undefined);
+    expect((await hit(redirectUri, `/?state=xyz&${name}=x&${name}=y`)).status).toBe(404);
+    expect(completed).toBe(false);
+    expect((await hit(redirectUri, "/?code=real&state=xyz")).status).toBe(303);
+    await expect(waiting).resolves.toEqual({ code: "real", state: "xyz" });
+  });
+
   it("keeps waiting after unrelated paths and wrong states, then consumes only one matching callback", async () => {
     const catchers = new AuthRedirectCatchers();
     const result = await catchers.open(OWNER, { state: "expected-state" });

@@ -9,6 +9,7 @@ export const en = {
   "oauthWindow.secure": "Secure connection (HTTPS)",
   "oauthWindow.insecure": "Not encrypted (HTTP / loopback)",
   "oauthWindow.certificateError": "Certificate error",
+  "oauthWindow.loadError": "Page could not be loaded",
   "mainToolbar.hideSidebar": "Hide sidebar",
   "mainToolbar.showSidebar": "Show sidebar",
   "sidebar.generalLabel": "General",
