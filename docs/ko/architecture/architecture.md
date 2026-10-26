@@ -2224,7 +2224,21 @@ Layer 0–8 의 permission policy 는 _어떤 도구 호출을 허용/거부_ �
   (`.cmd`/`.bat`, 또는 `npx` 처럼 배치 파일만 응답하는 bare 이름) 은 이유와 함께
   거부되고, relay 도 `cmd.exe` 도 지정하지 않은 Windows 샌드박스 spawn 은 거부된다 — srt-win 의 PowerShell 실행은
   stdin·환경·종료 코드를 모두 잃는다.
-  srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다** —
+  srt-win.exe 는 **번들** (asarUnpack vendor/**) 이라 **다운로드가 없다**.
+  실행할 사본은 `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` 에 둔다.
+  실행 파일 바이트를 쓰기 전에 두 디렉터리를 현재 사용자 소유의 protected DACL 로
+  생성·검증하고, 기존 경로나 링크가 있으면 거부한다. 이미지와 `owner.json` 도
+  `bin` 안에 최종 보안 설명자로 새로 생성한다. 쓰기 거부 대상은 `bin` 이므로
+  부모의 상속 가능한 delete-child deny 는 Ave 소유 바깥 디렉터리에만 찍힌다.
+  해당 바깥 디렉터리 내부의 직접 grant 와 이를 포함하는 쓰기 grant 는 거부한다.
+  마지막 holder 해제나 session reset 은 deny 를 제거한다. holder 가 죽으면 ACE 가
+  남을 수 있고, 다음 native ACL 작업이 추적 중인 죽은 holder 를 정리한다.
+  stale-copy sweep 은 새 구조의 두 디렉터리 소유자·DACL 과 marker 를 검증하고,
+  기존 단일 디렉터리 구조도 같은 marker·소유자 조건으로 처리한다. 알려진 일반 파일
+  `srt-win.exe`, `owner.json` 두 개와 빈 디렉터리만 재귀 없이 삭제한다.
+  임시 루트에 sandbox 계정 ACE 가 있으면 `srt-win-temp-root-acl-owner-action-required`
+  진단을 남기며 ACL 은 바꾸지 않는다. 남은 기존 ACE 의 제거는 활성 holder 를 확인한 뒤
+  정확한 명시적 ACE 또는 상속 원본을 조사·수정하도록 소유자가 승인해야 한다.
   활성화는 _오직_ 명시적 consent 버튼이 호출하는 1회 self-elevating UAC 설치만
   트리거한다. Windows 계정 로그아웃은 요구하지 않는다.
   `checkAsrtDependencies()` 는 user/WFP readiness 전까지 errors 로 보고한다.

@@ -2312,9 +2312,9 @@ async function grantWindowsWorkerFilesystemAccessInTurn(opts: {
 
 function assertPrivateHelperGrants(read: readonly string[], write: readonly string[]): void {
   // Direct grants would override the image's DACL. A writable ancestor could replace the whole directory using its delete-child right, even though the image itself does not inherit the ancestor's permissions.
-  if (srtWinPrivateDirectories().some((directory) =>
-    read.some((path) => isGrantPathWithin(directory, path)) ||
-    write.some((path) => isGrantPathWithin(directory, path) || isGrantPathWithin(path, directory)))) {
+  if (srtWinPrivateDirectories().some((bin) =>
+    read.some((path) => isGrantPathWithin(dirname(bin), path)) ||
+    write.some((path) => isGrantPathWithin(dirname(bin), path) || isGrantPathWithin(path, dirname(bin))))) {
     throw new Error("Windows filesystem grant overlaps a private helper image");
   }
 }

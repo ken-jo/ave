@@ -168,6 +168,7 @@ afterAll(async () => {
     await retryOnTransientFsLock(async () => {
       for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(directory, name), { force: true });
       if (existsSync(directory)) rmdirSync(directory);
+      if (existsSync(dirname(directory))) rmdirSync(dirname(directory));
     });
   }
 });
@@ -1154,6 +1155,10 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
       expect(bare(config.filesystem.denyWrite)).toContain(dirname(executable));
       expect(() => buildSandboxConfig({ allowWrite: [dirname(dirname(executable))] }))
         .toThrow("Windows filesystem grant overlaps a private helper image");
+      expect(() => buildSandboxConfig({ allowWrite: [dirname(dirname(dirname(executable)))] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
+      expect(() => buildSandboxConfig({ allowWrite: [join(dirname(dirname(executable)), "sibling")] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
       expect(() => buildSandboxConfig({ allowRead: [dirname(executable)] }))
         .toThrow("Windows filesystem grant overlaps a private helper image");
     } finally {
@@ -1172,7 +1177,7 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
     try {
       setProcessPlatform("win32");
       const executable = buildSandboxConfig({ allowedDomains: [] }).windows!.srtWin!.path;
-      const root = dirname(dirname(executable));
+      const root = dirname(dirname(dirname(executable)));
       filler = mkdtempSync(join(root, "scan-budget-"));
       for (let group = 0; group < 180; group += 1) {
         mkdirSync(join(filler, `g${group}`));

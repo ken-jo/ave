@@ -2176,15 +2176,27 @@ with its own owner rule:
 - **The Windows sandbox helper copy is created with its final security
   descriptor.** `prepareSrtWinExecutable` in
   `src/permissions/srt-win-integrity.ts` picks a random, unpublished
-  `ave-srt-win-` name, and one PowerShell step creates the directory there with
-  the token user as owner and a protected DACL: full control for the user,
+  `%TEMP%/ave-srt-win-<random>/bin/srt-win.exe` path. One PowerShell step creates
+  both directories with the token user as owner and a protected DACL: full control for the user,
   read and execute for SYSTEM, `S-1-5-32-544` and `S-1-5-32-545`. Anything
-  already at that path, a link included, refuses creation. The empty image and
-  the owner marker are then created new inside it, each with its own
+  already at either directory path, a link included, refuses creation. The empty image and
+  the owner marker are then created new inside `bin`, each with its own
   descriptor, and each owner is read on the handle that created the file. No
   step changes the owner or DACL of an object that already exists. The image's
   bytes are written only after that step. If it fails, the step removes what it
   made; a later failure removes the copy without following a link.
+  The write-deny target is `bin`, so its parent's inheritable delete-child deny
+  lands on the private outer directory, never `%TEMP%`. Grants inside or writable
+  grants covering that outer directory are refused. Session reset or holder
+  release removes the deny when its final hold ends. A dead holder leaves its
+  ACE until a later native ACL operation prunes its tracked hold.
+  The stale-copy sweep checks both directory owners and DACLs for the new layout,
+  and also accepts the old single-level layout with its original marker checks.
+  It deletes only `srt-win.exe` and `owner.json`, then their empty directories,
+  without recursion. A sandbox-account ACE found on the temporary root emits
+  `srt-win-temp-root-acl-owner-action-required`; the sweep never edits that ACL.
+  Any remaining legacy ACE requires owner-approved inspection and repair of the
+  exact explicit ACE or its inheritance source, with active holders accounted for.
 - **`AVE_HOME` is created by the user, or admitted only on a strict DACL.**
   When `AVE_HOME`, its `secrets` directory, or its `subscription-runtimes`
   directory does not exist yet,

@@ -1,5 +1,6 @@
-import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync, spawn } from "node:child_process";
+import { once } from "node:events";
+import { copyFileSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
 import { dirname, join, relative, resolve, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
@@ -13,6 +14,9 @@ import { holdWindowsFilesystemGrant } from "../windows-acl-grant-holder.js";
 import { win32SystemBinary } from "../../shared/ave-home.js";
 import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 import { configureHostResources } from "../../main/host-resources.js";
+import { prepareSrtWinExecutable, srtWinPrivateDirectories, sweepStaleSrtWinDirectories } from "../srt-win-integrity.js";
+import { restoreWindowsAcl, stampWindowsAcl } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
+import { readWindowsDenyAcls } from "../windows-deny-acl.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -205,5 +209,124 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
     const held = await holdWindowsFilesystemGrant({ label: "directory-deny-native", allowRead: [], allowWrite: [workspace] });
     try { expect(lstatSync(target).isDirectory()).toBe(true); }
     finally { held.release(); }
+  }, 60_000);
+});
+
+describe.runIf(process.platform === "win32")("Windows private helper deny lifetime", () => {
+  let container: string;
+
+  beforeEach(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    container = mkdtempSync(join(os.tmpdir(), "helper-deny-native-"));
+    vi.stubEnv("TEMP", container);
+    vi.stubEnv("TMP", container);
+  });
+
+  afterEach(async () => {
+    try { await runtime.SandboxManager.reset(); }
+    finally {
+      vi.restoreAllMocks();
+      vi.unstubAllEnvs();
+      rmSync(container, { recursive: true, force: true });
+    }
+  });
+
+  function helper(): { executable: string; directory: string; sid: string; srtWin: runtime.SrtWinSpawn } {
+    const source = join(container, "source.exe");
+    copyFileSync(getVendoredSrtWinExePath(), source);
+    const executable = prepareSrtWinExecutable(source);
+    const srtWin = runtime.resolveSrtWin({ path: executable });
+    const sid = runtime.getWindowsSandboxUserStatus({ srtWin }).sid;
+    if (!sid) throw new Error("Sandbox SID is required for private helper verification");
+    const directory = dirname(executable);
+    expect(srtWinPrivateDirectories()).toContain(directory);
+    return { executable, directory, sid, srtWin };
+  }
+
+  function descriptor(path: string): string {
+    return execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+      "-NoProfile", "-NonInteractive", "-Command",
+      `[System.IO.Directory]::GetAccessControl('${path.replace(/'/g, "''")}').GetSecurityDescriptorSddlForm('Access')`,
+    ], { encoding: "utf8", env: windowsPowerShellEnv(), windowsHide: true }).trim();
+  }
+
+  it("keeps the temp root free of sandbox ACEs during a real session and removes the private parent deny on reset", async () => {
+    const { executable, directory, sid } = helper();
+    expect(descriptor(os.tmpdir())).not.toContain(sid);
+    try {
+      await runtime.SandboxManager.initialize({
+        network: { allowedDomains: [], deniedDomains: [] },
+        filesystem: { allowWrite: [], denyRead: [], denyWrite: [directory] },
+        windows: { srtWin: { path: executable } },
+      });
+      expect(readWindowsDenyAcls([directory], sid)[0]?.parentMask).toBe(0x40);
+      expect(descriptor(os.tmpdir())).not.toContain(sid);
+    } finally { await runtime.SandboxManager.reset(); }
+    expect(descriptor(dirname(directory))).not.toContain(sid);
+    expect(descriptor(os.tmpdir())).not.toContain(sid);
+  }, 60_000);
+
+  it("removes the private parent deny when its native holder is released", () => {
+    const { directory, sid, srtWin } = helper();
+    try {
+      stampWindowsAcl({ sandboxUserSid: sid, srtWin, denyRead: [], denyWrite: [directory] });
+      expect(readWindowsDenyAcls([directory], sid)[0]?.parentMask).toBe(0x40);
+      expect(descriptor(os.tmpdir())).not.toContain(sid);
+    } finally { restoreWindowsAcl({ sandboxUserSid: sid, srtWin }); }
+    expect(descriptor(dirname(directory))).not.toContain(sid);
+    expect(descriptor(os.tmpdir())).not.toContain(sid);
+  }, 60_000);
+
+  it("diagnoses a legacy temp-root ACE without changing that ACL", () => {
+    const { sid, srtWin } = helper();
+    const legacy = join(container, "ave-srt-win-legacy");
+    mkdirSync(legacy);
+    const warning = vi.spyOn(console, "warn");
+    try {
+      stampWindowsAcl({ sandboxUserSid: sid, srtWin, denyRead: [], denyWrite: [legacy] });
+      const before = descriptor(os.tmpdir());
+      expect(before).toContain(sid);
+      sweepStaleSrtWinDirectories();
+      expect(warning).toHaveBeenCalledWith(expect.stringContaining("[srt-win-temp-root-acl-owner-action-required]"));
+      expect(descriptor(os.tmpdir())).toBe(before);
+    } finally { restoreWindowsAcl({ sandboxUserSid: sid, srtWin }); }
+  }, 60_000);
+
+  it.each(["single-level", "two-level"])("records dead-holder recovery for a %s copy inside a fixture", async (layout) => {
+    const { directory, sid, srtWin } = helper();
+    const legacyTemp = join(container, "fixture-temp");
+    const outer = join(legacyTemp, "ave-srt-win-abandoned");
+    const target = layout === "single-level" ? outer : join(outer, "bin");
+    mkdirSync(legacyTemp);
+    const quote = (path: string) => `'${path.replace(/'/g, "''")}'`;
+    execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
+      "-NoProfile", "-NonInteractive", "-Command",
+      `$ErrorActionPreference='Stop'; $acl=[System.IO.Directory]::GetAccessControl(${quote(dirname(directory))});
+       [System.IO.Directory]::CreateDirectory(${quote(outer)},$acl) | Out-Null;
+       ${layout === "two-level" ? `[System.IO.Directory]::CreateDirectory(${quote(target)},$acl) | Out-Null` : ""}`,
+    ], { env: windowsPowerShellEnv(), windowsHide: true });
+    const held = spawn(join(process.env.SystemRoot!, "System32", "more.com"), [], { env: windowsPowerShellEnv(), windowsHide: true, stdio: "pipe" });
+    const exited = once(held, "exit");
+    if (!held.pid) throw new Error("Native holder did not start");
+    const holderPid = held.pid;
+    try {
+      stampWindowsAcl({ sandboxUserSid: sid, srtWin, holderPid, denyRead: [], denyWrite: [target] });
+      expect(readWindowsDenyAcls([target], sid)[0]?.parentMask).toBe(0x40);
+      held.kill();
+      await exited;
+      const afterDeath = descriptor(dirname(target));
+      const trigger = join(container, "recovery-trigger", "target");
+      mkdirSync(trigger, { recursive: true });
+      stampWindowsAcl({ sandboxUserSid: sid, srtWin, denyRead: [], denyWrite: [trigger] });
+      const afterNextStamp = descriptor(dirname(target));
+      console.log(JSON.stringify({ diagnostic: "private-helper-dead-holder", layout, afterDeath, afterNextStamp }));
+      expect(afterDeath).toContain(sid);
+      expect(afterNextStamp).not.toContain(sid);
+      expect(descriptor(os.tmpdir())).not.toContain(sid);
+    } finally {
+      if (held.exitCode === null && held.signalCode === null) { held.kill(); await exited; }
+      restoreWindowsAcl({ sandboxUserSid: sid, srtWin, holderPid });
+      restoreWindowsAcl({ sandboxUserSid: sid, srtWin });
+    }
   }, 60_000);
 });
