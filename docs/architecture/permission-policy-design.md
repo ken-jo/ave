@@ -219,7 +219,7 @@ lifecycle coverage are described in the architecture contract.
 
 ## Shell Credential And Sink Classification
 
-Host-shell credential and exfiltration analysis uses three buckets for
+Host-shell credential and exfiltration analysis and its work limits apply to
 sandboxed calls and unsandboxed inputs within the length limit. Over-limit
 unsandboxed input immediately asks or denies without running these inspections.
 An identified floor takes precedence over an ordinary reason in the same input.
@@ -229,8 +229,9 @@ requirements keep their own authority.
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
 | Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Ordinary | Parser refusal, budget exhaustion, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No credential/sink floor from this signal alone; sandboxed execution follows its route, while unsandboxed execution requires proven exact coverage or asks/denies |
-| Normal | Neither a floor nor an ordinary reason | Sandboxed execution follows its route; unsandboxed execution still requires proven exact coverage |
+| Work limit | Floor input over 8,000 characters or actual floor-analysis budget exhaustion | Per-call forced modal at layer 2; no exact rule, remembered grant, reviewer or mode auto-allow |
+| Ordinary | Parser refusal, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No credential/sink floor from this signal alone; sandboxed execution follows its route only after floor inspection completes, while unsandboxed automatic allowance requires proven exact coverage or asks/denies |
+| Normal | Neither a floor nor an ordinary reason | Sandboxed execution follows its route; unsandboxed automatic allowance still requires proven exact coverage |
 
 The path scan checks a glob argument's literal directory prefix, before its
 first wildcard, as well as its expansions, so a wildcard below a protected
@@ -280,11 +281,12 @@ An ordinary classifier reason does not itself establish exact-rule eligibility.
 Parser or lexer/analysis-budget failure and nonliteral or ambiguous argv remain
 unproven. Literal visible code can remain eligible despite an ordinary runner
 or file-provenance classification. Legacy shell tool grants stay inert. For
-inputs within the length limit, analysis failure retains visible credential
-and upload checks rather than replacing an identified floor with an ordinary
-reason. Over-limit unsandboxed input instead short-circuits to ask/deny.
+inputs within the length limit, identified credential and upload evidence
+retains its floor. Actual floor-analysis exhaustion also forces per-call modal
+approval rather than becoming an ordinary reason. Over-limit unsandboxed input
+instead short-circuits to ask/deny.
 
-Visible literal interpreter code, script-file invocation and delegation do not by themselves prohibit an exact rule. Host-shell syntax, canonical identity, budgets and the PowerShell encoded-execution exception determine proof. A known carrier role alone does not make an unrelated deny/ask rule uncertain; actual visible matches and syntactic inspection failures retain their precedence. An allow rule never proves future script contents or effects.
+Visible literal interpreter code, script-file invocation and delegation do not by themselves prohibit an exact rule. Host-shell syntax, raw-word identity, budgets and the PowerShell encoded-execution exception determine proof. A known carrier role alone does not make an unrelated deny/ask rule uncertain; actual visible matches and syntactic inspection failures retain their precedence. An allow rule never proves future script contents or effects.
 
 These are permission-classifier outcomes, not execution admission. A hard deny
 cannot be approved. A floor's forced ask requires per-call consent but cannot
@@ -310,7 +312,7 @@ option-shaped word before the command prevents persistence unless a literal
 used. `npx tsc`, `npm test`, `pnpm dlx tsc` and `corepack pnpm install` retain
 grantable persistent prefixes. Ambiguous forms remain ordinary and may be
 eligible for exact command rules when their host-shell argv has an unambiguous
-canonical identity; legacy shell grants cannot supply that authority.
+raw-word identity; legacy shell grants cannot supply that authority.
 Classifying a local argument as data does not grant execution, prove read-only
 effects or establish a runner command boundary.
 
@@ -325,14 +327,25 @@ PowerShell script blocks and `pwsh`/`powershell` inline command text use the Pow
 
 Shell rules are dialect-scoped: `Bash(...)` rules match bash and
 `PowerShell(...)` rules match PowerShell (owner decision 2026-10-25), each at
-user, project or session scope. A `PowerShell(...)` rule matches the parsed
-command with a literal identity (case folded only for a known cmdlet's name
-and unquoted named `-Parameter` options; native programs, unknown commands
-and every value verbatim, including quoted parameter-looking data; aliases
-never merge identities and are resolved only for floor classification and for deny/ask matching, where a path, `Module\` qualifier and
-executable extension are also dropped) and authorizes an unsandboxed call
-only as an exact rule, with the same strictness as Bash. Exact allows also
-require the literal-command proof below.
+user, project or session scope. Exact command rules preserve each literal raw
+word, including its quote style and contents; only whitespace between words
+is normalized, apart from the existing permitted command-head normalization.
+Arguments are never unquoted, requoted, case-folded or converted to values for
+exact identity. Thus `Write-Output '0x10'` and `Write-Output 0x10` are different
+rules, as are differently quoted spellings and parameter-word casing. A
+quoted command head retains its raw spelling. Effect and
+deny/ask normalization remain separate and may conservatively recognize more
+spellings without changing exact allow identity.
+
+Bash command heads remain raw. For an unquoted PowerShell head, a valid single
+`Module\Command` qualifier is removed without stripping executable paths.
+Known bare cmdlet heads retain their existing case folding on every host;
+Windows also folds unquoted command-head case. Aliases never merge identities,
+and quoted command heads stay raw. No parameter word is case-folded.
+
+Existing stored rules retain the literal meaning of their stored pattern text.
+Quote provenance discarded by an earlier writer cannot be recovered from that
+text; this change does not automatically invalidate or rewrite those rules.
 
 ### Literal-command proof
 
@@ -349,7 +362,7 @@ Wildcard allows apply only to sandboxed execution.
 
 The proof checks these conditions in order:
 
-1. Check `MAX_LITERAL_COMMAND_LENGTH` (10,000 characters), defined in
+1. Check `MAX_LITERAL_COMMAND_LENGTH` (2,000 characters), defined in
    [shell-prefix-values.ts](../../src/permissions/rules/shell-prefix-values.ts),
    before all further command processing in the unsandboxed lane. Over-limit
    input immediately asks or denies headless. It performs no later project
@@ -359,19 +372,22 @@ The proof checks these conditions in order:
 2. Require successful parsing in the selected host dialect without exhausting
    a lexer or analysis budget. A parser failure or incomplete required
    analysis is unproven.
-3. Require literal host-shell words and unambiguous canonical identity. Plain
-   and literally quoted arguments are accepted. Active variables, command
-   substitutions, globs and escape expansion are unproven. Quoted parameter
-   data must remain distinct from named options, in both matching directions.
-   A module-qualified command retains its qualifier in exact-rule identity.
-4. Refuse a parsed PowerShell launcher carrying an `-enc`/`-EncodedCommand`-family
-   operand, including an existing transparent wrapper target, even when the
-   operand is literal. This program-and-option check does not recurse into
-   `sh`/`cmd` code strings, `env -S`, `find` or `xargs` to discover another
-   launcher, and never inspects encoded contents. The option family includes
-   `-e`, `-ec`, `-en` and the prefixes from `-enc` through `-EncodedCommand`;
-   supported dash/slash and attached-value spellings are defined by
-   [`encodedPowerShellExecutionReason`](../../src/permissions/rules/powershell-encoded-command.ts).
+3. Require literal host-shell words and an unambiguous raw-word rule key.
+   Preserve quote delimiters and contents exactly; normalize only interword
+   whitespace and the permitted command head. Active variables, command
+   substitutions, globs and escape expansion remain unproven. No argument
+   binder emulation, numeric conversion or parameter-word lowercasing is used.
+4. For a recognized PowerShell launcher, inspect every following parsed argv
+   token's literal value: trim it, remove all leading `-`, `/`, U+2013,
+   U+2014 and U+2015 characters, lowercase it, and refuse the command if the
+   result starts with `e`. This intentionally includes `ExecutionPolicy`,
+   other e-leading arguments and missing operands. Never stop at `-File` or
+   `--`. The check applies to an existing transparent wrapper target too,
+   but does not recurse into shell code strings, `env -S`, `find` or `xargs`
+   to discover another launcher. It never inspects encoded contents. The
+   [encoded-execution predicate](../../src/permissions/rules/powershell-encoded-command.ts)
+   owns this conservative exclusion; the display decoder's narrower flag
+   recognition does not decide permissions.
 
 The sole proof launcher list is `pwsh`, `pwsh-preview`, `powershell` and
 `powershell_ise`, plus their `.exe` forms, matched case-insensitively by exact
@@ -394,13 +410,30 @@ referenced files or network response, or certify their effects. Such commands
 remain subject to representable exact-rule coverage and visible-text floors.
 
 The approval card derives a rule only when the supported command shape has an
-unambiguous canonical representation and validates that rule against the live
-request before saving. The card offers one simple-command rule; a literal
-pipeline can instead be covered by exact rules for each parsed subcommand.
-Literal quoted whitespace and quoted-versus-bare parameter meaning are
-preserved. An unsupported representation receives no exact-rule offer; this
-is distinct from detecting indirect code. Deny and ask
-matching keeps its conservative normalization and precedence.
+unambiguous raw-word representation and validates it against the live request
+before saving. The card offers one simple-command rule; a literal pipeline can
+instead be covered by exact rules for each parsed subcommand. Different quote
+styles, raw quoted data and argument casing remain distinct in both matching
+directions. An unsupported representation receives no exact-rule offer; this
+is distinct from detecting indirect code. Deny and ask matching keeps its
+separate conservative normalization and precedence.
+
+### Visible-floor work limits
+
+Visible-floor inspection has an independent 8,000-character input limit,
+checked before parsing or text/regex inspection. In the sandboxed lane, input
+over that limit forces per-call modal approval at layer 2 rather than reaching
+the automatic sandbox allow. Actual internal floor-analysis budget exhaustion
+has the same forced-modal outcome, even for shorter inputs. Exact rules,
+remembered approvals, reviewer decisions and allow mode cannot satisfy it;
+a stronger existing deny may still reject the call. These limits bound visible
+floor work and do not classify input as hidden code.
+
+The unsandboxed lane's earlier 2,000-character cap still asks at layer 6, or
+denies headless, before any command-dependent work. Within that cap, actual
+floor-analysis exhaustion also retains its per-call gate; an unsandboxed
+headless ask becomes deny. The two lane limits have independent purposes and
+must not be substituted for one another.
 
 For sandboxed execution, the sandbox's filesystem and egress controls remain
 the boundary. Visible-text destructive, credential-exfiltration and
@@ -1108,7 +1141,7 @@ unavailable. By owner decision 2026-10-25 (unsandboxed shell exact-rule requirem
 unavailable or not covering the command, an explicit host request, and the
 Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`) — runs unasked
 only on an exact allow rule for that proven literal command: `Bash(<command>)`, or
-`PowerShell(<command>)` matched on the parsed command's canonical form with the
+`PowerShell(<command>)` matched on the command's literal raw words with the
 same strictness (owner decision 2026-10-25). Otherwise it asks on the shared
 decision row of the approval card (owner decision 2026-10-25, unified approval
 card) in every mode. Headless, a matching exact rule runs it — for the Plan B

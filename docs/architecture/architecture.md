@@ -1563,42 +1563,45 @@ routine turn) the same exact rule still runs the command — sandbox-off bash,
 the Plan B and an explicit host request alike — and without one the call is
 denied and audited (I5). Every remaining unsandboxed headless ask, including a
 visible floor or unreadable restriction, becomes deny with its reason and layer
-preserved. A `PowerShell(...)` rule is matched on the parsed
-command with a literal identity: case is folded only for a known cmdlet's
-name and its unquoted named `-Parameter` options (before a `:`); a native
-program, an unknown command and every value stay verbatim, including quoted
-parameter-looking data (`git branch -d` and `-D`, `git clean
--n` and `-N`, `java -Dfoo=SAFE` are distinct rules). An alias never merges
-two identities (`sc`, `curl`, `wget`, `ls`, `rm` and `cat` differ by edition):
-aliases are resolved only to classify the command against the floors. A deny
-or ask rule compares a normalized name on both sides, since matching more only
-narrows: the directory path, a `Module\` qualifier, trailing dots and an
-executable extension are dropped, case is folded and an alias resolves to its cmdlet, so
-`PowerShell(git push *)` refuses `git.exe push` and `C:\Git\bin\git.exe push`,
-and `PowerShell(gci *)` refuses `Get-ChildItem`.
+preserved. Exact command-rule identity keeps literal raw words, including
+original quote style and contents. Only interword whitespace and the documented
+PowerShell unquoted-head normalization change; Bash heads stay raw. Argument
+words are never unquoted,
+requoted, value-converted or lowercased. `Write-Output '0x10'` and
+`Write-Output 0x10` remain distinct. Effect and deny/ask normalization stay
+separate from exact identity.
 
 Exact allows additionally require the host's
 [literal-command proof](permission-policy-design.md#literal-command-proof).
-An unsandboxed input over the shared length limit immediately asks or denies
-headless before project loading, parsing, command-rule or floor inspection. Under the
+An unsandboxed input over 2,000 characters immediately asks or denies
+headless before project loading, parsing, command-rule or floor inspection.
+Under the
 limit, parse or lexer/analysis-budget failure, nonliteral words and ambiguous
-canonical identity remain unproven. Literal quoting is preserved, so
+raw identity remain unproven. Literal quoting is preserved, so
 `git commit -m 'msg'` can be remembered.
 
 Visible literal code, including interpreter options and delegated commands, is
 eligible for exact rules. File, stdin and network indirection are accepted
 limits, not separately detected blockers; a saved `make` or `python script.py`
 invocation does not fix the code it will later execute. The one execution-form
-exception is a PowerShell launcher with an `-enc`-family operand. Its sole proof
-list is `pwsh`, `pwsh-preview`, `powershell`, `powershell_ise` and their
-`.exe` forms, compared as exact basenames case-insensitively. Other launcher
-tables serve only visible-floor and classification analysis.
+exception is a recognized PowerShell launcher with an e-leading argument.
+After trimming each argument and removing leading hyphen, slash and supported
+Unicode dash characters, any lowercase value starting with `e` is unproven,
+including `ExecutionPolicy`. All arguments are checked past `-File` and `--`,
+without requiring an operand. The sole launcher list is `pwsh`, `pwsh-preview`,
+`powershell`, `powershell_ise` and their `.exe` forms, compared as exact
+basenames case-insensitively. Other launcher tables serve only visible-floor
+and classification analysis.
 
-For sandboxed commands the sandbox is the boundary. Only the visible-text
-floors remain above it; encoded-looking data does not add a permission floor.
+For sandboxed commands the sandbox is the boundary. Visible-floor work has an
+independent 8,000-character pre-inspection input limit. Exceeding it or an
+internal floor-analysis budget forces modal approval at layer 2; exact rules,
+reviewers and modes cannot auto-allow that request. Only visible-text floors
+and their work limits remain above the sandbox; encoded-looking data does not
+add a permission floor.
 The card decodes only a literal `-enc`-family operand for display. That decoded
 text neither authorizes execution nor feeds permission decisions. The host
-builds the card's exact rule from proven literal argv and matches it against
+builds the card's exact rule from proven literal raw words and matches it against
 the live command again before saving.
 
 Remembered approvals saved for unsandboxed shells before this decision stay
