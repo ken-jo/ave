@@ -317,6 +317,8 @@ interface WindowsLiveGrantCounts {
 
 interface AsrtSandboxSession {
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
+  readonly windowsWrapDenyRead: Set<string>;
+  readonly windowsWrapDenyWrite: Set<string>;
 }
 
 interface WindowsLiveGrantSnapshot {
@@ -334,6 +336,13 @@ function snapshotWindowsLiveGrants(session: AsrtSandboxSession | undefined): Win
   };
 }
 
+// Deny ACEs affect the shared principal, including earlier wraps; retain their raw policy until session teardown.
+function rememberWindowsWrapDenies(filesystem: PerCommandFilesystem | undefined): void {
+  if (process.platform !== "win32" || sandboxSession === undefined) return;
+  for (const path of filesystem?.denyRead ?? []) sandboxSession.windowsWrapDenyRead.add(path);
+  for (const path of filesystem?.denyWrite ?? []) sandboxSession.windowsWrapDenyWrite.add(path);
+}
+
 // Refcount shared socket directories across overlapping generations; one release must not remove another holder's allowance. Resolve registration only after config update and pair every successful register with unregister; Linux socket permission is path-blind.
 interface WorkerUnixSocketDirEntry {
   readonly holders: Set<object>;
@@ -348,6 +357,13 @@ function withWorkerUnixSockets(
   base: TrustedSandboxSettings,
   pendingDir?: string,
 ): TrustedSandboxSettings {
+  if (process.platform === "win32" && sandboxSession !== undefined) {
+    base = {
+      ...base,
+      denyRead: [...(base.denyRead ?? []), ...sandboxSession.windowsWrapDenyRead],
+      denyWrite: [...(base.denyWrite ?? []), ...sandboxSession.windowsWrapDenyWrite],
+    };
+  }
   const dirs = [..._workerUnixSocketDirs]
     .filter(([dir, entry]) => entry.registered || dir === pendingDir)
     .map(([dir]) => dir);
@@ -1121,6 +1137,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   writeGrants: readonly FilesystemPathEntry[],
   kind: "read" | "write",
   readDenyEvidence?: WindowsReadDenySnapshot,
+  onWriteReachableDeny?: (entry: FilesystemPathEntry) => void,
 ): (T | string)[] {
   if (process.platform !== "win32") return [...entries];
   let machineRoots: readonly string[] | undefined;
@@ -1137,9 +1154,11 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   const expandedGrants = expandedWindowsDenyGrants(grants, profile);
   const expandedWriteGrants = expandedWindowsDenyGrants(writeGrants, profile);
   const retainedMachineRows = new Set<T>();
+  const expandedPaths = new Map<T, string>();
   entries = entries.filter((entry) => {
-    const path = typeof entry === "string" ? entry : entry.path;
     try {
+      const path = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path)));
+      expandedPaths.set(entry, path);
       if (machineRoots === undefined) {
         retainedMachineRows.add(entry);
         return true;
@@ -1159,7 +1178,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     }
   });
   const literals = entries.filter((entry) => typeof entry !== "string")
-    .filter(entry => retainedMachineRows.has(entry) || keepWindowsDenyTarget(entry, expandedWriteGrants));
+    .filter(entry => retainedMachineRows.has(entry) || keepWindowsDenyTarget(entry, expandedPaths.get(entry)!, expandedWriteGrants, onWriteReachableDeny));
   const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
   const homes = sensitiveDenyHomes();
   const aveHomes = [aveHome(), ...homes.map((home) => join(home, ".ave"))];
@@ -1179,7 +1198,8 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   ]);
   return paths
     .filter((path) => !posixRooted.has(path))
-    .filter((path) => {
+    .filter((original) => {
+      const path = expandedPaths.get(original) ?? original;
       try {
         // Use admission's canonical identity, including links and native aliases. Patterns and unresolved short names cannot prove disjointness.
         if ([path].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
@@ -1192,16 +1212,28 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
         return true;
       }
     })
-    .filter(path => retainedMachineRows.has(path) || keepWindowsDenyTarget(path, expandedWriteGrants))
+    .filter(path => retainedMachineRows.has(path) || keepWindowsDenyTarget(path, expandedPaths.get(path)!, expandedWriteGrants, onWriteReachableDeny))
     .map((path): T | string => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path))
     .concat(literals);
 }
 
-function keepWindowsDenyTarget(entry: FilesystemPathEntry, expandedGrants: readonly string[]): boolean {
+function keepWindowsDenyTarget(
+  entry: FilesystemPathEntry,
+  expanded: string,
+  expandedGrants: readonly string[],
+  onWriteReachableDeny?: (entry: FilesystemPathEntry) => void,
+): boolean {
   const path = typeof entry === "string" ? entry : entry.path;
-  const expanded = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(path)));
   if (isUncPath(expanded) || ((typeof entry === "string" || !entry.literal) && containsGlobCharsWin(expanded))) return true;
   const target = resolve(toForwardSlashes(expanded));
+  let writeReachable: boolean;
+  try {
+    writeReachable = expandedGrants.some(grant => isGrantPathWithin(grant, target) || isGrantPathWithin(target, grant));
+  } catch {
+    // An unproven grant identity cannot justify leaving a target unprotected.
+    writeReachable = true;
+  }
+  if (writeReachable) onWriteReachableDeny?.(entry);
   let present: boolean;
   try {
     present = lstatSync(target, { throwIfNoEntry: false }) !== undefined;
@@ -1218,12 +1250,7 @@ function keepWindowsDenyTarget(entry: FilesystemPathEntry, expandedGrants: reado
     present = false;
   }
   if (!present) {
-    try {
-      if (expandedGrants.some(grant => isGrantPathWithin(grant, target) || isGrantPathWithin(target, grant))) return true;
-    } catch {
-      // Unproven grant coverage must never remove a deny.
-      return true;
-    }
+    if (writeReachable) return true;
     const key = windowsReadDenyKey(target);
     if (!windowsAbsentDenyWarnings.has(key)) {
       windowsAbsentDenyWarnings.add(key);
@@ -1337,6 +1364,7 @@ export function buildSandboxConfig(
   trustedSettings: TrustedSandboxSettings,
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},
+  onWindowsWriteReachableDeny?: (kind: "denyRead" | "denyWrite", entry: FilesystemPathEntry) => void,
 ): SandboxRuntimeConfig {
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
     ? getVerifiedSrtWinExePath() : undefined;
@@ -1418,9 +1446,11 @@ export function buildSandboxConfig(
       windowsWriteGrants,
       "read",
       readDenyEvidence,
+      onWindowsWriteReachableDeny === undefined ? undefined : entry => onWindowsWriteReachableDeny("denyRead", entry),
     ),
     allowWrite,
-    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write"),
+    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write", undefined,
+      onWindowsWriteReachableDeny === undefined ? undefined : entry => onWindowsWriteReachableDeny("denyWrite", entry)),
     ...(allowRead !== undefined ? { allowRead } : {}),
   };
 
@@ -1678,7 +1708,7 @@ export async function initializeAsrtSandbox(
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
-  sandboxSession = { windowsLiveGrants: new Map() };
+  sandboxSession = { windowsLiveGrants: new Map(), windowsWrapDenyRead: new Set(), windowsWrapDenyWrite: new Set() };
   windowsProfileReadDenyWarnings.clear();
   windowsReadDenyWarnings.clear();
   windowsAbsentDenyWarnings.clear();
@@ -1741,6 +1771,7 @@ export async function wrapToolCommand(
   // Publish before wrapping: the runtime sets TMPDIR inside the command, ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, "wrapToolCommand");
+  rememberWindowsWrapDenies(options.filesystem);
   assertCommandId("wrapToolCommand", options.commandId);
   const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
@@ -1918,6 +1949,7 @@ async function wrapLongLivedCommand(
   // Publish before wrapping: the runtime sets TMPDIR inside the command, ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
   assertPerExecFilesystemSupported(options.filesystem, caller);
+  rememberWindowsWrapDenies(options.filesystem);
   assertCommandId(caller, options.commandId);
   const SandboxManager = await loadSandboxManager();
   await openEgressListener(SandboxManager, caller, options.commandId);
@@ -2074,7 +2106,7 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
   );
 }
 
-// Windows worker grants require a dedicated holder PID; per-exec allow lists and live config filesystem changes are unsupported. Thread one explicitly resolved verified binary descriptor through status, grant, rollback and release.
+// Windows worker grants name a dedicated holder PID. Apply session denies before access, then publish the logical config; use one verified binary descriptor throughout.
 export async function grantWindowsWorkerFilesystemAccess(opts: {
   readonly holderPid: number;
   readonly allowRead?: readonly string[];
@@ -2082,7 +2114,8 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
 }): Promise<WindowsWorkerFilesystemGrant> {
   assertAveHomePrivacyForConfinement();
   const session = sandboxSession;
-  if (!active || _baseTrustedSettings === undefined || session === undefined) {
+  const SandboxManager = loadedSandboxManagerForRelease;
+  if (!active || _baseTrustedSettings === undefined || session === undefined || SandboxManager === undefined) {
     throw new Error(
       "grantWindowsWorkerFilesystemAccess: ASRT sandbox is not active (initialize at boot first)",
     );
@@ -2093,6 +2126,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   const {
     getWindowsSandboxUserStatus,
     grantWindowsAcl,
+    stampWindowsAcl,
     revokeWindowsAcl,
     expandWindowsFsPaths,
     resolveSrtWin,
@@ -2123,6 +2157,36 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
 
   assertPrivateHelperGrants(allowRead, allowWrite);
 
+  const settings = withWorkerUnixSockets(_baseTrustedSettings);
+  const liveGrants = snapshotWindowsLiveGrants(session);
+  const before = buildSandboxConfig(settings, _baseReadDenyEvidence, liveGrants);
+  const writeReachable: Record<"denyRead" | "denyWrite", FilesystemPathEntry[]> = { denyRead: [], denyWrite: [] };
+  const pending = buildSandboxConfig(settings, _baseReadDenyEvidence, {
+    allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
+    allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
+  }, (kind, entry) => writeReachable[kind].push(entry));
+  const deniesToStamp = (kind: "denyRead" | "denyWrite"): FilesystemPathEntry[] => {
+    const previous = new Set(before.filesystem[kind].map(entry => typeof entry === "string" ? entry : entry.path));
+    // A target omitted by an earlier wrap may now exist, so fresh config equality alone cannot prove it was stamped.
+    const rows = new Map<string, FilesystemPathEntry>();
+    for (const entry of [...pending.filesystem[kind].filter(entry => !previous.has(typeof entry === "string" ? entry : entry.path)),
+      ...writeReachable[kind]]) {
+      rows.set(typeof entry === "string" ? entry : entry.path, entry);
+    }
+    return [...rows.values()];
+  };
+  const denyRead = expandWindowsFsPaths(deniesToStamp("denyRead"), { mode: "deny" });
+  const denyWrite = expandWindowsFsPaths(deniesToStamp("denyWrite"), { mode: "deny" });
+  if (denyRead.length > 0 || denyWrite.length > 0) {
+    try {
+      stampWindowsAcl({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin });
+    } catch (error) {
+      // Releasing this holder would also release initialization's protection; partial stamps remain protective.
+      log.warn(`[sandbox-deny-target] Refusing Windows filesystem grant: ${errorMessage(error)}`);
+      throw error;
+    }
+  }
+
   if (allowRead.length > 0 || allowWrite.length > 0) {
     try {
       grantWindowsAcl({
@@ -2147,7 +2211,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   }
 
   let released = false;
-  return {
+  const grant: WindowsWorkerFilesystemGrant = {
     allowRead,
     allowWrite,
     release: () => {
@@ -2162,8 +2226,22 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
       }
       // Capture srtWin in the closure — the release may run long after the dynamic import scope has gone; it still needs the explicit spawn descriptor (0.0.67 has no implicit vendored fallback).
       revokeWindowsAcl({ sandboxUserSid, holderPid: opts.holderPid, srtWin });
+      if (sandboxSession === session && active && _baseTrustedSettings !== undefined) {
+        SandboxManager.updateConfig(
+          buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
+        );
+      }
     },
   };
+  try {
+    SandboxManager.updateConfig(
+      buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence, snapshotWindowsLiveGrants(session)),
+    );
+  } catch (error) {
+    grant.release();
+    throw error;
+  }
+  return grant;
 }
 
 function assertPrivateHelperGrants(read: readonly string[], write: readonly string[]): void {
