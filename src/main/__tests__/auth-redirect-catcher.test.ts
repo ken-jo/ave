@@ -71,10 +71,14 @@ describe("the listener it binds", () => {
     const close = vi.spyOn(Server.prototype, "close");
     try {
       const catchers = new AuthRedirectCatchers();
-      const { redirectUri } = await open(catchers);
+      const { handle, redirectUri } = await open(catchers);
       expect(Number(new URL(redirectUri).port)).not.toBe(6000);
-      expect(close).toHaveBeenCalled();
-      await expect(hit(redirectUri, "/")).resolves.toMatchObject({ status: 200 });
+      expect(close).toHaveBeenCalledTimes(1);
+      address.mockRestore();
+      // The retried port is the one that receives the exact, state-checked callback.
+      const waiting = catchers.wait(OWNER, handle);
+      expect((await hit(redirectUri, "/?code=abc123&state=xyz")).status).toBe(303);
+      await expect(waiting).resolves.toEqual({ code: "abc123", state: "xyz" });
     } finally {
       address.mockRestore();
       close.mockRestore();
