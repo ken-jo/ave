@@ -64,6 +64,13 @@ import { setProcessPlatform } from "../../__tests__/support/process-platform.js"
 const ORIGINAL_PLATFORM = process.platform;
 const WXC_EXEC = String.raw`C:\Program Files\Ave\resources\mxc\x64\wxc-exec.exe`;
 const CONTAINER_OUTPUT = "output relayed from the container";
+const PARSER_REQUEST = "eyJwYXJzZXIiOnRydWV9";
+
+function isParserLaunch(input: { commandLine: string }): boolean {
+  const encoded = input.commandLine.split(" ").at(-1)!;
+  return Buffer.from(encoded, "base64").toString("utf16le")
+    .includes("[System.Management.Automation.Language.Parser]::ParseInput");
+}
 
 function fakeChild(output: string, code: number): EventEmitter & Record<string, unknown> {
   const child = new EventEmitter() as EventEmitter & Record<string, unknown>;
@@ -118,15 +125,15 @@ describe("builtin shell — Windows MXC containers", () => {
     __resetShellResolverCache();
     childProcessMock.execFileSync.mockImplementation((_file, args: readonly string[]) =>
       args.join(" ").includes("AVE_PROBE_RHS") ? "parent\0AB가😀\0" : "__ave_shell_ok__");
-    childProcessMock.spawn.mockImplementation((_command: string, _args: readonly string[], options?: { stdio?: unknown }) => {
+    childProcessMock.spawn.mockImplementation((_command: string, args: readonly string[], options?: { stdio?: unknown }) => {
       const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
-      return parser ? fakeChild(PARSED, 0) : fakeChild(`${CONTAINER_OUTPUT}\n`, 0);
+      return parser || args.includes(PARSER_REQUEST) ? fakeChild(PARSED, 0) : fakeChild(`${CONTAINER_OUTPUT}\n`, 0);
     });
-    mxcLaunchMock.prepare.mockResolvedValue({
-      argv: [WXC_EXEC, "--config-base64", "eyJ9"],
+    mxcLaunchMock.prepare.mockImplementation(async (input: { commandLine: string }) => ({
+      argv: [WXC_EXEC, "--config-base64", isParserLaunch(input) ? PARSER_REQUEST : "eyJ9"],
       proxyPort: 51234,
       release: mxcLaunchMock.release,
-    });
+    }));
   });
 
   afterEach(() => {
@@ -151,8 +158,18 @@ describe("builtin shell — Windows MXC containers", () => {
 
     expect(result).toMatchObject({ isError: false, metadata: { returncode: 0, sandboxed: true } });
     expect(result.output).toContain(CONTAINER_OUTPUT);
-    expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(1);
-    const [launch] = mxcLaunchMock.prepare.mock.calls[0] as [Record<string, unknown>];
+    expect(mxcLaunchMock.prepare).toHaveBeenCalledTimes(2);
+    const [parserLaunch] = mxcLaunchMock.prepare.mock.calls[0] as [{ commandLine: string }];
+    expect(isParserLaunch(parserLaunch)).toBe(true);
+    const [launch] = mxcLaunchMock.prepare.mock.calls[1] as [Record<string, unknown>];
+    for (const [prepared] of mxcLaunchMock.prepare.mock.calls as [{ commandLine: string; env: Record<string, string> }][]) {
+      const script = Buffer.from(prepared.commandLine.split(" ").at(-1)!, "base64").toString("utf16le");
+      expect(prepared.commandLine).toContain("-NoProfile -NonInteractive -ExecutionPolicy RemoteSigned -EncodedCommand");
+      expect(script).toContain("$PSModuleAutoLoadingPreference = 'None'");
+      expect(script).toContain("[System.IO.Path]::Combine($PSHOME, 'Modules')");
+      expect(script).toContain("Microsoft.PowerShell.Core\\Import-Module -Name");
+      expect(prepared.env.PSModulePath).toBe("");
+    }
     expect(launch["egressToken"]).toEqual(expect.any(String));
     expect(launch["commandLine"]).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe.* -EncodedCommand /);
     expect(launch["cwd"]).toBe(cwd);
@@ -164,13 +181,14 @@ describe("builtin shell — Windows MXC containers", () => {
     const env = launch["env"] as Record<string, string>;
     for (const key of Object.keys(env)) expect(key.toLowerCase()).not.toMatch(/_proxy$/);
 
-    const containerSpawn = childProcessMock.spawn.mock.calls.find((call) => call[0] === WXC_EXEC);
+    expect(childProcessMock.spawn.mock.calls.every((call) => call[0] === WXC_EXEC)).toBe(true);
+    const containerSpawn = childProcessMock.spawn.mock.calls.find((call) => call[0] === WXC_EXEC && (call[1] as string[]).at(-1) === "eyJ9");
     if (containerSpawn === undefined) throw new Error("wxc-exec was not spawned");
     expect(containerSpawn[1]).toEqual(["--config-base64", "eyJ9"]);
     expect(containerSpawn[2]).toMatchObject({ shell: false, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
     // The launcher runs from its own directory; the container cwd is in the request.
     expect((containerSpawn[2] as { cwd?: string }).cwd).toBe(String.raw`C:\Program Files\Ave\resources\mxc\x64`);
-    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
   it("gives the container the mandatory write floor: workspace control files and Ave's stores stay unwritable", async () => {
@@ -240,7 +258,8 @@ describe("builtin shell — Windows MXC containers", () => {
 
   it("releases the listener when the launcher fails to spawn and never closes", async () => {
     bootMxcShells();
-    childProcessMock.spawn.mockImplementation((command: string, _args: readonly string[], options?: { stdio?: unknown }) => {
+    childProcessMock.spawn.mockImplementation((command: string, args: readonly string[], options?: { stdio?: unknown }) => {
+      if (args.includes(PARSER_REQUEST)) return fakeChild(PARSED, 0);
       if (command !== WXC_EXEC) {
         const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
         return fakeChild(parser ? PARSED : "", 0);
@@ -254,13 +273,14 @@ describe("builtin shell — Windows MXC containers", () => {
     const result = await new PowerShellTool().execute({ command: "Write-Output hi", timeoutSeconds: 7 }, context("ps-mxc-enoent"));
     expect(result).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "unavailable" } });
     expect(result.output).toContain("ENOENT");
-    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2);
   });
 
   it("keeps a running launcher's abort watch after an error and releases only on close", async () => {
     bootMxcShells();
     let launcher: (EventEmitter & Record<string, unknown>) | undefined;
-    childProcessMock.spawn.mockImplementation((command: string, _args: readonly string[], options?: { stdio?: unknown }) => {
+    childProcessMock.spawn.mockImplementation((command: string, args: readonly string[], options?: { stdio?: unknown }) => {
+      if (args.includes(PARSER_REQUEST)) return fakeChild(PARSED, 0);
       if (command !== WXC_EXEC) {
         const parser = Array.isArray(options?.stdio) && options.stdio[0] === "pipe";
         return fakeChild(parser ? PARSED : "", 0);
@@ -279,13 +299,13 @@ describe("builtin shell — Windows MXC containers", () => {
     );
     expect(result.isError).toBe(true);
     // A still-running errored child must retain its resources and abort watch.
-    expect(mxcLaunchMock.release).not.toHaveBeenCalled();
+    expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1);
     abort.abort();
     expect((launcher!["stdout"] as PassThrough).destroyed).toBe(true);
     launcher!["exitCode"] = 1;
     launcher!.emit("exit", 1, null);
     launcher!.emit("close", 1, null);
-    await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(mxcLaunchMock.release).toHaveBeenCalledTimes(2));
   });
 
   it("refuses a sandboxed Bash command with the PowerShell guidance instead of running it", async () => {

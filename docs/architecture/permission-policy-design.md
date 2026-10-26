@@ -419,12 +419,47 @@ Detection still uses the alias union to retain visible floors. Native
 delegation never uses a cmdlet's grammar. Widening any removed
 configuration-dependent form requires a separate complete grammar review.
 
-Managed PowerShell execution, parser and sandbox launch paths use `-NoProfile`.
-This suppresses profile scripts, not the engine's separate
-`powershell.config.json` startup settings. The current cmdlet grammar does not
-prove those startup settings absent; module setup and transcription policies
-are a distinct host-startup boundary. In particular, `-NoProfile` alone is not
-evidence that user-configured transcription cannot write a file.
+Managed PowerShell execution and parsing require a separate startup proof.
+`-NoProfile` suppresses profiles only. `-SettingsFile` replaces the system-wide
+JSON file only, and an inherited `PSModulePath` can be augmented at startup.
+Neither is a proof that user configuration cannot select execution.
+
+On macOS and Linux each native parser and execution child receives a fresh
+host-owned `XDG_CONFIG_HOME` and settings file before startup. Host execution
+preserves the caller's HOME. The first command disables module autoload,
+replaces the runtime module path with exactly `$PSHOME/Modules`, and imports
+Utility and Management by their absolute installation manifest paths using
+the engine's core import command. An initialization error terminates before
+the original command; there is no discovery fallback. Sandboxed execution
+uses the same startup preparation inside its isolated profile.
+
+Outer PowerShell line and block comments are unproven because comment syntax
+can carry directives processed before the initialization prelude. The lexer
+records their presence and retains its full visible-floor pass; it does not
+enumerate directive names or treat an unknown directive as inert. Quoted `#`
+text remains literal argument data.
+
+Windows PowerShell 5.1 uses registry policy, while PowerShell 7 also reads
+CurrentUser JSON under the user's Documents directory. No supported startup
+pin is established for either Windows path: current-user policy can outrank
+a Process policy, and a configured session can be selected before a command
+prelude. All managed Windows PowerShell inputs are therefore unproven,
+including native leaf commands and literal evaluators. They offer no exact
+allow rule, cannot replay stored or broad allows, require per-call L2 consent,
+and deny headless. Raw rule identity and syntax proofs remain unchanged. A
+pinned POSIX launch retains the full-text literal-evaluation exact exception.
+
+An unpinned host AST parser starts only after genuine one-shot host authority
+is verified and consumed. MXC performs its AST inspection inside a separate
+confined invocation, then applies the existing structural/path gates before
+the execution invocation. A native host preflight is deferred on unpinned
+paths; the tool performs the same admission check on its execution route.
+Defensive module imports and Process policy flags on a Windows child do not
+make its startup eligible for automatic allowance.
+
+Local transcript-file writes are an accepted host-trust residual. They do
+not, by themselves, revoke cmdlet automatic allowance. This residual grants
+no exception for configuration that selects modules, code or execution policy.
 
 Catalogued package-runner forms remain rule-eligible only when the runner grammar
 consumes its complete outer argv and the delegated command range also satisfies

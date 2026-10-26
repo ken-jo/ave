@@ -266,7 +266,12 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
         shell?: boolean;
         stdio?: unknown;
       };
-      expect(nativeArgs).toContain(input.command);
+      if (toolName === "powershell") {
+        expect(nativeArgs.at(-1)).toEqual(expect.stringContaining("$PSModuleAutoLoadingPreference = 'None'"));
+        expect(nativeArgs.at(-1)?.endsWith(input.command)).toBe(true);
+        expect(nativeArgs.slice(0, -2)).toEqual(["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "RemoteSigned"]);
+        expect((nativeCall[2] as { env: Record<string, string> }).env.PSModulePath).toBe("");
+      } else expect(nativeArgs).toContain(input.command);
       expect(nativeOptions).toMatchObject({
         cwd: baseContext.cwd,
         shell: false,
@@ -281,7 +286,7 @@ describe("builtin shell - Windows partial Plan-B native execution", () => {
         metadata: { sandboxed: false, isolation: "none" },
       });
       expect(replay.output).toContain("one-shot host approval permit");
-      expect(childProcessMock.spawn).toHaveBeenCalledTimes(spawnCountAfterFirst + (toolName === "powershell" ? 1 : 0));
+      expect(childProcessMock.spawn).toHaveBeenCalledTimes(spawnCountAfterFirst);
     },
   );
 });
@@ -319,9 +324,9 @@ describe.each(["darwin", "linux", "win32"] as const)(
       childProcessMock.execFileSync.mockReset();
     });
 
-    // Unavailable sandboxing follows ordinary permission authority and records the fallback execution plan.
+    // Unavailable sandboxing retains its fallback plan; unpinned startup still needs one-shot authority.
     it.each(SHELLS)(
-      "runs $label as a permitless plain child and records the fallback plan",
+      "runs $label with the route's required authority and records the fallback plan",
       async ({ toolName, create, input, expectedSpawnCount }) => {
         const plan = issueRequestedUnavailable(platform);
         expect(plan).toMatchObject({
@@ -338,6 +343,14 @@ describe.each(["darwin", "linux", "win32"] as const)(
           hostShellExecutionPlan: plan,
           metadata: { toolUseId },
         };
+
+        if (platform === "win32" && toolName === "powershell") {
+          const refused = await create().execute(input, context);
+          expect(refused).toMatchObject({ isError: true, metadata: { sandboxed: false, isolation: "none" } });
+          expect(refused.output).toContain("one-shot host approval permit");
+          expect(childProcessMock.spawn).not.toHaveBeenCalled();
+          context.hostShellExecutionPermit = await mintOneShotPermit({ plan, toolName, toolUseId, rawInput: input, context });
+        }
 
         const first = await create().execute(input, context);
         expect(first).toMatchObject({

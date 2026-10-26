@@ -61,7 +61,7 @@ describe.each(["plain", "sandbox"] as const)("%s shell completion", (route) => {
         return { argv: failure === "empty" ? [] : ["shell"], env: {}, notices: ["narrowing reason"], cleanupCompleted: Promise.resolve({ notice: "quarantine restore location" }) };
       });
       vi.mocked(spawn).mockImplementation((_command, args) => {
-        if (args?.includes(POWER_SHELL_AST_PARSER)) {
+        if (args?.some((arg) => arg.endsWith(POWER_SHELL_AST_PARSER))) {
           const parser = childProcess();
           queueMicrotask(() => {
             parser.stdout.write(JSON.stringify({ errors: [], commands: [], redirections: [], unsupported: [] }));

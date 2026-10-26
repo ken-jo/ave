@@ -23,6 +23,7 @@ import {
 } from "../user-approval-store.js";
 import type { ShellRuleDialect, UserApprovalScope } from "../../shared/permissions-events.js";
 import { encodeScript } from "./fixtures/encoded-command.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 // Commands are inert parser fixtures. The sandbox owns execution confinement;
 // unsandboxed exact rules require a complete proof of literal argv.
@@ -337,6 +338,45 @@ describe("configuration loading proof", () => {
       expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed, true))
         .toMatchObject({ decision: "deny", layer: 2 });
     }
+  });
+});
+
+const STARTUP_CONFIGURATION_CASES = [
+  { platform: "win32", command: "Get-Date", ...EXPECTED_UNPROVEN },
+  { platform: "win32", command: "Microsoft.PowerShell.Utility\\Get-Date", ...EXPECTED_UNPROVEN },
+  { platform: "win32", command: "printf ready", ...EXPECTED_UNPROVEN },
+  { platform: "win32", command: "Invoke-Expression 'Get-Date'", ...EXPECTED_UNPROVEN },
+  { platform: "win32", command: "pwsh -Command 'Get-Date'", ...EXPECTED_UNPROVEN },
+  { platform: "darwin", command: "Get-Date", ...EXPECTED_STATIC },
+  { platform: "linux", command: "Get-Date", ...EXPECTED_STATIC },
+  { platform: "darwin", command: "Invoke-Expression 'Get-Date'", ...EXPECTED_LITERAL_EVALUATION },
+  { platform: "linux", command: "Invoke-Expression 'Get-Date'", ...EXPECTED_LITERAL_EVALUATION },
+  { platform: "linux", command: "#requires -Modules Eve\nGet-Date", storedRuleBody: "Get-Date", ...EXPECTED_UNPROVEN },
+  { platform: "darwin", command: "#requires -Modules '/tmp/outer-module.psd1'\nGet-Date", storedRuleBody: "Get-Date", ...EXPECTED_UNPROVEN },
+  { platform: "linux", command: "Get-Date # ordinary outer comment", storedRuleBody: "Get-Date", ...EXPECTED_UNPROVEN },
+  { platform: "darwin", command: "<# outer block comment #> Get-Date", storedRuleBody: "Get-Date", ...EXPECTED_UNPROVEN },
+  { platform: "linux", command: "Invoke-Expression 'Get-Date' # outer comment", storedRuleBody: "Invoke-Expression 'Get-Date'", ...EXPECTED_UNPROVEN },
+  { platform: "linux", command: "Write-Output '#requires -Modules Eve'", ...EXPECTED_STATIC },
+  { platform: "linux", command: "# comment\nGet-Content .env", storedRuleBody: "Get-Content .env", expectedOutcome: "visible-floor", exactEligible: false, forceModal: true },
+  { platform: "darwin", command: "# comment\rGet-Content .env", storedRuleBody: "Get-Content .env", expectedOutcome: "visible-floor", exactEligible: false, forceModal: true },
+] as const;
+
+describe("managed shell startup configuration boundary", () => {
+  it.each(STARTUP_CONFIGURATION_CASES)("$platform: $command", ({ platform, command, ...expected }) => {
+    const original = process.platform;
+    try {
+      setProcessPlatform(platform);
+      requireLaneBehavior({ ...expected, name: "managed startup", dialect: "powershell", command, allowBody: command });
+      if (expected.exactEligible) return;
+      const storedRuleBody = "storedRuleBody" in expected ? expected.storedRuleBody : command;
+      manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `PowerShell(${storedRuleBody})`, action: "allow" })]);
+      for (const sandboxed of [false, true]) {
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed))
+          .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed, true))
+          .toMatchObject({ decision: "deny", layer: 2 });
+      }
+    } finally { setProcessPlatform(original); }
   });
 });
 

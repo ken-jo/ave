@@ -140,11 +140,31 @@ grammar refuses. Direct `curl` and `wget` aliases therefore remain unproven.
 Full cmdlet names retain their own grammar, and native delegation never uses an
 alias grammar. Detection retains the alias union for visible floors.
 
-Host PowerShell launches use `-NoProfile` to suppress profile scripts. This does
-not disable `powershell.config.json` startup settings, including module setup
-and transcription. The cmdlet argv proof does not certify absence of those
-host-startup effects; profile suppression must not be described as disabling
-all configuration.
+PowerShell startup has its own proof boundary. Managed macOS/Linux parser and
+execution launches isolate CurrentUser configuration with a fresh owned
+`XDG_CONFIG_HOME`, override AllUsers configuration with an owned `-SettingsFile`,
+disable module autoload and import only absolute `$PSHOME` Utility/Management
+manifests before caller text. Import failure terminates the process; there is
+no module-search fallback. Unsandboxed HOME is preserved.
+
+Outer PowerShell comments remain unproven: comment directives can act before
+the prelude. The single lexer marks every outer line/block comment without a
+directive-name allowlist and still inspects visible floors. Quoted `#` data is
+unaffected.
+
+The Windows 5.1 registry and PowerShell 7 CurrentUser JSON paths cannot be
+certified by `-NoProfile`, a Process execution policy or a module-path prelude.
+Every managed Windows PowerShell input is therefore unproven, with no exact
+offer or stored-rule upgrade, per-call L2 consent and headless denial. This
+includes a native leaf or literal evaluator because its host starts first.
+The raw-key grammar is unchanged; the literal-evaluation exact exception stays
+available on a pinned POSIX host. An unpinned host parser requires verified
+one-shot authority; MXC's parser runs inside confinement, and structural/path
+admission still precedes the execution invocation.
+
+Local transcription is an accepted host-trust residual and does not itself
+disable cmdlet automatic allowance. It is separate from executable settings;
+profile suppression must not be described as disabling all configuration.
 
 Runtime-dependent execution, including substitutions, variables, splats,
 loops, callbacks, generated strings and runtime argv, produces no persistent

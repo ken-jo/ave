@@ -15,6 +15,7 @@ import { inspectLiteralShellArgvFacts, sensitivePathInArgumentText, sensitivePat
 import { proveStaticArgv, type StaticArgvProof } from "./shell-argument-grammar.js";
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
+import { isPowerShellStartupPinned, POWERSHELL_STARTUP_UNPROVEN_REASON } from "../../shared/powershell-startup-policy.js";
 
 class SharedPowerShellContext extends PowerShellAnalysisContext {
   readonly floor = new ShellFloorContext();
@@ -129,13 +130,15 @@ class Lexer {
       if (char === "`" && (next === "\n" || next === "\r")) { this.index += next === "\r" && src[this.index + 2] === "\n" ? 3 : 2; continue; }
       if (char === "\n" || char === "\r" || char === ";") { endPipeline(); this.index += 1; continue; }
       if (char === "<" && next === "#") {
+        this.analysis.facts.set("unproven-comment", true);
         const end = src.indexOf("#>", this.index + 2);
         if (end === -1) throw new PsUnreadable("unterminated comment");
         this.index = end + 2;
         continue;
       }
       if (char === "#") {
-        while (this.index < src.length && src[this.index] !== "\n") {  this.index += 1; }
+        this.analysis.facts.set("unproven-comment", true);
+        while (this.index < src.length && src[this.index] !== "\n" && src[this.index] !== "\r") { this.index += 1; }
         continue;
       }
       if (char === "|" ) {
@@ -476,7 +479,9 @@ function optionName(text: string): string { return normalizeDashes(text).toLower
 
 function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAnalysisContext): StaticProgram {
   const stages: StaticStage[] = [];
-  let dynamic = false;
+  // Comments may carry directives processed before the startup prelude.
+  // They remain visible to the lexer, but never supply positive argv proof.
+  let dynamic = analysis.facts.get("unproven-comment") === true;
   let maximumDepth = 1;
   const pending: { pipeline: PsPipeline; depth: number; direct: boolean; pipelineId: number }[] = [];
   for (let index = pipelines.length - 1; index >= 0; index -= 1) pending.push({ pipeline: pipelines[index]!, depth: 1, direct: true, pipelineId: index });
@@ -783,7 +788,13 @@ function inspectParsed(parsed: ParsedPowerShellCommand, cwd: string | undefined)
     program.literalEvaluation !== null && program.encodedReason === null);
 }
 
-export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string): ShellFloorSignals { return inspectParsed(asPowerShellCommand(input), cwd); }
+function applyStartupPolicy(signals: ShellFloorSignals): ShellFloorSignals {
+  if (isPowerShellStartupPinned() || signals.outcome === "visible-floor" || signals.analysisLimited
+    || (signals.outcome === "unproven" && signals.exactLiteralEvaluation !== true)) return signals;
+  return { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: POWERSHELL_STARTUP_UNPROVEN_REASON };
+}
+
+export function inspectPowerShellCommand(input: PowerShellCommandInput, cwd?: string): ShellFloorSignals { return applyStartupPolicy(inspectParsed(asPowerShellCommand(input), cwd)); }
 export function inspectPowerShellVisibleText(command: string, cwd?: string): ShellFloorSignals { return inspectPowerShellCommand(command, cwd); }
 export function powerShellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).sensitive; }
 export function powerShellExfiltrationSignal(input: ShellCommandInput, cwd?: string): string | null { return inspectPowerShellCommand(input, cwd).exfiltration; }
@@ -802,6 +813,6 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
     limited = true;
   } finally { if (context.currentFrameDepth() > 0) context.leave(); }
   const parsed: ParsedPowerShellCommand = { command, syntax, analysisLimited: limited || context.limited, facts: context.facts, context };
-  const result = inspectParsed(parsed, cwd);
+  const result = applyStartupPolicy(inspectParsed(parsed, cwd));
   return { ...result, limited: parsed.analysisLimited, visits: context.visits, shellVisits: context.floor.visits, limits: POWERSHELL_ANALYSIS_LIMITS };
 }

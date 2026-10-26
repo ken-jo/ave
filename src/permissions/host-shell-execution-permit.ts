@@ -161,7 +161,7 @@ export function mintHostShellExecutionPermit(input: {
     )
   ) return undefined;
   // Any receipt-bearing mint attempt consumes its receipt before checking plan compatibility, so a mismatch cannot be probed or replayed.
-  if (!requiresExplicitHostShellApproval(input.plan)) return undefined;
+  if (!requiresExplicitHostShellApproval(input.plan, input.binding.toolName)) return undefined;
   if (
     input.binding.plan !== input.plan ||
     input.binding.planIdentity !== input.plan.identity
