@@ -9,6 +9,7 @@ import { parsePolicyDocument } from "../shared/configuration-document.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
+import { resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-lock.js";
 const log = createLogger("policy-store");
 
 export const userPolicyPath = (home = aveHome()): string => resolve(aveHomeConfigurationDirectory(home), "policy.json");
@@ -51,19 +52,6 @@ function defaultPolicy(): PolicyFile {
     managed: false,
     updatedAt: new Date().toISOString(),
   };
-}
-
-const policyLocks = new Map<string, Promise<void>>();
-
-async function withPolicyLock<T>(
-  filePath: string,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const key = resolve(filePath);
-  const prev = policyLocks.get(key) ?? Promise.resolve();
-  const next = prev.then(() => fn());
-  policyLocks.set(key, next.then(() => undefined, () => undefined));
-  return next;
 }
 
 // Read (single file)
@@ -134,6 +122,7 @@ export async function loadPolicy(
   userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<LoadedPolicy> {
+  userPath = resolveConfigurationFile(userPath);
   const [userRead, adminRead] = await Promise.all([
     readPolicyFile(userPath),
     readPolicyFile(adminPath, true),
@@ -195,7 +184,7 @@ export async function savePolicy(
   userPath = userPolicyPath(),
   adminPath = getAdminPolicyPath(),
 ): Promise<PolicyFile> {
-  return withPolicyLock(userPath, async () => {
+  return withAveHomeConfigurationWrite(userPath, async (userPath) => {
     // Check admin-dir first.
     const adminFile = await readPolicyFile(adminPath, true);
     if (adminFile.status !== "absent") {

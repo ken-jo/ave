@@ -5,7 +5,8 @@ import { join } from "node:path";
 import { replaceStagedFile } from "../lib/atomic-file.js";
 import { validateSecretDocument } from "../data/secret-document-store.js";
 import { parseConfigurationObject, parsePolicyDocument } from "./configuration-document.js";
-import { AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_CONFIGURATION_MARKER, AVE_HOME_CONFIGURATION_MARKER_CONTENT, AveHomeConfigurationUntrustedError, invalidateAveHomeConfiguration, setAveHomeConfigurationAtBoot, verifyAveHomeConfiguration, win32SystemBinary, type AveHomePrivacy } from "./ave-home.js";
+import { AVE_HOME_CONFIGURATION_DIRECTORY, AVE_HOME_CONFIGURATION_MARKER, AVE_HOME_CONFIGURATION_MARKER_CONTENT, AveHomeConfigurationUntrustedError, isAveHomeConfigurationRefused, setAveHomeConfigurationRefusedAtBoot, verifyAveHomeConfiguration, win32SystemBinary, type AveHomePrivacy } from "./ave-home.js";
+import { withAveHomeConfigurationLock } from "./ave-home-configuration-lock.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 
@@ -33,17 +34,15 @@ function validateConfiguration(name: string, bytes: Buffer): void {
 
 /** Boot completes this before settings or policy readers can observe the new paths. */
 export function migrateAveHomeConfiguration(home: string, privacy?: AveHomePrivacy): string[] {
-  invalidateAveHomeConfiguration(home);
-  if (privacy?.enforcement === "none") {
-    setAveHomeConfigurationAtBoot(home, false);
+  if (privacy?.enforcement === "none" || isAveHomeConfigurationRefused(home)) {
+    setAveHomeConfigurationRefusedAtBoot(home);
     return [];
   }
-  let committed = verifyAveHomeConfiguration(home, true);
-  const diagnostics = committed ? cleanupRootConfiguration(home)
-    : process.platform === "win32" ? migrateWindowsConfiguration(home) : migratePosixConfiguration(home);
-  committed = verifyAveHomeConfiguration(home);
-  if (privacy !== undefined) setAveHomeConfigurationAtBoot(home, committed);
-  return diagnostics;
+  return withAveHomeConfigurationLock(home, () => {
+    const committed = verifyAveHomeConfiguration(home, true);
+    return committed ? cleanupRootConfiguration(home)
+      : process.platform === "win32" ? migrateWindowsConfiguration(home) : migratePosixConfiguration(home);
+  });
 }
 
 function cleanupRootConfiguration(home: string): string[] {
@@ -57,6 +56,18 @@ function cleanupRootConfiguration(home: string): string[] {
     const root = openSync(home, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
     try {
       const sourceRoot = process.platform === "linux" ? `/proc/self/fd/${root}` : home;
+      let hashes: Record<string, string> = {};
+      try {
+        const manifest = openSync(join(home, "config", ".ave-config-sources.json"), constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+        try {
+          if (!fstatSync(manifest).isFile()) throw new Error("Configuration source record is not a regular file");
+          const parsed: unknown = JSON.parse(readFileSync(manifest, "utf8"));
+          if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Configuration source record is invalid");
+          hashes = parsed as Record<string, string>;
+        } finally { closeSync(manifest); }
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") diagnostics.push(`Configuration source record is unavailable: ${(error as Error).message}`);
+      }
       for (const name of CONFIGURATION_FILES) {
         const path = join(sourceRoot, name);
         const oldPath = join(home, name);
@@ -67,7 +78,24 @@ function cleanupRootConfiguration(home: string): string[] {
             diagnostics.push(`Legacy configuration is a link or non-regular file: ${oldPath}`);
             continue;
           }
-          unlinkSync(path);
+          const descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+          let identical: boolean;
+          try {
+            const opened = fstatSync(descriptor);
+            if (!opened.isFile() || opened.ino !== identity.ino || opened.dev !== identity.dev) throw new Error("Legacy configuration changed before cleanup");
+            identical = createHash("sha256").update(readFileSync(descriptor)).digest("base64") === hashes[name];
+          } finally { closeSync(descriptor); }
+          const current = lstatSync(path);
+          if (current.ino !== identity.ino || current.dev !== identity.dev) throw new Error("Legacy configuration changed before cleanup");
+          if (identical) unlinkSync(path);
+          else {
+            const asideName = `${name}.post-migration-${new Date().toISOString().replace(/[-:.]/g, "")}`;
+            const aside = join(sourceRoot, asideName);
+            const reservation = openSync(aside, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+            closeSync(reservation);
+            replaceStagedFile(path, aside);
+            diagnostics.push(`Legacy configuration preserved at ${join(home, asideName)}`);
+          }
           fsyncSync(root);
         } catch (error) {
           diagnostics.push(`Legacy configuration cleanup failed at ${oldPath}: ${(error as Error).message}`);
@@ -86,7 +114,7 @@ function migratePosixConfiguration(home: string): string[] {
   const homeHandle = openSync(home, directoryFlags);
   let directoryHandle: number | undefined;
   const diagnostics: string[] = [];
-  const copied: Array<{ source: string; ino: number | bigint; dev: number | bigint; bytes: Buffer }> = [];
+  const copied: Array<{ name: string; source: string; ino: number | bigint; dev: number | bigint; bytes: Buffer }> = [];
   try {
     directoryHandle = openSync(destination, directoryFlags);
     const protection = fstatSync(directoryHandle);
@@ -120,7 +148,7 @@ function migratePosixConfiguration(home: string): string[] {
         } finally { closeSync(output); }
         replaceStagedFile(staged, join(destinationRoot, name));
         fsyncSync(directoryHandle);
-        copied.push({ source, ino: identity.ino, dev: identity.dev, bytes });
+        copied.push({ name, source, ino: identity.ino, dev: identity.dev, bytes });
       } catch (error) {
         const reason = error instanceof Error ? error.message : "Source could not be read safely";
         diagnostics.push(`Configuration source rejected at ${oldPath}: ${reason}`);
@@ -141,6 +169,16 @@ function migratePosixConfiguration(home: string): string[] {
         }
       } finally { closeSync(input); }
     }
+    const stagedHashes = join(destinationRoot, `.ave-config-sources-${randomUUID()}`);
+    try {
+      const manifest = openSync(stagedHashes, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
+      try {
+        writeFileSync(manifest, JSON.stringify(Object.fromEntries(copied.map(({ name, bytes }) => [name, createHash("sha256").update(bytes).digest("base64")]))));
+        fsyncSync(manifest);
+      } finally { closeSync(manifest); }
+      replaceStagedFile(stagedHashes, join(destinationRoot, ".ave-config-sources.json"));
+      fsyncSync(directoryHandle);
+    } finally { if (entry(stagedHashes) !== undefined) unlinkSync(stagedHashes); }
     const stagedMarker = join(destinationRoot, `.${AVE_HOME_CONFIGURATION_MARKER}.migration-${randomUUID()}`);
     try {
       const marker = openSync(stagedMarker, constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY | constants.O_NOFOLLOW, 0o600);
@@ -151,16 +189,7 @@ function migratePosixConfiguration(home: string): string[] {
       replaceStagedFile(stagedMarker, join(destinationRoot, AVE_HOME_CONFIGURATION_MARKER));
       fsyncSync(directoryHandle);
     } finally { if (entry(stagedMarker) !== undefined) unlinkSync(stagedMarker); }
-    for (const identity of copied) {
-      try {
-        const current = entry(identity.source);
-        if (current?.ino !== identity.ino || current.dev !== identity.dev) throw new Error("Configuration source changed before deletion");
-        unlinkSync(identity.source);
-        fsyncSync(homeHandle);
-      } catch (error) {
-        diagnostics.push(`Legacy configuration cleanup failed at ${identity.source}: ${(error as Error).message}`);
-      }
-    }
+    diagnostics.push(...cleanupRootConfiguration(home));
   } finally {
     if (directoryHandle !== undefined) closeSync(directoryHandle);
     closeSync(homeHandle);

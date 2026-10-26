@@ -52,7 +52,7 @@ describe("protected home configuration", () => {
     expect(() => userPolicyPath(dir)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
   });
 
-  it("rechecks the cached root before rereading user policy", async () => {
+  it("rechecks root protection before writing user policy", async () => {
     const dir = fixture();
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "ave-home-boundary-v1");
     writeFileSync(join(dir, "config", "policy.json"), '{"version":1,"requireExplicitApproval":false}');
@@ -62,27 +62,27 @@ describe("protected home configuration", () => {
     if (process.platform === "win32") {
       execFileSync(win32SystemBinary("icacls"), [dir, "/grant", "*S-1-1-0:(DC)", "/q"], { windowsHide: true, stdio: "pipe" });
     } else chmodSync(dir, 0o720);
-    await expect(loadPolicy(undefined, admin)).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
+    await expect(savePolicy({ requireExplicitApproval: true }, undefined, admin)).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
   });
 
-  it("rechecks the cached configuration before rereading user policy", async () => {
+  it("rechecks configuration protection before writing user policy", async () => {
     const dir = fixture();
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "ave-home-boundary-v1");
     vi.stubEnv("AVE_HOME", dir);
     const admin = join(dirname(dir), "absent-admin.json");
     expect((await loadPolicy(undefined, admin)).requireExplicitApproval).toBe(true);
     exposeConfiguration(dir);
-    await expect(loadPolicy(undefined, admin)).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
+    await expect(savePolicy({ requireExplicitApproval: true }, undefined, admin)).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
   });
 
-  it("rechecks protected boot paths before a subsequent policy read", async () => {
+  it("rechecks protected boot paths before a subsequent policy write", async () => {
     const dir = fixture();
     migrateAveHomeConfiguration(dir, ensureAveHomePrivate(dir));
     vi.stubEnv("AVE_HOME", dir);
     const admin = join(dirname(dir), "absent-admin.json");
     expect((await loadPolicy(undefined, admin)).requireExplicitApproval).toBe(true);
     exposeConfiguration(dir);
-    await expect(loadPolicy(undefined, admin)).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
+    await expect(savePolicy({ requireExplicitApproval: true }, undefined, admin)).rejects.toMatchObject({ name: "AveHomeConfigurationUntrustedError" });
   });
 
   it("retries failed root deletions on the next protected boot", async () => {
@@ -111,7 +111,6 @@ describe("protected home configuration", () => {
     expect(diagnostics.join("\n")).toContain("settings.json");
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
     for (const name of Object.keys(contents)) expect(existsSync(join(dir, name))).toBe(true);
-    for (const name of Object.keys(contents)) writeFileSync(join(dir, name), "stale non-JSON bytes");
     vi.mocked(execFileSync).mockImplementation(actualProcess.execFileSync);
     vi.mocked(unlinkSync).mockImplementation(actualFs.unlinkSync);
     _resetAveHomePrivacyForTest();
@@ -136,15 +135,15 @@ describe("protected home configuration", () => {
     expect(readFileSync(join(target, "private"), "utf8")).toBe("retained");
   });
 
-  it("caches the selected non-boot location but refuses a missing committed marker", () => {
+  it("resolves the current non boot marker on every lookup", () => {
     const dir = fixture();
     expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
     writeFileSync(join(dir, "config", ".ave-config-migrated"), "ave-home-boundary-v1");
-    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
+    expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
     migrateAveHomeConfiguration(dir);
     expect(userPolicyPath(dir)).toBe(join(dir, "config", "policy.json"));
     unlinkSync(join(dir, "config", ".ave-config-migrated"));
-    expect(() => userPolicyPath(dir)).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+    expect(userPolicyPath(dir)).toBe(join(dir, "policy.json"));
   });
 
   it("does not commit a settings document rejected by its reader", () => {
@@ -290,15 +289,15 @@ describe("protected home configuration", () => {
       .toContain(join(dir, "config").replace(/\\/g, "/"));
   });
 
-  it("pins the boot location but refuses its missing marker while other homes resolve independently", () => {
+  it("resolves marker presence after boot while other homes resolve independently", () => {
     const dir = fixture();
     const privacy = ensureAveHomePrivate(dir);
     migrateAveHomeConfiguration(dir, privacy);
     expect(readFileSync(join(dir, "config", ".ave-config-migrated"), "utf8")).toBe("ave-home-boundary-v1");
     unlinkSync(join(dir, "config", ".ave-config-migrated"));
     vi.stubEnv("AVE_HOME", dir);
-    expect(() => permissionSettingsPath()).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
-    expect(() => userPolicyPath()).toThrowError(expect.objectContaining({ name: "AveHomeConfigurationUntrustedError" }));
+    expect(permissionSettingsPath()).toBe(join(dir, "settings.json"));
+    expect(userPolicyPath()).toBe(join(dir, "policy.json"));
     const other = home();
     expect(permissionSettingsPath(other)).toBe(join(other, "settings.json"));
     expect(userPolicyPath(other)).toBe(join(other, "policy.json"));

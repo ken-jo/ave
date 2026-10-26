@@ -16,6 +16,7 @@ import { fileIdentityKey, sameFileIdentity } from "../lib/file-identity.js";
 import { createLogger } from "../lib/logger.js";
 import { FileLockReleaseError, withFileLock } from "../lib/with-file-lock.js";
 import { isRecord, hasOnlyKeys } from "../shared/is-record.js";
+import { resolveConfigurationFile, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-lock.js";
 
 const DOCUMENT_VERSION = 1;
 const MAX_SECRET_DOCUMENT_BYTES = 4 * 1024 * 1024;
@@ -394,8 +395,9 @@ export interface SecretDocumentStoreOptions {
 }
 
 export class SecretDocumentStore {
-  readonly path: string;
-  readonly lockAnchorPath: string;
+  private readonly originalPath: string;
+  get path(): string { return resolveConfigurationFile(this.originalPath); }
+  get lockAnchorPath(): string { return resolve(dirname(this.path), `${basename(this.path)}.lock-anchor`); }
   private readonly policy: SecretPolicy;
   private readonly encryption: SecretEncryption;
   private readonly externalKey: boolean;
@@ -405,8 +407,7 @@ export class SecretDocumentStore {
   private cachedIdentity?: { stamp: string; identity: SecretDocumentIdentity | null };
 
   constructor(options: SecretDocumentStoreOptions) {
-    this.path = resolve(options.path);
-    this.lockAnchorPath = resolve(dirname(this.path), `${basename(this.path)}.lock-anchor`);
+    this.originalPath = resolve(options.path);
     this.encryption = options.encryption;
     this.externalKey = this.encryption.getSelectedStorageBackend() === "external_key";
     this.policy = this.externalKey ? "packaged" : options.policy;
@@ -680,7 +681,7 @@ export class SecretDocumentStore {
     ) => T,
     options: { repairModeBeforeRead?: boolean; rewriteLegacy?: boolean; forceWrite?: boolean; forceChangedKeys?: readonly string[] } = {},
   ): Promise<T> {
-    return enqueueMutation(this.path, async () => {
+    return enqueueMutation(this.originalPath, () => withAveHomeConfigurationWrite(this.originalPath, async () => {
       let completed: MutationResult<T>;
       try {
         completed = await this.runtime.lock(this.lockAnchorPath, async () => {
@@ -753,6 +754,6 @@ export class SecretDocumentStore {
         completed = result;
       }
       return completed.value;
-    });
+    }));
   }
 }

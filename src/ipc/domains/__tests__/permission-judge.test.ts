@@ -1,12 +1,15 @@
 import { permissionSettingsPath } from "../../../permissions/permission-settings-store.js";
 import { writePermissionSettingsFixture } from "../../../__tests__/support/permission-settings-fixture.js";
 import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { foreignFrameEvent, hostFrameEvent, useTempDirs } from "../../../__tests__/test-helpers.js";
 import { PERMISSIONS } from "../../../shared/ipc-channels.js";
 import type { IpcDeps } from "../../types.js";
 import { registerPermissionJudgeHandlers } from "../permission-judge.js";
 import * as permissionSettings from "../../../permissions/permission-settings-store.js";
+import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 
 const handlers = new Map<string, (...args: unknown[]) => unknown>();
 vi.mock("electron", () => ({ ipcMain: { handle: (channel: string, handler: (...args: unknown[]) => unknown) => handlers.set(channel, handler) } }));
@@ -17,7 +20,10 @@ let home: string;
 
 beforeEach(() => {
   handlers.clear();
-  home = makeDir();
+  const root = makeDir();
+  setFixtureOwner(root);
+  home = join(root, ".ave");
+  expect(ensureAveHomePrivate(home)).not.toMatchObject({ enforcement: "none" });
   vi.stubEnv("AVE_HOME", home);
   deps = {
     settingsService: {

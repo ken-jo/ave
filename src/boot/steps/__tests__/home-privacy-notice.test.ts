@@ -3,7 +3,7 @@ import { createBootHostFixture, createDesktopHostFixture } from "../../../__test
 import { NotificationService } from "../../../main/notification-service.js";
 import { translate } from "../../../i18n/index.js";
 import { isModelFacingKey } from "../../../i18n/model-facing.js";
-import { notifyHomeBoundaryRepairs } from "../home-privacy-notice.js";
+import { notifyHomeBoundaryRepairs, notifyHomeConfigurationPreserved } from "../home-privacy-notice.js";
 
 function notificationFixture() {
   const show = vi.fn();
@@ -16,6 +16,25 @@ function notificationFixture() {
   });
   return { show, present, notificationService };
 }
+
+it("names an outside root configuration copy in a system boot notice", () => {
+  const { show, present, notificationService } = notificationFixture();
+  const path = "/fixture/policy.json.post-migration-20261026T000000Z";
+  notifyHomeConfigurationPreserved([`Legacy configuration preserved at ${path}`], {
+    host: createBootHostFixture({ desktop: createDesktopHostFixture() }), notificationService,
+  });
+  expect(show).toHaveBeenCalledOnce();
+  expect(present).toHaveBeenCalledWith(expect.objectContaining({
+    title: translate("ko", "homePrivacy.configurationPreservedTitle"),
+    body: expect.stringContaining("policy.json.post-migration-20261026T000000Z"),
+  }));
+});
+
+it("does not issue a configuration notice for successful cleanup", () => {
+  const { present, notificationService } = notificationFixture();
+  notifyHomeConfigurationPreserved([], { host: createBootHostFixture({ desktop: createDesktopHostFixture() }), notificationService });
+  expect(present).not.toHaveBeenCalled();
+});
 
 it("presents exactly one system notice per repaired boundary", () => {
   const { show, present, notificationService } = notificationFixture();

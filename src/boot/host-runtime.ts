@@ -13,6 +13,7 @@ import type { BrowserUploadPickerRequest } from "../main/browser/browser-upload.
 export interface DesktopHostCapabilities extends Pick<InitPluginRuntimeInput,
   "openAuthWindowService" | "openLinkWindowService" | "openAuthPartitionViewerService"
   | "clearAuthPartitionService" | "shellOpenExternal"> {
+  hasSingleInstanceLock(): boolean;
   getAppWindows(): BrowserWindow[];
   getFocusedWindow(): BrowserWindow | null;
   /** Resolve the session’s open window first; the prompt resolver may fall back to the active window. */

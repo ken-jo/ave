@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
-import { ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationAtBoot, win32SystemBinary, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
+import { ensureAveHomePrivate, aveHome, aveHomeConfigurationDirectory, setAveHomeConfigurationRefusedAtBoot, win32SystemBinary, readWindowsDirectoryDacls, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { setFixtureOwner } from "../../__tests__/support/fixture-owner.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
@@ -38,7 +38,7 @@ afterEach(async () => {
 describe("aveHome", () => {
   it("uses the refused boot location without probing a nonexistent configuration path", () => {
     const dir = join(tmpdir(), "missing-boot-home");
-    setAveHomeConfigurationAtBoot(dir, false);
+    setAveHomeConfigurationRefusedAtBoot(dir);
     vi.mocked(execFileSync).mockImplementation(() => { throw new Error("Unexpected subprocess"); });
     expect(aveHomeConfigurationDirectory(dir)).toBe(dir);
     expect(execFileSync).not.toHaveBeenCalled();
@@ -76,7 +76,7 @@ function requireRestorePrivilege(context: TestContext): void {
 
 describe("ensureAveHomePrivate", () => {
   const home = useTempPaths("ave-home-privacy-", ".ave");
-  it.runIf(process.platform === "win32")("rechecks a cached configuration across path owners and case aliases", () => {
+  it.runIf(process.platform === "win32")("reuses only a verified identity across path owners and case aliases", () => {
     const dir = home();
     setFixtureOwner(dirname(dir));
     expect(ensureAveHomePrivate(dir).enforcement).toBe("win32-dacl");
@@ -85,7 +85,7 @@ describe("ensureAveHomePrivate", () => {
     expect(aveHomeConfigurationDirectory(dir)).toBe(join(dir, "config"));
     expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
     expect(aveHomeConfigurationDirectory(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "config"));
-    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(3);
+    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
   });
   function check(change: (entry: WindowsDirectoryDacl, index: number) => WindowsDirectoryDacl = (entry) => entry) {
     const dir = home();

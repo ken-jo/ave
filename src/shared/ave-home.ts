@@ -5,13 +5,14 @@ import { dirname, join, resolve } from "node:path";
 import { checkResolvedAveHome } from "./ave-home-test-guard.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { WINDOWS_HOME_BOUNDARY_SOURCE } from "./windows-home-boundary.js";
+import { fileIdentityKey } from "../lib/file-identity.js";
 
 export const AVE_HOME_CONFIGURATION_DIRECTORY = "config";
 export const AVE_HOME_CONFIGURATION_MARKER = ".ave-config-migrated";
 export const AVE_HOME_CONFIGURATION_MARKER_CONTENT = "ave-home-boundary-v1";
 
-let bootConfiguration: { home: string; migrated: boolean } | undefined;
-const configurationDecisions = new Map<string, boolean | AveHomeConfigurationUntrustedError>();
+let refusedConfigurationHome: string | undefined;
+const verifiedConfigurationIdentities = new Map<string, string>();
 
 export class AveHomeConfigurationUntrustedError extends Error {
   constructor(readonly path: string, readonly reason: string) {
@@ -25,53 +26,59 @@ function configurationKey(home: string): string {
   return process.platform === "win32" ? root.toLowerCase() : root;
 }
 
-export function invalidateAveHomeConfiguration(home: string): void {
-  configurationDecisions.delete(configurationKey(home));
+/** Only a refused home bypasses protected storage. */
+export function setAveHomeConfigurationRefusedAtBoot(home: string): void {
+  refusedConfigurationHome = configurationKey(home);
 }
 
-/** Boot pins the selected location before any configuration reader starts. */
-export function setAveHomeConfigurationAtBoot(home: string, migrated: boolean): void {
-  bootConfiguration = { home: resolve(home), migrated };
+export function isAveHomeConfigurationRefused(home: string): boolean {
+  return refusedConfigurationHome === configurationKey(home);
 }
 
 export function aveHomeConfigurationDirectory(home = aveHome()): string {
   const root = resolve(home);
-  if (bootConfiguration !== undefined) {
-    const bootHome = bootConfiguration.home;
-    if (process.platform === "win32" ? bootHome.toLowerCase() === root.toLowerCase() : bootHome === root) {
-      if (!bootConfiguration.migrated) return root;
-      requireCommittedConfiguration(root);
-      return join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
-    }
-  }
+  if (isAveHomeConfigurationRefused(root)) return root;
   const key = configurationKey(root);
-  let committed = configurationDecisions.get(key);
-  // Cache the selected location, never the authority to reopen it.
-  if (committed === undefined) {
-    try { committed = verifyAveHomeConfiguration(root); }
+  const config = join(root, AVE_HOME_CONFIGURATION_DIRECTORY);
+  try {
+    let directory;
+    try { directory = lstatSync(config, { bigint: true }); }
     catch (error) {
-      if (error instanceof AveHomeConfigurationUntrustedError) configurationDecisions.set(key, error);
-      throw error;
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      verifiedConfigurationIdentities.delete(key);
+      return root;
     }
-    configurationDecisions.set(key, committed);
-  } else if (committed === true) requireCommittedConfiguration(root);
-  if (committed instanceof AveHomeConfigurationUntrustedError) throw committed;
-  return committed ? join(root, AVE_HOME_CONFIGURATION_DIRECTORY) : root;
-}
-
-function requireCommittedConfiguration(home: string): void {
-  if (!verifyAveHomeConfiguration(home)) {
-    throw new AveHomeConfigurationUntrustedError(join(home, AVE_HOME_CONFIGURATION_DIRECTORY), "Committed configuration marker is missing");
+    if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Configuration directory is a link or is not a directory");
+    const identity = fileIdentityKey(directory);
+    let marker;
+    try { marker = lstatSync(join(config, AVE_HOME_CONFIGURATION_MARKER), { bigint: true }); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
+    if (marker !== undefined && (!marker.isFile() || marker.isSymbolicLink())) throw new Error("Configuration marker is not a regular file");
+    if (verifiedConfigurationIdentities.get(key) !== identity) {
+      verifyAveHomeConfiguration(root);
+      if (fileIdentityKey(lstatSync(config, { bigint: true })) !== identity) throw new Error("Configuration directory changed during verification");
+      verifiedConfigurationIdentities.set(key, identity);
+    }
+    if (marker === undefined) return root;
+    if (marker.size !== BigInt(Buffer.byteLength(AVE_HOME_CONFIGURATION_MARKER_CONTENT)) || readFileSync(join(config, AVE_HOME_CONFIGURATION_MARKER), "utf8") !== AVE_HOME_CONFIGURATION_MARKER_CONTENT) {
+      throw new Error("Configuration marker content is invalid");
+    }
+    return config;
+  } catch (error) {
+    verifiedConfigurationIdentities.delete(key);
+    if (error instanceof AveHomeConfigurationUntrustedError) throw error;
+    throw new AveHomeConfigurationUntrustedError(config, (error as Error).message);
   }
 }
 
-export function verifyAveHomeConfiguration(home: string, recoverInvalidMarker = false): boolean {
+export function verifyAveHomeConfiguration(home: string, recoverInvalidMarker: boolean | "boundary" = false): boolean {
   const config = join(home, AVE_HOME_CONFIGURATION_DIRECTORY);
   try {
     try {
       const directory = lstatSync(config);
       if (!directory.isDirectory() || directory.isSymbolicLink()) throw new Error("Configuration directory is a link or is not a directory");
-      lstatSync(join(config, AVE_HOME_CONFIGURATION_MARKER));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
       throw error;
@@ -85,7 +92,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
         $identity=[System.Security.Principal.WindowsIdentity]::GetCurrent();
         $elevated=([System.Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator);
         try {
-          $committed=[HomeDirectoryDacl]::ConfigurationCommitted($request.path,$identity.User,$elevated,$request.recover);
+          $committed=[HomeDirectoryDacl]::ConfigurationCommitted($request.path,$identity.User,$elevated,$request.recover,$request.boundaryOnly);
           @{ committed=$committed } | ConvertTo-Json -Compress
         } catch {
           @{ reason=$_.Exception.InnerException.Message } | ConvertTo-Json -Compress
@@ -93,7 +100,7 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
       const output = execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"), [
         "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from("$s=[Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($s))", "utf16le").toString("base64"),
       ], { input: script, encoding: "utf8", windowsHide: true, env: windowsPowerShellEnv({ ...process.env,
-        AVE_DACL_REQUEST: JSON.stringify({ path: home, recover: recoverInvalidMarker }) }) });
+        AVE_DACL_REQUEST: JSON.stringify({ path: home, recover: recoverInvalidMarker === true, boundaryOnly: recoverInvalidMarker === "boundary" }) }) });
       const result = JSON.parse(output) as { committed?: unknown; reason?: unknown };
       if (typeof result.reason === "string") throw new Error(result.reason);
       if (typeof result.committed !== "boolean") throw new Error("Invalid boundary verification result");
@@ -110,6 +117,11 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
       const directory = openSync(configPath, flags);
       try {
         const markerPath = join(process.platform === "linux" ? `/proc/self/fd/${directory}` : config, AVE_HOME_CONFIGURATION_MARKER);
+        const protection = fstatSync(directory);
+        if (!protection.isDirectory() || protection.uid !== process.getuid!() || (protection.mode & 0o077) !== 0) {
+          throw new Error("Configuration directory protection is unverified");
+        }
+        if (recoverInvalidMarker === "boundary") return false;
         let marker: number;
         try { marker = openSync(markerPath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK); }
         catch (error) {
@@ -117,10 +129,6 @@ ${WINDOWS_HOME_BOUNDARY_SOURCE}
           throw error;
         }
         try {
-          const protection = fstatSync(directory);
-          if (!protection.isDirectory() || protection.uid !== process.getuid!() || (protection.mode & 0o077) !== 0) {
-            throw new Error("Configuration directory protection is unverified");
-          }
           const identity = fstatSync(marker);
           if (!identity.isFile()) throw new Error("Configuration marker is not a regular file");
           if (identity.size === Buffer.byteLength(AVE_HOME_CONFIGURATION_MARKER_CONTENT) && readFileSync(marker, "utf8") === AVE_HOME_CONFIGURATION_MARKER_CONTENT) return true;
@@ -392,8 +400,8 @@ export function assertAveHomePrivacyForConfinement(): void {
 
 /** Test teardown only; production seals the result during boot. */
 export function _resetAveHomePrivacyForTest(): void {
-  bootConfiguration = undefined;
-  configurationDecisions.clear();
+  refusedConfigurationHome = undefined;
+  verifiedConfigurationIdentities.clear();
   bootHomePrivacy = undefined;
   extensionsWithoutIsolationApproved = false;
   reportPrivacyRefusal = undefined;

@@ -7,6 +7,7 @@ import { isCommittedAtomicWriteError, writeUtf8FileAtomicSync } from "../lib/ato
 import { createLogger } from "../lib/logger.js";
 import { aveHome, aveHomeConfigurationDirectory } from "../shared/ave-home.js";
 import { parseConfigurationObject } from "../shared/configuration-document.js";
+import { configurationHomeForPath, resolveConfigurationFile, tryWithAveHomeConfigurationLock, withAveHomeConfigurationWrite } from "../shared/ave-home-configuration-lock.js";
 import {
   PARENT_ADJUDICATION_CONTEXT_TURNS_MAX,
   PARENT_ADJUDICATION_CONTEXT_TURNS_MIN,
@@ -29,6 +30,10 @@ import {
 } from "./judge/judge-settings.js";
 
 const log = createLogger("permission-settings");
+
+async function withPermissionSettingsWrite<T>(path: string, callback: (filePath: string) => Promise<T>): Promise<T> {
+  return withAveHomeConfigurationWrite(path, (filePath) => withFileLock(filePath, () => callback(filePath)));
+}
 
 // Disabled bypasses review as LOW while matrix/hard gates still apply; rule is deterministic, llm composes with rule floors, and strict returns HIGH/defer for every review.
 export type ReviewerMode = "disabled" | "rule" | "llm" | "strict";
@@ -184,7 +189,7 @@ export function permissionSettingsPath(home = aveHome()): string {
 
 // Unreadable existing settings return deny-shaped defaults with a visible fault, log an error and rewrite nothing. Migrate unmarked legacy disabled to strict and persist once; failed persistence still returns strict so upgrades cannot silently weaken policy.
 export function readPermissionSettings(pathOverride?: string): PermissionSettingsFile {
-  const filePath = pathOverride ?? permissionSettingsPath();
+  const filePath = resolveConfigurationFile(pathOverride ?? permissionSettingsPath());
   if (!existsSync(filePath)) return structuredClone(DEFAULT_FILE);
   let parsed: Record<string, unknown>;
   try {
@@ -205,14 +210,23 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
     const migrated = migrateLegacyDisabledMode(parsed);
     const normalized = normalizePermissionSettings(parsed, filePath);
     if (migrated) {
-      // Persist the migration synchronously so the file converges to the post-shape. We do a best-effort write — if the file is locked or the disk is read-only, we still return the migrated in-memory result so the user's runtime behaviour is fail-closed (strict).
+      // Persist only when immediately available; the normalized runtime result stays strict.
+      let persistFailure: string | undefined;
       try {
-        writeUtf8FileAtomicSync(filePath, JSON.stringify(parsed, null, 2), 0o600);
+        const result = tryWithAveHomeConfigurationLock(configurationHomeForPath(filePath), () => {
+          const target = resolveConfigurationFile(filePath);
+          const latest = readSettingsDocument(target);
+          if (migrateLegacyDisabledMode(latest)) writeUtf8FileAtomicSync(target, JSON.stringify(latest, null, 2), 0o600);
+        });
+        if (!result.acquired) persistFailure = "Configuration lock is busy";
       } catch (persistErr) {
+        persistFailure = (persistErr as Error).message;
+      }
+      if (persistFailure !== undefined) {
         log.warn(
           "issue-664 migration: failed to persist migrated settings to %s — runtime still strict (%s)",
           filePath,
-          (persistErr as Error).message,
+          persistFailure,
         );
       }
     }
@@ -222,6 +236,7 @@ export function readPermissionSettings(pathOverride?: string): PermissionSetting
 
 // Read the settings document off disk, throwing when it cannot be interpreted. An empty file is not damage: `withFileLock` creates the target as a zero-byte placeholder so `proper-lockfile` can stat it, so every first write this store ever performs starts from one. A non-object root (`null`, an array, a bare number) IS damage — every reader below indexes the result as a record — so it is rejected here rather than in each of them.
 function readSettingsDocument(filePath: string, allowEmpty = true): Record<string, unknown> {
+  filePath = resolveConfigurationFile(filePath);
   const raw = readFileSync(filePath, "utf-8");
   return parseConfigurationObject(raw, allowEmpty);
 }
@@ -512,7 +527,7 @@ export async function writePermissionSettings(
   pathOverride?: string,
 ): Promise<void> {
   const filePath = pathOverride ?? permissionSettingsPath();
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = (existing.permissions ?? {}) as Record<string, unknown>;
     const existingReviewer = normalizeReviewerBlock(existingPerm.reviewer);
@@ -682,7 +697,7 @@ export async function setJudgeSettingsPersist(
   }
   const filePath = pathOverride ?? permissionSettingsPath();
   let receipt: JudgeSettingsWriteReceipt | undefined;
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const document = readSettingsObjectForUpdate(filePath);
     const permissions = judgePermissionsForUpdate(document);
     const previous = { present: Object.hasOwn(permissions, "judge"), value: permissions.judge };
@@ -716,7 +731,7 @@ export async function setJudgeSettingsPersist(
     receipt = {
       settings,
       async rollback() {
-        await withFileLock(filePath, async () => {
+        await withPermissionSettingsWrite(filePath, async (filePath) => {
           const latest = readSettingsObjectForUpdate(filePath);
           const latestPermissions = judgePermissionsForUpdate(latest);
           if (!Object.hasOwn(latestPermissions, "judge") || JSON.stringify(latestPermissions.judge) !== appliedIdentity) {
@@ -756,7 +771,7 @@ async function mutateAllowedDirectoriesPersist(
 ): Promise<string[]> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let result: string[] = [];
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const current = Array.isArray(existingPerm.additionalDirectories)
@@ -837,7 +852,7 @@ export async function beginWorkspaceRootRemovalPersist(
 ): Promise<BeginWorkspaceRootRemovalResult | null> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let result: BeginWorkspaceRootRemovalResult | null = null;
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const current = Array.isArray(existingPerm.additionalDirectories)
@@ -912,7 +927,7 @@ export async function completeWorkspaceRootRemovalPersist(
 ): Promise<boolean> {
   const filePath = pathOverride ?? permissionSettingsPath();
   let completed = false;
-  await withFileLock(filePath, async () => {
+  await withPermissionSettingsWrite(filePath, async (filePath) => {
     const existing = readSettingsObjectForUpdate(filePath);
     const existingPerm = { ...((existing.permissions ?? {}) as Record<string, unknown>) };
     const journal = partitionPendingWorkspaceRootRemovals(

@@ -28,6 +28,8 @@ import { readPermissionSettings } from "../../../permissions/permission-settings
 import { canonicalizePathForMatch, caseFoldForMatch } from "../../../permissions/sensitive-paths.js";
 import { makeMockWebContents } from "../../../__tests__/test-helpers.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { ensureAveHomePrivate } from "../../../shared/ave-home.js";
+import { setFixtureOwner } from "../../../__tests__/support/fixture-owner.js";
 
 const workspaceDeps = {
   auditLogger: { log: vi.fn() },
@@ -87,13 +89,17 @@ async function firstApprovalPayload<T>(wc: ReturnType<typeof makeMockWebContents
   throw new Error("approval request was not sent");
 }
 
+let homeRoot: string;
 let home: string;
 let grantRoot: string;
 let previousHome: string | undefined;
 
 beforeAll(() => {
   previousHome = process.env.AVE_HOME;
-  home = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-home-"));
+  homeRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-home-"));
+  setFixtureOwner(homeRoot);
+  home = join(homeRoot, ".ave");
+  expect(ensureAveHomePrivate(home)).not.toMatchObject({ enforcement: "none" });
   process.env.AVE_HOME = home;
   grantRoot = mkdtempSync(join(tmpdir(), "ave-wsroot-authority-grant-"));
   writeFileSync(join(grantRoot, "notes.md"), "content\n");
@@ -103,7 +109,7 @@ beforeAll(() => {
 afterAll(async () => {
   if (previousHome === undefined) delete process.env.AVE_HOME;
   else process.env.AVE_HOME = previousHome;
-  await cleanupTmpDir(home);
+  await cleanupTmpDir(homeRoot);
   await cleanupTmpDir(grantRoot);
 });
 

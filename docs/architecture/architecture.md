@@ -2167,24 +2167,33 @@ with its own owner rule:
   copying into a fresh staged file, publishing it inside the protected directory,
   then flushing a staged `config/.ave-config-migrated` and atomically renaming it
   before deleting any copied root file. Both path owners use the root until commit.
-  A protected boot completes migration before publishing its verified decision;
-  a refused boot pins the legacy paths and skips migration. Readers and writers
-  share that decision without probing alternate files. Outside boot, explicit
-  homes require the exact marker content and verify both the root with the same
-  root-admission predicate used at boot and the owner-only configuration directory
-  without following links. Because neither permits foreign child replacement,
-  only the owner can swap these verified directories, so readers may reopen paths.
-  The per-home cache selects the location; each resolution of a switched location,
-  including boot-pinned policy rereads, rechecks both predicates and the marker,
-  refusing missing or untrusted state rather than returning to root copies.
-  Unswitched locations stay at root until migration invalidates their decision.
+  Only an interactive desktop process holding the single-instance lock migrates;
+  execution-mode and child processes only resolve the current on-disk layout.
+  A refused home stays root-only, without migration or a configuration lock.
+  No process caches the configuration location. Every read and write inspects
+  `config/` and its marker without following links. Reads compare the directory's
+  exact identity (volume serial and file ID on Windows, device and inode on POSIX)
+  with the last fully verified identity and rerun the root-admission and owner-only
+  checks when presence or identity changes. An unchanged identity permits reopening
+  paths because the verified boundaries prevent foreign child replacement.
+  Migration and every settings, policy and legacy-secret write share the exclusive
+  `config/.ave-config.lock`, created with exclusive no-follow creation. It records
+  the PID and process start time. A dead PID or a reused PID permits recovery;
+  unreadable records require a 30-second age bound. A live matching holder blocks
+  writers, with a named error after a bounded five-second wait. Every write fully
+  verifies both boundaries while holding this lock and resolves its destination
+  there, so an old root-era writer observes another process's marker commit.
   Before commit, every retry atomically replaces published copies from validated
   root sources. A linked, unreadable or invalid root source prevents commit and
   retains all roots with a diagnostic. A malformed regular marker can be removed
   for retry only inside a verified protected directory.
-  Every protected boot with a valid marker retries deletion of stale regular root
-  copies without following links; cleanup failures retain a diagnostic for that
-  boot and are retried on the next one. Interactive boot trust failures show a
+  Before committing the marker, migration atomically records each copied source's
+  SHA-256 in `config/.ave-config-sources.json`. Protected-boot cleanup deletes a
+  regular root copy only if its bytes still match that recorded hash. A changed
+  or newly appearing root file moves to `<name>.post-migration-<UTC timestamp>`;
+  a diagnostic and a system boot notice name the preserved copy. Cleanup never
+  merges root data into committed configuration. Per-entry no-follow cleanup
+  preserves links and reports failures for retry. Interactive boot trust failures show a
   localized native error with the cause, path and recovery instructions before exit.
   Feature storage asserts that boundaries already
   exist and never creates them on Windows.

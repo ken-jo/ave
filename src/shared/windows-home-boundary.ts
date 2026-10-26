@@ -50,7 +50,7 @@ public static class HomeDirectoryDacl {
     if (String.IsNullOrEmpty(parentPath) || String.IsNullOrEmpty(leaf)) throw new InvalidOperationException("Directory path is invalid");
     using (SafeFileHandle parent = WindowsOwnerClaim.CreateFile(parentPath, 0x00100001, 7, IntPtr.Zero, 3, 0x02000000, IntPtr.Zero)) {
       if (parent.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error(), "Directory parent handle could not be opened");
-      return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly);
+      return OpenRelative(parent, leaf, user, create ? 3u : 1u, true, true, true, readOnly, readOnly ? 7u : 3u);
     }
   }
   public static SafeFileHandle OpenRelative(SafeFileHandle parent, string leaf, SecurityIdentifier user, uint disposition, bool directory, bool noReparse, bool boundary, bool readOnly = false, uint share = 3u) {
@@ -168,6 +168,10 @@ public static class HomeDirectoryDacl {
       Check(NtSetInformationFile(handle, out io, memory, (uint)size, 10), "Repair rename failed");
     } finally { Marshal.FreeHGlobal(memory); GC.KeepAlive(parent); }
   }
+  public static bool RemoveConfigurationLock(SafeFileHandle handle, SecurityIdentifier user) {
+    if ((Attributes(handle) & 0x410) != 0) throw new InvalidOperationException("Configuration lock is not a regular file");
+    return Delete(handle, user);
+  }
   private static bool Delete(SafeFileHandle handle, SecurityIdentifier user) {
     long attributes = Attributes(handle);
     if ((attributes & 0x410) == 0x10) {
@@ -209,15 +213,16 @@ public static class HomeDirectoryDacl {
     }
     return skipped;
   }
-  public static bool ConfigurationCommitted(string path, SecurityIdentifier user, bool elevated, bool recover) {
+  public static bool ConfigurationCommitted(string path, SecurityIdentifier user, bool elevated, bool recover, bool boundaryOnly = false) {
     using (var home = OpenHome(path, user, false, true)) {
       if (home == null) return false;
       if (!RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
-      using (var directory = OpenRelative(home, "config", user, 1, true, true, true, !recover)) {
+      using (var directory = OpenRelative(home, "config", user, 1, true, true, true, !recover, recover ? 3u : 7u)) {
         if (directory == null) return false;
+        if (!OwnerOnly(Read(directory), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
+        if (boundaryOnly) return false;
         using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false, !recover)) {
           if (marker == null) return false;
-          if (!OwnerOnly(Read(directory), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
           if ((Attributes(marker) & 0x410) != 0) throw new InvalidOperationException("Configuration marker is not a regular file");
           if (MarkerContentValid(marker)) return true;
         }
@@ -235,13 +240,33 @@ public static class HomeDirectoryDacl {
       if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
       using (var boundary = OpenRelative(home, directory, user, 1, true, true, true, true)) {
         if (boundary == null || !OwnerOnly(Read(boundary), user, elevated) || !HasMarker(boundary, ConfigurationMarker, user)) throw new InvalidOperationException("Committed configuration protection is unverified");
+        string manifest = "";
+        using (var record = OpenRelative(boundary, ".ave-config-sources.json", user, 1, false, true, false, true)) {
+          if (record != null) {
+            if ((Attributes(record) & 0x410) != 0) throw new InvalidOperationException("Configuration source record is not a regular file");
+            using (var input = new System.IO.FileStream(record, System.IO.FileAccess.Read))
+            using (var reader = new System.IO.StreamReader(input)) manifest = reader.ReadToEnd();
+          }
+        }
         foreach (string name in names) {
           string oldPath = System.IO.Path.Combine(path, name);
           try {
-            using (var source = OpenRelative(home, name, user, 1, false, false, false)) {
+            using (var source = OpenRelative(home, name, user, 1, false, false, false, false, 1)) {
               if (source == null) continue;
               if ((Attributes(source) & 0x410) != 0) { diagnostics.Add("Legacy configuration is a link or non-regular file: " + oldPath); continue; }
-              if (!Delete(source, user)) diagnostics.Add("Legacy configuration cleanup failed: " + oldPath);
+              string hash;
+              using (var input = new System.IO.FileStream(source, System.IO.FileAccess.Read)) {
+                using (var digest = System.Security.Cryptography.SHA256.Create()) hash = Convert.ToBase64String(digest.ComputeHash(input));
+                string quote = ((char)34).ToString();
+                var recorded = System.Text.RegularExpressions.Regex.Match(manifest, quote + System.Text.RegularExpressions.Regex.Escape(name) + quote + "\\\\s*:\\\\s*" + quote + "([A-Za-z0-9+/=]+)" + quote);
+                if (recorded.Success && recorded.Groups[1].Value == hash) {
+                  if (!Delete(source, user)) diagnostics.Add("Legacy configuration cleanup failed: " + oldPath);
+                } else {
+                  string aside = name + ".post-migration-" + DateTime.UtcNow.ToString("yyyyMMddTHHmmssfffffffZ");
+                  Rename(source, home, aside, false);
+                  diagnostics.Add("Legacy configuration preserved at " + System.IO.Path.Combine(path, aside));
+                }
+              }
             }
           } catch (Exception error) { diagnostics.Add("Legacy configuration cleanup failed: " + oldPath + ": " + error.Message); }
         }
@@ -315,6 +340,21 @@ public static class HomeDirectoryDacl {
           }
           }
           if (refused) return diagnostics.ToArray();
+          string hashRecord = "{";
+          for (int index = 0; index < names.Length; index++) {
+            if (String.IsNullOrEmpty(expectedHashes[index])) continue;
+            if (hashRecord.Length > 1) hashRecord += ",";
+            string quote = ((char)34).ToString();
+            hashRecord += quote + names[index] + quote + ":" + quote + expectedHashes[index] + quote;
+          }
+          byte[] hashBytes = System.Text.Encoding.UTF8.GetBytes(hashRecord + "}");
+          string stagedHashes = ".ave-config-sources-" + Guid.NewGuid().ToString("N");
+          using (var record = OpenRelative(destination, stagedHashes, user, 2, false, true, false))
+          using (var output = new System.IO.FileStream(record, System.IO.FileAccess.Write)) {
+            output.Write(hashBytes, 0, hashBytes.Length);
+            output.Flush(true);
+            Rename(record, destination, ".ave-config-sources.json", true);
+          }
           EnsureMarker(destination, ConfigurationMarker, user);
           if (!HasMarker(destination, ConfigurationMarker, user)) throw new InvalidOperationException("Configuration migration marker is invalid");
           foreach (var deletion in deletions) {
