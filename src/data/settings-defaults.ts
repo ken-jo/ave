@@ -25,6 +25,8 @@ import type { AppSettings } from "./settings-store.js";
 
 export const DEFAULT_SETTINGS: AppSettings = {
   llm: {
+    compactionModel: "",
+    compactionModelRoute: "",
     activeChatRuntime: { kind: "api" },
     provider: DEFAULT_LLM_VENDOR,
     vendors: freshVendorBlocks(),

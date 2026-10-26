@@ -15,6 +15,7 @@ import {
 } from "../shared/side-panel.js";
 import { normalizeShutdownCleanupTimeoutMs } from "../shared/tool-timeout-policy.js";
 import type { PricingOverride } from "../shared/pricing-overrides.js";
+import { compactionModelRouteKey } from "../shared/compaction-model.js";
 import {
   sanitizePluginConfig,
   sanitizePluginConfigKey,
@@ -364,6 +365,10 @@ export function settingsFilePath(userDataPath: string): string {
 
 /** Read lazy vendor blocks through getLlmVendorSettings; provider defaults govern sampling and stale controls drop on write. */
 export interface LLMSettings {
+  /** Empty uses the current chat model; another id stays on the active provider and credential route. */
+  compactionModel?: string;
+  /** Provider namespace that owns compactionModel; a different active route uses its current chat model. */
+  compactionModelRoute?: string;
   /** Selects the execution boundary for new chat turns. API credentials and their provider/model
    * configuration remain under `provider` and `vendors` even while a subscription runtime is active. */
   activeChatRuntime: ActiveChatRuntime;
@@ -396,6 +401,8 @@ export interface LLMSettings {
 
 /** Patch shape for `SettingsService.patch()`. Vendor blocks are partial so a UI save touching a single vendor doesn't have to send every default or marketplace provider block. */
 export interface LLMSettingsPatch {
+  compactionModel?: string;
+  compactionModelRoute?: string;
   activeChatRuntime?: ActiveChatRuntime;
   provider?: LLMVendor;
   marketplaceProviderPresetId?: string;
@@ -1066,12 +1073,20 @@ export class SettingsService {
         )
       : [];
     if (partial.llm) {
-      this.settings.llm = mergeLlmPatch(
+      const nextLlm = mergeLlmPatch(
         this.settings.llm,
         partial.llm,
         nextMarketplace.installedProviderIds,
         nextMarketplace.installedProviderPresets,
       );
+      if (Object.hasOwn(partial.llm, "compactionModel")) {
+        const route = compactionModelRouteKey(nextLlm, nextMarketplace.installedProviderPresets);
+        if (Object.hasOwn(partial.llm, "compactionModelRoute") && partial.llm.compactionModelRoute !== route) {
+          throw new Error("Compaction provider route changed");
+        }
+        nextLlm.compactionModelRoute = route;
+      }
+      this.settings.llm = nextLlm;
       this.providerConfigChanged();
     }
     if (partial.chat) this.settings.chat = normalizeChat({ ...this.settings.chat, ...partial.chat });

@@ -188,6 +188,7 @@ function storedKeysFor(...providerIds: string[]) {
 }
 
 interface Profile {
+  provider?: string;
   pinnedModels?: string[];
   vendors?: Record<string, unknown>;
   installedProviderIds?: string[];
@@ -198,6 +199,7 @@ interface Profile {
 function profileSettings(profile: Profile) {
   return {
     llm: {
+      provider: profile.provider ?? "openai",
       pinnedModels: profile.pinnedModels ?? [],
       vendors: profile.vendors ?? {},
       modelListCache: profile.modelListCache ?? {},
@@ -505,6 +507,40 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("shows compaction uses the current model when the runtime cannot choose another one", async () => {
+    installSubscription([], {}, { kind: "subscription", provider: "kimi-code" });
+    await renderTab(makeApi());
+    expect(screen.getByRole("textbox", { name: t("compactionSettings.model") })).toBeDisabled();
+    expect(screen.getByText(t("compactionSettings.unavailable"))).toBeVisible();
+    expect(screen.getByTestId("compaction-model-save")).toBeDisabled();
+  });
+
+  it("preserves compaction input on save failure and unrelated settings broadcasts", async () => {
+    const api = makeApi();
+    await renderTab(api);
+    const input = screen.getByRole("textbox", { name: t("compactionSettings.model") });
+    fireEvent.change(input, { target: { value: "summary-model" } });
+    await act(async () => { await api.updateSettings({ llm: { pinnedModels: [] } }); });
+    expect(input).toHaveValue("summary-model");
+    api.updateSettings.mockRejectedValueOnce(new Error("unavailable"));
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(screen.getByText(t("compactionSettings.saveFailed"))).toHaveAttribute("role", "alert"));
+    expect(input).toHaveValue("summary-model");
+  });
+
+  it("saves a separate compaction model and clears it to follow the current model", async () => {
+    const { api } = profileApi({}, { hasApiKey: storedKeysFor("openai") });
+    await renderTab(api);
+    const input = screen.getByRole("textbox", { name: t("compactionSettings.model") });
+    expect(input).toHaveValue("");
+    fireEvent.change(input, { target: { value: "summary-model" } });
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModel: "summary-model", compactionModelRoute: expect.any(String) } }));
+    fireEvent.change(input, { target: { value: "" } });
+    fireEvent.click(screen.getByTestId("compaction-model-save"));
+    await waitFor(() => expect(api.updateSettings).toHaveBeenCalledWith({ llm: { compactionModel: "", compactionModelRoute: expect.any(String) } }));
+  });
+
   it("offers the catalog in release order in the fallback chooser without a key", async () => {
     const api = makeApi();
     await renderTab(api, { hasKey: false, model: "", fallbackOpen: true, fallbackChain: [{ provider: "claude", model: "" }] });
