@@ -35,7 +35,9 @@ import {
 import { spawnTerminal, writeTerminal } from "../../../__tests__/support/terminal-agent-fixture.js";
 
 const CURL = "/usr/bin/curl";
-const HOST = "example.com";
+// The IANA example domains serve the same page; the first one this runner reaches is the destination for every case.
+const HOSTS = ["example.com", "example.net", "example.org"];
+let HOST = HOSTS[0]!;
 const PORT = 443;
 const TAB = "terminal:0e9a5c11-1";
 const OTHER_TAB = "terminal:0e9a5c11-2";
@@ -55,17 +57,27 @@ async function requireNativeCase(context: TestContext): Promise<void> {
     context.skip(`${CURL} is missing`);
   }
   // Control: unconfined, this machine reaches the host at all. Where it does not, the precondition case below reports it; the cases have nothing to measure.
-  if (!(await hostReachable())) context.skip(NETWORK_UNREACHABLE);
+  if (!(await hostReachable())) context.skip(networkUnreachable());
 }
 
-const NETWORK_UNREACHABLE = `network unreachable: https://${HOST}/ cannot be fetched from this machine without the sandbox, so the terminal egress cases would measure nothing`;
+const unreachableReasons: string[] = [];
+const networkUnreachable = () =>
+  `network unreachable: none of ${HOSTS.map((host) => `https://${host}/`).join(", ")} can be fetched from this machine without the sandbox (${unreachableReasons.join("; ")}), so the terminal egress cases would measure nothing`;
 
-// Hosted runners drop a single fetch now and then, and one miss fails the required precondition; retry within the 45 s test timeout.
+// Hosted runners drop a fetch now and then, and one host can answer 5xx to a runner's address range for a while; one miss would fail the required precondition. Try each
+// example domain a few times within the 45 s test timeout.
 async function hostReachable(): Promise<boolean> {
   reachable ??= await (async () => {
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt > 0) await new Promise((resolve) => setTimeout(resolve, 1_000 * attempt));
-      if (await fetch(`https://${HOST}/`, { signal: AbortSignal.timeout(10_000) }).then((res) => res.ok, () => false)) return true;
+      for (const host of HOSTS) {
+        const reason = await fetch(`https://${host}/`, { signal: AbortSignal.timeout(4_000) }).then((res) => (res.ok ? undefined : `${host} ${res.status}`), (error: unknown) => `${host} ${String(error)}`);
+        if (reason === undefined) {
+          HOST = host;
+          return true;
+        }
+        unreachableReasons.push(reason);
+      }
     }
     return false;
   })();
@@ -166,8 +178,8 @@ describe.runIf(nativePlatform)("workspace terminal egress banner (native, design
   it("can reach the destination at all without the sandbox (the cases' precondition)", async (context) => {
     if (!(await sandboxCasesRun())) context.skip("ASRT cannot initialize (sandbox dependencies missing)");
     const ok = await hostReachable();
-    if (!ok && !sandboxCasesRequired()) context.skip(NETWORK_UNREACHABLE);
-    expect(ok, NETWORK_UNREACHABLE).toBe(true);
+    if (!ok && !sandboxCasesRequired()) context.skip(networkUnreachable());
+    expect(ok, networkUnreachable()).toBe(true);
   });
 
   it("Allow once lets that one curl through; the next curl asks again", async (context) => {
