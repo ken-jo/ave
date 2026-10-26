@@ -1,6 +1,13 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "documentSettings.title": "Document opening",
+  "documentSettings.description": "Choose how agent document requests appear. Only you can change this preference.",
+  "documentSettings.direct": "Open in side panel",
+  "documentSettings.directHint": "Open permitted documents immediately, without an extra prompt.",
+  "documentSettings.link": "Show a file link",
+  "documentSettings.linkHint": "Keep the panel unchanged and show a link you can open.",
+  "documentSettings.saveFailed": "Could not load or save the document preference. Reopen Settings and try again.",
   "sandboxPolicy.quarantined": "Sandbox protected Git entries were moved to quarantine (not deleted):\n{moves}\nRestore each entry from the shown quarantine path to its original path after inspecting it.",
   "sandboxPolicy.quarantineFailed": "Sandbox quarantine failed for {path}: {reason}. No deletion was attempted. Already moved entries remain at:\n{moves}",
   "sandboxPolicy.scanNarrowed": "{reason}; write access narrowed to {roots}. Unscanned or withheld roots: {removed}.",

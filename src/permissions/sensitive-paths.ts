@@ -34,7 +34,7 @@
  */
 import { realpathSync } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
+import { dirname, isAbsolute, resolve as pathResolve, relative as pathRelative } from "node:path";
 import { globMatch, globToRegExp } from "../lib/glob-matcher.js";
 import { aveHome } from "../shared/ave-home.js";
 import { sessionStorePath } from "../shared/session-store-path.js";
@@ -45,6 +45,22 @@ export const MAX_WALK_UP = 64;
 
 const NO_RUNTIME_SECRET_KEY_PATHS: readonly string[] = Object.freeze([]);
 let runtimeSecretKeyPaths: { configured: string; paths: readonly string[] } | undefined;
+
+const runtimeSettingsScopes = new Map<symbol, ReadonlySet<string>>();
+
+/** Protect one live host's settings file and its directory until that host closes. */
+export function protectRuntimeSettingsPath(path: string): () => void {
+  if (!isAbsolute(path) || path.includes("\0")) throw new Error("Settings path must be absolute");
+  const targets = new Set<string>();
+  for (const file of [canonicalizePathForMatch(path), pathResolve(path)]) {
+    for (const target of [file, dirname(file)]) {
+      targets.add(caseFoldForMatch(target).replace(/\/+$/u, ""));
+    }
+  }
+  const scope = Symbol();
+  runtimeSettingsScopes.set(scope, targets);
+  return () => { runtimeSettingsScopes.delete(scope); };
+}
 
 // The native host's configured external key is secret regardless of its name or workspace grants. Both the host guard and the OS deny floor consume these same literal paths. Host startup resolves them before exposing tools; retain that target if a directory symlink changes later. The host owns this process environment setting and keeps it unchanged for the encryption lifetime.
 export function getRuntimeSensitiveKeyPaths(): readonly string[] {
@@ -527,6 +543,12 @@ export function createSensitivePathMatcher(effect: PathEffect = "write"): (absPa
   return (absPath) => {
     if (!absPath) return null;
     const candidates = policyMatchPaths(absPath);
+    if (effect === "write" && candidates.some((candidate) => {
+      const target = caseFoldForMatch(candidate).replace(/\/+$/u, "");
+      return [...runtimeSettingsScopes.values()].some((targets) => targets.has(target));
+    })) {
+      return "runtime-settings-file";
+    }
     roots ??= {
       session: effect === "read" ? getConfiguredSessionReadRoot() : undefined,
       keys: getRuntimeSensitiveKeyPaths().map((path) => caseFoldForMatch(foldCanonicalPathSeparators(path))),

@@ -30,6 +30,8 @@ export const TOOL_TIMEOUT_POLICY = {
   workloadBrokerOuterGuardMs: 1_000,
   // Includes admission, source reading and decoder process lifetime.
   imagePreparationMs: 30_000,
+  // A panel request must be acknowledged by its originating visible renderer.
+  documentPanelAckMs: 10_000,
   // terminal_run wait expiry returns a running block without stopping the command; keep the wait below executor ceiling and expose whole seconds.
   terminalRunWaitDefaultMs: 15_000,
   terminalRunWaitMaxMs: 100_000,

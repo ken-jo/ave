@@ -2012,6 +2012,8 @@ interface WorkspaceFileMatch {
  * Korean message; `message` is English dev detail.
  */
 export interface AvePreviewApi {
+  onDocumentOpen: (handler: (request: import("../../shared/document-open.js").DocumentOpenRequest) => void) => () => void;
+  acknowledgeDocumentOpen: (ack: import("../../shared/document-open.js").DocumentOpenAck) => Promise<{ ok: true } | { ok: false; error: string }>;
   readFile: (path: string) => Promise<{
     ok: boolean;
     content?: string;

@@ -2,6 +2,7 @@
 // object lives in internal-api-surface.ts; this module retains the public
 // builder exports used by preload.ts.
 import { ipcRenderer } from "electron";
+import { parseDocumentOpenRequest, type DocumentOpenAck, type DocumentOpenRequest } from "../shared/document-open.js";
 import { isE2eTestRuntime } from "../boot/dev-flags.js";
 import {
   CHANNELS,
@@ -223,6 +224,15 @@ export function buildAveNamespaceExtras() {
       ipcRenderer.invoke(CHANNELS.attach.redeemDrop, token),
   },
   preview: {
+    onDocumentOpen: (handler: (request: DocumentOpenRequest) => void) => {
+      const listener = (_event: unknown, raw: unknown) => {
+        const request = parseDocumentOpenRequest(raw);
+        if (request) handler(request);
+      };
+      ipcRenderer.on(CHANNELS.preview.documentOpenRequest, listener);
+      return () => ipcRenderer.removeListener(CHANNELS.preview.documentOpenRequest, listener);
+    },
+    acknowledgeDocumentOpen: (ack: DocumentOpenAck) => ipcRenderer.invoke(CHANNELS.preview.documentOpenAck, ack),
     readFile: (filePath: string) =>
       ipcRenderer.invoke(CHANNELS.preview.readFile, filePath),
     readDocument: (filePath: string, sheetIndex: number) =>
