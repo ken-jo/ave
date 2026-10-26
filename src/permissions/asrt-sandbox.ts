@@ -2,6 +2,7 @@
 
 import { spawn } from "node:child_process";
 import { containsGlobCharsWin, globPatternBaseDir, isUncPath, normalizePathForSandbox, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
@@ -1544,14 +1545,11 @@ async function discardFailedAsrtInitialization(
 // Initialize once from trusted settings and publish activity only after native execution succeeds. Empty global allow lists plus non-strict mode route each connection to the ask callback; on macOS/Linux accept only listener-vouched identities and literal true allows. Log monitoring defaults off.
 function checkWindowsSandboxStampTargets(filesystem: Partial<FilesystemConfig> | undefined): void {
   if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || process.platform !== "win32") return;
-  const targets = [
+  // Expand as the runtime does before it stamps, so each glob match is checked; deny mode also keeps missing literals.
+  const targets = expandWindowsFsPaths([
     ...(filesystem?.denyRead ?? []), ...(filesystem?.denyWrite ?? []),
     ...(filesystem?.allowWrite ?? []), ...(filesystem?.allowRead ?? []),
-  ].flatMap((entry) => {
-    const raw = typeof entry === "string" ? entry : entry.path;
-    const path = normalizePathForSandbox(raw, typeof entry === "string" ? undefined : { literal: true });
-    return containsGlobCharsWin(path) || isUncPath(path) ? [] : [path];
-  });
+  ], { mode: "deny" }).filter((path) => !isUncPath(path));
   checkSandboxStampTargets(targets);
 }
 

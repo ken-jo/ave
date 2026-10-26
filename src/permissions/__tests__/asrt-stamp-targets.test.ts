@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, inject, it, vi } from "vitest";
 import * as homeGuard from "../../shared/ave-home-test-guard.js";
@@ -114,13 +115,15 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(initialize).not.toHaveBeenCalled();
   });
 
-  it("expands home and environment literals while skipping globs and UNC targets", async () => {
+  it("expands home and environment literals and checks each glob match while skipping UNC targets", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Fixture initialization reached"));
     const guard = vi.spyOn(homeGuard, "checkSandboxStampTargets");
     const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
-    const glob = join(inject("realAccountHome"), "*.stamp-fixture");
+    const match = join(process.env.USERPROFILE!, "match.stamp-fixture");
+    writeFileSync(match, "");
+    const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
     const unc = "\\\\server\\share\\stamp-fixture";
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
@@ -131,8 +134,34 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const paths = guard.mock.calls[0]![0].map((path) => resolve(path));
     expect(paths).toContain(join(process.env.HOME!, ".stamp-fixture"));
     expect(paths).toContain(join(process.env.USERPROFILE!, ".stamp-env-fixture"));
+    expect(paths).toContain(match);
     expect(paths).not.toContain(glob);
     expect(paths).not.toContain(unc);
+  });
+
+  it("refuses a glob whose matches are under the real account home", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await expect(initializeAsrtSandbox({
+      windows: { externalConfinement: true },
+      denyRead: [join(inject("realAccountHome"), "AppData*")],
+    })).rejects.toThrow(refusal);
+    expect(initialize).not.toHaveBeenCalled();
+  });
+
+  it("refuses a glob under a run-temp junction that reaches the real account home", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    const alias = link(inject("realAccountHome"), join(scratch(), "account-link"));
+    await expect(initializeAsrtSandbox({
+      windows: { externalConfinement: true },
+      denyWrite: [join(alias, "*")],
+    })).rejects.toThrow(refusal);
+    expect(initialize).not.toHaveBeenCalled();
   });
 
   it("refuses per-command tool denies before the native wrapper is called", async () => {
