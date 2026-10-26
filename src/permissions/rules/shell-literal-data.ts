@@ -1,5 +1,6 @@
 import { staticShellWord, type ShellRedirect, type ShellWord } from "../../shared/shell-analysis.js";
-import { hiddenCodeReason, type ParsedShellCommand } from "./shell-prefix-policy.js";
+import { wrapperCommand, type ParsedShellCommand } from "./shell-prefix-policy.js";
+import { programName } from "./shell-prefix-values.js";
 import { isDestructiveShellText } from "../reviewer/risk-classifier.js";
 import { isDestructiveShellArgv, noReusableRuleReason } from "./shell-prefix-values.js";
 import { parseShellFloorCommand } from "./shell-exfiltration.js";
@@ -12,6 +13,28 @@ export interface ShellFloorInput {
   literalDataBytes: number;
   destructive?: boolean;
   parsed?: ParsedShellCommand;
+}
+
+let preparationWorkRecorder: { steps: number } | undefined;
+function chargePreparationWork(steps = 1): void {
+  if (preparationWorkRecorder !== undefined) preparationWorkRecorder.steps += steps;
+}
+
+export function _recordShellLiteralDataWorkForTest(): { readonly steps: number; stop(): void } {
+  const previous = preparationWorkRecorder;
+  const record = { steps: 0 };
+  preparationWorkRecorder = record;
+  return {
+    get steps() { return record.steps; },
+    stop() { if (preparationWorkRecorder === record) preparationWorkRecorder = previous; },
+  };
+}
+
+const HEREDOC_DATA_RECEIVERS = new Set(["cat", "tee", "wc"]);
+
+function isProvenHeredocDataReceiver(argv: readonly (string | undefined)[], inner: number): boolean {
+  const head = argv[inner];
+  return head !== undefined && HEREDOC_DATA_RECEIVERS.has(programName(head));
 }
 
 function executableWordText(word: ShellWord): string {
@@ -42,10 +65,18 @@ export function prepareShellFloorInput(command: string, dialect: string): ShellF
   while (stack.length > 0) {
     const node = stack.pop();
     if (node === null || typeof node !== "object") continue;
+    chargePreparationWork();
     if ("kind" in node && (node.kind === "unsupported" || node.kind === "unknown")) return ordinary();
     if ("kind" in node && node.kind === "command" && "words" in node && Array.isArray(node.words)) {
+      chargePreparationWork(node.words.length);
       const argv = node.words.map(staticShellWord);
-      if (hiddenCodeReason(argv) !== null) return ordinary();
+      const ownsHeredoc = "redirects" in node && Array.isArray(node.redirects)
+        && node.redirects.some((redirect: ShellRedirect) => redirect.heredocQuoted !== undefined);
+      if (ownsHeredoc) {
+        const wrapper = wrapperCommand(argv);
+        if (argv.some((word) => word === undefined) || wrapper.ordinaryAsk !== undefined || wrapper.runtimeArgv
+          || !isProvenHeredocDataReceiver(argv, wrapper.index)) return ordinary();
+      }
       destructive ||= isDestructiveShellArgv(argv) || noReusableRuleReason(argv) !== null;
       // Inspect original executable word spans; quoted body data never becomes command text.
       const words = node.words.map(executableWordText).join(" ");
@@ -54,6 +85,7 @@ export function prepareShellFloorInput(command: string, dialect: string): ShellF
     }
     const redirect = node as Partial<ShellRedirect>;
     if (redirect.heredocQuoted !== undefined) {
+      chargePreparationWork();
       heredocFound = true;
       // One unquoted operator cancels the allowance for every body, including earlier quoted bodies.
       if (!redirect.heredocQuoted || redirect.data === undefined) return ordinary();

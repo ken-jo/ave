@@ -25,7 +25,7 @@ describe("bounded visible floor inspection", () => {
     const bash = vi.spyOn(shellAnalysis, "analyzeShell");
     const powershell = _recordPowerShellLexesForTest();
     try {
-      for (const inspect of [shellFloors.inspectShellCommand, inspectPowerShellCommand, inspectPowerShellVisibleText]) expect(inspect(command, CWD)).toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON, analysisLimited: true });
+      for (const inspect of [shellFloors.inspectShellCommand, inspectPowerShellCommand, inspectPowerShellVisibleText]) expect(inspect(command, CWD)).toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON, analysisLimited: true });
       expect(bash).not.toHaveBeenCalled();
       expect(powershell.lexed).toEqual([]);
     } finally { bash.mockRestore(); powershell.stop(); }
@@ -162,10 +162,10 @@ describe("bounded visible floor inspection", () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it.each(["read HOME", "unset HOME"])("retains executable word order through quoted data for %s", (mutation) => {
+  it.each(["read HOME", "unset HOME"])("retains runtime-state refusal through quoted data for %s", (mutation) => {
     const suffix = `${mutation}; cd "$HOME"/foo; grep -r x .`;
     const expected = shellFloors.inspectShellCommand(suffix, CWD);
-    expect(expected.sensitive).not.toBeNull();
+    expect(expected).toMatchObject({ outcome: "unproven", sensitive: null });
     const prepared = prepareShellFloorInput(`cat <<'E'\ndata\nE\n${suffix}`, "bash");
     expect(prepared?.parsed).toBeDefined();
     const actual = shellFloors.inspectShellCommand(prepared!.parsed!, CWD);

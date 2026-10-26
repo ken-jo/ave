@@ -27,10 +27,10 @@ function check(command: string, runsSandboxed = true) {
 }
 
 describe("literal heredoc data bounds", () => {
-  it("keeps quoted data inside substitutions out of destructive text inspection", () => {
+  it("declines a substitution even when its quoted heredoc body is inert data", () => {
     const command = 'echo "$(cat <<\'EOF\'\nrm -rf /\nEOF\n)"';
     expect(prepareShellFloorInput(command, "bash")?.destructive).toBe(false);
-    expect(check(command)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it("retains executable destructive commands beside nested quoted data", () => {

