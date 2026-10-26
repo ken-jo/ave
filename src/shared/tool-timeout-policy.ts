@@ -16,6 +16,8 @@ export const TOOL_TIMEOUT_POLICY = {
   // Reserve host-owned handshake, receipt, cleanup, and outer-timer headroom beyond semantic shell time on every route.
   shellCeilingGraceMs: 31_000,
   globalCeilingMs: 120_000,
+  // Cold native startup includes module loading, compilation and account-provider initialization before READY.
+  windowsAclHostStartupMs: 120_000,
   // Bound each serial native-location ACL check so a stalled host releases queued admissions before the global ceiling.
   windowsAclRequestMs: 15_000,
   // Share the exact workload-identity handshake budget with the protocol.

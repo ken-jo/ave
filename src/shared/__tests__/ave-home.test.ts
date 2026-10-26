@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { ensureAveHomePrivate, aveHome, win32SystemBinary, readWindowsDirectoryDacls, setAveHomePrivacyAtBoot, assertAveHomePrivacyForConfinement, _resetAveHomePrivacyForTest, type WindowsDirectoryDacl, type WindowsAccessRule } from "../ave-home.js";
 import { useTempPaths } from "../../__tests__/test-helpers.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "../windows-owner-claim.js";
+import { TOOL_TIMEOUT_POLICY } from "../tool-timeout-policy.js";
 import { configureHostResources } from "../../main/host-resources.js";
 import * as windowsPathFacts from "../windows-path-facts.js";
 import * as pathKindLauncher from "../../main/windows-path-kind-launcher.js";
@@ -293,6 +294,9 @@ describe("ensureAveHomePrivate", () => {
       command: (args as readonly string[]).at(-1)!,
       request: JSON.parse((options as { env: NodeJS.ProcessEnv }).env.AVE_DACL_REQUEST!),
     }));
+    for (const [, , options] of vi.mocked(execFileSync).mock.calls) {
+      expect(options).toMatchObject({ timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs });
+    }
     expect(writes.map(write => [write.request.path, write.request.action])).toEqual([
       [dir, "protect"], [join(dir, "secrets"), "protect"], [runtimeRoot, "claim"],
     ]);

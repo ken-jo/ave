@@ -192,7 +192,8 @@ ${WINDOWS_OWNER_CLAIM_SOURCE}
       & $request.icacls $path '/inheritance:r' '/grant:r' ('*' + $request.sid + ':(OI)(CI)F') '/L' '/q' | Out-Null;
       if ($LASTEXITCODE -ne 0) { throw 'Directory permission command failed' }
     }`,
-  ], { windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
+  // A one-shot process cannot separate cold startup from its directory operation.
+  ], { windowsHide: true, encoding: "utf8", timeout: TOOL_TIMEOUT_POLICY.windowsAclHostStartupMs + TOOL_TIMEOUT_POLICY.windowsAclRequestMs,
     env: windowsPowerShellEnv({ ...process.env, AVE_DACL_REQUEST: JSON.stringify({
       path, sid, action, icacls: win32SystemBinary("icacls"),
     }) }) });
