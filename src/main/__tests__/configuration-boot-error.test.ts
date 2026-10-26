@@ -11,13 +11,18 @@ const locale = getLocale();
 afterEach(() => { vi.mocked(dialog.showErrorBox).mockClear(); setLocale(locale); });
 
 describe("configuration boot refusal", () => {
-  it("limits configuration migration to the interactive single instance owner", () => {
+  it("limits configuration migration to the shared host instance owner", () => {
     const source = readFileSync(join(import.meta.dirname, "..", "..", "boot.ts"), "utf8");
-    expect(source).toContain("setAveHomeConfigurationOwner(headless ? undefined : host.desktop)");
+    expect(source).not.toContain("setAveHomeConfigurationOwner(");
     expect(source).toContain("const configurationDiagnostics = isAveHomeConfigurationOwner()");
     expect(source).toContain("? migrateAveHomeConfiguration(homePrivacy.home, homePrivacy) : []");
-    const desktop = readFileSync(join(import.meta.dirname, "..", "..", "boot", "desktop-host-runtime.ts"), "utf8");
-    expect(desktop).toContain("hasSingleInstanceLock: () => app.hasSingleInstanceLock()");
+    const lock = readFileSync(join(import.meta.dirname, "..", "host-instance-lock.ts"), "utf8");
+    expect(lock).toContain('database.exec("BEGIN EXCLUSIVE")');
+    expect(lock).toContain("setAveHomeConfigurationOwner({ hasSingleInstanceLock: () => processLock?.open === true && processLock.inTransaction })");
+    for (const entry of ["desktop-boot.ts", "headless-host.ts"]) {
+      const caller = readFileSync(join(import.meta.dirname, "..", "..", entry), "utf8");
+      expect(caller).toContain("await acquireHostInstanceLock()");
+    }
   });
   it("shows the path cause and recovery instructions in English", () => {
     setLocale("en");

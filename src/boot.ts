@@ -87,7 +87,7 @@ import { configureTracing, parseTelemetrySpec } from "./engine/telemetry/tracing
 import { getAveAppVersion } from "./shared/app-version.js";
 import { ensureAveHomePrivate, aveHome, setAveHomePrivacyAtBoot, setAveHomeConfigurationRefusedAtBoot } from "./shared/ave-home.js";
 import { migrateAveHomeConfiguration } from "./shared/ave-home-configuration.js";
-import { isAveHomeConfigurationOwner, setAveHomeConfigurationOwner } from "./shared/ave-home-configuration-access.js";
+import { isAveHomeConfigurationOwner } from "./shared/ave-home-configuration-access.js";
 import { ensureAveScratchDir } from "./shared/ave-scratch.js";
 import {
   listAveHomeDocUpgradeMarkers,
@@ -224,7 +224,6 @@ export async function bootstrap(
 
   await setupNetworkFetch(ctx);
 
-  setAveHomeConfigurationOwner(headless ? undefined : host.desktop);
   // Create protected storage boundaries before any feature writes.
   const homePrivacy = ensureAveHomePrivate();
   setAveHomePrivacyAtBoot(homePrivacy);

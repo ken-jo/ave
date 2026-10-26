@@ -2169,25 +2169,40 @@ with its own owner rule:
   copying into a fresh staged file, publishing it inside the protected directory,
   then flushing a staged `config/.ave-config-migrated` and atomically renaming it
   before deleting any copied root file. Both path owners use the root until commit.
-  Only an interactive desktop process holding the single-instance lock migrates;
-  execution-mode and child processes only resolve the current on-disk layout.
+  The holder of the shared host-instance lock migrates, whether desktop or
+  headless. Execution-mode and child processes without that lock only resolve
+  the current on-disk layout.
   A refused home stays root-only, without migration.
   No process caches the configuration location. Every read and write inspects
-  `config/` and its marker without following links. Reads compare the directory's
-  exact identity (volume serial and file ID on Windows, device and inode on POSIX)
-  with the last fully verified identity and rerun the root-admission and owner-only
-  checks when presence or identity changes. An unchanged identity permits reopening
-  paths because the verified boundaries prevent foreign child replacement.
-  Only the primary interactive instance may write configuration. Boot installs
-  the live single-instance capability; other processes start read-only and receive
-  `AveHomeConfigurationNotOwnerError` on mutation. Existing host routes retain
+  `config/` and its marker without following links. Windows read certificates key
+  the home root's RootSafe and protected `config` OwnerOnly checks on each object's
+  volume serial, file ID and ChangeTime. These predicates inspect no ancestor
+  DACL. Every path ancestor is keyed by volume serial and file ID, without its
+  ChangeTime: unrelated child-entry writes must not invalidate verification.
+  Every read checks directory-entry reparse state and directory shape along the
+  path. Cold native verification returns identities from its actual handles,
+  which must equal observations before and after verification. An ancestor swap
+  refuses the read; a DACL timestamp change requires full verification. Stable
+  reads spawn no process. POSIX directory verification retains device/inode checks.
+  Configuration ownership comes only from the live shared host-instance lock;
+  other processes start read-only and receive `AveHomeConfigurationNotOwnerError`
+  with "Ave is running; close it or use the app" on mutation. Existing host routes retain
   their permission gates. Execution-mode secret provisioning is refused and
   non-owner boot skips secret migrations. There is no configuration file lock,
   process-start identity or stale-record recovery. Owner mutations share an
   in-process FIFO queue, verify boundaries and resolve their destination inside
-  that queue. Synchronous owner migration completes before services start.
+  that queue. Within this scope, synchronous atomic staging creates and renames
+  check the previous certificate immediately before their syscall and re-key only
+  the affected directory's ChangeTime immediately afterward, without yielding.
+  A changed identity, ancestor or other boundary refuses re-keying. Async callback
+  completion never re-keys a certificate. Foreign changes after the immediate
+  observation still force verification. A concurrent same-account DACL change
+  inside the syscall-to-observation window remains a residual race: that account
+  already controls these protected objects; other accounts lack WRITE_DAC.
+  Synchronous owner migration completes before services start.
   `AVE_HOME` is used exactly as supplied, even when its basename is `config`.
-  Readers open without following links and validate the opened regular file.
+  Readers reject reparse entries, compare file identity before/open/after,
+  require a regular file of at most 4 MiB and check stable timestamps and bytes.
   A vanished file triggers one fresh resolution; persistent absence after an
   observed file or commit raises `AveHomeConfigurationUntrustedError`.
   Defaults require both candidate files and the migration marker to be absent.
