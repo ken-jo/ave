@@ -36,6 +36,7 @@ import {
 } from "./sandbox-capability.js";
 import { defaultHooksDir } from "../hooks/hook-discovery.js";
 import { readWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
+import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -1030,24 +1031,34 @@ async function gatherWindowsReadDenyEvidence(
 }
 
 const windowsReadDenyWarnings = new Set<string>();
+const windowsProfileReadDenyWarnings = new Map<string, NonNullable<SandboxWindowsStatusInfo["profileReadDenyWarnings"]>[number]>();
+
+export function getWindowsProfileReadDenyWarnings(): SandboxWindowsStatusInfo["profileReadDenyWarnings"] {
+  return [...windowsProfileReadDenyWarnings.values()].map(row => ({ ...row, ...(row.principals ? { principals: [...row.principals] } : {}) }));
+}
 
 function keepWindowsProfileReadDeny(path: string, profile: string, snapshot?: WindowsReadDenySnapshot): boolean {
   const evidence = windowsReadDenyEvidence(path, snapshot);
-  if (evidence.status === "missing" || evidence.status === "private") return false;
-  const reason = evidence.reason ?? evidence.status;
-  if (!windowsReadDenyWarnings.has(reason)) {
-    windowsReadDenyWarnings.add(reason);
-    log.warn(`[sandbox-profile-read-deny] Keeping ${path}: ${reason}`);
+  const key = windowsReadDenyKey(path);
+  if (evidence.status === "missing" || evidence.status === "private") {
+    windowsProfileReadDenyWarnings.delete(key);
+    return false;
   }
   const parent = dirname(path.replace(/[\\/]+$/, ""));
-  if (caseFoldForMatch(parent) === caseFoldForMatch(profile) && !windowsReadDenyWarnings.has(parent)) {
-    windowsReadDenyWarnings.add(parent);
-    log.warn(`[sandbox-profile-read-deny] Stamping parent ${parent} reaches the profile root; profile stamping can exceed the 60-second initialization timeout`);
+  const profileParent = caseFoldForMatch(parent) === caseFoldForMatch(profile);
+  if (profileParent) {
+    windowsProfileReadDenyWarnings.set(key, { path: path.replace(/[\\/]+$/, ""),
+      ...(evidence.status === "readable" && evidence.principals?.length ? { principals: evidence.principals } : {}) });
   }
-  return true;
+  const reason = evidence.reason ?? evidence.status;
+  if (!windowsReadDenyWarnings.has(key)) {
+    windowsReadDenyWarnings.add(key);
+    log.warn(`[sandbox-profile-read-deny] ${profileParent ? "Filtering" : "Keeping"} ${path}: ${evidence.principals?.join(", ") ?? reason}${profileParent ? "; profile-root stamping cannot protect this target" : ""}`);
+  }
+  return !profileParent;
 }
 
-// Stamping creates missing targets and changes parent DACLs. Disjoint profile reads require an existing, private DACL before omission; writes retain their machine/profile filtering.
+// Stamping changes parent DACLs; never stamp the profile root for a disjoint read deny.
 function windowsDenyTargets<T extends FilesystemPathEntry>(
   entries: readonly T[],
   userDataDir: string | undefined,
@@ -1548,15 +1559,17 @@ export async function initializeAsrtSandbox(
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
+  windowsProfileReadDenyWarnings.clear();
+  windowsReadDenyWarnings.clear();
   _workerUnixSocketDirs.clear();
-  useAppOwnedSandboxTempRoot();
-  _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
-  const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings), _baseReadDenyEvidence);
-  assertNoLocalBinding(config);
-  noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
-  // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
-  SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
   try {
+    useAppOwnedSandboxTempRoot();
+    _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
+    const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings), _baseReadDenyEvidence);
+    assertNoLocalBinding(config);
+    noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
+    // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
+    SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
     await SandboxManager.initialize(config, askCb, enableLogMonitor);
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
     await verifyAsrtRuntime(SandboxManager);
@@ -2044,6 +2057,8 @@ export async function resetAsrtSandbox(): Promise<void> {
   // Reset base settings and live socket holders so reinitialization cannot inherit stale allowances.
   _baseTrustedSettings = undefined;
   _baseReadDenyEvidence = undefined;
+  windowsProfileReadDenyWarnings.clear();
+  windowsReadDenyWarnings.clear();
   _workerUnixSocketDirs.clear();
   // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
   const { clearWrappedMcpServers, clearWrappedPluginWorkers, clearConfinedPluginChildren } =

@@ -1406,6 +1406,49 @@ describe("PermissionsTab — handleWindowsInstall error-shape robustness", () =>
     }
   });
 
+  it("shows readable and unverified profile warnings in English while ready", async () => {
+    const previousLocale = getLocale();
+    setLocale("en");
+    try {
+      const path = String.raw`D:\Users\tester\.ssh`;
+      const unverified = String.raw`D:\Users\tester\.aws`;
+      installApiWithWindows({ sandboxWindowsStatus: vi.fn().mockResolvedValue({
+        applicable: true, userState: "ready", wfpState: "installed", ready: true, instructions: "",
+        profileReadDenyWarnings: [{ path, principals: ["Everyone", "srt-sandbox", "sandbox-runtime-users"] }, { path: unverified }],
+      }) });
+      await act(async () => { render(<PermissionsTab />); });
+      const notices = screen.getAllByTestId("os-sandbox-windows-profile-read-deny-warning");
+      expect(notices).toHaveLength(2);
+      expect(notices[0]).toHaveAttribute("role", "alert");
+      expect(notices[0]).toHaveTextContent(`${path} is readable by Everyone, srt-sandbox, sandbox-runtime-users and cannot be protected by the sandbox`);
+      expect(notices[1]).toHaveTextContent(`${unverified} has unverified read protection and cannot be protected by the sandbox`);
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
+  it("shows Korean profile warnings from capability with both toggles off", async () => {
+    const previousLocale = getLocale();
+    setLocale("ko");
+    try {
+      const path = String.raw`D:\Users\tester\.ssh`;
+      const unverified = String.raw`D:\Users\tester\.aws`;
+      const { ave } = installApiWithWindows({ togglesOff: true });
+      const capability = await ave.permission.sandboxCapability();
+      ave.permission.sandboxCapability.mockResolvedValue({ ...capability,
+        profileReadDenyWarnings: [{ path, principals: ["Users", "Authenticated Users", "INTERACTIVE"] }, { path: unverified }],
+      } as never);
+      await act(async () => { render(<PermissionsTab />); });
+      const notices = screen.getAllByTestId("os-sandbox-windows-profile-read-deny-warning");
+      expect(notices).toHaveLength(2);
+      expect(notices[0]).toHaveTextContent(`${path} 경로는 Users, Authenticated Users, INTERACTIVE 주체가 읽을 수 있으며 샌드박스로 보호할 수 없습니다`);
+      expect(notices[1]).toHaveTextContent(`${unverified} 경로의 읽기 보호가 검증되지 않았으며 샌드박스로 보호할 수 없습니다`);
+      expect(ave.permission.sandboxWindowsInstall).not.toHaveBeenCalled();
+    } finally {
+      setLocale(previousLocale);
+    }
+  });
+
   it("requests a session approval once and reads the main-owned OFF status again after a reload", async () => {
     const status = { applicable: true, userState: null, wfpState: null, ready: false, instructions: "",
       homePrivacyError: { path: "D:/private-state/secrets", category: "read-back-failed", approvedForSession: false } };

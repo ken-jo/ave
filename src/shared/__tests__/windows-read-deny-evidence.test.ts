@@ -1,6 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { lstatSync, mkdirSync, mkdtempSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { win32SystemBinary } from "../ave-home.js";
@@ -47,23 +49,23 @@ describe.runIf(process.platform === "win32")("Windows read deny native evidence"
   });
 
   it("reports an explicit world read grant", () => {
-    expect(snapshot.get(windowsReadDenyKey(join(fixture, "everyone")))).toEqual({ status: "readable", reason: "S-1-1-0" });
+    expect(snapshot.get(windowsReadDenyKey(join(fixture, "everyone")))).toMatchObject({ status: "readable", principals: ["Everyone"] });
   });
 
   it("reports the private control without a broad read grant", () => {
-    expect(snapshot.get(windowsReadDenyKey(join(fixture, "control")))).toEqual({ status: "private" });
+    expect(snapshot.get(windowsReadDenyKey(join(fixture, "control")))).toMatchObject({ status: "private" });
   });
 
   it("reports built-in users read grants", () => {
-    expect(snapshot.get(windowsReadDenyKey(join(fixture, "users")))).toEqual({ status: "readable", reason: "S-1-5-32-545" });
+    expect(snapshot.get(windowsReadDenyKey(join(fixture, "users")))).toMatchObject({ status: "readable", principals: ["Users"] });
   });
 
   it("reports authenticated users read grants", () => {
-    expect(snapshot.get(windowsReadDenyKey(join(fixture, "authenticated")))).toEqual({ status: "readable", reason: "S-1-5-11" });
+    expect(snapshot.get(windowsReadDenyKey(join(fixture, "authenticated")))).toMatchObject({ status: "readable", principals: ["Authenticated Users"] });
   });
 
   it("reports interactive read grants", () => {
-    expect(snapshot.get(windowsReadDenyKey(join(fixture, "interactive")))).toEqual({ status: "readable", reason: "S-1-5-4" });
+    expect(snapshot.get(windowsReadDenyKey(join(fixture, "interactive")))).toMatchObject({ status: "readable", principals: ["INTERACTIVE"] });
   });
 
   it("maps generic read to file data access", () => {
@@ -99,9 +101,47 @@ describe.runIf(process.platform === "win32")("Windows read deny native evidence"
   it("does not change fixture security descriptors", () => {
     expect(execFileSync(win32SystemBinary("icacls"), [fixture, "/T"], { encoding: "utf8", windowsHide: true })).toBe(beforeAcl);
   });
+
+  it("matches native volume and file identity to no-follow bigint stats on this host", () => {
+    const file = join(fixture, "control");
+    const directory = join(fixture, "inherited");
+    const fileStat = lstatSync(file, { bigint: true });
+    const directoryStat = lstatSync(directory, { bigint: true });
+    expect(snapshot.get(windowsReadDenyKey(file))?.identity).toEqual({ volumeSerialNumber: fileStat.dev.toString(), fileId: fileStat.ino.toString() });
+    expect(snapshot.get(windowsReadDenyKey(directory))?.identity).toEqual({ volumeSerialNumber: directoryStat.dev.toString(), fileId: directoryStat.ino.toString() });
+    expect(windowsReadDenyEvidence(file, snapshot).status).toBe("private");
+    expect(windowsReadDenyEvidence(join(fixture, "missing"), snapshot).status).toBe("missing");
+  });
 });
 
 describe("Windows read deny evidence admission", () => {
+  it("keeps a private target whose path is now missing", async () => {
+    const fixture = mkdtempSync(join(tmpdir(), "ave-missing-private-"));
+    try {
+      const path = join(fixture, "secret");
+      const snapshot: WindowsReadDenySnapshot = new Map([[windowsReadDenyKey(path), {
+        status: "private", identity: { volumeSerialNumber: "1", fileId: "1" },
+      }]]);
+      expect(windowsReadDenyEvidence(path, snapshot).status).toBe("error");
+    } finally {
+      await cleanupTmpDir(fixture);
+    }
+  });
+
+  it("keeps a target when a no-follow identity check fails", () => {
+    const path = join(tmpdir(), "stat-denied-secret");
+    const stat = vi.spyOn(fs, "lstatSync").mockImplementation(() => { throw Object.assign(new Error("Access denied"), { code: "EACCES" }); });
+    syncBuiltinESMExports();
+    try {
+      expect(windowsReadDenyEvidence(path, new Map([[windowsReadDenyKey(path), { status: "missing" }]])).status).toBe("error");
+      expect(windowsReadDenyEvidence(path, new Map([[windowsReadDenyKey(path), { status: "private" }]])).status).toBe("error");
+      expect(stat).toHaveBeenCalledWith(path, { bigint: true, throwIfNoEntry: false });
+    } finally {
+      stat.mockRestore();
+      syncBuiltinESMExports();
+    }
+  });
+
   it("fails closed when a target is omitted from an injected snapshot", () => {
     expect(windowsReadDenyEvidence(join(tmpdir(), "omitted-secret"), new Map()).status).toBe("error");
   });
