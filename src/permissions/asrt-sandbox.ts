@@ -35,6 +35,8 @@ import {
   isShellSandboxRequestedAtBoot,
 } from "./sandbox-capability.js";
 import { defaultHooksDir } from "../hooks/hook-discovery.js";
+import { readWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
+import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -296,6 +298,12 @@ onEgressInvocationReleased((token, { processGroup }) => {
 
 // The trusted settings last applied via initializeAsrtSandbox. Remembered so worker-UDS register/unregister can rebuild the SHARED config additively (the manifest egress union, denyRead floor, weakening flags, etc. are preserved). Undefined before the first init.
 let _baseTrustedSettings: TrustedSandboxSettings | undefined;
+// Shared config already trusts init-time evidence; reuse adds no TOCTOU window. ACL widening during a session is picked up at the next init.
+let _baseReadDenyEvidence: WindowsReadDenySnapshot | undefined;
+
+export function _getWindowsReadDenySnapshotForTest(): WindowsReadDenySnapshot | undefined {
+  return _baseReadDenyEvidence;
+}
 
 // The shared loopback range that confined extension processes can reach.
 export function getWindowsProxyPortRange(): readonly [number, number] {
@@ -453,6 +461,7 @@ export function buildPerCommandSandboxCustomConfig(
   filesystem: PerCommandFilesystem | undefined,
   onNotice?: (notice: string) => void,
   onGitControlSnapshot?: (snapshot: SandboxGitControlSnapshot) => void,
+  readDenyEvidence?: WindowsReadDenySnapshot,
 ): Partial<SandboxRuntimeConfig> | undefined {
   // Windows keeps its separate per-exec filesystem admission contract.
   if (filesystem === undefined && process.platform === "win32") return undefined;
@@ -501,6 +510,7 @@ export function buildPerCommandSandboxCustomConfig(
       _baseTrustedSettings?.userDataDir,
       windowsGrants,
       "read",
+      readDenyEvidence,
     );
   }
   const sensitiveDenyWrite = getDefaultSensitiveWriteDenyPaths(_baseTrustedSettings?.userDataDir);
@@ -999,16 +1009,66 @@ function assertWindowsMachineRootWriteGrants(grants: readonly string[]): void {
   }
 }
 
-// Windows stamping creates missing deny targets and changes parent DACLs. Write denies under a machine root are omitted unless they overlap a grant strictly beneath that root: ordinary ACLs already deny Users writes there. Read denies are never omitted for this; one srt-win cannot stamp fails init. POSIX rows and profile rows disjoint from grants are omitted. Worker wraps restate overlapping denies.
+async function gatherWindowsReadDenyEvidence(
+  settings: TrustedSandboxSettings,
+  paths: readonly string[] = [],
+  snapshot?: WindowsReadDenySnapshot,
+): Promise<WindowsReadDenySnapshot | undefined> {
+  if (process.platform !== "win32") return undefined;
+  const profile = windowsProfileHome();
+  if (profile === undefined) return undefined;
+  const targets = [...getDefaultSensitiveReadDenyPaths(settings.userDataDir), ...(settings.denyRead ?? []), ...paths];
+  const candidates = targets.filter(path => {
+    if (containsGlobCharsWin(path)) return false;
+    try { return isGrantPathWithin(profile, path); }
+    catch { return true; }
+  });
+  const uncovered = [...new Map(candidates.filter(path => !snapshot?.has(windowsReadDenyKey(path)))
+    .map(path => [windowsReadDenyKey(path), path])).values()];
+  if (uncovered.length === 0) return snapshot ?? new Map();
+  const evidence = await readWindowsReadDenyEvidence(uncovered);
+  return snapshot === undefined ? evidence : new Map([...snapshot, ...evidence]);
+}
+
+const windowsReadDenyWarnings = new Set<string>();
+const windowsProfileReadDenyWarnings = new Map<string, NonNullable<SandboxWindowsStatusInfo["profileReadDenyWarnings"]>[number]>();
+
+export function getWindowsProfileReadDenyWarnings(): SandboxWindowsStatusInfo["profileReadDenyWarnings"] {
+  return [...windowsProfileReadDenyWarnings.values()].map(row => ({ ...row, ...(row.principals ? { principals: [...row.principals] } : {}) }));
+}
+
+function keepWindowsProfileReadDeny(path: string, profile: string, snapshot?: WindowsReadDenySnapshot): boolean {
+  const evidence = windowsReadDenyEvidence(path, snapshot);
+  const key = windowsReadDenyKey(path);
+  if (evidence.status === "missing" || evidence.status === "private") {
+    windowsProfileReadDenyWarnings.delete(key);
+    return false;
+  }
+  const parent = dirname(path.replace(/[\\/]+$/, ""));
+  const profileParent = caseFoldForMatch(parent) === caseFoldForMatch(profile);
+  if (profileParent) {
+    windowsProfileReadDenyWarnings.set(key, { path: path.replace(/[\\/]+$/, ""),
+      ...(evidence.status === "readable" && evidence.principals?.length ? { principals: evidence.principals } : {}) });
+  }
+  const reason = evidence.reason ?? evidence.status;
+  if (!windowsReadDenyWarnings.has(key)) {
+    windowsReadDenyWarnings.add(key);
+    log.warn(`[sandbox-profile-read-deny] ${profileParent ? "Filtering" : "Keeping"} ${path}: ${evidence.principals?.join(", ") ?? reason}${profileParent ? "; profile-root stamping cannot protect this target" : ""}`);
+  }
+  return !profileParent;
+}
+
+// Stamping changes parent DACLs; never stamp the profile root for a disjoint read deny.
 function windowsDenyTargets<T extends FilesystemPathEntry>(
   entries: readonly T[],
   userDataDir: string | undefined,
   grants: readonly FilesystemPathEntry[],
   kind: "read" | "write",
+  readDenyEvidence?: WindowsReadDenySnapshot,
 ): (T | string)[] {
   if (process.platform !== "win32") return [...entries];
   const machineRoots = windowsMachineRoots();
-  // Only the OS profile has the DACL that makes a disjoint deny redundant; a HOME elsewhere keeps every row. An unresolved profile drops nothing.
+  // Only the OS profile qualifies for omission; a HOME elsewhere or an unresolved profile keeps every row.
   const profile = windowsProfileHome();
   // Match runtime home expansion before judging whether a deny is disjoint.
   const expandedGrants = grants.map((entry) => typeof entry === "string" ? entry : entry.path).map((grant) => profile === undefined ? grant
@@ -1052,7 +1112,8 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
         if ([path, ...expandedGrants].some((candidate) => /[\0*?\[\]%]|~\d+(?:\.|[\\/]|$)/
           .test(candidate.replace(/^\\\\\?\\/, "")))) return true;
         return profile === undefined || !isGrantPathWithin(profile, path)
-          || expandedGrants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant));
+          || expandedGrants.some((grant) => isGrantPathWithin(grant, path) || isGrantPathWithin(path, grant))
+          || (kind === "read" && keepWindowsProfileReadDeny(path, profile, readDenyEvidence));
       } catch {
         // An unproven identity must never remove a deny.
         return true;
@@ -1162,7 +1223,7 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
 }
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
-export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): SandboxRuntimeConfig {
+export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings, readDenyEvidence?: WindowsReadDenySnapshot): SandboxRuntimeConfig {
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
     ? getVerifiedSrtWinExePath() : undefined;
   // Refuse the grants as requested, before the write policy can narrow one
@@ -1239,6 +1300,7 @@ export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings): San
       trustedSettings.userDataDir,
       windowsGrants,
       "read",
+      readDenyEvidence,
     ),
     allowWrite,
     denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants, "write"),
@@ -1470,6 +1532,7 @@ async function discardFailedAsrtInitialization(
   active = false;
   loadedSandboxManagerForRelease = undefined;
   _baseTrustedSettings = undefined;
+  _baseReadDenyEvidence = undefined;
   _workerUnixSocketDirs.clear();
   try {
     await SandboxManager.reset();
@@ -1509,14 +1572,17 @@ export async function initializeAsrtSandbox(
   const SandboxManager = await loadSandboxManager();
   // Remember the base settings so worker-UDS register/unregister can rebuild the SHARED config additively (see the WORKER UDS header). On a fresh init there are no registered worker sockets yet, so the effective config equals the base; withWorkerUnixSockets is a no-op until a worker registers.
   _baseTrustedSettings = trustedSettings;
+  windowsProfileReadDenyWarnings.clear();
+  windowsReadDenyWarnings.clear();
   _workerUnixSocketDirs.clear();
-  useAppOwnedSandboxTempRoot();
-  const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings));
-  assertNoLocalBinding(config);
-  noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
-  // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
-  SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
   try {
+    useAppOwnedSandboxTempRoot();
+    _baseReadDenyEvidence = await gatherWindowsReadDenyEvidence(trustedSettings);
+    const config = buildSandboxConfig(withWorkerUnixSockets(trustedSettings), _baseReadDenyEvidence);
+    assertNoLocalBinding(config);
+    noteAsrtUnixSocketPolicy(config.network.allowAllUnixSockets === true);
+    // Installed before the proxy starts, so no connection is routed without it; reset (including a failed initialization's) clears it.
+    SandboxManager.setParentProxyRouter(trustedSettings.upstreamRouter);
     checkWindowsSandboxStampTargets(config.filesystem);
     await SandboxManager.initialize(config, askCb, enableLogMonitor);
     // A host may reject a configured profile even when every dependency exists. Publish activity only after a real confined workload starts.
@@ -1572,7 +1638,9 @@ export async function wrapToolCommand(
   await openEgressListener(SandboxManager, "wrapToolCommand", options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; });
+  const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
+    : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence);
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   checkWindowsSandboxStampTargets(customConfig?.filesystem);
@@ -1748,7 +1816,9 @@ async function wrapLongLivedCommand(
   await openEgressListener(SandboxManager, caller, options.commandId);
   const notices: string[] = [];
   let gitControlSnapshot: SandboxGitControlSnapshot | undefined;
-  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; });
+  const readDenyEvidence = options.filesystem?.denyRead === undefined ? undefined
+    : await gatherWindowsReadDenyEvidence(_baseTrustedSettings ?? {}, options.filesystem.denyRead, _baseReadDenyEvidence);
+  const customConfig = buildPerCommandSandboxCustomConfig(options.filesystem, notice => notices.push(notice), snapshot => { gitControlSnapshot = snapshot; }, readDenyEvidence);
   const cleanupBare = process.platform === "linux"
     ? await prepareSandboxBareRepositoryCleanup(spelledPathEntries(customConfig?.filesystem?.allowWrite ?? [], "allowWrite"), options.commandId, gitControlSnapshot) : undefined;
   // `wrapOptions` carries a tty only for the terminal.
@@ -1869,7 +1939,7 @@ export async function registerWorkerUnixSocketDir(socketDir: string, holder: obj
       throw new Error("Socket directory registration was released before acquisition completed");
     }
     // Other pending dirs belong to their own push. Including them here could retain an allowance after that dir's push fails and its holders reject.
-    SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir)));
+    SandboxManager.updateConfig(buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings, socketDir), _baseReadDenyEvidence));
     entry.registered = true;
   } catch (error) {
     // Every holder of this entry — this caller and any waiter — sees the throw, treats the dir as not registered, and will not release it.
@@ -1894,7 +1964,7 @@ export async function unregisterWorkerUnixSocketDir(socketDir: string, holder: o
   const SandboxManager = await loadSandboxManager();
   if (!active || _baseTrustedSettings === undefined) return;
   SandboxManager.updateConfig(
-    buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings)),
+    buildSandboxConfig(withWorkerUnixSockets(_baseTrustedSettings), _baseReadDenyEvidence),
   );
 }
 
@@ -2004,6 +2074,9 @@ export async function resetAsrtSandbox(): Promise<void> {
   windowsExternalConfinement = false;
   // Reset base settings and live socket holders so reinitialization cannot inherit stale allowances.
   _baseTrustedSettings = undefined;
+  _baseReadDenyEvidence = undefined;
+  windowsProfileReadDenyWarnings.clear();
+  windowsReadDenyWarnings.clear();
   _workerUnixSocketDirs.clear();
   // Drop every wrapped-worker marker (MCP servers AND host-spawned plugin workers) so a torn-down sandbox cannot leave a stale `asrt` signal the reviewer would honour. Lazy import keeps the module-load edge one-way (sandbox-capability is renderer-safe and never imports back into this main-only module).
   const { clearWrappedMcpServers, clearWrappedPluginWorkers, clearConfinedPluginChildren } =

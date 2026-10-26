@@ -167,7 +167,8 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     expect(existsSync(marker)).toBe(true);
   });
 
-  it("compiles exclusion patterns once, so the sweep's cost does not grow per scanned entry", async () => {
+  // The Linux runtime consumes POSIX glob paths.
+  it.skipIf(process.platform === "win32")("compiles exclusion patterns once, so the sweep's cost does not grow per scanned entry", async () => {
     const base = realpathSync(mkdtempSync(join(tmpdir(), "asrt-sweep-cost-")));
     temporaryRoots.push(base);
     const project = join(base, "project");
@@ -218,7 +219,8 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     expect(existsSync(join(hidden, ".git", "config"))).toBe(true);
   });
 
-  it("keeps a directory wildcard exclusion disjoint from sibling Git controls", async () => {
+  // The Linux runtime consumes POSIX glob paths.
+  it.skipIf(process.platform === "win32")("keeps a directory wildcard exclusion disjoint from sibling Git controls", async () => {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "asrt-glob-exclusion-")));
     temporaryRoots.push(root);
     mkdirSync(join(root, ".git"));
@@ -402,9 +404,7 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     expect(isHostGitWorkspaceAvailable(root)).toBe(false);
   });
 
-  it.each([
-    ["tool", wrapToolCommand], ["worker", wrapWorkerCommand],
-  ] as const)("uses one immutable scan for the %s runtime and literal-deny replay", async (_kind, wrap) => {
+  async function assertImmutableScan(wrap: typeof wrapToolCommand): Promise<void> {
     await initializeAsrtSandbox({ allowedDomains: [] });
     h.wrapWithSandboxArgv.mockClear();
     const fixture = realpathSync(mkdtempSync(join(tmpdir(), "asrt-snapshot-")));
@@ -451,6 +451,16 @@ describe("Linux wrap filesystem discovery snapshot", () => {
     expect(replay).toContain(mount("--bind", ordinary));
     expect(replay).toContain(mount("--ro-bind", denied));
     expect(replay).not.toContain(mount("--bind", denied));
+  }
+
+  // The Linux mount replay uses POSIX path containment.
+  it.skipIf(process.platform === "win32")("uses one immutable scan for the tool runtime and literal-deny replay", async () => {
+    await assertImmutableScan(wrapToolCommand);
+  });
+
+  // The Linux mount replay uses POSIX path containment.
+  it.skipIf(process.platform === "win32")("uses one immutable scan for the worker runtime and literal-deny replay", async () => {
+    await assertImmutableScan(wrapWorkerCommand);
   });
 
   it("rejects a marked allowRead entry before handing an ambiguous grant to the runtime", async () => {

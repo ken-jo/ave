@@ -1,5 +1,7 @@
 // i18n fragment. Source: src/ui/renderer/tabs/PermissionsTab.tsx.
 export const en = {
+  "permissionsTab.osSandboxWindowsProfileReadDenyReadable": "{path} is readable by {principals} and cannot be protected by the sandbox",
+  "permissionsTab.osSandboxWindowsProfileReadDenyUnverified": "{path} has unverified read protection and cannot be protected by the sandbox",
   "permissionsTab.invalidAdminPolicy": "Administrative policy could not be trusted or parsed. Approval is required and policy edits are locked. {reason}",
   "permissionsTab.sandboxRestartBusy": "Ave is already restarting. Please wait.",
   "permissionsTab.sandboxRestartTitle": "Restart Ave to apply the sandbox change?",
@@ -391,6 +393,8 @@ export const en = {
   "permissionsTab.osSandboxWindowsSharedIdentity": "Extensions share one proxy identity: the proxy cannot tell which extension process opened a connection the way it can for a contained shell command.",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
+  "permissionsTab.osSandboxWindowsProfileReadDenyReadable": "{path} 경로는 {principals} 주체가 읽을 수 있으며 샌드박스로 보호할 수 없습니다",
+  "permissionsTab.osSandboxWindowsProfileReadDenyUnverified": "{path} 경로의 읽기 보호가 검증되지 않았으며 샌드박스로 보호할 수 없습니다",
   "permissionsTab.invalidAdminPolicy": "관리자 정책을 신뢰하거나 읽을 수 없습니다. 승인이 필수이며 정책을 수정할 수 없습니다. {reason}",
   "permissionsTab.sandboxRestartBusy": "Ave를 다시 시작하고 있습니다. 잠시 기다려 주세요.",
   "permissionsTab.sandboxRestartTitle": "샌드박스 변경 사항을 적용하려면 Ave를 다시 시작할까요?",
