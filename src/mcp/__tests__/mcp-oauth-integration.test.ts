@@ -5,7 +5,7 @@ useConfigurationOwner();
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
-import type { AddressInfo } from "node:net";
+import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -181,8 +181,8 @@ async function startWireFixture(options: { publicOrigin?: string } = {}): Promis
     }
     json(404, { error: "not_found" });
   });
-  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
-  fixture.listenOrigin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const port = await listenFetchLoopback(server);
+  fixture.listenOrigin = `http://127.0.0.1:${port}`;
   fixture.origin = options.publicOrigin ?? fixture.listenOrigin;
   fixture.endpoint = `${fixture.origin}/mcp`;
   cleanups.push(async () => {

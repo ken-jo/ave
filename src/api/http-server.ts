@@ -7,6 +7,7 @@ import type { A2AHttpRouter } from "./a2a-router.js";
 import type { LocalApi } from "./local-api.js";
 import type { StreamEventSource } from "./stream-broadcaster.js";
 import { errorMessage } from "../shared/error-message.js";
+import { FETCH_BAD_PORTS } from "../shared/fetch-loopback-listener.js";
 
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 0;
@@ -18,14 +19,6 @@ export const SSE_CONTENT_TYPE = "text/event-stream; charset=utf-8";
 export const SSE_HEARTBEAT_MS = 15_000;
 export const SSE_RETRY_MS = 3_000;
 const EPHEMERAL_PORT_RETRY_LIMIT = 20;
-// Fetch blocks these ports before connecting; advertising one would publish an unusable endpoint.
-const FETCH_FORBIDDEN_PORTS = new Set<number>([
-  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77, 79,
-  87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123, 135, 137,
-  139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530, 531, 532,
-  540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719, 1720, 1723,
-  2049, 3659, 4045, 4190, 5060, 5061, 6000, 6566, 6697, 10080,
-]);
 
 export interface LoopbackRouteFamilies {
   localApi: boolean;
@@ -65,7 +58,7 @@ export function sendJson(
 }
 
 function isFetchForbiddenPort(port: number): boolean {
-  return FETCH_FORBIDDEN_PORTS.has(port) || (port >= 6665 && port <= 6669);
+  return FETCH_BAD_PORTS.includes(port);
 }
 
 // Literal-only validation prevents DNS changes from moving the bind off loopback.
