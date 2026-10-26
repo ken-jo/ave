@@ -10,6 +10,32 @@ import { setPluginWorkerConfinementRequestedAtBoot, __resetSandboxRequestedAtBoo
 import { readAsrtWindowsStatus } from "../asrt-windows-support.js";
 
 const runtime = vi.hoisted(() => ({ initialize: vi.fn(), wrap: vi.fn() }));
+
+// A simulated drive path must use drive-path operations even on a POSIX host.
+vi.mock("node:path", async original => {
+  const actual = await original<typeof import("node:path")>();
+  return { ...actual, ...Object.fromEntries(Object.entries(actual.win32)
+    .filter(([, value]) => typeof value === "function")
+    .map(([key, value]) => [key, (...args: unknown[]) =>
+      Reflect.apply(process.platform === "win32" && args.some(arg => typeof arg === "string" && /^[A-Za-z]:[\\/]/.test(arg))
+        ? value as (...args: unknown[]) => unknown : actual[key as keyof typeof actual] as (...args: unknown[]) => unknown, undefined, args)])) };
+});
+
+// Lifecycle fixtures on another kernel validate spellings but cannot open native handles.
+vi.mock("../windows-stamp-targets.js", async original => {
+  const actual = await original<typeof import("../windows-stamp-targets.js")>();
+  const host = process.platform;
+  return { ...actual, pinWindowsFilesystemConfig: (filesystem: Parameters<typeof actual.pinWindowsFilesystemConfig>[0]) => {
+    if (host === "win32") return actual.pinWindowsFilesystemConfig(filesystem);
+    for (const entries of [filesystem?.allowRead, filesystem?.allowWrite, filesystem?.denyRead, filesystem?.denyWrite]) {
+      for (const entry of entries ?? []) {
+        const path = typeof entry === "string" ? entry : entry.path;
+        if (/[A-Za-z]:/.test(path) && !actual.isPlainWindowsStampPath(path.replace(/\//g, "\\"))) throw new Error("Invalid simulated drive path");
+      }
+    }
+    return filesystem;
+  } };
+});
 vi.mock("@anthropic-ai/sandbox-runtime", () => ({
   SandboxManager: {
     initialize: runtime.initialize,

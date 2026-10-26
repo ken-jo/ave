@@ -514,13 +514,13 @@ export async function spawnConfinedPluginChild(
     }
     // Register Unix-socket directories before wrapping because profiles read shared configuration at generation time.
     // Use the directory, not the socket file, for every confined child within its own namespace.
-    if (isPluginWorkerConfinementActive()) {
+    if (process.platform !== "win32" && isPluginWorkerConfinementActive()) {
       await registerWorkerUnixSocketDir(socketDir, socketHolder);
       socketDirRegistered = true;
     }
     // Register worker leaves for bind and the plugin run subtree for connect; neither profile grant implies the other.
     // Shared socket entries do not widen filesystem reach: per-plugin path confinement remains the boundary.
-    if (isPluginWorkerConfinementActive()) {
+    if (process.platform !== "win32" && isPluginWorkerConfinementActive()) {
       await registerWorkerUnixSocketDir(workerRunRoot, socketHolder);
       workerRunRootRegistered = true;
     }

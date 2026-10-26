@@ -34,6 +34,12 @@ import { bundledWrappedEnv, wrapBundledCommand } from "../../sandbox/wrap-bundle
 import { getConfiguredSessionReadPolicy } from "../sensitive-paths.js";
 import { asrtCanInitialize } from "./test-helpers.js";
 
+vi.mock("../../shared/policy-home.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../shared/policy-home.js")>();
+  const os = await import("node:os");
+  return { ...actual, policyHomeAnchors: () => [os.homedir()] };
+});
+
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
   return {
@@ -186,9 +192,10 @@ describe("the shared layer withholds grants under the protected floor", () => {
     const sessions = getConfiguredSessionReadPolicy().allowRead;
     expect(sessions).toHaveLength(1);
     const grants = [certs, join(certs, "corp"), ...sessions, join(root, ".ave", "secrets")];
+    for (const grant of grants) mkdirSync(grant, { recursive: true });
     const readFor = (floorPierces?: string[]) => buildPerCommandSandboxCustomConfig({
       allowRead: grants, denyRead: getDefaultSensitiveReadDenyPaths(), ...(floorPierces ? { floorPierces } : {}),
-    })?.filesystem?.allowRead;
+    })?.filesystem?.allowRead?.map(entry => typeof entry === "string" ? entry : entry.path);
     expect(readFor([...sessions]), "the shell").toEqual(sessions.map(path => normalizePathForSandbox(path)));
     expect(readFor([certs]), "a plugin that declared certs").toEqual([certs, join(certs, "corp")]);
     expect(readFor(), "a bundled hook or MCP stdio server").toEqual([]);
@@ -296,6 +303,8 @@ describe("the plugins root, refused to plugin-owned wraps", () => {
 
   it("adds nothing without the flag", () => {
     vi.stubEnv("AVE_HOME", join(root, ".ave"));
+    vi.stubEnv("HOME", root);
+    vi.stubEnv("USERPROFILE", root);
     expect(buildPerCommandSandboxCustomConfig({ denyRead: [], denyWrite: [] })?.filesystem?.denyRead).toEqual([]);
   });
 

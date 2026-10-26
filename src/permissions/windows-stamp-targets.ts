@@ -1,29 +1,16 @@
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
 import { containsGlobCharsWin, expandTilde, expandWindowsEnvRefs, globPatternBaseDir, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
-import { lstatSync, readlinkSync, realpathSync, type BigIntStats } from "node:fs";
-import { dirname, join, parse, resolve, sep } from "node:path";
+import { lstatSync, type BigIntStats } from "node:fs";
+import { join, parse, resolve, sep } from "node:path";
 import { sameFileIdentity, type FileIdentity } from "../lib/file-identity.js";
-import { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "../shared/ave-home-test-guard.js";
+import { pinWindowsPaths, type WindowsPathPin } from "./windows-path-pin.js";
+import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets } from "../shared/ave-home-test-guard.js";
 
-function canonicalStampPath(path: string): string {
-  const absolute = resolve(path);
-  const { root } = parse(absolute);
-  const parts = absolute.slice(root.length).split(sep).filter(Boolean);
-  let ancestor = realpathSync.native(root);
-  assertPlainWindowsStampPath(ancestor);
-  for (let index = 0; index < parts.length; index++) {
-    const candidate = join(ancestor, parts[index]!);
-    const entry = lstatSync(candidate, { throwIfNoEntry: false });
-    if (entry === undefined) {
-      ancestor = join(ancestor, ...parts.slice(index));
-      break;
-    }
-    ancestor = realpathSync.native(candidate);
-    // Refuse a resolved component before another append can hide its spelling.
-    assertPlainWindowsStampPath(ancestor);
-  }
-  return /[\\/]$/.test(path) && !ancestor.endsWith(sep) ? ancestor + sep : ancestor;
+const missingWindowsGrants = new WeakSet<object>();
+
+export function existingWindowsGrants(entries: readonly FilesystemPathEntry[]): FilesystemPathEntry[] {
+  return entries.filter(entry => typeof entry === "string" || !missingWindowsGrants.has(entry));
 }
 
 function stampPathChain(path: string): string[] {
@@ -36,9 +23,17 @@ function stampPathChain(path: string): string[] {
   return chain;
 }
 
-function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
-  if (!AVE_HOME_ISOLATION_GUARD_ACTIVE) return paths.map(path => ({ path, literal: true }));
-  const identities = new Map<string, { identity: FileIdentity; linkTarget: string | undefined } | undefined>();
+function guardedStampLiterals(paths: string[], pins: readonly WindowsPathPin[]): FilesystemPathEntry[] {
+  const identities = new Map<string, FileIdentity | undefined>();
+  for (const pin of pins) {
+    for (const component of pin.components) {
+      const entry = lstatSync(component.path, { bigint: true, throwIfNoEntry: false });
+      if (entry === undefined || entry.isSymbolicLink() || entry.ino.toString() !== component.ino) {
+        throw new Error(`Sandbox stamp target identity changed: ${component.path}`);
+      }
+      identities.set(component.path.toLowerCase(), entry);
+    }
+  }
   const verify = (): void => {
     const checked = new Set<string>();
     const verifyPath = (path: string): void => {
@@ -47,18 +42,18 @@ function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
       let missing = false;
       for (const component of stampPathChain(path)) {
         const entry: BigIntStats | undefined = missing ? undefined : lstatSync(component, { bigint: true, throwIfNoEntry: false });
-        const linkTarget = entry?.isSymbolicLink() ? readlinkSync(component) : undefined;
-        const previous = identities.get(component);
+        if (entry?.isSymbolicLink()) throw new Error(`Sandbox stamp target identity changed (reparse point): ${path}`);
+        const key = component.toLowerCase();
+        const previous = identities.get(key);
         // A missing component that appears as a non-link cannot redirect the path; record it instead of failing.
-        if (identities.has(component) && !(previous === undefined && entry !== undefined && linkTarget === undefined)) {
+        if (identities.has(key) && !(previous === undefined && entry !== undefined)) {
           if (entry === undefined ? previous !== undefined : previous === undefined ||
-              !sameFileIdentity(previous.identity, entry) || previous.linkTarget !== linkTarget) {
+              !sameFileIdentity(previous, entry)) {
             throw new Error(`Sandbox stamp target identity changed: ${path}`);
           }
         } else {
-          identities.set(component, entry === undefined ? undefined : { identity: entry, linkTarget });
+          identities.set(key, entry);
         }
-        if (linkTarget !== undefined) verifyPath(resolve(dirname(component), linkTarget));
         missing ||= entry === undefined;
       }
     };
@@ -66,7 +61,16 @@ function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
   };
   verify();
   // The runtime reads marked paths after its async lookups; keep this check on that consumption boundary.
-  return paths.map(path => ({ get path() { verify(); return path; }, literal: true }));
+  return paths.map(path => Object.freeze({ get path() { verify(); return path; }, literal: true as const }));
+}
+
+// Preserve identity checks when a boundary accepts string arrays instead of literal objects.
+export function windowsPinnedPaths(entries: readonly FilesystemPathEntry[]): string[] {
+  const paths: string[] = [];
+  entries.forEach((entry, index) => Object.defineProperty(paths, index, {
+    enumerable: true, get: () => typeof entry === "string" ? entry : entry.path,
+  }));
+  return Object.freeze(paths) as string[];
 }
 
 const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
@@ -89,7 +93,7 @@ function assertPlainWindowsStampPath(path: string): void {
 }
 
 // Check the spelling before runtime expansion can replace a link path with its final target.
-export function checkWindowsCanonicalIntermediates(path: string): void {
+function checkWindowsCanonicalIntermediates(path: string): void {
   if (process.platform !== "win32") return;
   const homeExpanded = expandWindowsEnvRefs(path) !== path || expandTilde(path) !== path;
   if (homeExpanded && containsGlobCharsWin(expandWindowsEnvRefs("%USERPROFILE%"))) {
@@ -101,8 +105,7 @@ export function checkWindowsCanonicalIntermediates(path: string): void {
     ? globPatternBaseDir(toForwardSlashes(expanded)).replace(/\//g, "\\").replace(/^([A-Za-z]:)$/, "$1\\") : expanded;
   // Other spellings still face the strict final grammar at pinning. Do not let normalization hide a dotted component.
   if (/[. ](?:\\|$)/.test(prefix)) assertPlainWindowsStampPath(prefix);
-  const absolute = resolve(prefix);
-  if (isPlainWindowsStampPath(absolute)) canonicalStampPath(absolute);
+  // Canonical resolution belongs exclusively to the non-following handle pin.
 }
 
 // The runtime normalizes a marked literal again (environment references, tilde, prefix, realpath) before any existence check; hand one off only if that string is exactly a spelling checked here.
@@ -117,24 +120,47 @@ function assertRuntimeReadsAs(path: string, target: string): void {
 
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
+  const prefixes: string[] = [];
   for (const entries of [filesystem.allowRead, filesystem.allowWrite, filesystem.denyRead, filesystem.denyWrite]) {
-    for (const entry of entries ?? []) checkWindowsCanonicalIntermediates(typeof entry === "string" ? entry : entry.path);
+    for (const entry of entries ?? []) {
+      const path = typeof entry === "string" ? entry : entry.path;
+      checkWindowsCanonicalIntermediates(path);
+      const expanded = expandTilde(stripExtendedPathPrefix(expandWindowsEnvRefs(path))).replace(/\//g, "\\")
+        .replace(/^[a-z]:/, drive => drive.toUpperCase());
+      const prefix = containsGlobCharsWin(expanded) ? globPatternBaseDir(toForwardSlashes(expanded)).replace(/\//g, "\\") : expanded;
+      const absolute = resolve(prefix);
+      assertPlainWindowsStampPath(absolute);
+      prefixes.push(absolute);
+    }
   }
-  const pin = (entries: readonly FilesystemPathEntry[], mode: "grant" | "deny"): FilesystemPathEntry[] =>
-    expandWindowsFsPaths(entries, { mode }).map(path => path.replace(/\//g, "\\")).flatMap(path => {
+  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets(prefixes);
+  const prefixPins = pinWindowsPaths(prefixes);
+  const prefixLiterals = guardedStampLiterals(prefixes, prefixPins);
+  // Deny expansion retains match spellings as well as canonical targets. Check both before accepting any grant.
+  const lists = [filesystem.allowRead, filesystem.allowWrite, filesystem.denyRead, filesystem.denyWrite]
+    .map(entries => expandWindowsFsPaths(entries ?? [], { mode: "deny" }).map(path => path.replace(/\//g, "\\")));
+  for (const entry of prefixLiterals) if (typeof entry !== "string") void entry.path;
+  const snapshots = pinWindowsPaths(lists.flat());
+  let snapshotIndex = 0;
+  const pin = (paths: readonly string[], mode: "grant" | "deny"): FilesystemPathEntry[] =>
+    paths.flatMap(path => {
       assertPlainWindowsStampPath(path);
-      const canonical = canonicalStampPath(path);
+      const snapshot = snapshots[snapshotIndex++]!;
+      const canonical = mode === "grant" ? snapshot.path.replace(/^(.*[^:])\\$/, "$1")
+        : /\\$/.test(path) && !/\\$/.test(snapshot.path) ? `${snapshot.path}\\` : snapshot.path;
+      assertPlainWindowsStampPath(canonical);
       const literals = mode === "deny" && path !== canonical ? [path, canonical] : [canonical];
       for (const literal of literals) assertRuntimeReadsAs(literal, canonical);
-      // The runtime drops a grant whose target is missing; drop it here too rather than hand off a string nothing checked.
-      if (mode === "grant" && lstatSync(canonical, { throwIfNoEntry: false }) === undefined) return [];
-      return guardedStampLiterals(literals);
+      const entries = guardedStampLiterals(literals, [snapshot]);
+      // Missing grants still need policy checks and control denies; omit them only at native handoff.
+      if (mode === "grant" && !snapshot.exists) for (const entry of entries) if (typeof entry !== "string") missingWindowsGrants.add(entry);
+      return entries;
     });
   return {
     ...filesystem,
-    allowRead: pin(filesystem.allowRead ?? [], "grant"),
-    allowWrite: pin(filesystem.allowWrite ?? [], "grant"),
-    denyRead: pin(filesystem.denyRead ?? [], "deny"),
-    denyWrite: pin(filesystem.denyWrite ?? [], "deny"),
+    allowRead: pin(lists[0]!, "grant"),
+    allowWrite: pin(lists[1]!, "grant"),
+    denyRead: pin(lists[2]!, "deny"),
+    denyWrite: pin(lists[3]!, "deny"),
   };
 }

@@ -1675,11 +1675,19 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
   covers only the `srt-win` Rust sources.
 
-Session, per-command, worker and holder grants enter through one filesystem policy admission function.
-Each policy composition expands leading `~` and, on Windows, supported profile
-environment references once before deriving control-file denies, filtering grants,
-or checking machine-root and private-helper overlaps. Downstream policy uses the
-expanded absolute paths; stored settings retain the original diagnostic spelling.
+Session, per-command, worker, holder, plugin and bundled-process grants enter
+through one filesystem policy admission function. On Windows its order is
+**pin → check pinned → hand off pinned**. Non-following handles resolve every
+existing component, refusing any reparse point in the chain. Ancestor handles
+exclude write and delete sharing while final paths and file identities are read.
+Machine-root checks, control-file deny derivation and private-helper overlap
+checks consume the pinned canonical result. Policy composition retains those
+literal grant objects and pins composed denies at their existing post-filter point; it never resolves an
+admitted grant again. The manager receives that pinned filesystem object, while
+the direct ACL API receives string arrays whose reads validate the same component
+identities. This validation runs in production as well as isolated tests.
+Each composition expands leading `~` and supported profile environment references
+once; stored settings retain the original diagnostic spelling.
 Thus `~/x` protects the controls inside the actual home subtree on every platform,
 and a Windows whole-home grant cannot evade a refusal by using `~` or `%USERPROFILE%`.
 
@@ -1688,12 +1696,10 @@ introduces `*`, `?`, `[` or `]` is refused with `filesystem-expansion-glob`:
 the runtime has no glob escape syntax, so expanded data cannot become a pattern.
 Braces remain ordinary characters. Windows machine-root writes are refused at
 this entry before narrowing or any native account lookup, including held grants.
-The Windows grammar also checks each resolved intermediate before another
-component is appended, and checks the original literal prefix before runtime
-normalization can replace a junction spelling. Missing tails retain checked
-literal components beneath a checked canonical ancestor.
+The Windows grammar checks intermediate components and expansion prefixes.
+Missing deny tails retain literal components beneath a checked canonical ancestor.
 
-On Windows, filesystem lists are expanded once before runtime handoff: denies cover both the alias and the canonical target present at expansion, while grants cover only that target; a new glob match created after that expansion is not stamped by this wrap. Every pinned literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` forms are refused. The runtime normalizes each entry again (environment references, `~`, prefix, realpath), so an entry is handed off only when the normalized string, before any existence check, exactly matches a spelling Ave checked, with no case folding; otherwise the configuration is refused whether or not the target exists. A grant whose target is missing is dropped. After handoff, the runtime's realpath and the native ACL write both follow a link swapped in later; Ave cannot close that without identity-carrying native calls.
+On Windows, filesystem lists are expanded once before runtime handoff; a new glob match created afterward is not stamped by this wrap. Junctions and symlinks are refused even when their targets would be permitted. Every pinned literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` forms are refused. The runtime normalizes each entry again, so its result must exactly match a checked spelling, with no case folding, before any existence check. A missing grant is dropped. A swap before pinning is refused as a reparse point; a replacement between pinning, policy checks and native handoff is refused by the retained identities. After the final identity validation, the native string API can still follow a later swap. Closing that native residual requires calls that consume held handles.
 
 On Windows, only each deny target's own DACL is checked, so a child with its own broad allow beneath a private directory is not detected, as for write denies. Preceding deny ACEs are ignored, so a target can conservatively be classified as readable even when it is not. Evidence is tied to object identity and re-proven by a no-follow stat at each use; in-place ACL changes on the same object are not detected.
 
