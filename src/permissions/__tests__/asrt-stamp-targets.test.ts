@@ -19,6 +19,19 @@ vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => {
   };
 });
 
+const expansion = vi.hoisted(() => ({ after: undefined as (() => void) | undefined }));
+vi.mock("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js", async importOriginal => {
+  const actual = await importOriginal<typeof import("@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js")>();
+  return {
+    ...actual,
+    expandWindowsFsPaths: (...args: Parameters<typeof actual.expandWindowsFsPaths>) => {
+      const expanded = actual.expandWindowsFsPaths(...args);
+      if (expanded.length > 0) expansion.after?.();
+      return expanded;
+    },
+  };
+});
+
 useVerifiedAveHomePrivacy();
 const scratch = useTempDirs("stamp-targets-");
 const link = useScratchLinks();
@@ -385,6 +398,18 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const template = join(scratch(), "%HOMEPATH%");
     mkdirSync(join(template, "leaf"), { recursive: true });
     const alias = link(template, join(scratch(), "alias"));
+    expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] }))
+      .toThrow(/reinterpreted by the runtime/);
+  });
+
+  it.each(["allowWrite", "allowRead"] as const)("refuses a %s target removed after expansion that the runtime would reread through an environment reference", async (list) => {
+    const template = join(scratch(), "%HOMEPATH%");
+    const leaf = join(template, "leaf");
+    mkdirSync(leaf, { recursive: true });
+    const alias = link(template, join(scratch(), "alias"));
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+    // The leaf vanishes between expansion and canonicalization, so no existence check sees it.
+    expansion.after = () => { expansion.after = undefined; rmdirSync(leaf); };
     expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] }))
       .toThrow(/reinterpreted by the runtime/);
   });

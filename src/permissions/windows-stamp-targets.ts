@@ -1,5 +1,5 @@
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
-import { isUncPath } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { isUncPath, normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { lstatSync, readlinkSync, realpathSync, type BigIntStats } from "node:fs";
 import { dirname, join, parse, resolve, sep } from "node:path";
@@ -66,12 +66,11 @@ function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
   return paths.map(path => ({ get path() { verify(); return path; }, literal: true }));
 }
 
-// The runtime normalizes a marked literal again (environment references, tilde, prefix, realpath); hand one off only if that lands on a spelling checked here.
-function assertRuntimeReadsAs(path: string, target: string, mode: "grant" | "deny"): void {
+// The runtime normalizes a marked literal again (environment references, tilde, prefix, realpath) before any existence check; hand one off only if that string is a spelling checked here.
+function assertRuntimeReadsAs(path: string, target: string): void {
   const fold = (spelling: string) => spelling.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-  const reread = expandWindowsFsPaths([{ path, literal: true }], { mode });
-  if (reread.length === 0 && mode === "grant" && !isUncPath(target) && lstatSync(target, { throwIfNoEntry: false }) === undefined) return;
-  if (reread.length !== 1 || ![path, target].some(checked => fold(checked) === fold(reread[0]!))) {
+  const reread = normalizePathForSandbox(path, { literal: true });
+  if (![path, target].some(checked => fold(checked) === fold(reread))) {
     throw new Error(`Sandbox stamp target is reinterpreted by the runtime: ${path}`);
   }
 }
@@ -82,7 +81,9 @@ export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> |
     expandWindowsFsPaths(entries, { mode }).flatMap(path => {
       const canonical = isUncPath(path) ? path : canonicalStampPath(path);
       const literals = mode === "deny" && path !== canonical ? [path, canonical] : [canonical];
-      for (const literal of literals) assertRuntimeReadsAs(literal, canonical, mode);
+      for (const literal of literals) assertRuntimeReadsAs(literal, canonical);
+      // The runtime drops a grant whose target is missing; drop it here too rather than hand off a string nothing checked.
+      if (mode === "grant" && !isUncPath(canonical) && lstatSync(canonical, { throwIfNoEntry: false }) === undefined) return [];
       return guardedStampLiterals(literals);
     });
   return {
