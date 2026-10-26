@@ -1,5 +1,5 @@
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
-import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { containsGlobCharsWin, expandTilde, expandWindowsEnvRefs, globPatternBaseDir, normalizePathForSandbox, stripExtendedPathPrefix, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { lstatSync, readlinkSync, realpathSync, type BigIntStats } from "node:fs";
 import { dirname, join, parse, resolve, sep } from "node:path";
@@ -11,6 +11,7 @@ function canonicalStampPath(path: string): string {
   const { root } = parse(absolute);
   const parts = absolute.slice(root.length).split(sep).filter(Boolean);
   let ancestor = realpathSync.native(root);
+  assertPlainWindowsStampPath(ancestor);
   for (let index = 0; index < parts.length; index++) {
     const candidate = join(ancestor, parts[index]!);
     const entry = lstatSync(candidate, { throwIfNoEntry: false });
@@ -19,6 +20,8 @@ function canonicalStampPath(path: string): string {
       break;
     }
     ancestor = realpathSync.native(candidate);
+    // Refuse a resolved component before another append can hide its spelling.
+    assertPlainWindowsStampPath(ancestor);
   }
   return /[\\/]$/.test(path) && !ancestor.endsWith(sep) ? ancestor + sep : ancestor;
 }
@@ -81,9 +84,30 @@ export function isPlainWindowsStampPath(path: string): boolean {
     !RESERVED_DEVICE_NAME.test(component.split(".")[0]!.trimEnd()));
 }
 
+function assertPlainWindowsStampPath(path: string): void {
+  if (!isPlainWindowsStampPath(path)) throw new Error(`Sandbox stamp target is not a plain drive path: ${JSON.stringify(path)}`);
+}
+
+// Check the spelling before runtime expansion can replace a link path with its final target.
+export function checkWindowsCanonicalIntermediates(path: string): void {
+  if (process.platform !== "win32") return;
+  const homeExpanded = expandWindowsEnvRefs(path) !== path || expandTilde(path) !== path;
+  if (homeExpanded && containsGlobCharsWin(expandWindowsEnvRefs("%USERPROFILE%"))) {
+    throw new Error(`filesystem-expansion-glob: expanded path cannot be represented literally: ${JSON.stringify(path)}`);
+  }
+  let expanded = expandTilde(stripExtendedPathPrefix(expandWindowsEnvRefs(path))).replace(/\//g, "\\");
+  expanded = expanded.replace(/^[a-z]:/, drive => drive.toUpperCase());
+  const prefix = containsGlobCharsWin(expanded)
+    ? globPatternBaseDir(toForwardSlashes(expanded)).replace(/\//g, "\\").replace(/^([A-Za-z]:)$/, "$1\\") : expanded;
+  // Other spellings still face the strict final grammar at pinning. Do not let normalization hide a dotted component.
+  if (/[. ](?:\\|$)/.test(prefix)) assertPlainWindowsStampPath(prefix);
+  const absolute = resolve(prefix);
+  if (isPlainWindowsStampPath(absolute)) canonicalStampPath(absolute);
+}
+
 // The runtime normalizes a marked literal again (environment references, tilde, prefix, realpath) before any existence check; hand one off only if that string is exactly a spelling checked here.
 function assertRuntimeReadsAs(path: string, target: string): void {
-  if (!isPlainWindowsStampPath(path)) throw new Error(`Sandbox stamp target is not a plain drive path: ${JSON.stringify(path)}`);
+  assertPlainWindowsStampPath(path);
   const exact = (spelling: string) => spelling.replace(/\\$/, "");
   const reread = exact(normalizePathForSandbox(path, { literal: true }));
   if (![path, target].some(checked => exact(checked) === reread)) {
@@ -93,9 +117,12 @@ function assertRuntimeReadsAs(path: string, target: string): void {
 
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
+  for (const entries of [filesystem.allowRead, filesystem.allowWrite, filesystem.denyRead, filesystem.denyWrite]) {
+    for (const entry of entries ?? []) checkWindowsCanonicalIntermediates(typeof entry === "string" ? entry : entry.path);
+  }
   const pin = (entries: readonly FilesystemPathEntry[], mode: "grant" | "deny"): FilesystemPathEntry[] =>
     expandWindowsFsPaths(entries, { mode }).map(path => path.replace(/\//g, "\\")).flatMap(path => {
-      if (!isPlainWindowsStampPath(path)) throw new Error(`Sandbox stamp target is not a plain drive path: ${JSON.stringify(path)}`);
+      assertPlainWindowsStampPath(path);
       const canonical = canonicalStampPath(path);
       const literals = mode === "deny" && path !== canonical ? [path, canonical] : [canonical];
       for (const literal of literals) assertRuntimeReadsAs(literal, canonical);

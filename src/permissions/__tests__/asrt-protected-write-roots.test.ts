@@ -3,6 +3,7 @@ import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/suppo
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir, userInfo } from "node:os";
+import * as os from "node:os";
 import { join, relative, sep } from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
@@ -45,6 +46,34 @@ const hostPlatform = process.platform;
 const SECRET = "user-data-the-child-must-not-read";
 const OWN_TEMP = "own-temp-written";
 const OWN_HOME = "own-home-written";
+
+describe("filesystem expansion admission", () => {
+  afterEach(() => {
+    setProcessPlatform(hostPlatform);
+    vi.restoreAllMocks();
+  });
+
+  const cases = (["linux", "darwin"] as const).flatMap(platform =>
+    ["alice*", "alice[1]", "alice?"].flatMap(home =>
+      (["allowRead", "allowWrite", "denyRead", "denyWrite"] as const).flatMap(field =>
+        (["session", "per-command"] as const).map(config => ({ platform, home, field, config })))));
+
+  it.each(cases)("refuses $home expansion in $platform $config $field before runtime consumption", ({ platform, home, field, config }) => {
+    setProcessPlatform(platform);
+    vi.spyOn(os, "homedir").mockReturnValue(`/tmp/${home}`);
+    const filesystem = { [field]: ["~/project"] };
+    expect(() => config === "session" ? buildSandboxConfig(filesystem) : buildPerCommandSandboxCustomConfig(filesystem))
+      .toThrow(/filesystem-expansion-glob/);
+  });
+
+  it.each(["linux", "darwin"] as const)("keeps braces literal in %s expansions", platform => {
+    setProcessPlatform(platform);
+    vi.spyOn(os, "homedir").mockReturnValue("/tmp/alice{a,b}");
+    const expected = normalizePathForSandbox("~/project");
+    expect(buildSandboxConfig({ allowRead: ["~/project"] }).filesystem.allowRead).toContain(expected);
+    expect(buildPerCommandSandboxCustomConfig({ allowRead: ["~/project"] })?.filesystem?.allowRead).toContain(expected);
+  });
+});
 
 describe("the shared layer withholds grants under the protected floor", () => {
   let root: string;

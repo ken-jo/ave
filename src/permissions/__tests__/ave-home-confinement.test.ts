@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
+import { mkdirSync } from "node:fs";
 import { ensureAveHomePrivate, setAveHomePrivacyAtBoot, _resetAveHomePrivacyForTest, approveExtensionsWithoutIsolation, areExtensionsWithoutIsolationApproved, setAveHomePrivacyRefusalReporter } from "../../shared/ave-home.js";
 import { useTempDirs, useTempPaths } from "../../__tests__/test-helpers.js";
 import * as policyHome from "../../shared/policy-home.js";
@@ -30,7 +31,11 @@ const home = useTempPaths("ave-home-confinement-", ".ave");
 const policyFixture = useTempDirs("confinement-stamp-floor-");
 
 beforeEach(() => {
-  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([policyFixture()]);
+  const profile = ORIGINAL_PLATFORM === "win32" ? join(policyFixture(), "alice") : "C:\\Users\\alice";
+  if (ORIGINAL_PLATFORM === "win32") mkdirSync(profile);
+  vi.stubEnv("HOME", profile);
+  vi.stubEnv("USERPROFILE", profile);
+  vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
 });
 
 afterEach(async () => {
@@ -40,6 +45,7 @@ afterEach(async () => {
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.clearAllMocks();
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("private-directory confinement gate", () => {

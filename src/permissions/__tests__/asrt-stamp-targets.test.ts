@@ -1,4 +1,7 @@
 import { mkdirSync, realpathSync, renameSync, rmdirSync, writeFileSync } from "node:fs";
+import childProcess, { type ChildProcess } from "node:child_process";
+import { syncBuiltinESMExports } from "node:module";
+import { EventEmitter } from "node:events";
 import { join, resolve } from "node:path";
 import type { FilesystemConfig, SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
@@ -7,7 +10,7 @@ import * as homeGuard from "../../shared/ave-home-test-guard.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import { useScratchLinks, useTempDirs } from "../../__tests__/test-helpers.js";
 import * as policyHome from "../../shared/policy-home.js";
-import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { TEST_COMMAND_ID, TEST_WORKER_EGRESS_OWNER } from "../../__tests__/support/egress-fixture.js";
 
 vi.mock("@anthropic-ai/sandbox-runtime", async importOriginal => {
   const actual = await importOriginal<typeof import("@anthropic-ai/sandbox-runtime")>();
@@ -41,6 +44,7 @@ afterEach(async () => {
   const { resetAsrtSandbox } = await import("../asrt-sandbox.js");
   await resetAsrtSandbox();
   vi.restoreAllMocks();
+  syncBuiltinESMExports();
 });
 
 async function initializeFixtureSandbox() {
@@ -55,6 +59,14 @@ async function initializeFixtureSandbox() {
 function runtimeDenyWrite(filesystem: Partial<FilesystemConfig> | undefined): string[] {
   return expandWindowsFsPaths(filesystem?.denyWrite ?? [], { mode: "deny" }).map(path => resolve(path));
 }
+
+it("enforces the filesystem policy producer inventory", () => {
+  const result = childProcess.spawnSync(process.execPath, [
+    "--test", resolve(__dirname, "../../../test/scripts/filesystem-policy-entry.test.mjs"),
+  ], { encoding: "utf8", windowsHide: true });
+  expect(result.error).toBeUndefined();
+  expect(result.status, result.stdout + result.stderr).toBe(0);
+});
 
 describe.runIf(process.platform === "win32")("sandbox stamp target isolation", () => {
   // A fixture profile keeps real-home rows profile-disjoint, so they reach the guard instead of the missing-row filter.
@@ -234,6 +246,67 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
       denyRead: [join(inject("realAccountHome"), "AppData*")],
     })).rejects.toThrow(refusal);
     expect(initialize).not.toHaveBeenCalled();
+  });
+
+  it.each(["allowWrite", "allowRead", "denyWrite", "denyRead"] as const)("refuses an intermediate dotted junction in %s before appending a leaf", async list => {
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+    const parent = scratch();
+    mkdirSync(join(parent, "document", "leaf"), { recursive: true });
+    const dotted = "\\\\?\\" + join(parent, "document.");
+    mkdirSync(dotted);
+    const alias = link(dotted, join(scratch(), "alias"));
+    expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] })).toThrow(/not a plain drive path/);
+  });
+
+  it.each(["allowWrite", "allowRead", "denyWrite", "denyRead"] as const)("refuses wildcard data introduced by Windows home expansion in %s", async list => {
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+    const profile = join(scratch(), "alice*");
+    vi.stubEnv("USERPROFILE", profile);
+    vi.stubEnv("HOME", profile);
+    for (const path of ["~/leaf", "%USERPROFILE%\\leaf", "%USERPROFILE%\\*.txt"]) {
+      expect(() => pinWindowsFilesystemConfig({ [list]: [path] })).toThrow(/filesystem-expansion-glob/);
+    }
+  });
+
+  it.each(["session", "per-command", "worker", "plugin-holder", "grant-holder", "bundled-holder"])("refuses machine-root writes at the %s policy entry", async producer => {
+    const { sandbox } = await initializeFixtureSandbox();
+    const runtime = await import("@anthropic-ai/sandbox-runtime");
+    const grant = vi.spyOn(runtime, "grantWindowsAcl").mockImplementation(() => {});
+    const lookup = vi.spyOn(runtime, "getWindowsSandboxUserStatus");
+    vi.stubEnv("ProgramData", "C:\\ProgramData");
+    const filesystem = { allowWrite: ["C:\\ProgramData"] };
+    if (producer === "session") {
+      expect(() => sandbox.buildSandboxConfig({ ...filesystem, windows: { externalConfinement: true } })).toThrow(/contains machine root/);
+    } else if (producer === "per-command") {
+      expect(() => sandbox.buildPerCommandSandboxCustomConfig(filesystem)).toThrow(/contains machine root/);
+    } else if (producer === "worker") {
+      await expect(sandbox.grantWindowsWorkerFilesystemAccess({ ...filesystem, holderPid: process.pid })).rejects.toThrow(/contains machine root/);
+    } else {
+      const holder = Object.assign(new EventEmitter(), {
+        pid: 5101, exitCode: 0, signalCode: null, stdin: { end: vi.fn() },
+      }) as unknown as ChildProcess;
+      vi.spyOn(childProcess, "spawn").mockReturnValue(holder);
+      syncBuiltinESMExports();
+      try {
+        if (producer === "grant-holder") {
+          const { holdWindowsFilesystemGrant } = await import("../windows-acl-grant-holder.js");
+          await expect(holdWindowsFilesystemGrant({ label: "fixture", allowRead: [], ...filesystem })).rejects.toThrow(/contains machine root/);
+        } else if (producer === "plugin-holder") {
+          vi.spyOn(sandbox, "isPluginWorkerConfinementActive").mockReturnValue(true);
+          const { spawnWorker } = await import("../worker-spawn.js");
+          await expect(spawnWorker({ pluginId: "fixture", workerId: "fixture", command: "fixture.exe", allowWritePaths: filesystem.allowWrite }))
+            .rejects.toThrow(/contains machine root/);
+        } else {
+          const { spawnWindowsBundledProcess } = await import("../../sandbox/wrap-bundled-command.js");
+          await expect(spawnWindowsBundledProcess({ label: "fixture", command: "fixture.exe", args: [], baseEnv: {}, allowRead: [], ...filesystem, egressOwner: TEST_WORKER_EGRESS_OWNER }))
+            .rejects.toThrow(/contains machine root/);
+        }
+      } finally {
+        holder.emit("exit", 0, null);
+      }
+    }
+    expect(grant).not.toHaveBeenCalled();
+    expect(lookup).not.toHaveBeenCalled();
   });
 
   it("refuses a glob under a run-temp junction that reaches the real account home", async () => {

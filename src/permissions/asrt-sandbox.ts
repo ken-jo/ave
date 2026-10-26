@@ -1,8 +1,8 @@
 
 
 import { spawn } from "node:child_process";
-import { containsGlobCharsWin, globPatternBaseDir, isUncPath, normalizePathForSandbox, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
-import { pinWindowsFilesystemConfig } from "./windows-stamp-targets.js";
+import { containsGlobChars, containsGlobCharsWin, globPatternBaseDir, isUncPath, normalizePathForSandbox, toForwardSlashes } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { checkWindowsCanonicalIntermediates, pinWindowsFilesystemConfig } from "./windows-stamp-targets.js";
 import { prepareSrtWinExecutable, srtWinPrivateDirectories, getSrtWinArchitecture } from "./srt-win-integrity.js";
 import { noteConfinedProcessesMayRun } from "../lib/confined-process-phase.js";
 import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
@@ -13,7 +13,7 @@ import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
 import { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkSandboxStampTargets, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
-import { expandLeadingTilde } from "../shared/home-tilde.js";
+import { expandLeadingTilde, leadingTildeHome } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
 import { compileGlobMatcher, globMatch } from "../lib/glob-matcher.js";
@@ -458,14 +458,33 @@ export function pluginGrantPathsBeyondOwnRoots(pluginId: string, paths: readonly
     || (roots.some((root) => within(path, root)) && !own.some((ownRoot) => within(path, ownRoot))));
 }
 
-// Grant spellings enter policy here, before any deny joining or overlap check.
+// Every grant producer enters here, before any narrowing, deny joining or native lookup.
 // Each policy composition expands once; stored settings retain diagnostic spellings.
-function normalizeFilesystemGrants<T extends Pick<TrustedSandboxSettings, "allowRead" | "allowWrite">>(filesystem: T): T {
-  return {
-    ...filesystem,
-    ...(filesystem.allowRead !== undefined ? { allowRead: filesystem.allowRead.map(path => normalizePathForSandbox(path)) } : {}),
-    ...(filesystem.allowWrite !== undefined ? { allowWrite: filesystem.allowWrite.map(path => normalizePathForSandbox(path)) } : {}),
+function admitFilesystemPolicy<T extends Pick<TrustedSandboxSettings, "allowRead" | "allowWrite" | "denyRead" | "denyWrite">>(filesystem: T): T {
+  const normalize = (path: string): string => {
+    checkWindowsCanonicalIntermediates(path);
+    const normalized = normalizePathForSandbox(path);
+    const expansionHome = leadingTildeHome(path);
+    // The runtime's pattern parser has no escape syntax. An expanded literal must never become a pattern.
+    if (process.platform !== "win32" && (
+      (expansionHome !== undefined && containsGlobChars(expansionHome)) ||
+      (!isAbsolute(path) && expansionHome === undefined && containsGlobChars(process.cwd())) ||
+      (!containsGlobChars(path) && containsGlobChars(normalized))
+    )) {
+      throw new Error(`filesystem-expansion-glob: expanded path cannot be represented literally: ${JSON.stringify(path)}`);
+    }
+    return normalized;
   };
+  const admitted = {
+    ...filesystem,
+    ...(filesystem.allowRead !== undefined ? { allowRead: filesystem.allowRead.map(normalize) } : {}),
+    ...(filesystem.allowWrite !== undefined ? { allowWrite: filesystem.allowWrite.map(normalize) } : {}),
+    ...(filesystem.denyRead !== undefined ? { denyRead: process.platform === "win32" ? filesystem.denyRead : filesystem.denyRead.map(normalize) } : {}),
+    ...(filesystem.denyWrite !== undefined ? { denyWrite: process.platform === "win32" ? filesystem.denyWrite : filesystem.denyWrite.map(normalize) } : {}),
+  };
+  // Refuse requested roots before discovery can narrow them away.
+  assertWindowsMachineRootWriteGrants(admitted.allowWrite ?? []);
+  return admitted;
 }
 
 export function buildPerCommandSandboxCustomConfig(
@@ -498,9 +517,11 @@ export function buildPerCommandSandboxCustomConfig(
       );
     }
   }
-  const grants = normalizeFilesystemGrants({
+  const grants = admitFilesystemPolicy({
     allowWrite: filesystem.allowWrite ?? _baseTrustedSettings?.allowWrite ?? [],
     allowRead: filesystem.allowRead ?? _baseTrustedSettings?.allowRead,
+    denyRead: [...(filesystem.denyRead ?? []), ...(_baseTrustedSettings?.denyRead ?? [])],
+    denyWrite: [...(filesystem.denyWrite ?? []), ...(_baseTrustedSettings?.denyWrite ?? [])],
   });
   const fs: Partial<FilesystemConfig> = {};
   const floor = getProtectedReadDenyPaths();
@@ -514,7 +535,7 @@ export function buildPerCommandSandboxCustomConfig(
   ];
   if (filesystem.denyRead !== undefined) {
     const pluginRoots = filesystem.denyPluginsRoot === true ? ensurePluginOwnedReadRoots() : [];
-    const denyRead = [...new Set([...filesystem.denyRead, ...pluginRoots, ...(_baseTrustedSettings?.denyRead ?? [])])];
+    const denyRead = [...new Set([...grants.denyRead, ...pluginRoots])];
     hiddenSeccompHelper = seccompHelperHiddenBy(denyRead);
     fs.denyRead = windowsDenyTargets(
       asrtReadDenyPaths(
@@ -555,8 +576,7 @@ export function buildPerCommandSandboxCustomConfig(
       [...new Set([
         ...sensitiveDenyWrite,
         ...mandatory.denyWrite,
-        ...(filesystem.denyWrite ?? []),
-        ...(_baseTrustedSettings?.denyWrite ?? []),
+        ...grants.denyWrite,
         ...(filesystem.pinWriteRoots === true ? pinnedWriteRootDenies(filesystem.allowWrite === undefined ? [] : grants.allowWrite) : []),
       ])],
       _baseTrustedSettings?.userDataDir,
@@ -1235,13 +1255,9 @@ export function getDefaultSensitiveWriteDenyPaths(userDataDir = _baseTrustedSett
 
 // Build a fully-resolved SandboxRuntimeConfig from TRUSTED settings. Deny-by-default: when no `allowedDomains` are supplied the network section has an empty allow-list, which ASRT treats as "no egress". Weakening flags default to `false`/absent and are only set when explicitly present in the trusted `weakening` object. @internal Exported for unit tests only (the Windows-logic tests assert the win32 `windows.proxyPortRange` emission with `process.platform` forced). Not part of the module's runtime API — boot uses initializeAsrtSandbox.
 export function buildSandboxConfig(trustedSettings: TrustedSandboxSettings, readDenyEvidence?: WindowsReadDenySnapshot): SandboxRuntimeConfig {
-  trustedSettings = normalizeFilesystemGrants(trustedSettings);
+  trustedSettings = admitFilesystemPolicy(trustedSettings);
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
     ? getVerifiedSrtWinExePath() : undefined;
-  // Refuse the grants as requested, before the write policy can narrow one
-  // away: a root withdrawn for its Git-scan budget would otherwise pass
-  // silently, so the refusal would depend on how full the directory is.
-  assertWindowsMachineRootWriteGrants(trustedSettings.allowWrite ?? []);
   if (srtWinPath !== undefined) {
     assertPrivateHelperGrants(trustedSettings.allowRead ?? [], trustedSettings.allowWrite ?? []);
   }
@@ -2000,8 +2016,9 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   if (process.platform !== "win32") {
     throw new Error("grantWindowsWorkerFilesystemAccess is only valid on win32");
   }
-  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets([...(opts.allowRead ?? []), ...(opts.allowWrite ?? [])]);
-  const pinned = pinWindowsFilesystemConfig<Partial<FilesystemConfig>>({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
+  const admitted = admitFilesystemPolicy({ allowRead: [...(opts.allowRead ?? [])], allowWrite: [...(opts.allowWrite ?? [])] });
+  if (AVE_HOME_ISOLATION_GUARD_ACTIVE) checkSandboxStampTargets([...admitted.allowRead, ...admitted.allowWrite]);
+  const pinned = pinWindowsFilesystemConfig<Partial<FilesystemConfig>>(admitted);
   checkWindowsSandboxStampTargets(pinned);
   const {
     getWindowsSandboxUserStatus,

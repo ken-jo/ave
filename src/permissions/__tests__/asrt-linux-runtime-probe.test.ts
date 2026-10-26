@@ -136,6 +136,7 @@ afterEach(async () => {
   }
   setProcessPlatform(ORIGINAL_PLATFORM);
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   vi.clearAllMocks();
   for (const root of temporaryRoots.splice(0)) await cleanupTmpDir(root);
 });
@@ -535,7 +536,11 @@ describe("initializeAsrtSandbox — Linux configured-wrapper runtime probe", () 
     setProcessPlatform("win32");
     const root = mkdtempSync(join(tmpdir(), "asrt-win-probe-"));
     temporaryRoots.push(root);
-    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([root]);
+    const profile = ORIGINAL_PLATFORM === "win32" ? join(root, "alice") : "C:\\Users\\alice";
+    if (ORIGINAL_PLATFORM === "win32") mkdirSync(profile);
+    vi.stubEnv("HOME", profile);
+    vi.stubEnv("USERPROFILE", profile);
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([profile]);
 
     await initializeAsrtSandbox({ allowedDomains: [] });
 

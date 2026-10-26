@@ -1662,13 +1662,23 @@ Two ASRT 0.0.80 rules shape what a confined command can do:
   `windows-sandbox-logic.test.ts` pins this ranking. The NSIS drift guard
   covers only the `srt-win` Rust sources.
 
-Session and per-command grants enter policy through the same runtime normalizer.
+Session, per-command, worker and holder grants enter through one filesystem policy admission function.
 Each policy composition expands leading `~` and, on Windows, supported profile
 environment references once before deriving control-file denies, filtering grants,
 or checking machine-root and private-helper overlaps. Downstream policy uses the
 expanded absolute paths; stored settings retain the original diagnostic spelling.
 Thus `~/x` protects the controls inside the actual home subtree on every platform,
 and a Windows whole-home grant cannot evade a refusal by using `~` or `%USERPROFILE%`.
+
+All four filesystem lists use that admission function. On POSIX, expansion that
+introduces `*`, `?`, `[` or `]` is refused with `filesystem-expansion-glob`:
+the runtime has no glob escape syntax, so expanded data cannot become a pattern.
+Braces remain ordinary characters. Windows machine-root writes are refused at
+this entry before narrowing or any native account lookup, including held grants.
+The Windows grammar also checks each resolved intermediate before another
+component is appended, and checks the original literal prefix before runtime
+normalization can replace a junction spelling. Missing tails retain checked
+literal components beneath a checked canonical ancestor.
 
 On Windows, filesystem lists are expanded once before runtime handoff: denies cover both the alias and the canonical target present at expansion, while grants cover only that target; a new glob match created after that expansion is not stamped by this wrap. Every pinned literal and canonical target must be a plain drive path: `X:\` followed by components that are not empty, `.` or `..`, do not end in a dot or space, and contain no control character, none of `<>:"/|?*%~`, and no reserved device name. UNC, device and `\\?\` forms are refused. The runtime normalizes each entry again (environment references, `~`, prefix, realpath), so an entry is handed off only when the normalized string, before any existence check, exactly matches a spelling Ave checked, with no case folding; otherwise the configuration is refused whether or not the target exists. A grant whose target is missing is dropped. After handoff, the runtime's realpath and the native ACL write both follow a link swapped in later; Ave cannot close that without identity-carrying native calls.
 
