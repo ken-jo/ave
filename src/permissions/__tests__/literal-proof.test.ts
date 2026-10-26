@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -32,7 +33,7 @@ describe("literal exact-rule proof", () => {
     const pattern = `${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`;
     expect(approval.exactRule).toBe(pattern);
     const scopes = new ProjectRuleScopes(join(cwd, "rules"));
-    await scopes.addRule(cwd, { pattern, action: "allow" });
+    await scopes.addRule(cwd, withCurrentShellRuleVersion({ pattern, action: "allow" }));
     const state = await scopes.reload(cwd);
     expect(state.ok).toBe(true);
     if (!state.ok) throw state.error;
@@ -83,8 +84,8 @@ describe("literal exact-rule proof", () => {
 
   it.each(["-Force", "–Force", "—Force"])("preserves cmdlet parameter provenance for %s", (parameter) => {
     const pattern = canonicalRuleSpecifier(`PowerShell(Get-ChildItem '${parameter}')`);
-    expect(pattern).toBe(`PowerShell(get-childitem '${parameter}')`);
-    const rule = { pattern, action: "allow" as const };
+    expect(pattern).toBe(`PowerShell(Get-ChildItem '${parameter}')`);
+    const rule = withCurrentShellRuleVersion({ pattern, action: "allow" as const });
     expect(evaluatePowerShellSubject({ command: `Get-ChildItem '${parameter}'`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).toBe("allow");
     expect(evaluatePowerShellSubject({ command: `Get-ChildItem ${parameter}`, exactAllowOnly: true, floorSignal: null }, [rule]).decision).not.toBe("allow");
     expect(buildShellRuleApproval("powershell", `Get-ChildItem '${parameter}'`, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(pattern);
@@ -108,7 +109,7 @@ describe("literal exact-rule proof", () => {
     expect(proveLiteralShell(command).proven).toBe(true);
     expect(proveLiteralPowerShell(command).proven).toBe(true);
     const pattern = canonicalRuleSpecifier(`Bash(${command})`);
-    expect(evaluateShellSubject({ command, exactAllowOnly: true }, [{ pattern, action: "allow" }, { pattern: "Bash(unrelated *)", action: "deny" }]).decision).toBe("allow");
+    expect(evaluateShellSubject({ command, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" }), { pattern: "Bash(unrelated *)", action: "deny" }]).decision).toBe("allow");
   });
 
   it.each(["find . -maxdepth 0 -exec sh -c 'printf ready' ';'", "xargs -I X env X -c 'printf ready'", "xargs rg --files", "make build", "sh build.sh", "python3 https://example.invalid/code.py"])("accepts literal file, stdin and network indirection: %s", (command) => {
@@ -121,9 +122,15 @@ describe("literal exact-rule proof", () => {
     expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'", "Start-Process pwsh -ArgumentList '-enc literal'", "Start-Job -FilePath ./script.ps1"])("accepts visible literal invocation code: %s", (command) => {
+  it.each(["Invoke-Expression 'Write-Output ready'", "iex 'Write-Output ready'", "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'", "Start-Job -FilePath ./script.ps1"])("accepts visible literal invocation code: %s", (command) => {
     expect(proveLiteralPowerShell(command).proven).toBe(true);
     expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
+  });
+
+  it("conservatively refuses encoded arguments after a launcher word", () => {
+    const command = "Start-Process pwsh -ArgumentList '-enc literal'";
+    expect(proveLiteralPowerShell(command).proven).toBe(false);
+    expect(buildShellRuleApproval("powershell", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it.each(["pwsh", "powershell", "pwsh-preview", "powershell_ise"])("excludes encoded execution for every exact launcher: %s", (name) => {
@@ -162,7 +169,7 @@ describe("literal exact-rule proof", () => {
     expect(shellRuleCoversCommand("powershell", pattern, "allow", command, cwd)).toBe(false);
     const manager = new PermissionManager(join(cwd, "permissions.json"));
     manager.setMode("allow");
-    manager.setRules([{ pattern, action: "allow" }]);
+    manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
     const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed: false } };
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, context).decision).toBe("ask");
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("deny");

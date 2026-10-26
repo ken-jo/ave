@@ -7,15 +7,21 @@ const DISPLAY_ENCODED_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:e|ec|en|enc|enco|e
 const DISPLAY_SCRIPT_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
 const DISPLAY_VALUE_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:workingdirectory|configurationname|configurationfile|custompipename|executionpolicy|inputformat|outputformat|settingsfile|version|windowstyle)$/i;
 
-// Every explicit argument participates. Conservative e-prefix exclusion also covers ordinary options and data.
-export function encodedPowerShellExecutionReason(argv: readonly (string | null | undefined)[]): string | null {
-  const words = argv.map((word) => word ?? undefined);
-  const wrapper = wrapperCommand(words, words.length).index;
-  const head = words[wrapper];
-  if (head === undefined || !isPowerShellLauncher(head)) return null;
-  for (let index = wrapper + 1; index < words.length; index += 1) {
-    const arg = words[index];
-    if (arg?.trim().replace(/^[-/–—―]+/, "").toLowerCase().startsWith("e")) return "encoded PowerShell argument exclusion";
+// Value and raw-word streams preserve both joined literal words and boundaries inside quoted command text.
+export function encodedPowerShellExecutionReason(
+  argv: readonly (string | null | undefined)[],
+  rawWords: readonly (string | null | undefined)[] = [],
+): string | null {
+  for (const words of [argv, rawWords]) {
+    let launcherSeen = false;
+    for (const value of words) {
+      if (value == null) continue;
+      for (const match of value.matchAll(/[^\s"'`;|&()<>{},=]+/g)) {
+        const word = match[0];
+        if (launcherSeen && word.trim().replace(/^[-/–—―]+/, "").toLowerCase().startsWith("e")) return "encoded PowerShell argument exclusion";
+        if (isPowerShellLauncher(word)) launcherSeen = true;
+      }
+    }
   }
   return null;
 }

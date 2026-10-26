@@ -221,10 +221,12 @@ lifecycle coverage are described in the architecture contract.
 
 Host-shell credential/sink classification is separate from exact raw-word
 identity. Unsandboxed input over 2,000 characters asks, or denies headless,
-before command-dependent work. Normal floor input is bounded at 8,000 characters, with a separate verified
-quoted-heredoc data allowance described below. One shared work budget stops all
-analysis immediately when spent: Lane B asks/L6 or denies headless; Lane A
-requires modal approval/L2. No reusable authority can auto-allow that result. An
+before command-dependent work. Lane A retains an 8,000-character executable
+envelope limit, with verified quoted literal Bash heredoc bodies separately
+bounded at an aggregate 65,536 bytes. Shared work-budget exhaustion immediately
+stops all analysis: Lane B asks/L6 or denies headless; Lane A requires modal
+approval/L2. No fallback, later candidate, floor, rule, proof or reviewer work
+continues. Exceeding Lane A input/data bounds likewise requires modal approval. An
 identified floor takes precedence over an ordinary reason in the same input.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
@@ -290,7 +292,7 @@ terminates all analysis immediately with the lane-specific closed result,
 without fallback continuation. Over-limit unsandboxed input
 instead short-circuits to ask/deny.
 
-Visible literal interpreter code, script-file invocation and delegation do not by themselves prohibit an exact rule. Host-shell syntax, raw-word identity, budgets and the PowerShell encoded-execution exception determine proof. A known carrier role alone does not make an unrelated deny/ask rule uncertain; actual visible matches and syntactic inspection failures retain their precedence. An allow rule never proves future script contents or effects.
+Visible literal interpreter code and file/stdin/network indirection remain eligible for exact rules; the host does not certify referenced code or future effects. A carrier classification alone does not make an unrelated restriction uncertain. Actual visible deny/ask matches and syntax uncertainty keep their precedence. Exact identity preserves raw argument text and quote style, normalizing only interword whitespace. Program case, module qualifiers, paths and quotes stay raw, as do all arguments; detection and restriction normalization never changes the exact key.
 
 These are permission-classifier outcomes, not execution admission. A hard deny
 cannot be approved. A floor's forced ask requires per-call consent but cannot

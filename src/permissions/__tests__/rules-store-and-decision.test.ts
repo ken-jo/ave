@@ -1,3 +1,4 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 // Across scopes, floors outrank deny, then ask, then allow; corrupt rule data must not silently disappear.
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -347,7 +348,7 @@ describe("decision path", () => {
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "ask" });
     const location = projectRulesLocation(dir, project);
     mkdirSync(join(dir, "permissions", "project-rules"), { recursive: true });
-    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [{ pattern: "Bash(npm test)", action: "allow" }] }));
+    writeFileSync(location.filePath, JSON.stringify({ version: 1, projectRoot: location.projectRoot, rules: [withCurrentShellRuleVersion({ pattern: "Bash(npm test)", action: "allow" })] }));
     await pm.ensureProjectRulesLoaded(project);
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx)).toMatchObject({ decision: "allow" });
     writeFileSync(location.filePath, "{ broken");

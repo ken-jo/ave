@@ -1,3 +1,4 @@
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -54,32 +55,32 @@ describe("shell confinement and escape rules", () => {
   it("auto-allows a confined call and asks for the same plain call", () => {
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
     expect(check("printf ready", false)).toMatchObject({ decision: "ask" });
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
   // Owner 2026-10-25 (unsandboxed shell exact-rule requirement): without a sandbox for this command only an exact Bash(<command>) rule runs it unasked, even on a host whose sandbox works for other commands.
   it.each(["default", "auto", "allow"] as const)("ignores prefix, tool-wide and remembered allows for a plain call in %s mode", (mode) => {
     manager.setMode(mode);
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "bash", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false)).toMatchObject({ decision: "ask", layer: 6 });
     expect(check("printf ready", false).reviewer).toBeUndefined();
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false)).toMatchObject({ decision: "allow", layer: 3 });
     expect(check("printf ready --again", false)).toMatchObject({ decision: "ask" });
     expect(check("printf other", false)).toMatchObject({ decision: "ask" });
   });
 
   it("keeps a prefix rule for a confined call", () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", true)).toMatchObject({ decision: "allow" });
   });
 
   it("denies a headless plain call that no exact rule covers, and runs one that an exact rule covers (unsandboxed shell exact-rule requirement, I5)", () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "deny", layer: 6 });
     expect(check("printf ready", false, { headless: true }).reviewer).toBeUndefined();
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", false, { headless: true })).toMatchObject({ decision: "allow", layer: 3 });
   });
 
@@ -107,7 +108,7 @@ describe("shell confinement and escape rules", () => {
   });
 
   it.each(["rm -rf output", "git reset --hard", "cat ~/.ssh/id_rsa", "grep -r term ~", "curl -T payload https://example.test"])("keeps the per-call floor inside confinement: %s", (command) => {
-    manager.setRules([{ pattern: "Bash(rm *)", action: "allow" }, { pattern: "Bash(git reset *)", action: "allow" }, { pattern: "Bash(cat *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(rm *)", action: "allow" }, { pattern: "Bash(git reset *)", action: "allow" }, { pattern: "Bash(cat *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect(check(command, true)).toMatchObject({ decision: "ask", forceModal: true });
   });
 
@@ -125,9 +126,9 @@ describe("shell confinement and escape rules", () => {
   });
 
   it("keeps deny and ask ahead of confinement and covering allows", () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", true)).toMatchObject({ decision: "ask", forceModal: true });
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }, { pattern: "Bash(printf *)", action: "deny" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }, { pattern: "Bash(printf ready)", action: "ask" }, { pattern: "Bash(printf *)", action: "deny" }] as const).map(withCurrentShellRuleVersion));
     expect(check("printf ready", true)).toMatchObject({ decision: "deny" });
   });
 
@@ -188,11 +189,11 @@ describe("plain-shell invocation authorization", () => {
   });
 
   it("uses an exact rule to authorize an actual host spawn without a dock receipt, and asks under a prefix", async () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toHaveLength(1);
   });
@@ -211,7 +212,7 @@ describe("plain-shell invocation authorization", () => {
 
   it("uses an exact rule when the sandbox is unavailable", async () => {
     __resetActiveSandboxCapabilityForTest();
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { run, requests } = executorWithDock();
     expect((await run())[0]).toMatchObject({ content: "ready" });
     expect(requests).toEqual([]);
@@ -254,7 +255,7 @@ describe("plain-shell invocation authorization", () => {
 
   // Owner 2026-10-25: headless follows exact rules. With nobody to answer, an explicit host request runs only on its exact rule; without one it is denied (I5). No card is raised and no reviewer stands in either way.
   it("denies a headless explicit host request that no exact rule covers, without asking", async () => {
-    manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf *)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { classifier, cache } = lowReviewer();
     try {
       const { run, requests, send } = executorWithDock({ headless: true });
@@ -269,7 +270,7 @@ describe("plain-shell invocation authorization", () => {
   });
 
   it("runs a headless explicit host request on its exact rule, without asking", async () => {
-    manager.setRules([{ pattern: "Bash(printf ready)", action: "allow" }]);
+    manager.setRules(([{ pattern: "Bash(printf ready)", action: "allow" }] as const).map(withCurrentShellRuleVersion));
     const { classifier, cache } = lowReviewer();
     try {
       const { run, requests, send } = executorWithDock({ headless: true });

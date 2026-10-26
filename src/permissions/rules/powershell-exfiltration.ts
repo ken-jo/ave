@@ -16,7 +16,7 @@ import {
   type PowerShellPathBinding,
 } from "./powershell-command-policy.js";
 import { PowerShellFileProvenance } from "./powershell-file-provenance.js";
-import { canonicalPowerShellRuleTokens, literalRuleWord } from "./rule-specifier.js";
+import { literalRuleWord } from "./rule-specifier.js";
 import { INTERPRETER_SET, RUNNER_SET, SHELL_SET, WRAPPER_SET, programName, runnerName, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { hiddenCodeReason, isNetworkProgram, opaqueRunnerReason, runnerCodeContext, runnerCommandIndexes, wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
@@ -27,6 +27,26 @@ import {
   shellExfiltrationSignal,
 } from "./shell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, shellFloorBudgetSignals, shellFloorInputExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
+import { ShellFloorWorkBudget, ShellFloorWorkBudgetError } from "./shell-floor-work-budget.js";
+
+class SharedPowerShellBudget extends PowerShellAnalysisBudget {
+  constructor(readonly work: ShellFloorWorkBudget, disabled: ReadonlySet<PowerShellExpressionKind> = new Set()) { super(disabled); }
+
+  override spend(steps = 1, chars = 0): void {
+    this.work.spend(steps, chars);
+    super.spend(steps, chars);
+  }
+
+  override enter(source: string): void {
+    this.work.reserveSource(source);
+    super.enter(source);
+  }
+}
+
+function sharedWork(budget: PowerShellAnalysisBudget): ShellFloorWorkBudget {
+  if (!(budget instanceof SharedPowerShellBudget)) throw new Error("Missing shared floor budget");
+  return budget.work;
+}
 
 // Lexer
 
@@ -1169,7 +1189,7 @@ function senderCommandSignal(cmd: PsCommand, fedByPipeline: boolean, ctx: Contex
       const argv = `${fileInput ? "cat '__ave_pipeline_input__' | " : ""}${bashArgv(nativeName, args, ctx)}`;
       // Only a short, entirely quoted argv reaches this parser; reserve its scan work.
       ctx.budget.spend(argv.length * 4, argv.length);
-      const native = shellExfiltrationSignal(argv, ctx.cwd);
+      const native = shellExfiltrationSignal(argv, ctx.cwd, sharedWork(ctx.budget));
       if (native === SHELL_FLOOR_BUDGET_REASON) throw new PowerShellBudgetError(native);
       if (native) return native;
     }
@@ -1584,7 +1604,7 @@ function genericInterpreter(name: string): boolean {
 
 function genericTextSignals(text: string, ctx: Context): FloorSignals {
   ctx.budget.spend(text.length * 4 + 1, text.length);
-  const signals = inspectShellCommand(text, ctx.cwd);
+  const signals = inspectShellCommand(text, ctx.cwd, sharedWork(ctx.budget));
   if (signals.analysisLimited) throw new PowerShellBudgetError(SHELL_FLOOR_BUDGET_REASON);
   return signals;
 }
@@ -1884,7 +1904,7 @@ function sensitiveValue(value: PsValue, ctx: Context): string | null {
   const { cwd } = ctx;
   ctx.budget.spend(1, value.text.length);
   const normalized = normalizePaths(value.text);
-  const direct = sensitivePathInArgumentText(normalized, cwd, (steps, chars) => ctx.budget.spend(steps, chars));
+  const direct = sensitivePathInArgumentText(normalized, cwd, (steps, chars) => ctx.budget.spend(steps, chars), sharedWork(ctx.budget));
   if (direct === SHELL_FLOOR_BUDGET_REASON) throw new PowerShellBudgetError(direct);
   if (direct) return direct;
   const opaque = value.computed && normalized.includes(DYNAMIC);
@@ -1978,7 +1998,7 @@ export function _recordPowerShellLexesForTest(): { readonly lexed: readonly stri
 
 // Rule shape
 
-// The argv of each simple command a `PowerShell(...)` rule is matched against. A literal token (plain or literally quoted, with no expansion, escape, group or splat) takes its canonical spelling (`canonicalPowerShellRuleTokens`), the form a stored rule is in; any other token is `null`, which no rule token equals, so a deny or ask prefix still matches the literal words before it. A command whose name is not literal (an expression, a call operator) has no argv. `opaque` names the first construct that is not a fully literal command (an assignment, a non-literal command or token): an allow rule never covers input with one, and a deny or ask rule that matched nothing then asks, because it could not inspect everything.
+// Rule argv retains each literal word's complete raw text, including command identity and quotes. Non-literal words are null so restrictions retain visible literal prefixes. Opaque syntax cannot satisfy a reusable allow.
 export type PowerShellRuleShape =
   | { ok: true; commands: readonly (readonly (string | null)[])[]; opaque: string | null }
   | { ok: false; reason: string; visible: readonly (readonly (string | null)[])[] };
@@ -1994,7 +2014,7 @@ function ruleArgv(cmd: PsCommand): (string | null)[] | null {
   if (cmd.tokens[0]?.kind !== "word" || cmd.tokens[0].quoted) return null;
   const argv = cmd.tokens.map((token) => isLiteralWord(token) ? token.raw : null);
   if (argv.length === 0 || argv[0] === null || argv[0] === ".") return null;
-  return canonicalPowerShellRuleTokens(argv);
+  return argv;
 }
 
 export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleShape {
@@ -2017,10 +2037,10 @@ export function powerShellRuleShape(input: ShellCommandInput): PowerShellRuleSha
         continue;
       }
       if (argv.includes(null)) opaque ??= "non-literal argument";
-      opaque ??= encodedPowerShellExecutionReason(argv.map((token) => token === null ? undefined : literalRuleWord(token, "powershell")));
       commands.push(argv);
     }
   }
+  opaque ??= encodedPowerShellExecutionReason(commands.flatMap((argv) => argv.map((token) => token === null ? undefined : literalRuleWord(token, "powershell"))), commands.flat());
   return { ok: true, commands, opaque };
 }
 
@@ -2141,19 +2161,19 @@ function closedWorldSignal(pipelines: readonly PsPipeline[], ctx: Context, sensi
 }
 
 // The command is size-checked before parsing or value analysis.
-export function inspectPowerShellCommand(input: ShellCommandInput, cwd?: string): FloorSignals {
-  if (shellFloorInputExceeded(input)) return shellFloorBudgetSignals();
-  return runInspection(input, cwd, new PowerShellAnalysisBudget());
+export function inspectPowerShellCommand(input: ShellCommandInput, cwd?: string, work = new ShellFloorWorkBudget()): FloorSignals {
+  if (shellFloorInputExceeded(input) || work.exhausted) return shellFloorBudgetSignals();
+  return runInspection(input, cwd, new SharedPowerShellBudget(work));
 }
 
 // Retain visible tripwires without parsing inputs outside the literal-proof limit.
-export function inspectPowerShellVisibleText(command: string, cwd?: string): FloorSignals {
-  if (shellFloorInputExceeded(command)) return shellFloorBudgetSignals();
-  const budget = new PowerShellAnalysisBudget();
+export function inspectPowerShellVisibleText(command: string, cwd?: string, work = new ShellFloorWorkBudget()): FloorSignals {
+  if (shellFloorInputExceeded(command) || work.exhausted) return shellFloorBudgetSignals();
+  const budget = new SharedPowerShellBudget(work);
   try {
     return visibleFallback(command, cwd, "PowerShell visible text inspection", budget);
   } catch (error) {
-    if (error instanceof PowerShellBudgetError) return shellFloorBudgetSignals();
+    if (error instanceof PowerShellBudgetError || error instanceof ShellFloorWorkBudgetError) { work.exhausted = true; return shellFloorBudgetSignals(); }
     throw error;
   }
 }
@@ -2165,8 +2185,9 @@ function runInspection(input: ShellCommandInput, cwd: string | undefined, budget
     return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}), ...(analysisLimited ? { analysisLimited } : {}) };
   }
   catch (error) {
-    if (error instanceof PowerShellBudgetError) {
+    if (error instanceof PowerShellBudgetError || error instanceof ShellFloorWorkBudgetError) {
       budget.exhausted = true;
+      sharedWork(budget).exhausted = true;
       return shellFloorBudgetSignals();
     }
     throw error;
@@ -2174,9 +2195,10 @@ function runInspection(input: ShellCommandInput, cwd: string | undefined, budget
 }
 
 export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string, disabled: readonly PowerShellExpressionKind[] = []) {
-  const budget = new PowerShellAnalysisBudget(new Set(disabled));
+  const budget = new SharedPowerShellBudget(new ShellFloorWorkBudget(), new Set(disabled));
   const signals = runInspection(input, cwd, budget);
-  return { ...signals, steps: budget.steps, chars: budget.chars, exhausted: budget.exhausted, limits: POWERSHELL_ANALYSIS_LIMITS };
+  return { ...signals, steps: budget.steps, chars: budget.chars, workSteps: budget.work.steps, workChars: budget.work.chars,
+    exhausted: budget.exhausted, limits: POWERSHELL_ANALYSIS_LIMITS };
 }
 
 function inspectPowerShell(input: ShellCommandInput, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched = false, probe = false, files = new PowerShellFileProvenance(budget, cwd), pathData = false): FrameSignals {
@@ -2225,7 +2247,7 @@ function inspectArgumentCode(stage: PsCommand, ctx: Context, scanned: string | u
 // Preserve visible credentials and uploads when structural analysis is opaque.
 function visibleFallback(command: string, cwd: string | undefined, ordinaryAsk: string, budget: PowerShellAnalysisBudget): FloorSignals {
   budget.spend(1, command.length);
-  const shell = inspectShellCommand(command, cwd);
+  const shell = inspectShellCommand(command, cwd, sharedWork(budget));
   if (shell.analysisLimited) throw new PowerShellBudgetError(SHELL_FLOOR_BUDGET_REASON);
   let exfiltration = UNREADABLE_FALLBACK.test(normalizeDashes(command)) ? "PowerShell file upload (unparsed)" : shell.exfiltration;
   if (UNREADABLE_TRANSPORT_SPLAT.test(command)) exfiltration ??= "PowerShell transport parameters splatted from an unreadable input";
@@ -2233,7 +2255,7 @@ function visibleFallback(command: string, cwd: string | undefined, ordinaryAsk: 
   // These spans partition the visible text: no suffix or prefix is rescanned as another argument.
   for (const text of visiblePathWords(normalizePaths(command))) {
     budget.spend(1, text.length);
-    const path = sensitivePathInArgumentText(text, cwd, (steps, chars) => budget.spend(steps, chars));
+    const path = sensitivePathInArgumentText(text, cwd, (steps, chars) => budget.spend(steps, chars), sharedWork(budget));
     if (path === SHELL_FLOOR_BUDGET_REASON) throw new PowerShellBudgetError(path);
     if (path) sensitive ??= `sensitive path argument (${path})`;
   }
