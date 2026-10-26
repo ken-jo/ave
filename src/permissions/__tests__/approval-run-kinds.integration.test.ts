@@ -1,3 +1,4 @@
+import { allowOnceCardAnswer } from "../../__tests__/support/approval-card-answer.js";
 import { EventEmitter } from "node:events";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -27,7 +28,7 @@ import { createDynamicTool } from "../../tools/base.js";
 import { makeWriteProbeTool } from "../../tools/__tests__/approval-memory-test-fixtures.js";
 import { userPermissionContext } from "../../tools/__tests__/tool-context-fixture.js";
 import { ToolRegistry } from "../../tools/registry.js";
-import { ApprovalGate, type ApprovalDecision, type ApprovalRequest } from "../approval-gate.js";
+import { ApprovalGate, type ApprovalRequest } from "../approval-gate.js";
 import { approvalSurfaceRegistry } from "../approval-surface-registry.js";
 import { PermissionManager } from "../permission-manager.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
@@ -140,9 +141,6 @@ function surface(id: number) {
   return Object.assign(new EventEmitter(), { id, mainFrame: { url: "file:///application/index.html" }, isDestroyed: vi.fn(() => false), send: vi.fn() });
 }
 
-function signedAnswer(card: ApprovalRequest): ApprovalDecision {
-  return { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac };
-}
 
 class ActionProvider implements LLMProvider {
   readonly vendor = "openai" as const;
@@ -216,15 +214,15 @@ async function setup() {
     expect(foreign.send).not.toHaveBeenCalled();
     expect(gate.listPendingRendererRequests(foreign as unknown as WebContents)).toEqual([]);
     expect(gate.listPendingRendererRequests(owner as unknown as WebContents)).toHaveLength(1);
-    gate.resolveFromDesktopRenderer(card.id, signedAnswer(card), foreign as unknown as WebContents);
+    gate.resolveFromDesktopRenderer(card.id, allowOnceCardAnswer(card), foreign as unknown as WebContents);
     expect(gate.pendingCount).toBe(1);
     expect(execute).not.toHaveBeenCalled();
     expect(auditLog.mock.calls.some(([entry]) => entry.type === "approval" && entry.output?.includes("surface-owner-required"))).toBe(true);
-    gate.resolveFromDesktopRenderer(card.id, signedAnswer(card), owner as unknown as WebContents);
+    gate.resolveFromDesktopRenderer(card.id, allowOnceCardAnswer(card), owner as unknown as WebContents);
     await running;
     expect(execute).toHaveBeenCalledOnce();
     expect(gate.pendingCount).toBe(0);
-    gate.resolveFromDesktopRenderer(card.id, signedAnswer(card), owner as unknown as WebContents);
+    gate.resolveFromDesktopRenderer(card.id, allowOnceCardAnswer(card), owner as unknown as WebContents);
     expect(execute).toHaveBeenCalledOnce();
   };
   const bindMainHost = (loop: ConversationLoop, grouped: boolean): void => {

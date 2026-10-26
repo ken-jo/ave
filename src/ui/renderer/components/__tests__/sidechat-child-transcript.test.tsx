@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { CHANNELS, PERMISSIONS } from "../../../../contract/app-contract.js";
 import { sessionUuid } from "../../../../__tests__/support/session-uuid.js";
 import { cleanupTmpDir } from "../../../../__tests__/support/tmp-dir-teardown.js";
+import { installNativeChatWindow, nativeChatFrameEvent } from "../../../../__tests__/support/native-chat-window.js";
 import { MemoryManager } from "../../../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../../../main/storage/feature-namespace.js";
 import { SubAgentRunner } from "../../../../engine/subagent-runner.js";
@@ -45,7 +46,7 @@ function publish(channel: string, payload: unknown) {
 const invoke = vi.fn(async (channel: string, ...args: unknown[]) => {
   const handler = handlers.get(channel);
   if (!handler) throw new Error(`Unregistered test channel: ${channel}`);
-  const result = await handler({ senderFrame, sender: { id: 1 } }, ...args);
+  const result = await handler({ ...nativeChatFrameEvent(), senderFrame }, ...args);
   replies.push({ channel, result });
   return result;
 });
@@ -128,6 +129,9 @@ afterEach(async () => {
 });
 
 async function setup() {
+  const ownerWindow = { webContents: { send: publish, isDestroyed: () => false, on: vi.fn() } };
+  await installNativeChatWindow(ownerWindow);
+  senderFrame = nativeChatFrameEvent().senderFrame;
   const childStore = new MemoryManager({ aveDir: openFeatureNamespace("subagent").dir });
   const mainStore = new MemoryManager({ aveDir: scratchHome });
   childStore.load();
@@ -168,7 +172,7 @@ async function setup() {
     getSubAgentRunner: () => runner,
     settingsService: { get: (key: string) => key === "llm" ? fakeLlmSettings() : {} },
     auditLogger: { log: vi.fn() },
-    getMainWindow: () => ({ webContents: { send: publish, isDestroyed: () => false, on: vi.fn() } }),
+    getMainWindow: () => ownerWindow,
   } as unknown as IpcDeps;
   registerChatHandlers(deps);
   registerSideChatHandlers(deps);

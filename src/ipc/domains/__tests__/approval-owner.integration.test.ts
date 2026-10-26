@@ -1,3 +1,4 @@
+import { allowOnceCardAnswer } from "../../../__tests__/support/approval-card-answer.js";
 import { randomBytes, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -6,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuditLogger } from "../../../audit/audit-logger.js";
 import { ScriptHookManager } from "../../../hooks/script-hook-manager.js";
 import { PermissionTestResources } from "../../../permissions/__tests__/test-resources.js";
-import { ApprovalGate, type ApprovalDecision, type ApprovalRequest, type ApprovalRequestInput } from "../../../permissions/approval-gate.js";
+import { ApprovalGate, type ApprovalRequest, type ApprovalRequestInput } from "../../../permissions/approval-gate.js";
 import { buildPermissionEvaluationContext } from "../../../permissions/evaluation-context.js";
 import { DEFAULT_JUDGE_SETTINGS } from "../../../permissions/judge/judge-settings.js";
 import { PermissionManager } from "../../../permissions/permission-manager.js";
@@ -62,9 +63,6 @@ function invoke(channel: string, event: IpcMainInvokeEvent, ...args: unknown[]) 
   return handler(event, ...args);
 }
 
-function response(card: ApprovalRequest): ApprovalDecision {
-  return { requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac };
-}
 
 async function subject(mode: "auto" | "default" = "auto") {
   const root = resources.makeTmpDir("ave-approval-owner-");
@@ -194,7 +192,7 @@ describe("live native approval ownership", () => {
     expect(await approvals.listApprovals()).toEqual([expect.objectContaining({ decision: "allow", nlJustification: "owner two approved" })]);
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
   });
 
   it("lets only the current owner persist the host-derived exact shell rule", async () => {
@@ -215,7 +213,7 @@ describe("live native approval ownership", () => {
     expect(await invoke(PERMISSIONS.userApprovalRecord, frameEvent(f.windowB), payload)).toEqual({ ok: true });
     expect(addRule).toHaveBeenCalledTimes(2);
     expect(f.gate.pendingCount).toBe(1);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
   });
 
   it("discloses proposal context only to the current owner and never settles from a proposal", async () => {
@@ -239,7 +237,7 @@ describe("live native approval ownership", () => {
     expect(f.selectComplete).toHaveBeenCalledTimes(2);
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
   });
 
   it.each(["subframe", "unregistered renderer"] as const)("rejects %s grant writes and proposal disclosure before host authority is consulted", async (source) => {
@@ -264,7 +262,7 @@ describe("live native approval ownership", () => {
     expect(await approvals.listApprovals()).toEqual([]);
     expect(f.selectComplete).not.toHaveBeenCalled();
     expect(f.gate.pendingCount).toBe(1);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
   });
 
   it.each(["paused automation", "late pause", "ordinary default"] as const)("keeps a valid signed %s card pending after another window answers", async (lane) => {
@@ -278,7 +276,7 @@ describe("live native approval ownership", () => {
       held.release();
     }
     const card = await f.waitForCard();
-    const decision = response(card);
+    const decision = allowOnceCardAnswer(card);
     invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), decision);
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(f.gate.pendingCount).toBe(1);
@@ -290,7 +288,7 @@ describe("live native approval ownership", () => {
     }));
     expect(invoke(PERMISSIONS.approvalPending, frameEvent(f.windowB))).toEqual([]);
     expect(invoke(PERMISSIONS.approvalPending, frameEvent(f.windowA))).toEqual([card]);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     expect((await pending)[0].is_error).toBeUndefined();
     expect(f.execute).toHaveBeenCalledOnce();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(false);
@@ -307,11 +305,11 @@ describe("live native approval ownership", () => {
     f.setOwner(f.windowB);
     expect(invoke(PERMISSIONS.approvalPending, frameEvent(f.windowA))).toEqual([]);
     expect(invoke(PERMISSIONS.approvalPending, frameEvent(f.windowB))).toEqual([card]);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
     expect((await pending)[0].is_error).toBeUndefined();
     expect(f.execute).toHaveBeenCalledOnce();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(false);
@@ -325,13 +323,13 @@ describe("live native approval ownership", () => {
     f.setOwner(undefined);
     for (const window of [f.windowA, f.windowB]) {
       expect(invoke(PERMISSIONS.approvalPending, frameEvent(window))).toEqual([]);
-      invoke(PERMISSIONS.approvalRespond, frameEvent(window), response(card));
+      invoke(PERMISSIONS.approvalRespond, frameEvent(window), allowOnceCardAnswer(card));
     }
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
     f.setOwner(f.windowB);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowB), allowOnceCardAnswer(card));
     expect((await pending)[0].is_error).toBeUndefined();
     expect(f.execute).toHaveBeenCalledOnce();
   });
@@ -348,14 +346,14 @@ describe("live native approval ownership", () => {
     if (source === "destroyed window") f.windowA.isDestroyed.mockReturnValue(true);
     if (source === "destroyed contents") f.windowA.webContents.isDestroyed.mockReturnValue(true);
     expect(invoke(PERMISSIONS.approvalPending, event)).toEqual(UNAUTHORIZED_FRAME);
-    expect(invoke(PERMISSIONS.approvalRespond, event, response(card))).toEqual(UNAUTHORIZED_FRAME);
+    expect(invoke(PERMISSIONS.approvalRespond, event, allowOnceCardAnswer(card))).toEqual(UNAUTHORIZED_FRAME);
     expect(f.gate.pendingCount).toBe(1);
     expect(f.execute).not.toHaveBeenCalled();
     expect(f.manager.isAutomatedApprovalPaused(SESSION_ID)).toBe(true);
     expect(f.auditLog.mock.calls.filter(([entry]) => entry.sessionId === "ipc-guard")).toHaveLength(2);
     f.windowA.isDestroyed.mockReturnValue(false);
     f.windowA.webContents.isDestroyed.mockReturnValue(false);
-    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), response(card));
+    invoke(PERMISSIONS.approvalRespond, frameEvent(f.windowA), allowOnceCardAnswer(card));
     expect((await pending)[0].is_error).toBeUndefined();
     expect(f.execute).toHaveBeenCalledOnce();
   });
