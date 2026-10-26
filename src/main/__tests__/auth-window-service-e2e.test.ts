@@ -109,6 +109,9 @@ let currentFakeWindow: FakeBrowserWindow;
 // Shared partition session returned by session.fromPartition in grace-collect.
 const fakePartitionSession = {
   setUserAgent: vi.fn(),
+  setPermissionRequestHandler: vi.fn(),
+  setPermissionCheckHandler: vi.fn(),
+  setDevicePermissionHandler: vi.fn(),
   clearStorageData: vi.fn().mockResolvedValue(undefined),
   clearCache: vi.fn().mockResolvedValue(undefined),
   cookies: {

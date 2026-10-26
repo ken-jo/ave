@@ -67,20 +67,38 @@ export function buildAuthWindowShellHtml(input: {
     const view = document.getElementById("auth-view");
     const uri = document.getElementById("oauth-uri");
     const security = document.getElementById("oauth-security");
-    const updateLocation = (currentUrl, certificateError = false) => {
+    let committedUrl = ${input.chromeOnly ? "url" : '""'};
+    let certificateError = ${input.certificateError === true};
+    const certificateErrors = new Set();
+    const updateLocation = () => {
       if (!uri || !security) return;
-      uri.value = currentUrl;
-      const secure = currentUrl.startsWith("https:");
+      uri.value = committedUrl;
+      const secure = committedUrl.startsWith("https:") && !certificateError;
       security.textContent = certificateError ? ${JSON.stringify(t("oauthWindow.certificateError"))} : secure ? ${JSON.stringify(t("oauthWindow.secure"))} : ${JSON.stringify(t("oauthWindow.insecure"))};
       security.dataset.security = certificateError ? "certificate-error" : secure ? "https" : "http";
     };
-    updateLocation(url, ${input.certificateError === true});
-    if (view) {
-      for (const event of ["did-start-navigation", "did-navigate", "did-navigate-in-page", "did-redirect-navigation"]) {
-        view.addEventListener(event, e => { if (e.isMainFrame !== false) updateLocation(e.url); });
+    const recordCertificateError = failedUrl => {
+      const documentUrl = failedUrl.split("#", 1)[0];
+      certificateErrors.add(documentUrl);
+      if (documentUrl === committedUrl.split("#", 1)[0]) {
+        certificateError = true;
+        updateLocation();
       }
+    };
+    const commitLocation = (currentUrl, sameDocument) => {
+      committedUrl = currentUrl;
+      if (!sameDocument) certificateError = certificateErrors.has(currentUrl.split("#", 1)[0]);
+      updateLocation();
+    };
+    updateLocation();
+    if (view) {
+      view.addEventListener("did-start-navigation", e => {
+        if (e.isMainFrame !== false && !e.isInPlace) certificateErrors.clear();
+      });
+      view.addEventListener("did-navigate", e => { if (e.isMainFrame !== false) commitLocation(e.url, false); });
+      view.addEventListener("did-navigate-in-page", e => { if (e.isMainFrame !== false) commitLocation(e.url, true); });
       view.addEventListener("did-fail-load", e => {
-        if (e.isMainFrame !== false && e.errorCode <= -200 && e.errorCode > -300) updateLocation(e.validatedURL, true);
+        if (e.isMainFrame !== false && e.errorCode <= -200 && e.errorCode >= -299) recordCertificateError(e.validatedURL);
       });
       view.setAttribute("partition", partition);
       view.setAttribute("src", url);
@@ -108,6 +126,13 @@ export interface AuthNavigationFailure {
   isMainFrame: boolean;
 }
 
+/** Login documents need no privileged web API grants; native credential prompts do not require WebUSB or WebHID access. */
+export function installAuthSessionPermissions(session: Session): void {
+  session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+  session.setPermissionCheckHandler(() => false);
+  session.setDevicePermissionHandler(() => false);
+}
+
 /** The local chrome and all remote guests share one security and popup boundary. */
 export function attachAuthWindowContent(input: {
   window: BrowserWindow;
@@ -130,9 +155,12 @@ export function attachAuthWindowContent(input: {
   const isHttpUrl = (value: string): boolean => {
     try { return ["http:", "https:"].includes(new URL(value).protocol); } catch { return false; }
   };
+  // Sign-in pages build helper iframes from about:blank/srcdoc; neither can launch an external protocol.
+  const isSubframeUrl = (value: string): boolean => isHttpUrl(value) || value === "about:blank" || value === "about:srcdoc";
   const guardShell = (shell: BrowserWindow): void => {
     shell.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
     shell.webContents.on("will-navigate", event => event.preventDefault());
+    shell.webContents.on("will-frame-navigate", event => event.preventDefault());
     shell.webContents.on("will-redirect", event => event.preventDefault());
   };
   guardShell(window);
@@ -150,6 +178,27 @@ export function attachAuthWindowContent(input: {
     });
   };
   const attachGuest = (contents: WebContents, depth = 0, popup?: BrowserWindow): void => {
+    let committedUrl = "";
+    let certificateError = false;
+    const certificateErrors = new Set<string>();
+    const recordCertificateError = (url: string): void => {
+      const documentUrl = url.split("#", 1)[0];
+      certificateErrors.add(documentUrl);
+      const isCommittedDocument = documentUrl === committedUrl.split("#", 1)[0];
+      if (isCommittedDocument) certificateError = true;
+      if (popup) {
+        if (isCommittedDocument) updateLocation(popup, committedUrl, certificateError);
+      } else if (!window.isDestroyed()) {
+        // Only the trusted local chrome receives this status; remote documents are never scripted.
+        void window.webContents.executeJavaScript(`recordCertificateError(${JSON.stringify(url)})`).catch(() => undefined);
+      }
+    };
+    const commitLocation = (url: string, sameDocument: boolean): void => {
+      if (!input.active()) return;
+      committedUrl = url;
+      if (!sameDocument) certificateError = certificateErrors.has(url.split("#", 1)[0]);
+      if (popup) updateLocation(popup, committedUrl, certificateError);
+    };
     markAsAuthOwned(contents);
     contents.setWindowOpenHandler(({ url }) => {
       if (!input.active() || window.isDestroyed() || !isHttpUrl(url) || depth >= 3 || popups.size + pendingPopups >= 5) return { action: "deny" };
@@ -192,7 +241,7 @@ export function attachAuthWindowContent(input: {
           });
           webContents.on("destroyed", () => { if (!child.isDestroyed()) child.destroy(); });
           attachGuest(webContents, depth + 1, child);
-          updateLocation(child, url);
+          updateLocation(child, "");
           return webContents;
         },
       };
@@ -201,31 +250,42 @@ export function attachAuthWindowContent(input: {
       // Only the adopted, guarded guest path is admitted.
       if (!popups.has(child)) child.destroy();
     });
-    const guardNavigation = (event: Electron.Event & { url: string }): void => {
-      if (!isHttpUrl(event.url) || input.onRefusal(event.url)) event.preventDefault();
+    const guardNavigation = (event: Electron.Event & { url: string; isMainFrame?: boolean }): void => {
+      const mainFrame = event.isMainFrame !== false;
+      if (!(mainFrame ? isHttpUrl(event.url) : isSubframeUrl(event.url)) || (mainFrame && input.onRefusal(event.url))) event.preventDefault();
     };
     contents.on("will-navigate", guardNavigation);
+    contents.on("will-frame-navigate", guardNavigation);
     contents.on("will-redirect", guardNavigation);
     const track = (url: string, committed: boolean): void => {
       if (!input.active() || input.onRefusal(url)) return;
-      if (popup) updateLocation(popup, url);
       input.onNavigation(url, committed);
     };
     contents.on("did-navigate", (event, url) => {
       if ((event as Electron.Event & { isMainFrame?: boolean }).isMainFrame === false) return;
       track(url, true);
+      commitLocation(url, false);
       input.onCheck(contents);
     });
     contents.on("did-navigate-in-page", (_event, url, isMainFrame) => {
       if (isMainFrame === false) return;
       track(url, false);
+      commitLocation(url, true);
       input.onCheck(contents);
     });
     contents.on("did-start-navigation", (_event, url, _isInPlace, isMainFrame) => {
-      if (isMainFrame !== false) track(url, false);
+      if (isMainFrame !== false) {
+        if (!_isInPlace) certificateErrors.clear();
+        track(url, false);
+      }
     });
     contents.on("did-redirect-navigation", (_event, url, _isInPlace, isMainFrame) => {
       if (isMainFrame !== false) track(url, false);
+    });
+    contents.on("certificate-error", (event, url, _error, _certificate, callback, isMainFrame) => {
+      event.preventDefault();
+      callback(false);
+      if (isMainFrame) recordCertificateError(url);
     });
     const onFailure = (event: Electron.Event, code: number, description: string, url: string, isMainFrame: boolean): void => {
       const details = event as unknown as Partial<AuthNavigationFailure>;
@@ -234,8 +294,8 @@ export function attachAuthWindowContent(input: {
         validatedURL: details.validatedURL ?? url, isMainFrame: details.isMainFrame ?? isMainFrame,
       };
       if (!failure.isMainFrame) return;
-      if (failure.errorCode <= -200 && failure.errorCode > -300) {
-        if (popup) updateLocation(popup, failure.validatedURL, true);
+      if (failure.errorCode <= -200 && failure.errorCode >= -299) {
+        recordCertificateError(failure.validatedURL);
         return;
       }
       input.onFailure(failure);

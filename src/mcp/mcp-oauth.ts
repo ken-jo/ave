@@ -493,14 +493,14 @@ export class McpOAuthSession {
       this.credentialGeneration += 1;
       this.status = "authenticating";
       const discovery = await this.discover(true);
+      const state = randomBytes(32).toString("base64url");
       // The loopback IP literal: RFC 8252 §7.3 obliges the server to accept any port for it.
-      const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey, { redirectHost: "127.0.0.1" });
+      const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey, { state, redirectHost: "127.0.0.1" });
       handle = catcher.handle;
       this.assertActive();
       issuer = discovery.issuer;
       ({ client, source } = await this.selectClient(discovery, catcher.redirectUri));
       this.assertActive();
-      const state = randomBytes(32).toString("base64url");
       const authorization = await startAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
         redirectUrl: catcher.redirectUri, state, scope: discovery.scope, resource: discovery.resource });
       await ensurePublicHttpUrl(authorization.authorizationUrl.href, {

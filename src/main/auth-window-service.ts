@@ -3,7 +3,7 @@ export { wirePluginAuthPartitionPersistence, seedPluginAuthPartitions, rememberP
 // The host owns login-window lifecycle; plugins supply completion patterns and cookie-domain allowlists.
 import { randomBytes } from "node:crypto";
 import { BrowserWindow, dialog, screen, session, shell, type Cookie, type Session, type WebContents } from "electron";
-import { attachAuthWindowContent, buildAuthWindowShellHtml, type AuthNavigationFailure } from "./auth-window-content.js";
+import { attachAuthWindowContent, buildAuthWindowShellHtml, installAuthSessionPermissions, type AuthNavigationFailure } from "./auth-window-content.js";
 export { buildAuthWindowShellHtml } from "./auth-window-content.js";
 import { isOAuthBrowserRefusal, requiresSystemBrowser } from "./oauth-login.js";
 import { resolveAppIconPath } from "./app-icon.js";
@@ -354,6 +354,7 @@ async function openAuthWindowInternal(
       : `ephemeral-auth-${randomBytes(8).toString("hex")}`;
   rememberPluginAuthPartition(effectivePartition);
   const partitionSession = session.fromPartition(effectivePartition);
+  installAuthSessionPermissions(partitionSession);
   applyBrowserSessionIdentity(partitionSession);
 
   // Idempotency guard — a single visible auth window per (partition, title). Silent warmups (show:false) are never deduped: they are invisible and may

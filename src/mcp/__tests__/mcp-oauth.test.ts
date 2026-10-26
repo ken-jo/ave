@@ -236,7 +236,14 @@ function createSession(state: Fixture, options: { store?: Map<string, string>; c
     const auth = await fetch(url, { redirect: "manual" });
     const redirect = new URL(auth.headers.get("location") ?? "");
     redirect.hostname = "127.0.0.1";
-    await fetch(redirect, { redirect: "manual" });
+    let completed = false;
+    void login.completion.then(() => { completed = true; }, () => undefined);
+    const response = await fetch(redirect, { redirect: "manual" });
+    if (state.callbackState !== undefined) {
+      expect(response.status).toBe(404);
+      expect(completed).toBe(false);
+      login.onCancel();
+    }
     await login.completion;
   });
   const networkFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)) as typeof fetch;
@@ -669,8 +676,8 @@ describe("remote authorization", () => {
     const { session, catchers } = createSession(state);
     await session.authenticate();
     const registeredRedirect = state.authorizations[0].searchParams.get("redirect_uri")!;
-    vi.spyOn(catchers, "open").mockImplementationOnce(async function (this: typeof catchers, ownerKey: string) {
-      const opened = await (Object.getPrototypeOf(catchers) as typeof catchers).open.call(catchers, ownerKey);
+    vi.spyOn(catchers, "open").mockImplementationOnce(async function (this: typeof catchers, ownerKey: string, options) {
+      const opened = await (Object.getPrototypeOf(catchers) as typeof catchers).open.call(catchers, ownerKey, options);
       return { ...opened, redirectUri: registeredRedirect };
     });
     state.rejectAccess = true;

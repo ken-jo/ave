@@ -1,7 +1,7 @@
 // Concurrent visible logins share one window per partition/title; silent warmups remain independent.
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { useChromiumRuntime } from "../../__tests__/support/chromium-runtime.js";
-import { shell, type Cookie } from "electron";
+import { shell, session, type Cookie } from "electron";
 import { t } from "../../i18n/index.js";
 import { SYSTEM_BROWSER_OAUTH_ENDPOINTS } from "../oauth-browser-policy.js";
 import { AuthRedirectCatchers } from "../auth-redirect-catcher.js";
@@ -102,6 +102,9 @@ vi.mock("electron", () => {
       clearCache: vi.fn().mockResolvedValue(undefined),
       clearAuthCache: vi.fn().mockResolvedValue(undefined),
       setUserAgent: vi.fn(),
+      setPermissionRequestHandler: vi.fn(),
+      setPermissionCheckHandler: vi.fn(),
+      setDevicePermissionHandler: vi.fn(),
     }) },
     shell: { openExternal: vi.fn() },
     dialog: { showMessageBox: vi.fn().mockResolvedValue({ response: 0 }) },
@@ -202,6 +205,14 @@ describe("host OAuth auth window", () => {
         const callback = new URL(authorization.searchParams.get("redirect_uri")!);
         expect(callback.hostname).toBe("127.0.0.1");
         expect(Number(callback.port)).toBeGreaterThan(0);
+        if (!refusal) {
+          for (const path of ["/unrelated?x=1", "/?code=forged&state=wrong"]) {
+            expect((await fetch(new URL(path, callback), { redirect: "manual" })).status).toBe(404);
+            await flush(1);
+            expect(constructed[0].isDestroyed()).toBe(false);
+            expect(proofVerified).toBe(false);
+          }
+        }
         callback.search = new URLSearchParams({ code: "fixture-code", state: authorization.searchParams.get("state")! }).toString();
         await fetch(callback, { redirect: "manual" });
         await shown;
@@ -300,32 +311,140 @@ describe("host OAuth auth window", () => {
         : openAuthWindow(parent(), { url: "https://auth.example.test/authorize", completionUrlPatterns: [COMPLETION], cookieHosts: [COOKIE_HOST], persistPartition: "plugin-auth:sampleportal" });
       return { pending, finish: async () => { complete(); constructed[0].close(); await pending.catch(() => undefined); } };
     }
-    it("renders a read-only full URI and updates connection security on every guest navigation", async () => {
+    function shellState(win: FakeBrowserWindow) {
+      const html = decodeURIComponent(win.loadURL.mock.calls.at(-1)![0]);
+      const listeners = new Map<string, (event: Record<string, unknown>) => void>();
+      const uri = { value: "" };
+      const security = { textContent: "", dataset: { security: "" } };
+      const view = { setAttribute: vi.fn(), addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => listeners.set(name, callback) };
+      const context = {
+        document: { title: "", getElementById: (id: string) => ({ "auth-view": view, "oauth-uri": uri, "oauth-security": security })[id] },
+      };
+      runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], context);
+      return { uri, security, listeners, context };
+    }
+
+    it("keeps the committed identity through starts, redirects, aborts and failed loads", async () => {
+      const attempt = start();
+      try {
+        const { uri, security, listeners } = shellState(constructed[0]);
+        expect(uri.value).toBe("");
+        expect(security.dataset.security).not.toBe("https");
+        const committed = "http://identity.example.test/login";
+        listeners.get("did-navigate")!({ url: committed, isMainFrame: true });
+        for (const name of ["did-start-navigation", "did-redirect-navigation"]) {
+          listeners.get(name)?.({ url: "https://trusted.example.test/", isMainFrame: true });
+          expect(uri.value).toBe(committed);
+          expect(security.dataset.security).toBe("http");
+        }
+        for (const errorCode of [-3, -105, -202]) {
+          listeners.get("did-fail-load")!({ validatedURL: "https://trusted.example.test/", errorCode, isMainFrame: true });
+          expect(uri.value).toBe(committed);
+          expect(security.dataset.security).toBe("http");
+        }
+      } finally { await attempt.finish(); }
+    });
+
+    it("renders only main-frame commits and retains document TLS state across in-page navigation", async () => {
       const url = "https://auth.example.test/authorize?state=private#fragment";
       const attempt = start();
       try {
-        const html = decodeURIComponent(constructed[0].loadURL.mock.calls[0][0]);
-        expect(html).toContain('id="oauth-uri" readonly');
-        const listeners = new Map<string, (event: Record<string, unknown>) => void>();
-        const uri = { value: "" };
-        const security = { textContent: "", dataset: { security: "" } };
-        const view = { setAttribute: vi.fn(), addEventListener: (name: string, callback: (event: Record<string, unknown>) => void) => listeners.set(name, callback) };
-        runInNewContext(html.match(/<script>([\s\S]*?)<\/script>/)![1], {
-          document: { title: "", getElementById: (id: string) => ({ "auth-view": view, "oauth-uri": uri, "oauth-security": security })[id] },
-        });
-        expect(uri.value).toBe("https://auth.example.test/authorize");
+        const { uri, security, listeners } = shellState(constructed[0]);
+        listeners.get("did-navigate")!({ url, isMainFrame: true });
+        expect(uri.value).toBe(url);
         expect(security.textContent).toBe(t("oauthWindow.secure"));
-        for (const name of ["did-start-navigation", "did-navigate", "did-navigate-in-page", "did-redirect-navigation"]) {
-          const next = `http://127.0.0.1:12345/callback?event=${name}`;
-          listeners.get(name)!({ url: next, isMainFrame: true });
-          expect(uri.value).toBe(next);
-          expect(security.dataset.security).toBe("http");
-        }
-        listeners.get("did-fail-load")!({ validatedURL: "https://invalid.example.test/", errorCode: -202, isMainFrame: true });
-        expect(uri.value).toBe("https://invalid.example.test/");
+        listeners.get("did-fail-load")!({ validatedURL: url, errorCode: -202, isMainFrame: true });
         expect(security.textContent).toBe(t("oauthWindow.certificateError"));
-        listeners.get("did-navigate")!({ url, isMainFrame: false });
+        listeners.get("did-navigate-in-page")!({ url: url + "next", isMainFrame: true });
+        expect(uri.value).toBe(url + "next");
         expect(security.dataset.security).toBe("certificate-error");
+        listeners.get("did-navigate")!({ url: "https://other.example.test", isMainFrame: false });
+        expect(security.dataset.security).toBe("certificate-error");
+        listeners.get("did-navigate")!({ url: "http://identity.example.test", isMainFrame: true });
+        expect(security.dataset.security).toBe("http");
+      } finally { await attempt.finish(); }
+    });
+
+    it.each(["main", "popup"])("tracks certificate events and committed identity for the %s guest", async target => {
+      const attempt = start();
+      try {
+        const guest = new FakeWebContents();
+        const win = constructed[0];
+        win.webContents.emit("did-attach-webview", {}, guest);
+        const chrome = target === "popup" ? openPopup(guest) : win;
+        const page = target === "popup" ? popupContents(chrome) : guest;
+        const state = shellState(chrome);
+        chrome.webContents.executeJavaScript.mockImplementation(async (script: string) => runInNewContext(script, state.context));
+        const read = () => target === "popup" ? shellState(chrome) : state;
+        const commit = (url: string, inPage = false) => {
+          page.emit(inPage ? "did-navigate-in-page" : "did-navigate", {}, url, true);
+          if (target === "main") state.listeners.get(inPage ? "did-navigate-in-page" : "did-navigate")!({ url, isMainFrame: true });
+        };
+        const committed = "https://identity.example.test/login#initial";
+        commit(committed);
+        expect(read().security.dataset.security).toBe("https");
+        page.emit("did-start-navigation", {}, "https://trusted.example.test/", false, true);
+        page.emit("did-redirect-navigation", {}, "https://trusted.example.test/next", false, true);
+        page.emit("did-fail-load", {}, -3, "ERR_ABORTED", "https://trusted.example.test/next", true);
+        expect(read().uri.value).toBe(committed);
+        expect(read().security.dataset.security).toBe("https");
+        page.emit("did-fail-load", {}, -202, "Certificate failed", "https://uncommitted.example.test/", true);
+        expect(read().uri.value).toBe(committed);
+        expect(read().security.dataset.security).toBe("https");
+        const rejectCertificate = vi.fn();
+        page.emit("certificate-error", { preventDefault: vi.fn() }, committed.split("#", 1)[0], "Certificate failed", {}, rejectCertificate, true);
+        await flush(1);
+        expect(rejectCertificate).toHaveBeenCalledWith(false);
+        expect(read().uri.value).toBe(committed);
+        expect(read().security.dataset.security).toBe("certificate-error");
+        commit(committed + "#step", true);
+        expect(read().uri.value).toBe(committed + "#step");
+        expect(read().security.dataset.security).toBe("certificate-error");
+        commit("http://identity.example.test/login");
+        expect(read().security.dataset.security).toBe("http");
+        expect(page.executeJavaScript).not.toHaveBeenCalled();
+      } finally { await attempt.finish(); }
+    });
+
+    it("installs default-deny permission handlers before any load and leaves cookie storage untouched", async () => {
+      const ses = session.fromPartition("unused");
+      for (const method of [ses.setPermissionRequestHandler, ses.setPermissionCheckHandler, ses.setDevicePermissionHandler, ses.clearStorageData]) vi.mocked(method).mockClear();
+      const attempt = start();
+      try {
+        const loadOrder = constructed[0].loadURL.mock.invocationCallOrder[0];
+        for (const install of [ses.setPermissionRequestHandler, ses.setPermissionCheckHandler, ses.setDevicePermissionHandler]) {
+          expect(install).toHaveBeenCalledOnce();
+          expect(vi.mocked(install).mock.invocationCallOrder[0]).toBeLessThan(loadOrder);
+        }
+        const request = vi.mocked(ses.setPermissionRequestHandler).mock.calls[0][0]!;
+        const check = vi.mocked(ses.setPermissionCheckHandler).mock.calls[0][0]!;
+        for (const permission of ["media", "geolocation", "notifications", "fullscreen", "midi", "midiSysex", "hid", "serial", "usb", "clipboard-read", "clipboard-sanitized-write", "openExternal", "pointerLock", "idle-detection", "window-management", "display-capture", "unknown", "future-permission"]) {
+          const answer = vi.fn();
+          request(null as never, permission as never, answer, {} as never);
+          expect(answer, permission).toHaveBeenCalledExactlyOnceWith(false);
+          expect(check(null, permission as never, "https://identity.example.test", {} as never), permission).toBe(false);
+        }
+        const device = vi.mocked(ses.setDevicePermissionHandler).mock.calls[0][0]!;
+        for (const deviceType of ["hid", "serial", "usb"]) expect(device({ deviceType } as never)).toBe(false);
+        expect(ses.clearStorageData).not.toHaveBeenCalled();
+      } finally { await attempt.finish(); }
+    });
+
+    it.each(["main", "popup"])("refuses external protocols in every frame of the %s guest", async target => {
+      const attempt = start();
+      try {
+        const guest = new FakeWebContents();
+        constructed[0].webContents.emit("did-attach-webview", {}, guest);
+        const page = target === "popup" ? popupContents(openPopup(guest)) : guest;
+        for (const url of ["mailto:someone@example.test", "custom:launch", "file:///private", "javascript:alert(1)"]) {
+          const preventDefault = vi.fn();
+          page.emit("will-frame-navigate", { url, isMainFrame: false, preventDefault });
+          expect(preventDefault, url).toHaveBeenCalledOnce();
+        }
+        const preventDefault = vi.fn();
+        page.emit("will-frame-navigate", { url: "https://identity.example.test/frame", isMainFrame: false, preventDefault });
+        expect(preventDefault).not.toHaveBeenCalled();
+        expect(shell.openExternal).not.toHaveBeenCalled();
       } finally { await attempt.finish(); }
     });
 
@@ -353,8 +472,9 @@ describe("host OAuth auth window", () => {
         popup.loadURL.mockRejectedValueOnce(Object.assign(new Error("Navigation superseded"), { code: "ERR_ABORTED" }));
         page.emit("did-navigate", {}, "http://identity.example.test/next");
         expect(decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0])).toContain("http://identity.example.test/next");
+        page.emit("did-navigate", {}, "https://invalid.example.test");
         page.emit("did-fail-load", { errorCode: -202, validatedURL: "https://invalid.example.test", isMainFrame: true }, -202, "ERR_CERT_AUTHORITY_INVALID", "https://invalid.example.test", true);
-        expect(decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0])).toContain("updateLocation(url, true)");
+        expect(shellState(popup).security.dataset.security).toBe("certificate-error");
         expect(page.executeJavaScript).not.toHaveBeenCalled();
         expect(page.preferences).not.toHaveProperty("preload");
         await flush(1);
@@ -395,9 +515,10 @@ describe("host OAuth auth window", () => {
       expect(html).toContain('id="oauth-uri" readonly');
       expect(html).toContain(location);
       expect(html).not.toContain("<webview");
+      page.emit("did-navigate", {}, "https://invalid.example.test/");
       page.emit("did-fail-load", {}, -202, "ERR_CERT_AUTHORITY_INVALID", "https://invalid.example.test/", true);
       html = decodeURIComponent(popup.loadURL.mock.calls.at(-1)![0]);
-      expect(html).toContain("updateLocation(url, true)");
+      expect(html).toContain("let certificateError = true");
       expect(page.executeJavaScript).not.toHaveBeenCalled();
       expect(page.preferences).not.toHaveProperty("preload");
     } finally { complete(); await pending; }
@@ -489,7 +610,7 @@ describe("host OAuth auth window", () => {
   it("keeps the opener message and script-close sequence usable with a real callback", async () => {
     const { openOAuthInAuthWindow } = await import("../auth-window-service.js");
     const catchers = new AuthRedirectCatchers();
-    const catcher = await catchers.open("popup-login", { redirectHost: "127.0.0.1" });
+    const catcher = await catchers.open("popup-login", { state: "popup-state", redirectHost: "127.0.0.1" });
     const completion = catchers.wait("popup-login", catcher.handle, 10_000);
     const onCancel = vi.fn();
     const pending = openOAuthInAuthWindow(parent(), "https://auth.example.test/authorize", { completion, onCancel, timeoutMs: 10_000 });
@@ -536,7 +657,7 @@ describe("host OAuth auth window", () => {
     const { openOAuthInAuthWindow } = await import("../auth-window-service.js");
     const { shell } = await import("electron");
     const catchers = new AuthRedirectCatchers();
-    const catcher = await catchers.open("direct-browser", { redirectHost: "127.0.0.1" });
+    const catcher = await catchers.open("direct-browser", { state: "browser-state", redirectHost: "127.0.0.1" });
     const completion = catchers.wait("direct-browser", catcher.handle, 10_000);
     const url = system ? "https://client.example.test/authorize?state=browser-state&code_challenge=unchanged"
       : "https://accounts.google.com/o/oauth2/v2/auth?state=browser-state&code_challenge=unchanged";
@@ -681,7 +802,7 @@ describe("host OAuth auth window", () => {
     const { openOAuthInAuthWindow } = await import("../auth-window-service.js");
     const { shell } = await import("electron");
     const catchers = new AuthRedirectCatchers();
-    const catcher = await catchers.open("oauth-window-test", { redirectHost: "127.0.0.1" });
+    const catcher = await catchers.open("oauth-window-test", { state: "original", redirectHost: "127.0.0.1" });
     const completion = catchers.wait("oauth-window-test", catcher.handle, 10_000);
     const url = "https://auth.example.test/authorize?state=original&code_challenge=pkce";
     const onCancel = vi.fn(() => catchers.close("oauth-window-test", catcher.handle));
