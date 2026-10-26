@@ -101,4 +101,19 @@ describe("ending a conversation's session scope", () => {
     expect(() => manager.endSession("child-1")).toThrow(/root conversation/);
     expect(() => dropSessionApprovals("child-1")).toThrow(/root conversation/);
   });
+
+  it("releases counted invocation identities only when the root session ends", () => {
+    withTree();
+    const manager = new PermissionManager(join(dir, "permissions.json"));
+    const breaker = manager.getJudgeBreaker();
+    breaker.record("root", "ask", "reviewed-action");
+    breaker.record("other", "ask", "other-action");
+    endSessionScopedPermissions("child-1", manager);
+    expect(breaker.snapshot("root")).toEqual({ consecutive: 1, total: 1, open: false });
+    endSessionScopedPermissions("root", manager);
+    expect(breaker.snapshot("root")).toEqual({ consecutive: 0, total: 0, open: false });
+    breaker.record("root", "ask", "reviewed-action");
+    expect(breaker.snapshot("root")).toEqual({ consecutive: 1, total: 1, open: false });
+    expect(breaker.snapshot("other")).toEqual({ consecutive: 1, total: 1, open: false });
+  });
 });

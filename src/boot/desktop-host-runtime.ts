@@ -5,10 +5,11 @@ import { createDesktopNetworkFetch } from "./steps/desktop-network-fetch.js";
 import { prepareDesktopRelease } from "./steps/desktop-release.js";
 import { adaptPowerMonitor } from "../main/idle-scheduler.js";
 import { getAppWindows } from "../main/main-window.js";
-import { isAppShutdownStarted, findSessionMainWindowContents, findTerminalMainWindowContents, getMainWindows, mainWindowForContents } from "../main/app-state.js";
+import { isAppShutdownStarted, findSessionMainWindowContents, findTerminalMainWindowContents, getMainWindows, mainWindowForContents, getPrimaryMainWindow } from "../main/app-state.js";
 import { isAppUpdateInstallRequested } from "../main/app-update-install-intent.js";
 import { unregisterAllGlobalShortcuts } from "../main/global-shortcuts.js";
-import { openAuthWindow, clearAuthPartition } from "../main/auth-window-service.js";
+import { openAuthWindow, clearAuthPartition, openOAuthInAuthWindow } from "../main/auth-window-service.js";
+import { installOAuthLoginOpener, type OpenOAuthLogin } from "../main/oauth-login.js";
 import { openLinkWindow } from "../main/link-window-service.js";
 import { openAuthPartitionViewer } from "../main/auth-partition-viewer-service.js";
 import { installPluginPartitionPolicy } from "../main/html-preview-partition.js";
@@ -24,6 +25,11 @@ import { settingsFilePath } from "../data/settings-store.js";
 import { protectRuntimeSettingsPath } from "../permissions/sensitive-paths.js";
 
 export function createDesktopBootHost(projectRoot: string): BootHost {
+  const openLogin: OpenOAuthLogin = (url, options) => {
+    const parent = getPrimaryMainWindow();
+    if (!parent || parent.isDestroyed()) throw new Error("OAuth login requires a main window");
+    return openOAuthInAuthWindow(parent, url, options);
+  };
   const host: BootHost = {
     userDataPath: app.getPath("userData"),
     resourcePath: app.isPackaged ? process.resourcesPath : join(projectRoot, "resources"),
@@ -38,6 +44,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
     desktop: {
       hasSingleInstanceLock: () => app.hasSingleInstanceLock(),
       getAppWindows,
+      openOAuthLogin: openLogin,
       getFocusedWindow: () => BrowserWindow.getFocusedWindow(),
       findSessionSurface: findSessionMainWindowContents,
       findTerminalSurface: findTerminalMainWindowContents,
@@ -95,6 +102,7 @@ export function createDesktopBootHost(projectRoot: string): BootHost {
     },
   };
   const releaseSettingsPath = protectRuntimeSettingsPath(settingsFilePath(host.userDataPath));
-  host.close = async () => { releaseSettingsPath(); };
+  const releaseOAuthOpener = installOAuthLoginOpener(openLogin);
+  host.close = async () => { releaseOAuthOpener(); releaseSettingsPath(); };
   return host;
 }

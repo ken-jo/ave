@@ -132,7 +132,7 @@ describe("judge boot wiring", () => {
     const networkFetch = vi.fn(async () => new Response('{"decision":"deny","rationale":"unsafe effect"}'));
     const deps = {
       permissionManager, reviewer: result,
-      settings: judgeSettings({ breaker: { consecutive: 2, total: 4 } }),
+      settings: judgeSettings(),
       providerForModel: () => null, networkFetch, audit: audit.logger, resolveRootSessionId,
     };
     const engine = wireJudgeAgent(deps);
@@ -141,9 +141,10 @@ describe("judge boot wiring", () => {
     const rewired = wireJudgeAgent(deps);
     expect(rewired.breaker).toBe(engine.breaker);
     await resolveJudge(gate, judgeRequest({ sessionId: resolveRootSessionId(second) }), rewired);
-    expect(rewired.breaker.snapshot(root)).toEqual({ consecutive: 2, total: 2, open: true });
-    expect(networkFetch).toHaveBeenCalledTimes(2);
-    expect(audit.chained).toHaveLength(2);
+    await resolveJudge(gate, judgeRequest({ sessionId: resolveRootSessionId(first) }), rewired);
+    expect(rewired.breaker.snapshot(root)).toEqual({ consecutive: 3, total: 3, open: true });
+    expect(networkFetch).toHaveBeenCalledTimes(3);
+    expect(audit.chained).toHaveLength(3);
   });
 
   it("records the exact default subscription model identity", () => {

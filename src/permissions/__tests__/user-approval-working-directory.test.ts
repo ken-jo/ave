@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { canCreateSymlinks } from "../../__tests__/support/symlink-capability.js";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, symlinkSync, unlinkSync } from "node:fs";
@@ -86,14 +88,19 @@ describe("exact decisions scoped to the captured working directory", () => {
       pathFields: [], targetFilePaths: [], sensitivePathsAdjacent: [],
     });
     const args = { command: "inspect_local_fixture" };
-    const reviewer = await new PermissionManager(join(root, "permissions.json")).dispatchReviewer("bash", {
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    wireJudgeForTest(manager);
+    const reviewer = await manager.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "working-directory-session",
       source: "builtin", category: "shell", pathFields: [], finalInput: args,
       trustOrigin: "user-keyboard", executionCwd: alias, allowedDirectories: [first], sensitivePathsAdjacent: [],
-    });
+    }, undefined, { defer: "none" });
     let displayed: ApprovalRequest | undefined;
-    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    const nativeWebContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
-    } } as never);
+    } };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const pending = gate.requestAndWait({
       id: "alias-pending", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args, reason: "assessment unavailable", createdAt: Date.now(), trustOrigin: "user-keyboard",
@@ -112,7 +119,7 @@ describe("exact decisions scoped to the captured working directory", () => {
       trustOrigin: snapshot.trustOrigin, workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
       riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
     });
-    gate.resolveFromDesktopRenderer("alias-pending", { requestId: "alias-pending", choice: "allow-always", nonce: displayed!.nonce, hmac: displayed!.hmac });
+    gate.resolveFromDesktopRenderer("alias-pending", { requestId: "alias-pending", choice: "allow-always", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;
     expect(await lookupApproval("bash", JSON.stringify(args), "builtin", "user-keyboard", undefined, first)).not.toBeNull();
     expect(await lookupApproval("bash", JSON.stringify(args), "builtin", "user-keyboard", undefined, alias)).toBeNull();
@@ -121,15 +128,20 @@ describe("exact decisions scoped to the captured working directory", () => {
   it.each(["high", "forged", "changed-input"])("rejects %s evidence for remembering failed-review HIGH", async (caseName) => {
     const cwd = join(root, "first");
     const args = { command: caseName === "high" ? "rm -rf file" : "printf hello" };
-    const reviewer = await new PermissionManager(join(root, "permissions.json")).dispatchReviewer("bash", {
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    wireJudgeForTest(manager);
+    const reviewer = await manager.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "working-directory-session",
       source: "builtin", category: "shell", pathFields: [], finalInput: args,
       trustOrigin: "user-keyboard", executionCwd: cwd, allowedDirectories: [cwd], sensitivePathsAdjacent: [],
-    });
+    }, undefined, { defer: "none" });
     if (caseName === "high") expect(reviewer.approvalBasis!.ruleVerdict).toBe("high");
     let displayed: ApprovalRequest | undefined;
-    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    const nativeWebContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
-    } } as never);
+    } };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const pending = gate.requestAndWait({
       id: "ineligible", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args: caseName === "changed-input" ? { command: "rm -rf file" } : args,
@@ -143,7 +155,7 @@ describe("exact decisions scoped to the captured working directory", () => {
       }),
     });
     expect(displayed).toMatchObject({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
-    gate.resolveFromDesktopRenderer("ineligible", { requestId: "ineligible", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac });
+    gate.resolveFromDesktopRenderer("ineligible", { requestId: "ineligible", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;
   });
 

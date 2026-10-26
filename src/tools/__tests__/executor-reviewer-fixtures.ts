@@ -5,6 +5,7 @@ import type { ExecutionMode } from "../../shared/permission-mode.js";
 import { DeferredQueue } from "../../permissions/reviewer/deferred-queue.js";
 import { VerdictCache } from "../../permissions/reviewer/verdict-cache.js";
 import { PermissionManager } from "../../permissions/permission-manager.js";
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 
 // Use default mode to test approval prompts and auto mode to test reviewer rationale.
 export function makePermissionManager(
@@ -15,7 +16,7 @@ export function makePermissionManager(
   const permMgr = new PermissionManager(join(dir, "permissions.json"));
   permMgr.setMode(mode);
   permMgr.setInteractiveAutoApprove("low");
-  permMgr.setReviewer({
+  setReviewerForTest(permMgr, {
     classifier: { classify: classifySpy },
     cache: new VerdictCache(join(dir, "reviewer-cache.jsonl")),
     deferredQueue: new DeferredQueue(join(dir, "deferred-queue.jsonl")),

@@ -3,6 +3,9 @@ import { directHostFetchTransport } from "../../../__tests__/support/host-fetch-
 /** Auth surfaces require capability checks; partition clearing is limited to the caller’s own partitions. */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { PluginHostApi } from "../../../plugins/public-contract.js";
 import { pluginDataDirIn } from "../../../plugins/__tests__/test-helpers.js";
 
 import { createTmpDirTracker } from "../../../__tests__/support/tmp-dir-teardown.js";
@@ -81,6 +84,7 @@ vi.mock("../../../plugins/registry.js", () => ({
 import { initPluginRuntime } from "../plugin-runtime.js";
 
 type AuthHostApi = {
+  authRedirect: PluginHostApi["authRedirect"];
   openAuthWindow: (opts: {
     url: string;
     cookieHosts?: string[];
@@ -102,6 +106,7 @@ type CreateHostApi = (
     isActive: () => boolean;
     isLifecycleHookActive: () => boolean;
   },
+  installPluginId: string | null,
 ) => AuthHostApi;
 
 const ACTIVE_INCARNATION = {
@@ -167,6 +172,33 @@ beforeEach(() => {
 afterEach(() => tmpDirs.cleanup());
 
 describe("HostApi openAuthWindow capability gate", () => {
+  // The plugin contract carries no flow state (protocol v3), so plugins get the exact-path check; the plugin verifies state itself.
+  it("holds the plugin redirect catcher to its exact callback path", async () => {
+    const createHostApi = await initAndGetFactory();
+    const api = createHostApi(
+      "plugin-a", { id: "plugin-a", config: {}, capabilities: ["external-auth-consumer"] },
+      pluginDataDirIn(tmpDirs.track(mkdtempSync(join(tmpdir(), "ave-auth-")))), ACTIVE_INCARNATION, "plugin-a",
+    );
+    const result = await api.authRedirect.open();
+    const callback = new URL(result.redirectUri);
+    callback.hostname = "127.0.0.1";
+    let completed = false;
+    const waiting = api.authRedirect.wait({ handle: result.handle });
+    void waiting.then(() => { completed = true; }, () => undefined);
+    try {
+      for (const path of ["/unrelated?x=1", "/other/?code=forged&state=plugin-flow-state"]) {
+        expect((await fetch(new URL(path, callback), { redirect: "manual" })).status).toBe(404);
+        expect(completed).toBe(false);
+      }
+      callback.search = "code=plugin-code&state=plugin-flow-state";
+      expect((await fetch(callback, { redirect: "manual" })).status).toBe(303);
+      await expect(waiting).resolves.toEqual({ code: "plugin-code", state: "plugin-flow-state" });
+      callback.search = "code=replay&state=plugin-flow-state";
+      expect((await fetch(callback, { redirect: "manual" })).status).toBe(404);
+      await expect(api.authRedirect.wait({ handle: result.handle })).resolves.toEqual({ code: "plugin-code", state: "plugin-flow-state" });
+    } finally { await api.authRedirect.close({ handle: result.handle }); }
+  });
+
   it("rejects when the manifest has not declared external-auth-consumer", async () => {
     const createHostApi = await initAndGetFactory();
     const api = createHostApi(

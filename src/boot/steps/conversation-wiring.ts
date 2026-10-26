@@ -1,5 +1,6 @@
 /** Wire loop-dependent services late; retain the event-bridge disposer for refresh and shutdown. */
 import type { BrowserWindow } from "electron";
+import { openOAuthLogin, type OpenOAuthLogin } from "../../main/oauth-login.js";
 import { createRoutineEngine } from "../routine.js";
 import { MAIN_CHAT_GROUP_ID, MAX_CHAT_GROUPS } from "../../contract/app-contract.js";
 import {
@@ -14,6 +15,7 @@ import { MemoryManager } from "../../memory/memory-manager.js";
 import { openFeatureNamespace } from "../../main/storage/feature-namespace.js";
 import { registerPluginEventBridge } from "./ipc-bridge.js";
 import { readPermissionSettings } from "../../permissions/permission-settings-store.js";
+import { updateApprovalSurface } from "../../permissions/approval-surface-registry.js";
 import { retainedDescendantWorkspaceRoots } from "../../permissions/workspace-root-reconciler.js";
 import { broadcastPermissionConfigChangedFromHost } from "../permission-config-broadcast.js";
 import { PreferenceRefreshService } from "../../memory/preference-refresh-service.js";
@@ -76,15 +78,14 @@ export interface SubscriptionChatLoopBindings {
 
 /** Accept normalized settings only; the shared runtime owns credentials and transport. */
 export function createSubscriptionChatLoopBindings(input: {
-  readonly shellOpenExternal: (url: string) => Promise<void>;
   readonly auditLogger: Pick<AuditLogger, "log">;
 }): SubscriptionChatLoopBindings {
-  const openExternal = async (url: string): Promise<void> => {
+  const openAuthorizationUrl: OpenOAuthLogin = async (url, options) => {
     const validated = validateExternalUrl(url);
     if (!validated.ok) {
       throw new SubscriptionRuntimeServiceError("subscription-verification-url-unavailable");
     }
-    await input.shellOpenExternal(validated.url);
+    await openOAuthLogin(validated.url, options);
   };
   const audit: SubscriptionRuntimeAuditSink = (event) => {
     const requestKind = typeof event.requestKind === "string"
@@ -113,7 +114,7 @@ export function createSubscriptionChatLoopBindings(input: {
     ) => createSubscriptionLlmProvider({
       selection,
       ...(fallbackSelection ? { fallbackSelection } : {}),
-      openExternal,
+      openAuthorizationUrl,
       runtimeServiceOptions: { audit },
     }),
   });
@@ -337,6 +338,7 @@ export async function wireConversation(
     ...(ctx.tracing.enabled ? { tracer: ctx.tracing.tracer } : {}),
     ...rationaleBindings,
   });
+  updateApprovalSurface({ kind: "attach", sessionId: conversationLoop.getSessionId(), surface: mainWindow?.webContents ?? null });
 
   // Side chat uses its own feature namespace while sharing main-chat model and permission policy.
   let sideChatConversationLoop!: ConversationLoop;
@@ -400,6 +402,8 @@ export async function wireConversation(
           getLoop: () => paneLoop,
         }),
       });
+      const owner = ctx.host.desktop?.getAppWindows().find((window) => window.id === windowId);
+      updateApprovalSurface({ kind: "attach", sessionId: paneLoop.getSessionId(), surface: owner?.webContents ?? null });
       paneLoops.set(paneKey(windowId, tabId), { windowId, tabId, loop: paneLoop });
       return paneLoop;
     },
@@ -409,6 +413,7 @@ export async function wireConversation(
       if (!entry) return undefined;
       paneLoops.delete(paneKey(windowId, tabId));
       entry.loop.abortCurrentTurn(new Error("pane chat ended"));
+      updateApprovalSurface({ kind: "release", sessionId: entry.loop.getSessionId() });
       return entry.loop;
     },
     inWindow: (windowId) => [...paneLoops.values()]
@@ -487,6 +492,7 @@ export async function wireConversation(
     const loop = groupLoops.get(chatGroupId);
     if (!loop) return;
     loop.abortCurrentTurn();
+    updateApprovalSurface({ kind: "release", sessionId: loop.getSessionId() });
     groupLoops.delete(chatGroupId);
   };
 

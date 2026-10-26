@@ -21,6 +21,7 @@ import { InvalidClientError, InvalidGrantError, UnauthorizedClientError } from "
 import { ensurePublicHttpUrl } from "../core/network-guard.js";
 import { AVE_SERVICE_BASE_URL } from "../marketplace/service/client.js";
 import type { AuthRedirectCatchers } from "../main/auth-redirect-catcher.js";
+import type { OpenOAuthLogin } from "../main/oauth-login.js";
 import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import { runWithCeiling } from "../tools/executor-ceiling.js";
 import type { McpAuthErrorCode, McpAuthStatus, McpHttpServerConfig } from "./types.js";
@@ -38,7 +39,7 @@ export interface McpOAuthDependencies {
   networkFetch: typeof fetch;
   secrets: McpOAuthSecrets;
   redirectCatchers: AuthRedirectCatchers;
-  openAuthorizationUrl(url: string): Promise<void>;
+  openAuthorizationUrl: OpenOAuthLogin;
 }
 
 export interface McpOAuthSessionOptions {
@@ -492,14 +493,14 @@ export class McpOAuthSession {
       this.credentialGeneration += 1;
       this.status = "authenticating";
       const discovery = await this.discover(true);
+      const state = randomBytes(32).toString("base64url");
       // The loopback IP literal: RFC 8252 §7.3 obliges the server to accept any port for it.
-      const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey, { redirectHost: "127.0.0.1" });
+      const catcher = await this.dependencies.redirectCatchers.open(this.ownerKey, { state, redirectHost: "127.0.0.1" });
       handle = catcher.handle;
       this.assertActive();
       issuer = discovery.issuer;
       ({ client, source } = await this.selectClient(discovery, catcher.redirectUri));
       this.assertActive();
-      const state = randomBytes(32).toString("base64url");
       const authorization = await startAuthorization(discovery.issuer, { metadata: discovery.metadata, clientInformation: client,
         redirectUrl: catcher.redirectUri, state, scope: discovery.scope, resource: discovery.resource });
       await ensurePublicHttpUrl(authorization.authorizationUrl.href, {
@@ -507,13 +508,25 @@ export class McpOAuthSession {
         allowLoopback: this.config.allowPrivateNetworks === true,
       });
       this.assertActive();
+      const callback = this.dependencies.redirectCatchers.wait(this.ownerKey, handle, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
+      void callback.catch(() => undefined);
+      const closeCatcher = () => this.dependencies.redirectCatchers.close(this.ownerKey, catcher.handle);
       const opened = await runWithCeiling(
-        () => this.dependencies.openAuthorizationUrl(authorization.authorizationUrl.href),
+        async (signal) => {
+          signal.addEventListener("abort", closeCatcher, { once: true });
+          try {
+            await this.dependencies.openAuthorizationUrl(authorization.authorizationUrl.href, {
+              completion: callback, onCancel: closeCatcher, timeoutMs: TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs,
+            });
+          } finally {
+            signal.removeEventListener("abort", closeCatcher);
+          }
+        },
         TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs, this.controller.signal, "MCP authentication",
       );
       if (!opened.ok) throw new Error(AUTH_FAILED);
       this.assertActive();
-      const params = await this.dependencies.redirectCatchers.wait(this.ownerKey, handle, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs);
+      const params = await callback;
       // Verify state and issuer before acting on any callback, including errors.
       if (params.state !== state || (params.iss !== undefined && params.iss !== discovery.issuer) ||
         (discovery.requireIssuerResponse && !params.iss)) throw new Error(AUTH_FAILED);

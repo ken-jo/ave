@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+import { setReviewerForTest, wireJudgeForTest } from "../../__tests__/support/reviewer-judge.js";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { tmpdir } from "node:os";
 import {
@@ -49,7 +51,7 @@ function makeManager(): {
   const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
   const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
   const classifier = new RuleBasedRiskClassifier();
-  pm.setReviewer({ classifier, cache, deferredQueue: queue });
+  setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
   return { pm, cache, queue, classifier };
 }
 
@@ -88,6 +90,8 @@ describe("PermissionManager.dispatchReviewer", () => {
 
   it("LOW verdict — no deferred entry, cacheReason='miss-not-found'", async () => {
     const r = await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -104,6 +108,8 @@ describe("PermissionManager.dispatchReviewer", () => {
 
   it("HIGH verdict — deferred entry created with id", async () => {
     const r = await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -123,6 +129,8 @@ describe("PermissionManager.dispatchReviewer", () => {
 
   it("MEDIUM verdict — no deferred entry", async () => {
     const r = await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -141,6 +149,8 @@ describe("PermissionManager.dispatchReviewer", () => {
     const r = await pm.dispatchReviewer(
       "fs_write",
       {
+        invocationId: randomUUID(),
+        sessionId: "permission-manager-reviewer-session",
         source: "builtin",
         category: "write",
         pathFields: ["path"],
@@ -162,6 +172,7 @@ describe("PermissionManager.dispatchReviewer", () => {
 
   it("second dispatch hits cache", async () => {
     const input = {
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin" as const,
       category: "write" as const,
       pathFields: ["path"],
@@ -171,9 +182,9 @@ describe("PermissionManager.dispatchReviewer", () => {
       sensitivePathsAdjacent: [],
       trustOrigin: "user-keyboard" as const,
     };
-    const first = await pm.dispatchReviewer("fs_write", input);
+    const first = await pm.dispatchReviewer("fs_write", { ...input, invocationId: randomUUID() });
     expect(first.cacheReason).toBe("miss-not-found");
-    const second = await pm.dispatchReviewer("fs_write", input);
+    const second = await pm.dispatchReviewer("fs_write", { ...input, invocationId: randomUUID() });
     expect(second.cacheReason).toBe("hit");
     expect(second.verdict).toEqual(first.verdict);
   });
@@ -186,7 +197,7 @@ describe("PermissionManager.dispatchReviewer", () => {
           : { level: "high", reason: "unconfined shell" }
       )),
     };
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
     const fullPlan = buildHostShellExecutionPlan({
       platform: "darwin",
       requestedSandbox: true,
@@ -222,14 +233,20 @@ describe("PermissionManager.dispatchReviewer", () => {
 
     // No process-global active capability is published: the reviewer must still receive the invocation's sealed full-ASRT plan, not recompute `none`.
     const first = await pm.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       hostShellExecutionPlan: fullPlan,
     }, undefined, { defer: "none" });
     const samePlan = await pm.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       hostShellExecutionPlan: fullPlan,
     }, undefined, { defer: "none" });
     const changedPlan = await pm.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       hostShellExecutionPlan: explicitOffPlan,
     }, undefined, { defer: "none" });
@@ -263,8 +280,9 @@ describe("PermissionManager.dispatchReviewer", () => {
           : { level: "high", reason: "unwrapped worker must re-review" }
       )),
     };
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
     const input = {
+      sessionId: "permission-manager-reviewer-session",
       source: "plugin" as const,
       category: "network" as const,
       pathFields: [],
@@ -279,12 +297,12 @@ describe("PermissionManager.dispatchReviewer", () => {
     };
 
     markPluginWorkerWrapped("local-indexer", "embed");
-    const wrapped = await pm.dispatchReviewer("index_fetch", input);
+    const wrapped = await pm.dispatchReviewer("index_fetch", { ...input, invocationId: randomUUID() });
     expect(wrapped.cacheReason).toBe("miss-not-found");
     expect(wrapped.verdict.level).toBe("low");
 
     unmarkPluginWorkerWrapped("local-indexer", "embed");
-    const unwrapped = await pm.dispatchReviewer("index_fetch", input);
+    const unwrapped = await pm.dispatchReviewer("index_fetch", { ...input, invocationId: randomUUID() });
     expect(unwrapped.cacheReason).toBe("miss-stale");
     expect(unwrapped.verdict.level).toBe("high");
     expect(classifier.classify).toHaveBeenCalledTimes(2);
@@ -313,8 +331,9 @@ describe("PermissionManager.dispatchReviewer", () => {
           : { level: "high", reason: "unwrapped worker must re-review" };
       }),
     };
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
     const input = {
+      sessionId: "permission-manager-reviewer-session",
       source: "plugin" as const,
       category: "network" as const,
       pathFields: [],
@@ -329,14 +348,14 @@ describe("PermissionManager.dispatchReviewer", () => {
     };
 
     markPluginWorkerWrapped("local-indexer", "embed");
-    const raced = await pm.dispatchReviewer("index_fetch", input, undefined, { defer: "none" });
+    const raced = await pm.dispatchReviewer("index_fetch", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
     expect(raced.cacheReason).toBe("miss-not-found");
     expect(raced.verdict).toEqual({
       level: "high",
       reason: "reviewer sandbox state changed during classification — fail-safe re-review required",
     });
 
-    const unwrapped = await pm.dispatchReviewer("index_fetch", input, undefined, { defer: "none" });
+    const unwrapped = await pm.dispatchReviewer("index_fetch", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
     expect(unwrapped.cacheReason).toBe("miss-not-found");
     expect(unwrapped.verdict.level).toBe("high");
     expect(classifier.classify).toHaveBeenCalledTimes(2);
@@ -349,7 +368,7 @@ describe("PermissionManager.dispatchReviewer", () => {
         reason: "classifier called",
       })),
     };
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
     const base = {
       source: "builtin" as const,
       category: "write" as const,
@@ -361,24 +380,32 @@ describe("PermissionManager.dispatchReviewer", () => {
     };
 
     const first = await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       trustOrigin: "user-keyboard" as const,
       approvalCacheKey: "fs_write:scope-a",
       approvalMemory: { kind: "args" } as const,
     });
     const same = await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       trustOrigin: "user-keyboard" as const,
       approvalCacheKey: "fs_write:scope-a",
       approvalMemory: { kind: "args" } as const,
     });
     const originChanged = await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       trustOrigin: "llm-tool-arg" as const,
       approvalCacheKey: "fs_write:scope-a",
       approvalMemory: { kind: "args" } as const,
     });
     const keyChanged = await pm.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       trustOrigin: "llm-tool-arg" as const,
       approvalCacheKey: "fs_write:scope-b",
@@ -399,7 +426,7 @@ describe("PermissionManager.dispatchReviewer", () => {
         reason: "classifier called",
       })),
     };
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
     const base = {
       source: "plugin" as const,
       category: "network" as const,
@@ -412,14 +439,20 @@ describe("PermissionManager.dispatchReviewer", () => {
     };
 
     const first = await pm.dispatchReviewer("plugin_send", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       conversationContext: { recentUserMessage: "관리자에게 릴리즈 성공을 알려줘." },
     });
     const second = await pm.dispatchReviewer("plugin_send", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       conversationContext: { recentUserMessage: "관리자에게 토큰 값을 보내줘." },
     });
     const firstAgain = await pm.dispatchReviewer("plugin_send", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       conversationContext: { recentUserMessage: "관리자에게 릴리즈 성공을 알려줘." },
     });
@@ -437,7 +470,7 @@ describe("PermissionManager.dispatchReviewer", () => {
         reason: "classifier called",
       })),
     };
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
     const base = {
       source: "plugin" as const,
       category: "network" as const,
@@ -450,14 +483,20 @@ describe("PermissionManager.dispatchReviewer", () => {
     };
 
     const first = await pm.dispatchReviewer("plugin_send", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       cacheIdentityInput: { payload: "send alice@example.com with sk-alice" },
     });
     const second = await pm.dispatchReviewer("plugin_send", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       cacheIdentityInput: { payload: "send bob@example.com with sk-bob" },
     });
     const firstAgain = await pm.dispatchReviewer("plugin_send", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       cacheIdentityInput: { payload: "send alice@example.com with sk-alice" },
     });
@@ -485,7 +524,7 @@ describe("PermissionManager.dispatchReviewer", () => {
         return { level: "low", reason: "classifier called" };
       }),
     };
-    pm.setReviewer({ classifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier, cache, deferredQueue: queue });
     const base = {
       source: "plugin" as const,
       category: "network" as const,
@@ -499,14 +538,20 @@ describe("PermissionManager.dispatchReviewer", () => {
     };
 
     const first = await pm.dispatchReviewer("plugin_fetch", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       pluginId: "plugin-a",
     });
     const second = await pm.dispatchReviewer("plugin_fetch", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       pluginId: "plugin-b",
     });
     const firstAgain = await pm.dispatchReviewer("plugin_fetch", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       ...base,
       pluginId: "plugin-a",
     });
@@ -525,6 +570,8 @@ describe("PermissionManager.dispatchReviewer", () => {
     const firstInput = { command: "echo ok" };
     const destructiveInput = { command: "rm -rf ./build" };
     const first = await pm.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin",
       category: "shell",
       pathFields: [],
@@ -537,6 +584,8 @@ describe("PermissionManager.dispatchReviewer", () => {
       approvalMemory: { kind: "args" } as const,
     });
     const second = await pm.dispatchReviewer("bash", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin",
       category: "shell",
       pathFields: [],
@@ -558,6 +607,7 @@ describe("PermissionManager.dispatchReviewer", () => {
 
   it("settings change invalidates stale cache (different allowedDirectories)", async () => {
     const ctxA = {
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin" as const,
       category: "write" as const,
       pathFields: ["path"],
@@ -567,10 +617,10 @@ describe("PermissionManager.dispatchReviewer", () => {
       sensitivePathsAdjacent: [],
       trustOrigin: "user-keyboard" as const,
     };
-    await pm.dispatchReviewer("fs_write", ctxA);
+    await pm.dispatchReviewer("fs_write", { ...ctxA, invocationId: randomUUID() });
     // Same input, different allowedDirectories context.
-    const ctxB = { ...ctxA, allowedDirectories: [allowedDir("/different")] };
-    const r = await pm.dispatchReviewer("fs_write", ctxB);
+    const ctxB = { sessionId: "permission-manager-reviewer-session", ...ctxA, allowedDirectories: [allowedDir("/different")] };
+    const r = await pm.dispatchReviewer("fs_write", { ...ctxB, invocationId: randomUUID() });
     expect(r.cacheReason).toBe("miss-stale");
   });
 
@@ -581,13 +631,14 @@ describe("PermissionManager.dispatchReviewer", () => {
     const classifierB: RiskClassifier = {
       classify: vi.fn(() => ({ level: "medium", reason: "classifier B" })),
     };
-    pm.setReviewer({
+    setReviewerForTest(pm, {
       classifier: classifierA,
       cache,
       deferredQueue: queue,
       cacheScope: { mode: "rule", model: "a" },
     });
     const input = {
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin" as const,
       category: "write" as const,
       pathFields: ["path"],
@@ -597,14 +648,14 @@ describe("PermissionManager.dispatchReviewer", () => {
       sensitivePathsAdjacent: [],
       trustOrigin: "user-keyboard" as const,
     };
-    const first = await pm.dispatchReviewer("fs_write", input);
-    pm.setReviewer({
+    const first = await pm.dispatchReviewer("fs_write", { ...input, invocationId: randomUUID() });
+    setReviewerForTest(pm, {
       classifier: classifierB,
       cache,
       deferredQueue: queue,
       cacheScope: { mode: "llm", model: "b" },
     });
-    const second = await pm.dispatchReviewer("fs_write", input);
+    const second = await pm.dispatchReviewer("fs_write", { ...input, invocationId: randomUUID() });
 
     expect(first.cacheReason).toBe("miss-not-found");
     expect(second.cacheReason).toBe("miss-stale");
@@ -614,13 +665,14 @@ describe("PermissionManager.dispatchReviewer", () => {
 
   it("reclassifies a cached verdict from before host policy facts were supplied", async () => {
     const classify = vi.fn(() => ({ level: "medium" as const, reason: "current review" }));
-    pm.setReviewer({ classifier: { classify }, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier: { classify }, cache, deferredQueue: queue });
     const store = cache.store.bind(cache);
     vi.spyOn(cache, "store").mockImplementationOnce((key, context, verdict) => {
       const { reviewerFrameworkVersion: _obsolete, ...oldScope } = context.scope;
       return store(key, { ...context, scope: oldScope }, verdict);
     });
     const input = {
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin" as const,
       category: "write" as const,
       pathFields: ["path"],
@@ -630,15 +682,17 @@ describe("PermissionManager.dispatchReviewer", () => {
       sensitivePathsAdjacent: [],
       trustOrigin: "user-keyboard" as const,
     };
-    await pm.dispatchReviewer("fs_write", input);
-    const result = await pm.dispatchReviewer("fs_write", input);
+    await pm.dispatchReviewer("fs_write", { ...input, invocationId: randomUUID() });
+    const result = await pm.dispatchReviewer("fs_write", { ...input, invocationId: randomUUID() });
     expect(result.cacheReason).toBe("miss-stale");
     expect(classify).toHaveBeenCalledTimes(2);
   });
 
-  it("returns HIGH + no deferredId when reviewer not wired", async () => {
+  it("rejects an automated dispatch when the judge engine was never wired", async () => {
     const fresh = new PermissionManager(tmpFile("permissions.json"));
-    const r = await fresh.dispatchReviewer("fs_write", {
+    await expect(fresh.dispatchReviewer("fs_write", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -647,10 +701,7 @@ describe("PermissionManager.dispatchReviewer", () => {
       executionCwd: process.cwd(),
       sensitivePathsAdjacent: [],
       trustOrigin: "user-keyboard" as const,
-    });
-    expect(r.verdict.level).toBe("high");
-    expect(r.verdict.reason).toMatch(/not wired/);
-    expect(r.deferredId).toBeUndefined();
+    })).rejects.toThrow("Permission judge is not wired");
   });
 
   it("async classifier (LLM) is awaited", async () => {
@@ -662,8 +713,10 @@ describe("PermissionManager.dispatchReviewer", () => {
         }),
       ),
     };
-    pm.setReviewer({ classifier: asyncClassifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier: asyncClassifier, cache, deferredQueue: queue });
     const r = await pm.dispatchReviewer("any_tool", {
+      invocationId: randomUUID(),
+      sessionId: "permission-manager-reviewer-session",
       source: "builtin",
       category: "write",
       pathFields: ["path"],
@@ -682,20 +735,16 @@ describe("PermissionManager.dispatchReviewer", () => {
 // MAJOR-1 R2: abortSignal end-to-end dispatchReviewer → LlmRiskClassifier
 
 describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.classifyWithTrace", () => {
-  it("calls LlmRiskClassifier.classifyWithTrace with the supplied abortSignal", async () => {
+  it("forwards caller cancellation through the judge stage signal", async () => {
     const { pm } = makeManager();
     const ac = new AbortController();
 
-    // Stub an LlmRiskClassifier-shaped classifier with a spy on classify. We can't easily import LlmRiskClassifier here without a provider, so we subclass to a minimal stand-in that records the opts argument.
     let capturedOpts: { abortSignal?: AbortSignal } | undefined;
     const { LlmRiskClassifier } = await import("../reviewer/risk-classifier.js");
-    const { LlmReviewerProvider } = {} as never; // type only
     const providerStub = {
-      complete: vi.fn(async () => ({
-        text: '{"level":"low","reason":"ok"}',
-        tokensIn: 0,
-        tokensOut: 0,
-        costUsd: 0,
+      complete: vi.fn(({ abortSignal }: { abortSignal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+        if (!abortSignal) throw new Error("Reviewer signal missing");
+        abortSignal.addEventListener("abort", () => reject(abortSignal.reason), { once: true });
       })),
     };
     const llmClassifier = new LlmRiskClassifier(providerStub, "gpt-4o-mini");
@@ -709,11 +758,13 @@ describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.
 
     const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
     const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
-    pm.setReviewer({ classifier: llmClassifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier: llmClassifier, cache, deferredQueue: queue });
 
-    await pm.dispatchReviewer(
+    const dispatch = pm.dispatchReviewer(
       "bash",
       {
+        invocationId: randomUUID(),
+        sessionId: "permission-manager-reviewer-session",
         source: "builtin",
         category: "shell",
         pathFields: [],
@@ -727,7 +778,12 @@ describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.
       { abortSignal: ac.signal },
     );
 
-    expect(capturedOpts?.abortSignal).toBe(ac.signal);
+    await vi.waitFor(() => expect(capturedOpts?.abortSignal).toBeDefined());
+    const reason = new Error("Caller cancelled review");
+    ac.abort(reason);
+    await dispatch;
+    expect(capturedOpts?.abortSignal?.aborted).toBe(true);
+    expect(capturedOpts?.abortSignal?.reason).toBe(reason);
   });
 
   it("mid-call abort → classify throws and dispatchReviewer returns HIGH (fallbackOnError=deny)", async () => {
@@ -747,11 +803,13 @@ describe("MAJOR-1 R2: dispatchReviewer threads abortSignal to LlmRiskClassifier.
     const llmClassifier = new LlmRiskClassifier(providerStub, "gpt-4o-mini", "deny");
     const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
     const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
-    pm.setReviewer({ classifier: llmClassifier, cache, deferredQueue: queue });
+    setReviewerForTest(pm, { classifier: llmClassifier, cache, deferredQueue: queue });
 
     const result = await pm.dispatchReviewer(
       "bash",
       {
+        invocationId: randomUUID(),
+        sessionId: "permission-manager-reviewer-session",
         source: "builtin",
         category: "shell",
         pathFields: [],
@@ -794,6 +852,7 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
       verdictCachePath: tmpFile("flood-cache.jsonl"),
       deferredQueuePath: tmpFile("flood-queue.jsonl"),
     });
+    wireJudgeForTest(pm);
     const wiredCache = pm.getVerdictCache();
     if (wiredCache) resources.trackFlushable(wiredCache);
     expect(wiring.runtimeMode).toBe("llm-degraded-to-rule");
@@ -805,6 +864,8 @@ describe("#664 flood guard — degraded rule reviewer does not over-defer headle
     const r = await pm.dispatchReviewer(
       "samplemail_auth",
       {
+        invocationId: randomUUID(),
+        sessionId: "permission-manager-reviewer-session",
         source: "plugin",
         category: "write",
         pathFields: ["path"],
@@ -851,6 +912,7 @@ describe("PermissionManager.checkDetailed — headless mutating reviewer lane", 
 
 describe("reviewer outcome provenance and base-cache safety", () => {
   const input = {
+    sessionId: "permission-manager-reviewer-session",
     source: "builtin" as const,
     category: "shell" as const,
     pathFields: [] as string[],
@@ -868,7 +930,7 @@ describe("reviewer outcome provenance and base-cache safety", () => {
     const cache = resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl"));
     const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
     const provider = { complete: vi.fn(complete) };
-    pm.setReviewer({
+    setReviewerForTest(pm, {
       classifier: new LlmRiskClassifier(provider, "test-model", "deny"),
       cache,
       deferredQueue: queue,
@@ -904,8 +966,8 @@ describe("reviewer outcome provenance and base-cache safety", () => {
       costUsd: 0,
     }));
 
-    const first = await pm.dispatchReviewer("bash", input, undefined, { defer: "none" });
-    const second = await pm.dispatchReviewer("bash", input, undefined, { defer: "none" });
+    const first = await pm.dispatchReviewer("bash", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
+    const second = await pm.dispatchReviewer("bash", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
 
     expect(first.outcome).toBe("fresh");
     expect(first.cacheReason).toBe("miss-not-found");
@@ -922,8 +984,8 @@ describe("reviewer outcome provenance and base-cache safety", () => {
       costUsd: 0,
     }));
 
-    const first = await pm.dispatchReviewer("bash", input, undefined, { defer: "none" });
-    const second = await pm.dispatchReviewer("bash", input, undefined, { defer: "none" });
+    const first = await pm.dispatchReviewer("bash", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
+    const second = await pm.dispatchReviewer("bash", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
 
     expect(first.outcome).toBe("malformed");
     expect(second.outcome).toBe("malformed");
@@ -948,8 +1010,8 @@ describe("reviewer outcome provenance and base-cache safety", () => {
       throw makeError();
     });
 
-    const first = await pm.dispatchReviewer("bash", input, undefined, { defer: "none" });
-    const second = await pm.dispatchReviewer("bash", input, undefined, { defer: "none" });
+    const first = await pm.dispatchReviewer("bash", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
+    const second = await pm.dispatchReviewer("bash", { ...input, invocationId: randomUUID() }, undefined, { defer: "none" });
 
     expect(first.outcome).toBe(expected);
     expect(second.outcome).toBe(expected);
@@ -966,7 +1028,7 @@ describe("reviewer outcome provenance and base-cache safety", () => {
     });
     const queue = new DeferredQueue(tmpFile("deferred-queue.jsonl"));
     const pm = new PermissionManager(tmpFile("permissions.json"));
-    pm.setReviewer({
+    setReviewerForTest(pm, {
       classifier: { classify },
       cache: resources.makeVerdictCache(tmpFile("reviewer-cache.jsonl")),
       deferredQueue: queue,
@@ -974,13 +1036,13 @@ describe("reviewer outcome provenance and base-cache safety", () => {
 
     const aborted = await pm.dispatchReviewer(
       "bash",
-      input,
+      { ...input, invocationId: randomUUID() },
       undefined,
       { defer: "medium-high", abortSignal: abortController.signal },
     );
     const next = await pm.dispatchReviewer(
       "bash",
-      input,
+      { ...input, invocationId: randomUUID() },
       undefined,
       { defer: "none" },
     );

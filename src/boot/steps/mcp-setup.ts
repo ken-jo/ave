@@ -30,7 +30,9 @@ export async function setupMcp(ctx: BootContext): Promise<void> {
     ctx.settingsService,
     {
       redirectCatchers: new AuthRedirectCatchers(),
-      openAuthorizationUrl: (url) => requireDesktopHost(ctx.host).shellOpenExternal(url),
+      openAuthorizationUrl: async (url, options) => {
+        await requireDesktopHost(ctx.host).openOAuthLogin(url, options);
+      },
       secrets: {
         getSecret: (key) => ctx.settingsService.getEncryptedSecret(key),
         // The session checks canStoreEncrypted() before any flow starts; this guard keeps a write fail-closed.

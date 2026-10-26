@@ -14,7 +14,7 @@ import { ToolRegistry } from "../../tools/registry.js";
 import type { LoadedAgentProfile } from "../../main/agent-profile-store.js";
 import {
   boardParentToolRegistry,
-  scriptedApprovalGate as fakeGate,
+  boardApprovalGate,
 } from "../../work-board/__tests__/board-test-fixtures.js";
 import type { WorkBoardRunEvent } from "../../shared/work-board-types.js";
 
@@ -123,7 +123,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const id = created.itemId;
 
       const { runner, calls } = fakeRunner();
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -131,7 +131,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
       expect(result.status).toBe("completed");
       expect(calls).toHaveLength(2);
 
@@ -167,7 +167,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       if (created.status !== "created") throw new Error("setup failed");
 
       const { runner, calls } = fakeRunner();
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -175,7 +175,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      expect((await engine.runItem(created.itemId)).status).toBe("completed");
+      expect((await engine.runItem(created.itemId, { approvalSurface: owner })).status).toBe("completed");
       const granted = calls[0].grantedToolNames;
 
       expect(granted).toEqual(expect.arrayContaining(["read_file", "grep_files", "sample_lookup"]));
@@ -196,7 +196,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       if (created.status !== "created") throw new Error("setup failed");
 
       const { runner, calls } = fakeRunner();
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => ({
@@ -207,7 +207,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(created.itemId);
+      const result = await engine.runItem(created.itemId, { approvalSurface: owner });
       expect(result.status).toBe("error");
       expect(result.reason).toContain("read-tier");
       expect(calls).toHaveLength(0);
@@ -224,7 +224,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const id = created.itemId;
 
       const { runner } = fakeRunner();
-      const { gate } = fakeGate("allow-session");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({
         store,
@@ -233,7 +233,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: (e) => events.push(e),
       });
 
-      await engine.runItem(id);
+      await engine.runItem(id, { approvalSurface: owner });
 
       // Ignore repeated turn updates when comparing phase-entry order.
       const order: WorkBoardRunEvent["phase"][] = [];
@@ -268,7 +268,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const id = created.itemId;
 
       const { runner, calls } = fakeRunner();
-      const { gate, requests } = fakeGate("deny-always");
+      const { gate, owner, requests } = boardApprovalGate("deny-once");
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({
         store,
@@ -277,7 +277,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: (e) => events.push(e),
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
 
       expect(result.status).toBe("denied");
       expect(calls).toHaveLength(1);
@@ -306,7 +306,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const id = created.itemId;
 
       const { runner } = fakeRunner();
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -314,7 +314,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
       expect(result.status).toBe("completed");
       const expectedSession = `work-board:${id}::exec`;
       expect(result.runSessionId).toBe(expectedSession);
@@ -341,7 +341,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const id = created.itemId;
 
       const { runner, calls } = fakeRunner();
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -350,7 +350,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(id, { agentName: "researcher" });
+      const result = await engine.runItem(id, { approvalSurface: owner, agentName: "researcher" });
       expect(result.status).toBe("completed");
 
       expect(calls).toHaveLength(2);
@@ -369,7 +369,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const id = created.itemId;
 
       const { runner, calls } = fakeRunner();
-      const { gate, requests } = fakeGate("allow-once");
+      const { gate, owner, requests } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -378,7 +378,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(id, { agentName: "does-not-exist" });
+      const result = await engine.runItem(id, { approvalSurface: owner, agentName: "does-not-exist" });
 
       expect(result.status).toBe("error");
       expect(calls).toHaveLength(0);
@@ -404,7 +404,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
           throw new Error("boom in execute");
         },
       });
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({
         store,
@@ -413,7 +413,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: (e) => events.push(e),
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
 
       expect(result.status).toBe("error");
       expect(result.reason).toContain("boom in execute");
@@ -442,7 +442,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       // Returned ok:false is a failed run; never persist its summary as successful output.
       const { runner, calls } = fakeRunner({ execFails: true });
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const events: WorkBoardRunEvent[] = [];
       const engine = createWorkBoardEngine({
         store,
@@ -451,7 +451,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: (e) => events.push(e),
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
 
       expect(result.status).toBe("error");
       expect(result.reason).toContain("provider not configured");
@@ -483,7 +483,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         releasePlan = resolve;
       });
       const { runner, calls } = fakeRunner({ holdPlan });
-      const { gate } = fakeGate("allow-once");
+      const { gate, owner } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -491,13 +491,13 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const firstRun = engine.runItem(id);
+      const firstRun = engine.runItem(id, { approvalSurface: owner });
       // Wait for the first plan spawn before issuing the concurrent run.
       while (calls.length === 0) {
         await new Promise((r) => setTimeout(r, 0));
       }
 
-      const busy = await engine.runItem(id);
+      const busy = await engine.runItem(id, { approvalSurface: owner });
       expect(busy.status).toBe("already_running");
       expect(calls).toHaveLength(1);
 
@@ -519,7 +519,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       await store.setRunStatus(id, "executing");
 
       const { runner, calls } = fakeRunner();
-      const { gate, requests } = fakeGate("allow-once");
+      const { gate, owner, requests } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -527,7 +527,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const result = await engine.runItem(id);
+      const result = await engine.runItem(id, { approvalSurface: owner });
       expect(result.status).toBe("already_running");
       expect(calls).toHaveLength(0);
       expect(requests).toHaveLength(0);
@@ -545,14 +545,14 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       {
         const { runner } = fakeRunner();
-        const { gate } = fakeGate("allow-once");
+        const { gate, owner } = boardApprovalGate("allow-once");
         const engine = createWorkBoardEngine({
           store,
           getRunner: () => runner,
           approvalGate: gate,
           emitProgress: () => {},
         });
-        const result = await engine.runItem(id);
+        const result = await engine.runItem(id, { approvalSurface: owner });
         expect(result.status).toBe("completed");
       }
       const afterComplete = await store.get(id);
@@ -564,14 +564,14 @@ describe("WorkBoardEngine — run-flow contracts", () => {
 
       {
         const { runner } = fakeRunner();
-        const { gate } = fakeGate("deny-once");
+        const { gate, owner } = boardApprovalGate("deny-once");
         const engine = createWorkBoardEngine({
           store,
           getRunner: () => runner,
           approvalGate: gate,
           emitProgress: () => {},
         });
-        const result = await engine.runItem(id);
+        const result = await engine.runItem(id, { approvalSurface: owner });
         expect(result.status).toBe("denied");
       }
 
@@ -585,7 +585,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
     }
   });
 
-  it("requires a fresh plan approval every run — an 'allow always' choice cannot remember a bypass", async () => {
+  it("requires a fresh plan approval every run and offers no standing grant", async () => {
     const { store, cleanup } = tempBoard();
     try {
       const created = await store.create({ title: "no remembered bypass" });
@@ -593,7 +593,7 @@ describe("WorkBoardEngine — run-flow contracts", () => {
       const id = created.itemId;
 
       const { runner } = fakeRunner();
-      const { gate, requests } = fakeGate("allow-always");
+      const { gate, owner, requests } = boardApprovalGate("allow-once");
       const engine = createWorkBoardEngine({
         store,
         getRunner: () => runner,
@@ -601,9 +601,9 @@ describe("WorkBoardEngine — run-flow contracts", () => {
         emitProgress: () => {},
       });
 
-      const first = await engine.runItem(id);
+      const first = await engine.runItem(id, { approvalSurface: owner });
       expect(first.status).toBe("completed");
-      const second = await engine.runItem(id);
+      const second = await engine.runItem(id, { approvalSurface: owner });
       expect(second.status).toBe("completed");
 
       expect(requests).toHaveLength(2);

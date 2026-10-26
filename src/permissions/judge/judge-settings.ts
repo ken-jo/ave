@@ -5,6 +5,8 @@ import { classifyAddress } from "../../core/network-guard.js";
 import { isLLMVendor, llmVendorModelOptions, type LLMVendor } from "../../shared/llm-vendor-defaults.js";
 import type { JudgeCategory } from "./judge-contract.js";
 import { MAX_PERMISSION_JUDGE_STAGES } from "../../shared/permission-judge-settings.js";
+import { JUDGE_BLOCK_THRESHOLDS } from "./judge-breaker.js";
+import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
 
 // Settings path of the subtree. The write floor is enforced outside this module: agent file and shell writes to `~/.ave/config/settings.json` hit the sensitive-path floor, and the only writer is the user-keyboard-gated Settings IPC in `src/ipc/domains/permission-judge.ts`.
 const JUDGE_SETTINGS_KEY = "permissions.judge";
@@ -71,16 +73,15 @@ export const DEFAULT_JUDGE_SETTINGS: Readonly<JudgeSettings> = Object.freeze({
   chain: Object.freeze([]) as unknown as JudgeStageSettings[],
   mode: "shadow",
   categories: Object.freeze({ shell: true, write: true, network: false }),
-  timeoutMs: 15_000,
+  timeoutMs: TOOL_TIMEOUT_POLICY.reviewerHttpTimeoutMs,
   chainDeadlineMs: 60_000,
-  breaker: Object.freeze({ consecutive: 3, total: 20 }),
+  breaker: JUDGE_BLOCK_THRESHOLDS,
 }) as Readonly<JudgeSettings>;
 
 const TIMEOUT_MIN_MS = 500;
 const TIMEOUT_MAX_MS = 120_000;
 const CHAIN_DEADLINE_MIN_MS = 1_000;
 const CHAIN_DEADLINE_MAX_MS = 600_000;
-const BREAKER_MAX = 1_000;
 const STAGE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 
 export class JudgeSettingsError extends Error {
@@ -377,13 +378,11 @@ export function normalizeJudgeSettings(
     else issues.push(`chainDeadlineMs must be an integer in [${CHAIN_DEADLINE_MIN_MS}, ${CHAIN_DEADLINE_MAX_MS}]`);
   }
   if (obj.breaker !== undefined) {
-    const b = isPlainObject(obj.breaker) ? obj.breaker : {};
-    const consecutive = b.consecutive === undefined ? settings.breaker.consecutive : intInRange(b.consecutive, 1, BREAKER_MAX);
-    const total = b.total === undefined ? settings.breaker.total : intInRange(b.total, 1, BREAKER_MAX);
-    if (consecutive === null || total === null || consecutive > total) {
-      issues.push(`breaker must be integers 1 ≤ consecutive ≤ total ≤ ${BREAKER_MAX}`);
-    } else {
-      settings.breaker = { consecutive, total };
+    if (!isPlainObject(obj.breaker) ||
+        (obj.breaker.consecutive !== undefined && obj.breaker.consecutive !== JUDGE_BLOCK_THRESHOLDS.consecutive) ||
+        (obj.breaker.total !== undefined && obj.breaker.total !== JUDGE_BLOCK_THRESHOLDS.total)) {
+      issues.push("breaker thresholds must be 3 consecutive or 20 total");
+      chainRejected = true;
     }
   }
   return {

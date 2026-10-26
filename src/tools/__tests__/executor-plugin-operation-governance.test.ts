@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../__tests__/support/reviewer-judge.js";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -276,7 +277,7 @@ describe("ToolExecutor plugin operation governance", () => {
       const deferredQueue = new DeferredQueue(
         join(directory, "deferred-queue.jsonl"),
       );
-      permissions.setReviewer({
+      setReviewerForTest(permissions, {
         classifier: new RuleBasedRiskClassifier(),
         cache: new VerdictCache(join(directory, "reviewer-cache.jsonl")),
         deferredQueue,

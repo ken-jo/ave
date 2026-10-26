@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createHash } from "node:crypto";
 import {
   CHATGPT_PLAN_AUTHORIZE_URL,
   CHATGPT_PLAN_DISCOVERY_URL,
@@ -8,7 +9,7 @@ import {
   CHATGPT_PLAN_TOKEN_URL,
 } from "../endpoints.js";
 import { ChatGptPlanIdTokenError } from "../id-token.js";
-import type { ChatGptPlanCallbackListener } from "../loopback.js";
+import { startChatGptPlanCallbackListener, type ChatGptPlanCallbackListener } from "../loopback.js";
 import {
   CHATGPT_PLAN_ACCOUNT_SECRET_KEY,
   ChatGptPlanSession,
@@ -52,6 +53,7 @@ function harness(options: {
   refreshVerify?: { failure: ConstructorParameters<typeof ChatGptPlanIdTokenError>[0] | null };
   subject?: string;
   now?: () => number;
+  startListener?: (expectedState: string) => Promise<ChatGptPlanCallbackListener>;
 } = {}) {
   const secrets = new FakeSecrets();
   const requests: { url: string; body: URLSearchParams | null; authorization: string | null }[] = [];
@@ -78,13 +80,14 @@ function harness(options: {
   let deliver: (query: string) => void = () => undefined;
   let closed = 0;
   const opened: string[] = [];
+  const loginWindows: import("../../oauth-login.js").OAuthLoginOptions[] = [];
   const events: ChatGptPlanSessionEvent[] = [];
   const session = new ChatGptPlanSession({
     fetch: fetchImpl,
     secrets,
     hostId: async () => HOST_ID,
-    openExternal: async (url) => { opened.push(url); },
-    startListener: async (): Promise<ChatGptPlanCallbackListener> => {
+    openAuthorizationUrl: async (url, login) => { opened.push(url); loginWindows.push(login); await login.completion; },
+    startListener: options.startListener ?? (async (): Promise<ChatGptPlanCallbackListener> => {
       let resolve: (url: URL) => void = () => undefined;
       let reject: (error: Error) => void = () => undefined;
       const callback = new Promise<URL>((res, rej) => { resolve = res; reject = rej; });
@@ -94,7 +97,7 @@ function harness(options: {
         callback,
         close: () => { closed += 1; reject(new Error("closed")); },
       };
-    },
+    }),
     verifier: {
       verify: async (idToken, expected) => {
         if (options.verifyFails) throw new ChatGptPlanIdTokenError("signature");
@@ -110,7 +113,7 @@ function harness(options: {
     onEvent: (event) => events.push(event),
   });
   const authorizeParams = () => new URL(opened.at(-1)!).searchParams;
-  return { session, secrets, requests, events, deliver: (query: string) => deliver(query), authorizeParams, closed: () => closed };
+  return { session, secrets, requests, events, loginWindows, deliver: (query: string) => deliver(query), authorizeParams, closed: () => closed };
 }
 
 function tokens(n: number, scope = PLAN_SCOPES, nonce = ""): Route {
@@ -136,6 +139,41 @@ function tokensFor(h: { authorizeParams: () => URLSearchParams }, n: number, sco
 }
 
 describe("plan-usage sign-in state machine", () => {
+  it("completes its login with a real ephemeral callback listener and verifies the proof key", async () => {
+    const tokenRoutes: Route[] = [];
+    const h = harness({ token: tokenRoutes, startListener: startChatGptPlanCallbackListener });
+    tokenRoutes.push(tokensFor(h, 1));
+    const { completion } = await h.session.startSignIn();
+    const params = h.authorizeParams();
+    const redirect = new URL(params.get("redirect_uri")!);
+    expect(redirect.hostname).toBe("127.0.0.1");
+    expect(Number(redirect.port)).toBeGreaterThan(0);
+    expect(params.get("code_challenge_method")).toBe("S256");
+    try {
+      redirect.search = "code=forged&state=wrong-state&client_id=oaiapp_1";
+      expect((await fetch(redirect)).status).toBe(404);
+      expect(h.requests.filter(request => request.url === CHATGPT_PLAN_TOKEN_URL)).toHaveLength(0);
+      redirect.search = new URLSearchParams({ code: "accepted-code", state: params.get("state")!, client_id: "oaiapp_1" }).toString();
+      expect((await fetch(redirect)).status).toBe(200);
+      await completion;
+      await expect(h.loginWindows[0].completion).resolves.toBeInstanceOf(URL);
+      const exchange = h.requests.find(request => request.url === CHATGPT_PLAN_TOKEN_URL)!;
+      expect(exchange.body!.get("code")).toBe("accepted-code");
+      expect(createHash("sha256").update(exchange.body!.get("code_verifier")!).digest("base64url")).toBe(params.get("code_challenge"));
+      expect(h.session.status().connection).toBe("connected");
+      await expect(fetch(redirect)).rejects.toThrow();
+    } finally { h.loginWindows[0].onCancel(); await completion.catch(() => undefined); }
+  });
+
+  it("releases the callback listener and shows a failure when its login window closes", async () => {
+    const h = harness();
+    const { completion } = await h.session.startSignIn();
+    expect(h.loginWindows).toHaveLength(1);
+    h.loginWindows[0].onCancel();
+    await expect(completion).rejects.toMatchObject({ failure: "sign-in-failed" });
+    expect(h.closed()).toBeGreaterThan(0);
+    expect(h.session.status()).toMatchObject({ connection: "signed-out", notice: "sign-in-failed" });
+  });
   it("registers, validates and stores one encrypted record, then shows the welcome once", async () => {
     const tokenRoutes: Route[] = [];
     const routed = harness({ token: tokenRoutes });
@@ -146,6 +184,7 @@ describe("plan-usage sign-in state machine", () => {
     const params = routed.authorizeParams();
     routed.deliver(`code=c1&state=${params.get("state")}&client_id=oaiapp_1&scope=${encodeURIComponent(PLAN_SCOPES)}`);
     await completion;
+    await expect(routed.loginWindows[0].completion).resolves.toBeInstanceOf(URL);
     expect(routed.authorizeParams().get("client_id")).toBe("dynamic_agent_client");
     expect(routed.authorizeParams().get("ext_agent_host_id")).toBe(HOST_ID);
     const exchange = routed.requests.find((request) => request.url === CHATGPT_PLAN_TOKEN_URL)!;

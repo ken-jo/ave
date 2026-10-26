@@ -91,7 +91,7 @@ class FakeAppServer extends EventEmitter {
 
 interface Harness {
   client: CodexAppServerClient;
-  openExternal: ReturnType<typeof vi.fn>;
+  openAuthorizationUrl: ReturnType<typeof vi.fn>;
   runtimeRoot: string;
   runtimeHome: string;
   sqliteHome: string;
@@ -114,7 +114,7 @@ async function createHarness(
   } = {},
 ): Promise<Harness> {
   const server = new FakeAppServer(handler, options.deferInitializeUntilInitialized);
-  const openExternal = vi.fn(async (_url: string) => undefined);
+  const openAuthorizationUrl = vi.fn(async (_url: string) => undefined);
   const runtimeRoot = mkdtempSync(join(TEST_RUNTIME_PARENT, "ave-codex-app-server-client-"));
   if (process.platform !== "win32") normalizeFixtureAncestorPermissions(runtimeRoot);
   const runtimeHome = join(runtimeRoot, "home");
@@ -132,7 +132,7 @@ async function createHarness(
     return server as unknown as ChildProcess;
   };
   const client = new CodexAppServerClient({
-    openExternal,
+    openAuthorizationUrl,
     runtimeHome,
     sqliteHome,
     workspaceDir,
@@ -144,7 +144,7 @@ async function createHarness(
   });
   const harness = {
     client,
-    openExternal,
+    openAuthorizationUrl,
     runtimeRoot,
     runtimeHome,
     sqliteHome,
@@ -375,8 +375,10 @@ describe("CodexAppServerClient", () => {
 
     const status = await harness.client.startBrowserLogin();
 
-    expect(harness.openExternal).toHaveBeenCalledOnce();
-    expect(harness.openExternal).toHaveBeenCalledWith(authUrl);
+    expect(harness.openAuthorizationUrl).toHaveBeenCalledOnce();
+    expect(harness.openAuthorizationUrl).toHaveBeenCalledWith(authUrl, expect.objectContaining({
+      completion: expect.any(Promise), onCancel: expect.any(Function), timeoutMs: expect.any(Number),
+    }));
     expect(status).toEqual({
       runtime: "ready",
       connection: "pending",
@@ -395,6 +397,25 @@ describe("CodexAppServerClient", () => {
         appBrand: "codex",
       },
     }));
+    const login = harness.openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
+    harness.server.stdout.write(`${JSON.stringify({ method: "account/login/completed", params: { loginId: "browser-login", success: true } })}\n`);
+    await expect(login.completion).resolves.toBeUndefined();
+  });
+
+  it("cancels the runtime login and exposes a failure after its window closes", async () => {
+    const harness = await createHarness((request) => {
+      if (request.method === "initialize") return standardInitialize(request);
+      if (request.method === "account/login/start") return { type: "chatgpt", loginId: "cancel-window", authUrl: "https://auth.openai.com/authorize" };
+      if (request.method === "account/login/cancel") return {};
+      if (request.method === "account/read") return { account: null };
+      throw new Error("Unexpected login request");
+    });
+    await harness.client.startBrowserLogin();
+    const login = harness.openAuthorizationUrl.mock.calls[0][1] as import("../oauth-login.js").OAuthLoginOptions;
+    login.onCancel();
+    await vi.waitFor(() => expect(harness.server.requests).toContainEqual(expect.objectContaining({ method: "account/login/cancel" })));
+    await expect(harness.client.getStatus()).rejects.toMatchObject({ code: "codex-login-failed" });
+    await expect(login.completion).resolves.toBeUndefined();
   });
 
   it("rejects an untrusted login URL without opening it", async () => {
@@ -414,7 +435,7 @@ describe("CodexAppServerClient", () => {
       code: "codex-login-failed",
     });
 
-    expect(harness.openExternal).not.toHaveBeenCalled();
+    expect(harness.openAuthorizationUrl).not.toHaveBeenCalled();
   });
 
   it("keeps the device verification URL in main while returning only the one-time code", async () => {
@@ -435,8 +456,10 @@ describe("CodexAppServerClient", () => {
 
     const result = await harness.client.startDeviceCodeLogin();
 
-    expect(harness.openExternal).toHaveBeenCalledOnce();
-    expect(harness.openExternal).toHaveBeenCalledWith(verificationUrl);
+    expect(harness.openAuthorizationUrl).toHaveBeenCalledOnce();
+    expect(harness.openAuthorizationUrl).toHaveBeenCalledWith(verificationUrl, expect.objectContaining({
+      completion: expect.any(Promise), onCancel: expect.any(Function), timeoutMs: expect.any(Number),
+    }));
     expect(result).toEqual({
       status: {
         runtime: "ready",

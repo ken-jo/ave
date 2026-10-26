@@ -18,6 +18,8 @@ interface WindowsPathComponentFacts {
   readonly volumeSerialNumber: string | null;
   /** The legacy 64-bit file index exposed as Node's bigint ino. */
   readonly fileIndex: string | null;
+  /** FILE_BASIC_INFO.ChangeTime from the pinned handle; changes on content, metadata or ACL change. */
+  readonly changeTime: string | null;
   readonly attributes: number;
   readonly reparseTag: number;
   readonly directory: boolean;
@@ -74,6 +76,9 @@ function isComponent(value: unknown): value is WindowsPathComponentFacts {
   const row = value as WindowsPathComponentFacts;
   if (row.reparseTarget !== null && (typeof row.reparseTarget !== "string" || !row.reparseTarget || row.reparseTarget.includes("\0"))) return false;
   if (![true, false, null].includes(row.exists) || !isUint(row.attributes) || !isUint(row.reparseTag) || typeof row.directory !== "boolean") return false;
+  if (row.exists === true ? typeof row.changeTime !== "string" || !HEX_64_PATTERN.test(row.changeTime) : row.changeTime !== null) {
+    throw new Error("Invalid Windows path pin changeTime");
+  }
   if (row.exists !== true) return [row.canonical, row.volumeSerial, row.fileId, row.volumeSerialNumber, row.fileIndex].every(field => field === null)
     && row.attributes === 0 && row.reparseTag === 0 && !row.directory;
   return typeof row.canonical === "string" && row.canonical.length > 0

@@ -26,7 +26,7 @@ function descriptor(path: string): WindowsDirectoryDacl {
 function nativeDescriptor(path: string, owner = OWNER_SID): windowsPathFacts.WindowsDaclFacts {
   const identity = { volumeSerial: "0x0000000000000001", fileId: "0x00000000000000000000000000000001" };
   return { exists: true, canonical: resolve(path), ...identity, volumeSerialNumber: "0x0000000000000001",
-    fileIndex: "0x0000000000000001", attributes: 16, reparseTag: 0, reparseTarget: null, directory: true, ancestors: [],
+    fileIndex: "0x0000000000000001", changeTime: "0x0000000000000001", attributes: 16, reparseTag: 0, reparseTarget: null, directory: true, ancestors: [],
     currentUserSid: OWNER_SID, elevated: false, principals: {},
     dacl: { identity, owner, group: OWNER_SID, protected: true, nullDacl: false,
       aces: [{ type: 0, flags: 3, mask: 0x1f01ff, sid: OWNER_SID }] } };

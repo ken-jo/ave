@@ -3,6 +3,26 @@ import { MCP_APP_PARTITION_PREFIX, MCP_APP_SCHEME } from "../shared/mcp-app-part
 import { isPluginPartitionName } from "../shared/plugin-partition.js";
 import { PRELOAD_BUNDLES } from "../shared/preload-bundles.js";
 import { configureSideBrowserWebviewAttach } from "./side-browser-webview.js";
+import { hardenRemoteWebPreferences } from "./remote-browser-preferences.js";
+
+export type AuthWebviewAttachResult = "enforced" | "blocked";
+
+// The login shell embeds only its own authorization URL, as a remote page in the login partition.
+export function configureAuthWebviewAttach(input: {
+  event: { preventDefault: () => void };
+  webPreferences: Record<string, unknown>;
+  params: Record<string, string>;
+  url: string;
+  partition: string;
+}): AuthWebviewAttachResult {
+  if (input.params.src !== input.url) {
+    input.event.preventDefault();
+    return "blocked";
+  }
+  hardenRemoteWebPreferences(input.webPreferences);
+  input.webPreferences.partition = input.partition;
+  return "enforced";
+}
 
 export type PluginWebviewAttachResult = "ignored" | "enforced";
 

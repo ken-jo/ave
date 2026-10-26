@@ -205,9 +205,14 @@ describe("judge chain — breaker and shadow", () => {
     await resolveJudge(UNDECIDED, judgeRequest(), d); // jev deny
     await resolveJudge(UNDECIDED, judgeRequest(), d); // jev ask → llm deny
     expect(d.breaker.snapshot("session-root")).toMatchObject({ consecutive: 2, total: 2, open: false });
-    await resolveJudge(UNDECIDED, judgeRequest(), d); // jev deny
+    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({
+      judged: true, source: "breaker", pause: "consecutive", decision: "ask", breakerTripped: true,
+    });
     expect(d.breaker.isOpen("session-root")).toBe(true);
-    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toEqual({ judged: false, skip: "breaker-open" });
+    expect(await resolveJudge(UNDECIDED, judgeRequest(), d)).toMatchObject({
+      judged: true, source: "breaker", pause: "consecutive", decision: "ask", breakerTripped: false,
+    });
+    expect(jev.calls + llm.calls).toBe(4);
   });
 
   it("escalated (non-final) denials and stage failures do not count", async () => {

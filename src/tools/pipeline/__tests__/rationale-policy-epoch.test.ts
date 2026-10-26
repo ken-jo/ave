@@ -1,3 +1,4 @@
+import { setReviewerForTest } from "../../../__tests__/support/reviewer-judge.js";
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { HookRunner } from "../../../hooks/hook-runner.js";
@@ -52,7 +53,7 @@ describe("rationale policy epoch", () => {
 
     changes(() => permissionManager.setMode("auto"));
     changes(() => permissionManager.setInteractiveAutoApprove("low"));
-    changes(() => permissionManager.setReviewer({
+    changes(() => setReviewerForTest(permissionManager, {
       classifier: { classify: vi.fn() } as never,
       cache: {} as never,
       deferredQueue: {} as never,

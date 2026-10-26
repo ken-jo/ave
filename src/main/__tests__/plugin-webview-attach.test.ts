@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("electron", () => ({ session: {} }));
 
 import {
+  configureAuthWebviewAttach,
   configureMainWindowWebviewAttach,
   configureMcpAppWebviewAttach,
   configurePluginWebviewAttach,
@@ -111,6 +112,31 @@ describe("plugin webview attach", () => {
 
 const attachEvent = () => ({ preventDefault: vi.fn() });
 const proxyUrl = (serverId: string) => `ave-mcp-app://${mcpAppPartitionName(serverId).slice(MCP_APP_PARTITION_PREFIX.length)}/proxy.html?t=abc`;
+
+describe("auth window webview attach", () => {
+  const url = "https://login.example.com/authorize?state=s";
+  const partition = "ephemeral-auth-00";
+
+  it("embeds only its own authorization URL", () => {
+    const event = { preventDefault: vi.fn() };
+    const webPreferences = { ...weakRequest(), preload: "C:/host/preload.cjs" };
+    expect(configureAuthWebviewAttach({ event, webPreferences, params: { src: "https://other.example.com/" }, url, partition })).toBe("blocked");
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(webPreferences.preload).toBe("C:/host/preload.cjs");
+  });
+
+  it("strips host privileges and pins the login partition", () => {
+    const event = { preventDefault: vi.fn() };
+    const webPreferences: Record<string, unknown> = { ...weakRequest(), preload: "C:/host/preload.cjs", partition: "persist:main" };
+    expect(configureAuthWebviewAttach({ event, webPreferences, params: { src: url }, url, partition })).toBe("enforced");
+    expect(event.preventDefault).not.toHaveBeenCalled();
+    expect(webPreferences.preload).toBeUndefined();
+    expect(webPreferences).toMatchObject({
+      nodeIntegration: false, nodeIntegrationInWorker: false, nodeIntegrationInSubFrames: false,
+      contextIsolation: true, sandbox: true, webSecurity: true, webviewTag: false, partition,
+    });
+  });
+});
 
 describe("MCP app webview attach", () => {
   it("drops any preload the element names and enforces the relay's sandbox from the table", () => {

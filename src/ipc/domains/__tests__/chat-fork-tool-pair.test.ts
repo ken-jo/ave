@@ -1,6 +1,6 @@
+import { installNativeChatWindow, invokeNativeChatHandler as invokeRegisteredHandler } from "../../../__tests__/support/native-chat-window.js";
 // Forked files must preserve tool-call/result pairing before any reader loads them.
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { invokeRegisteredHandler } from "../../../__tests__/test-helpers.js";
 import type { GenericMessage } from "../../../engine/llm/types.js";
 
 const CHANNEL = "ave:chat:fork";
@@ -56,6 +56,7 @@ async function setup(history: GenericMessage[]) {
   vi.clearAllMocks();
   const { registerChatHandlers } = await import("../chat.js");
   const deps = makeDeps(history);
+  await installNativeChatWindow(deps.getMainWindow());
   registerChatHandlers(deps as any);
   return deps;
 }

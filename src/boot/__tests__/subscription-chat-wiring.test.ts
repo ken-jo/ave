@@ -26,6 +26,7 @@ import {
   createSideChatConversationLoop,
 } from "../conversation.js";
 import { createSubscriptionChatLoopBindings } from "../steps/conversation-wiring.js";
+import { installOAuthLoginOpener, type OpenOAuthLogin } from "../../main/oauth-login.js";
 
 const selection = {
   kind: "subscription",
@@ -35,7 +36,7 @@ const selection = {
 
 interface SubscriptionProviderFactoryOptions {
   readonly selection: SubscriptionChatRuntimeSelection;
-  readonly openExternal: (url: string) => Promise<void>;
+  readonly openAuthorizationUrl: OpenOAuthLogin;
   readonly runtimeServiceOptions: {
     readonly audit: (event: SubscriptionRuntimeAuditEvent) => void;
   };
@@ -111,7 +112,6 @@ describe("subscription chat boot wiring", () => {
 
   it("injects the subscription runtime into main, side, and routine loops", () => {
     const bindings = createSubscriptionChatLoopBindings({
-      shellOpenExternal: vi.fn(async () => {}),
       auditLogger: { log: vi.fn() },
     });
     const shared = sharedLoopDeps();
@@ -155,22 +155,24 @@ describe("subscription chat boot wiring", () => {
     );
   });
 
-  it("uses only validated system-browser URLs and redacted audit metadata", async () => {
-    const shellOpenExternal = vi.fn(async () => {});
+  it("rejects unsafe login URLs and keeps audit metadata redacted", async () => {
     const auditLogger = { log: vi.fn() };
-    const bindings = createSubscriptionChatLoopBindings({ shellOpenExternal, auditLogger });
+    const bindings = createSubscriptionChatLoopBindings({ auditLogger });
 
     bindings.subscriptionProviderFactory(selection);
     const options = h.createSubscriptionLlmProvider.mock.calls[0]?.[0] as SubscriptionProviderFactoryOptions;
-    await options.openExternal("https://login.example.test/callback?code=one-time-secret");
-
-    expect(shellOpenExternal).toHaveBeenCalledWith(
-      "https://login.example.test/callback?code=one-time-secret",
-    );
-    await expect(options.openExternal("file:///C:/sensitive.txt")).rejects.toMatchObject({
+    const openLogin = vi.fn(async () => {});
+    const releaseOpener = installOAuthLoginOpener(openLogin);
+    const login = { completion: Promise.resolve(), onCancel: vi.fn(), timeoutMs: 10_000 };
+    try {
+      await options.openAuthorizationUrl("https://login.example.test/authorize?state=private", login);
+      expect(openLogin).toHaveBeenCalledWith("https://login.example.test/authorize?state=private", login);
+    } finally {
+      releaseOpener();
+    }
+    await expect(options.openAuthorizationUrl("file:///C:/sensitive.txt", login)).rejects.toMatchObject({
       code: "subscription-verification-url-unavailable",
     });
-    expect(shellOpenExternal).toHaveBeenCalledTimes(1);
 
     options.runtimeServiceOptions.audit({
       provider: "codex",

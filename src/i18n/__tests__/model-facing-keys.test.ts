@@ -27,6 +27,8 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["main/global-shortcuts.ts", ["startupTab."]], // shortcut notifications
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
   ["main/provider-settings-startup-error.ts", ["providerSettingsError."]], // startup settings error dialog
+  ["main/auth-window-content.ts", ["oauthWindow."]], // login window address and TLS chrome
+  ["main/auth-window-service.ts", ["oauthWindow."]], // login window title and system-browser notice
   ["main/startup-launch.ts", ["startupTab."]], // login-item dialogs
   ["shared/format-time.ts", ["sidebar."]], // relative times in the sidebar
   ["shared/plugin-provenance.ts", ["alerts."]], // plugin identity on cards and notifications
