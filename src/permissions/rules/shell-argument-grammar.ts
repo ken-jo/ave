@@ -257,7 +257,7 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
       if (PYTHON_PROGRAM.test(name) && option === "-m") return /^[A-Za-z_][A-Za-z0-9_.]*$/.test(read(at + 2) ?? "") ? complete(true) : UNPROVEN;
       if (codeOptions.includes(optionKey)) {
         const payload = read(at + 2);
-        const shellArguments = SHELL_PROGRAMS.has(name) || PYTHON_PROGRAM.test(name);
+        const shellArguments = (SHELL_PROGRAMS.has(name) && name !== "fish") || PYTHON_PROGRAM.test(name);
         return payload !== undefined && payload !== "-" && (shellArguments || at + 3 === argv.length) ? evaluation([at + 2]) : UNPROVEN;
       }
       const equal = optionKey.indexOf("=");

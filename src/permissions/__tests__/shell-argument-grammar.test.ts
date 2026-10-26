@@ -28,6 +28,10 @@ describe("positive shell argument grammars", () => {
     expect(proveStaticArgv(["env", "cp", "source", "runner"], "bash")).toMatchObject({ kind: "static-complete", changesState: true });
     expect(proveStaticArgv(["cd", "-"], "bash").kind).toBe("unproven");
   });
+  it.each(["bash", "powershell"] as const)("does not infer an inline shell argument tail in %s", (dialect) => {
+    expect(proveStaticArgv(["fish", "--command", "printf ready", "--unknown"], dialect).kind).toBe("unproven");
+    expect(proveStaticArgv(["fish", "-c", "printf ready", "-C", "printf other"], dialect).kind).toBe("unproven");
+  });
   it("counts actual positive grammar reads linearly across runner prefixes", () => {
     for (const dialect of ["bash", "powershell"] as const) {
       const work = [128, 256, 398].map((size) => _proveStaticArgvForTest([...Array.from({ length: size }, () => "npx"), "printf", "%s", "ready"], dialect));
