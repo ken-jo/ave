@@ -1,8 +1,9 @@
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { request } from "node:http";
+import { Server } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openFeatureNamespace } from "../../storage/feature-namespace.js";
 import { isChatGptPlanHostId, loadOrCreateChatGptPlanHostId } from "../host-id.js";
 import { startChatGptPlanCallbackListener } from "../loopback.js";
@@ -100,5 +101,40 @@ describe("plan-usage loopback callback", () => {
       await busy.callback.catch(() => undefined);
       await second.callback.catch(() => undefined);
     }
+  });
+
+  // The first fallback assignment reports a Fetch-blocked port; the browser could never reach it, so it must not reach the redirect URI.
+  async function expectBlockedFirstPortRetried(start: () => ReturnType<typeof startChatGptPlanCallbackListener>): Promise<void> {
+    const address = vi.spyOn(Server.prototype, "address")
+      .mockReturnValueOnce({ address: "127.0.0.1", family: "IPv4", port: 6000 });
+    const close = vi.spyOn(Server.prototype, "close");
+    let listener: Awaited<ReturnType<typeof startChatGptPlanCallbackListener>> | undefined;
+    try {
+      listener = await start();
+      expect(close).toHaveBeenCalledTimes(1);
+      address.mockRestore();
+      expect(Number(new URL(listener.redirectUri).port)).not.toBe(6000);
+      expect((await get(`${listener.redirectUri}?code=c1&state=s1`)).status).toBe(200);
+      expect((await listener.callback).searchParams.get("code")).toBe("c1");
+    } finally {
+      address.mockRestore();
+      close.mockRestore();
+      listener?.close();
+    }
+  }
+
+  it("retries a Fetch-blocked fallback port when the preferred one is busy", async () => {
+    const busy = await startChatGptPlanCallbackListener("s1", 0);
+    const port = Number(new URL(busy.redirectUri).port);
+    try {
+      await expectBlockedFirstPortRetried(() => startChatGptPlanCallbackListener("s1", port));
+    } finally {
+      busy.close();
+      await busy.callback.catch(() => undefined);
+    }
+  });
+
+  it("retries a Fetch-blocked port when no preferred port is requested", async () => {
+    await expectBlockedFirstPortRetried(() => startChatGptPlanCallbackListener("s1", 0));
   });
 });
