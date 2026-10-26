@@ -52,7 +52,7 @@ describe("the Ave home guard in a production bundle", () => {
     const home = join(scratch, "home");
     const run = (extra: Record<string, string>) => spawnSync(
       node,
-      ["--input-type=module", "-e", `const m = await import(${JSON.stringify(pathToFileURL(file).href)}); m.checkAdminPolicyPath("C:/ProgramData/Ave/policy.json"); m.checkSandboxStampTargets(["C:/Users/person/.curlrc", "C:/ProgramData/Ave/policy.json"]); console.log(JSON.stringify([m.aveHome(), m.AVE_HOME_ISOLATION_GUARD_ACTIVE]));`],
+      ["--input-type=module", "-e", `const m = await import(${JSON.stringify(pathToFileURL(file).href)}); m.checkAdminPolicyPath("C:/ProgramData/Ave/policy.json"); m.checkSandboxStampTargets(["C:/Users/example/.curlrc", "C:/ProgramData/Ave/policy.json"]); console.log(JSON.stringify([m.aveHome(), m.AVE_HOME_ISOLATION_GUARD_ACTIVE]));`],
       {
         encoding: "utf8",
         timeout: 15_000,
