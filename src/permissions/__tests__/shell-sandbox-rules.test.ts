@@ -143,9 +143,10 @@ function executorWithDock(options: { executionMode?: "host" | "sandbox"; headles
   const send = vi.fn((channel: string, request: ApprovalRequest) => {
     if (channel !== "ave:approval:request") return;
     requests.push(request);
-    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+    gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
   });
-  gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
+  const nativeWebContents = { isDestroyed: () => false, send };
+  gate = new ApprovalGate(nativeWebContents as never);
   const auditLogger = new AuditLogger();
   auditLoggers.push(auditLogger);
   const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);

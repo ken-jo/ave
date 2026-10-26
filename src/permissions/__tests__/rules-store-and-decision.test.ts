@@ -402,9 +402,10 @@ describe("gate: unreviewed shell in default mode", () => {
     }).verdict;
     expect(ruleVerdict?.level).toBe(level);
     let displayed: ApprovalRequest | undefined;
-    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    const nativeWebContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
-    } } as never);
+    } };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const id = `unreviewed-${String(level)}`;
     const pending = gate.requestAndWait({
       id, category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
@@ -418,7 +419,7 @@ describe("gate: unreviewed shell in default mode", () => {
     });
     expect(displayed).toMatchObject({ persistentAllowAllowed: rememberable });
     if (!rememberable) expect(displayed!.allowedChoices).toEqual(["allow-once", "deny-once"]);
-    gate.resolveFromDesktopRenderer(id, { requestId: id, choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac });
+    gate.resolveFromDesktopRenderer(id, { requestId: id, choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;
   });
 });

@@ -89,8 +89,7 @@ export function setSessionContentsLookup(value: SessionContentsLookup | null): v
   sessionContentsLookup = value;
 }
 
-// The live main window renderer whose tile shows `sessionId`, or null when no open window shows it. Prompts about a session (approvals, ask-user
-// questions) go here first; boot falls back to the window in use.
+// The live main window renderer whose chat tile shows `sessionId`, or null when no open tile holds it. Prompt callers apply their own routing policy.
 export function findSessionMainWindowContents(sessionId: string | undefined): WebContents | null {
   if (sessionId === undefined) return null;
   const holder = sessionContentsLookup?.(sessionId) ?? null;

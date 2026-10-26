@@ -2011,6 +2011,14 @@ remembered approvals, reviewer and parent decisions, and sealed rationale
 receipts do not establish fresh human consent.
 Fresh native consent is a gate-verified response to the current signed approval
 card, [consumed once by the host](../../src/permissions/judge/manual-approval.ts).
+The responder must be a registered application window's exact main frame and
+the live owner of the card's session or terminal. Listing pending cards and
+answering them both resolve the current owner; moving the session or terminal
+transfers that authority immediately. A valid card signature does not authorize
+a foreign window. Missing or foreign ownership rejects and audits the answer
+without settling the pending card or minting fresh consent.
+Remembering exact approvals or shell rules and requesting scope proposals use
+the same frame and live-owner checks; knowing a card id grants neither operation.
 After all asynchronous hooks and route admission, one synchronous final gate
 rechecks cancellation, required audit integrity and writability, the shared
 breaker and plugin/remote authority immediately before entering the handler.

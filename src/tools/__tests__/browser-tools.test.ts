@@ -180,7 +180,7 @@ describe("browser tools", () => {
     });
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
-    const gate = new ApprovalGate({
+    const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
         if (channel !== "ave:approval:request") return;
@@ -207,10 +207,11 @@ describe("browser tools", () => {
             choice: "allow-once",
             nonce: request.nonce,
             hmac: request.hmac,
-          });
+          }, nativeWebContents as never);
         })());
       },
-    } as never);
+    };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     let seq = 0;
     const run = async (name: string, input: Record<string, unknown>, sessionId: string | undefined = HOST_SESSION) => {

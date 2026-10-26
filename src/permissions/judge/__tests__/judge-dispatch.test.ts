@@ -1007,7 +1007,7 @@ describe("automatic review pause and evidence", () => {
     const answer = { requestId: card.id, choice: "allow-once" as const, nonce: card.nonce, hmac: card.hmac };
     subject.manager.resumeAutomatedApproval("session-root", answer);
     expect(subject.manager.getJudgeBreaker().isOpen("session-root")).toBe(true);
-    gate.resolveFromDesktopRenderer(card.id, answer);
+    gate.resolveFromDesktopRenderer(card.id, answer, wc as never);
     const approved = await pending;
     subject.manager.resumeAutomatedApproval("other-session", approved);
     expect(subject.manager.getJudgeBreaker().isOpen("session-root")).toBe(true);

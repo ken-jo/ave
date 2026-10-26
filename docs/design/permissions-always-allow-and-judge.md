@@ -300,6 +300,13 @@ Every allow remains automated for pause checks unless the host has consumed
 verified fresh native human consent for that exact action. Policy grants,
 remembered approvals, reviewer decisions, parent decisions and sealed rationale
 receipts do not establish that provenance.
+Native approval requires a registered application window's exact main frame
+and live ownership of the card's session or terminal. Pending-card listing and
+answers resolve current ownership, so a move transfers authority immediately;
+a valid signature never authorizes a foreign window. A rejected answer is
+audited, leaves the card pending for its owner and creates no fresh consent.
+Remembered grants and scope proposals share this
+[live-owner boundary](../architecture/permission-policy-design.md#automated-judge-chain).
 One synchronous final gate runs immediately before the tool handler, after all
 asynchronous hooks and route admission. It rechecks cancellation, required audit
 integrity and writability, breaker state and plugin/remote authority, with no

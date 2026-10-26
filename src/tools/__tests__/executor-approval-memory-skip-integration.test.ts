@@ -398,7 +398,7 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
     manager.setInteractiveAutoApprove("low");
     const cards: ApprovalRequest[] = [];
     const recordings: Promise<void>[] = [];
-    const gate = new ApprovalGate({
+    const nativeWebContents = {
       isDestroyed: () => false,
       send: (channel: string, request: ApprovalRequest) => {
         if (channel !== "ave:approval:request") return;
@@ -415,10 +415,11 @@ describe("ToolExecutor — Store B memory skip end-to-end (real PermissionManage
           });
           gate.resolveFromDesktopRenderer(request.id, {
             requestId: request.id, choice: "allow-always", nonce: request.nonce, hmac: request.hmac,
-          });
+          }, nativeWebContents as never);
         })());
       },
-    } as never);
+    };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const executor = new ToolExecutor(registry, undefined, manager, undefined, gate, undefined, auditLogger);
     const run = (id: string, cwd: string, nextCommand = command) => executor.executeAll(
       [{ id, name: tool.name, input: { command: nextCommand } }],

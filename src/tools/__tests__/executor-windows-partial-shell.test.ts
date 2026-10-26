@@ -158,9 +158,10 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const send = vi.fn((channel: string, request: ApprovalRequest) => {
       if (channel !== "ave:approval:request") return;
       expect(request).toMatchObject({ executionPlan: { executionRequest: "host", mode: "plain", fallbackReason: "none", requiresExplicitUserApproval: true }, requireExplicit: true });
-      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
     });
-    gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
+    const nativeWebContents = { isDestroyed: () => false, send };
+    gate = new ApprovalGate(nativeWebContents as never);
     const pm = pmReturning({ decision: "ask", reason: "plain shell requires consent", layer: 6 });
     const checkDetailed = vi.spyOn(pm, "checkDetailed");
     const executor = new ToolExecutor(registry, undefined, pm, undefined, gate);
@@ -321,9 +322,10 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     let gate: ApprovalGate;
     const send = vi.fn((channel: string, request: ApprovalRequest) => {
       if (channel !== "ave:approval:request") return;
-      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac });
+      gate.resolveFromDesktopRenderer(request.id, { requestId: request.id, choice: "allow-once", nonce: request.nonce, hmac: request.hmac }, nativeWebContents as never);
     });
-    gate = new ApprovalGate({ isDestroyed: () => false, send } as never);
+    const nativeWebContents = { isDestroyed: () => false, send };
+    gate = new ApprovalGate(nativeWebContents as never);
     const result = await new ToolExecutor(registry, undefined, pm, undefined, gate).executeAll(
       [{ id: "partial-shell-card", name: "bash", input: { command: "echo plan-b" } }],
       { sessionId: "partial-shell-card", permissionContext: permissionContext() },

@@ -97,9 +97,10 @@ describe("exact decisions scoped to the captured working directory", () => {
       trustOrigin: "user-keyboard", executionCwd: alias, allowedDirectories: [first], sensitivePathsAdjacent: [],
     }, undefined, { defer: "none" });
     let displayed: ApprovalRequest | undefined;
-    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    const nativeWebContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
-    } } as never);
+    } };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const pending = gate.requestAndWait({
       id: "alias-pending", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args, reason: "assessment unavailable", createdAt: Date.now(), trustOrigin: "user-keyboard",
@@ -118,7 +119,7 @@ describe("exact decisions scoped to the captured working directory", () => {
       trustOrigin: snapshot.trustOrigin, workingDirectoryIdentity: snapshot.workingDirectoryIdentity,
       riskCeilingAtApproval: snapshot.riskCeilingAtApproval,
     });
-    gate.resolveFromDesktopRenderer("alias-pending", { requestId: "alias-pending", choice: "allow-always", nonce: displayed!.nonce, hmac: displayed!.hmac });
+    gate.resolveFromDesktopRenderer("alias-pending", { requestId: "alias-pending", choice: "allow-always", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;
     expect(await lookupApproval("bash", JSON.stringify(args), "builtin", "user-keyboard", undefined, first)).not.toBeNull();
     expect(await lookupApproval("bash", JSON.stringify(args), "builtin", "user-keyboard", undefined, alias)).toBeNull();
@@ -137,9 +138,10 @@ describe("exact decisions scoped to the captured working directory", () => {
     }, undefined, { defer: "none" });
     if (caseName === "high") expect(reviewer.approvalBasis!.ruleVerdict).toBe("high");
     let displayed: ApprovalRequest | undefined;
-    const gate = new ApprovalGate({ isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
+    const nativeWebContents = { isDestroyed: () => false, send: (channel: string, request: ApprovalRequest) => {
       if (channel === "ave:approval:request") displayed = request;
-    } } as never);
+    } };
+    const gate = new ApprovalGate(nativeWebContents as never);
     const pending = gate.requestAndWait({
       id: "ineligible", category: "tool", toolName: "bash", toolCategory: "shell", source: "builtin",
       args: caseName === "changed-input" ? { command: "rm -rf file" } : args,
@@ -153,7 +155,7 @@ describe("exact decisions scoped to the captured working directory", () => {
       }),
     });
     expect(displayed).toMatchObject({ persistentAllowAllowed: false, allowedChoices: ["allow-once", "deny-once"] });
-    gate.resolveFromDesktopRenderer("ineligible", { requestId: "ineligible", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac });
+    gate.resolveFromDesktopRenderer("ineligible", { requestId: "ineligible", choice: "deny-once", nonce: displayed!.nonce, hmac: displayed!.hmac }, nativeWebContents as never);
     await pending;
   });
 

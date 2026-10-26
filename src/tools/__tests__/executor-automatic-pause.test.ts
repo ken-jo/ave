@@ -157,15 +157,16 @@ async function rationaleContinuation(surface: "native" | "unavailable" = "native
 
 function manualGate() {
   const cards: ApprovalRequest[] = [];
-  const gate = new ApprovalGate({
+  const nativeWebContents = {
     isDestroyed: () => false,
     send(channel: string, request: ApprovalRequest) {
       if (channel === "ave:approval:request") cards.push(request);
     },
-  } as never);
+  };
+  const gate = new ApprovalGate(nativeWebContents as never);
   const approve = (card: ApprovalRequest) => gate.resolveFromDesktopRenderer(card.id, {
     requestId: card.id, choice: "allow-once", nonce: card.nonce, hmac: card.hmac,
-  });
+  }, nativeWebContents as never);
   return { gate, cards, approve };
 }
 
@@ -186,16 +187,17 @@ function heldPreToolUse() {
 
 function denyingGate() {
   const cards: ApprovalRequest[] = [];
-  const gate = new ApprovalGate({
+  const nativeWebContents = {
     isDestroyed: () => false,
     send(channel: string, request: ApprovalRequest) {
       if (channel !== "ave:approval:request") return;
       cards.push(request);
       queueMicrotask(() => gate.resolveFromDesktopRenderer(request.id, {
         requestId: request.id, choice: "deny-once",
-      }));
+      }, nativeWebContents as never));
     },
-  } as never);
+  };
+  const gate = new ApprovalGate(nativeWebContents as never);
   return { gate, cards };
 }
 
