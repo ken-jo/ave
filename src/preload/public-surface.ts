@@ -1,5 +1,6 @@
 // Public chat actions share gesture tokens; mutating permission and policy operations remain internal.
 import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
+import type { TurnReviewResult } from "../shared/turn-change-review.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { ipcRenderer } from "electron";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
@@ -122,6 +123,8 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
     ipcRenderer.invoke(CHANNELS.chat.editResend, messageId, newText, chatGroupId),
   chatRewindTo: async (messageId: string, mode: RewindMode = "conversation") =>
     ipcRenderer.invoke(CHANNELS.chat.rewindTo, messageId, chatGroupId, mode) as Promise<RewindResult>,
+  chatGetTurnReview: async (expectedSessionId: string) =>
+    ipcRenderer.invoke(CHANNELS.chat.getTurnReview, expectedSessionId, chatGroupId) as Promise<TurnReviewResult>,
   chatFork: async (messageId?: string) => ipcRenderer.invoke(CHANNELS.chat.fork, messageId, chatGroupId),
   chatContinueLastUser: async (sessionId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.continueLastUser, { sessionId }, chatGroupId) as Promise<{ ok: boolean; error?: string }>,

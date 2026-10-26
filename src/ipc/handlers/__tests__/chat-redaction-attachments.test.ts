@@ -6,6 +6,7 @@ import {
 } from "../chat.js";
 import { initDlpAudit } from "../../../audit/dlp-filter.js";
 import { turnOptions } from "./chat-test-helpers.js";
+import * as fileMentionContext from "../file-mention-context.js";
 
 const completedTurn = {
   text: "done",
@@ -44,10 +45,30 @@ function redactNotices(sink: ReturnType<typeof vi.fn>) {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   initDlpAudit(null, "unknown");
 });
 
 describe("chat send attachment PII redaction", () => {
+  it("redacts resolved file context and the independently persisted display text", async () => {
+    const fixture = makeFixture(true);
+    const expansion = vi.spyOn(fileMentionContext, "expandFileMentionContext").mockResolvedValueOnce({
+      input: "point here alice@example.com\n<file-context>call 010-1234-5678</file-context>",
+      displayText: "point here alice@example.com",
+    });
+    await handleChatSend(fixture.deps, { input: "point here", inputOrigin: "user-keyboard", userActivation: true }, fixture.context);
+    expect(expansion).toHaveBeenCalledOnce();
+    expect(fixture.runTurn.mock.calls[0][0]).toBe("point here [REDACTED:EMAIL]\n<file-context>call [REDACTED:PHONE]</file-context>");
+    expect(turnOptions(fixture.runTurn).displayText).toBe("point here [REDACTED:EMAIL]");
+  });
+  it("does not resolve file mentions for a refused overlapping turn", async () => {
+    const fixture = makeFixture(true);
+    const expansion = vi.spyOn(fileMentionContext, "expandFileMentionContext");
+    fixture.context.trackStreamTurn = () => Promise.reject(new Error("streaming-active"));
+    await expect(handleChatSend(fixture.deps, { input: "point here", inputOrigin: "user-keyboard", userActivation: true }, fixture.context)).rejects.toThrow("streaming-active");
+    expect(expansion).not.toHaveBeenCalled();
+    expect(fixture.runTurn).not.toHaveBeenCalled();
+  });
   it("redacts input and text attachments, aggregates one notice, and preserves non-text parts", async () => {
     const fixture = makeFixture(true);
     const dlpAudit = { log: vi.fn() };
