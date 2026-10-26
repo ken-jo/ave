@@ -58,7 +58,28 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
       expect(metrics.hasTabs).toBe(false);
       expect(metrics.overflow).toBeLessThanOrEqual(1);
       expect(metrics.rowsWithinCard).toBe(true);
+      const browserRow = page.getByTestId("sidebar-surface-browser:abc12345-1");
+      const terminalRow = page.getByTestId("sidebar-surface-terminal:abc12345-2");
+      await browserRow.focus();
+      await page.keyboard.press("Tab");
+      await expect(terminalRow).toBeFocused();
+      await page.keyboard.press("Enter");
+      await terminalRow.focus();
+      await page.keyboard.press("Shift+Tab");
+      await expect(browserRow).toBeFocused();
+      await page.keyboard.press("Space");
+      if (width === 1100) {
+        await expect(browserRow).toHaveAttribute("aria-current", "page");
+      } else {
+        await expect(browserRow).not.toHaveAttribute("aria-current");
+      }
       await page.screenshot({ path: testInfo.outputPath(`sidebar-${width}.png`) });
+      await page.getByTestId("sidebar-settings").focus();
+      await page.keyboard.press("Enter");
+      await expect(page.getByTestId("sidebar-settings")).toHaveAttribute("aria-current", "page");
+      await expect(browserRow).not.toHaveAttribute("aria-current");
+      await browserRow.focus();
+      await page.keyboard.press("Enter");
     }
     await page.getByTestId("sidebar-surface-terminal:abc12345-2").click();
     await expect(page.getByTestId("chat-side-panel-tab-strip")).toBeVisible();
@@ -73,8 +94,18 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
     const policy = await page.locator('meta[http-equiv="Content-Security-Policy"]').getAttribute("content");
     expect(policy).toContain("img-src 'self' data: blob: ave-content:");
     await page.screenshot({ path: testInfo.outputPath("sidebar-favicon.png") });
+    await page.getByTestId("sidebar-group-features").click();
+    await page.getByTestId("sidebar-web").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("web-panel")).toBeVisible();
+    await page.getByTestId("sidebar-surface-browser:abc12345-1").focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByTestId("web-panel")).toBeHidden();
+    await expect(page.getByTestId("chat-side-panel-browser-webview")).toBeVisible();
+    await expect(page.getByTestId("sidebar-surface-browser:abc12345-1")).toHaveAttribute("aria-current", "page");
   } finally {
-    await teardownSeededElectron(ctx);
+    await teardownSeededElectron(ctx, { terminate: true });
+    server.closeAllConnections();
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
 });

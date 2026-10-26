@@ -171,6 +171,7 @@ export interface SidebarProps {
   browserTabs?: BrowserTabsApi;
   chatGroupIds?: readonly string[];
   onOpenSurface?: (tabId: string) => void;
+  isSurfaceVisible?: (tabId: string) => boolean;
   /** Per-conversation pin state — reuses the existing starred-session mechanism (id truthy = pinned). */
   isSessionStarred?: (sessionId: string) => string | null;
   /** Toggle a conversation's pin state (any row, not just the active session). */
@@ -360,8 +361,9 @@ function NavItem({
   return btn;
 }
 
-function SidebarSurfaceRow({ surface, onOpen }: {
+function SidebarSurfaceRow({ surface, visible, onOpen }: {
   surface: SidebarSurface;
+  visible: boolean;
   onOpen?: (tabId: string) => void;
 }) {
   const { t } = useTranslation();
@@ -381,7 +383,7 @@ function SidebarSurfaceRow({ surface, onOpen }: {
       icon={surface.kind === "browser" && faviconUrl && faviconUrl !== failedFavicon
         ? <img src={faviconUrl} alt="" referrerPolicy="no-referrer" className="h-4 w-4 object-contain" onError={() => setFailedFavicon(faviconUrl)} />
         : <Icon className="h-4 w-4" />}
-      isActive={active?.tabId === surface.tabId}
+      isActive={visible && active?.tabId === surface.tabId}
       onClick={() => onOpen?.(surface.tabId)}
       collapsed={false}
       data-testid={`sidebar-surface-${surface.tabId}`}
@@ -1128,6 +1130,7 @@ function ProjectSessionList({
   projects: projectsProp,
   surfaces,
   onOpenSurface,
+  isSurfaceVisible,
   isSessionStarred,
   onToggleSessionStar,
   isProjectPinned,
@@ -1161,6 +1164,7 @@ function ProjectSessionList({
   projects?: ProjectIdentity[];
   surfaces: readonly SidebarSurface[];
   onOpenSurface?: (tabId: string) => void;
+  isSurfaceVisible?: (tabId: string) => boolean;
   isSessionStarred?: (sessionId: string) => string | null;
   onToggleSessionStar?: (sessionId: string, title?: string) => void | Promise<void>;
   isProjectPinned?: (projectRoot: string | undefined) => boolean;
@@ -1305,7 +1309,7 @@ function ProjectSessionList({
   const generalSurfaces = surfaces.filter((surface) => !projectOfSurface(surface));
   const hasUngroupedSessions = ungroupedSessions.length > 0 || generalSurfaces.length > 0;
   const renderSurfaceRow = (surface: SidebarSurface) => (
-    <SidebarSurfaceRow key={surface.tabId} surface={surface} onOpen={onOpenSurface} />
+    <SidebarSurfaceRow key={surface.tabId} surface={surface} visible={Boolean(isSurfaceVisible?.(surface.tabId))} onOpen={onOpenSurface} />
   );
 
   const conversationMenuHandlers = (session: SessionSummary): NativeContextMenuHandlers => {
@@ -1806,6 +1810,7 @@ export function Sidebar({
   browserTabs,
   chatGroupIds = [],
   onOpenSurface,
+  isSurfaceVisible,
   isSessionStarred,
   onToggleSessionStar,
   conversationActions,
@@ -2264,6 +2269,7 @@ export function Sidebar({
                     onProjectError={onProjectError}
                     surfaces={surfaces}
                     onOpenSurface={onOpenSurface}
+                    isSurfaceVisible={isSurfaceVisible}
                     isSessionStarred={isSessionStarred}
                     onToggleSessionStar={onToggleSessionStar}
                     isProjectPinned={isProjectPinned}

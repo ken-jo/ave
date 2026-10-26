@@ -32,7 +32,7 @@ import type { ConversationRowActions, ProjectRowActions } from "./components/Sid
 import { WebSurfaceLayer } from "./components/WebSurfaceLayer.js";
 import { SurfacePane } from "./components/MainSurfacePanels.js";
 import type { SideChatRuntime } from "./components/SideChatView.js";
-import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces } from "./preview/main-surfaces.js";
+import { SURFACE_KIND_OF_VIEW, VIEW_OF_SURFACE_KIND, useMainSurfaces, type MainSurface } from "./preview/main-surfaces.js";
 import { SurfaceMovesContext, activateSideTab, getSideTabsSink, isMovableTabKind, type SurfaceDragPayload, type SurfaceMoves } from "./preview/surface-moves.js";
 import { latestUnreadTerminal, markTerminalRead, useTerminalAttentionWatcher } from "./preview/terminal-attention.js";
 import { surfaceMountLocation, useSurfaceMountRevision } from "./preview/surface-mounts.js";
@@ -480,6 +480,12 @@ export function App() {
     chatGroups.setPaneContent(chatGroups.focusedId, { view: VIEW_OF_SURFACE_KIND[closed.kind], surface: surface.tabId });
   }, [chatGroups, mainSurfaces]);
 
+  const activeSurfaceOf = useCallback((surface: MainSurface): ActiveSurface => ({
+    kind: surface.kind,
+    tabId: surface.tabId,
+    label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[surface.kind]])} ${surface.ordinal}`,
+    cwd: surface.cwd ?? null,
+  }), [t]);
   const mainBrowserHostRef = useRef({ chatGroups, mainSurfaces });
   mainBrowserHostRef.current = { chatGroups, mainSurfaces };
   const openWorkspaceSurface = useCallback((tabId: string) => {
@@ -489,19 +495,21 @@ export function App() {
       const paneId = Object.entries(groups.contentById).find(([, content]) => content?.surface === tabId)?.[0];
       if (paneId) {
         groups.focus(paneId);
-        const active = focusedActiveSurfaceRef.current;
-        if (active?.tabId === tabId) showActiveSurface(active);
       } else groups.setPaneContent(groups.focusedId, { view: VIEW_OF_SURFACE_KIND[surface.kind], surface: tabId });
+      showActiveSurface(activeSurfaceOf(surface));
       return true;
     }
     const groupId = activateSideTab(tabId);
     if (groupId) {
       groups.setPaneContent(groupId, PANE_HOME);
       groups.focus(groupId);
+      const selected = getSideTabsSink(groupId)?.snapshot().find((entry) => entry.tabId === tabId);
+      if (!selected) throw new Error("Selected surface is missing");
+      showActiveSurface(activeSurfaceOf(selected));
       return true;
     }
     return false;
-  }, []);
+  }, [activeSurfaceOf]);
 
   /** Show the most recent live terminal asking for attention; discard stale entries until one can be shown. */
   const jumpToUnreadTerminal = useCallback(() => {
@@ -544,12 +552,7 @@ export function App() {
   const focusedSurfaceId = chatGroups.contentById[chatGroups.focusedId]?.surface;
   const focusedMainSurface = focusedSurfaceId ? mainSurfaces.surfaces.find((each) => each.tabId === focusedSurfaceId) : undefined;
   const focusedActiveSurface: ActiveSurface | null = focusedMainSurface
-    ? {
-      kind: focusedMainSurface.kind,
-      tabId: focusedMainSurface.tabId,
-      label: `${t(BUILTIN_LABEL_KEYS[VIEW_OF_SURFACE_KIND[focusedMainSurface.kind]])} ${focusedMainSurface.ordinal}`,
-      cwd: focusedMainSurface.cwd ?? null,
-    }
+    ? activeSurfaceOf(focusedMainSurface)
     : null;
   const focusedActiveSurfaceRef = useRef(focusedActiveSurface);
   focusedActiveSurfaceRef.current = focusedActiveSurface;
@@ -1828,6 +1831,9 @@ export function App() {
                 browserTabs={api.browserTabs}
                 chatGroupIds={leafIds(chatGroups.tree)}
                 onOpenSurface={openWorkspaceSurface}
+                isSurfaceVisible={(tabId) => focusedSurface
+                  ? focusedSurface === tabId
+                  : activeView === "home" && getSideTabsSink(chatGroups.focusedId)?.visibleTabId?.() === tabId}
                 isSessionStarred={isSessionStarred}
                 onToggleSessionStar={handleToggleSessionStar}
                 isProjectPinned={isProjectPinned}
