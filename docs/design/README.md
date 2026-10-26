@@ -8,9 +8,10 @@ contracts. The visual design system for the whole app is
 ## Pages in this directory
 
 - [Tiled chat groups](./tiled-chat-groups.md): the workbench model of the main
-  area. Up to four framed chat groups in work mode and one in chat mode, what is
-  per group and what is per window, how `ave:chat:*` divides along that line, the
-  split tree, edge drops, gutter resizing, and the work panel inside a tile.
+  area. Up to four framed chat groups on a wide canvas and the focused group on
+  a narrow canvas; what is per group and what is per window; how `ave:chat:*`
+  divides along that line; the split tree, edge drops, gutter resizing, and
+  the work panel inside a tile.
   Change it in the same commit that changes that behavior. Implemented.
 - [Extensions and plugins](./extensions-and-plugins.md): an extension is a code
   package (HostApi, Lease, Admission); a plugin is a code-free bundle of skills,
