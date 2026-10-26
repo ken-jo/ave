@@ -22,46 +22,11 @@ import * as policyHome from "../../shared/policy-home.js";
 
 useVerifiedAveHomePrivacy();
 
-// A simulated drive path must use drive-path operations even on a POSIX host.
-vi.mock("node:path", async original => {
-  const actual = await original<typeof import("node:path")>();
-  return { ...actual, ...Object.fromEntries(Object.entries(actual.win32)
-    .filter(([, value]) => typeof value === "function")
-    .map(([key, value]) => [key, (...args: unknown[]) =>
-      Reflect.apply(process.platform === "win32" && args.some(arg => typeof arg === "string" && /^[A-Za-z]:[\\/]/.test(arg))
-        ? value as (...args: unknown[]) => unknown : actual[key as keyof typeof actual] as (...args: unknown[]) => unknown, undefined, args)])) };
-});
-
-// On a POSIX host a simulated drive is empty: only its root resolves, so path resolution still walks up to it.
-vi.mock("node:fs", async original => {
-  const actual = await original<typeof import("node:fs")>();
-  if (process.platform === "win32") return actual;
-  const simulated = (real: (...args: unknown[]) => unknown) => (...args: unknown[]) => {
-    const [path] = args;
-    if (typeof path !== "string" || !/^[A-Za-z]:[\\/]/.test(path)) return real(...args);
-    if (/^[A-Za-z]:[\\/]$/.test(path)) return path;
-    throw Object.assign(new Error(`ENOENT: no such file or directory, realpath '${path}'`), { code: "ENOENT" });
-  };
-  const realpathSync = Object.assign(simulated(actual.realpathSync as (...args: unknown[]) => unknown),
-    { native: simulated(actual.realpathSync.native as (...args: unknown[]) => unknown) }) as typeof actual.realpathSync;
-  return { ...actual, default: { ...actual, realpathSync }, realpathSync };
-});
-
-// Lifecycle fixtures on another kernel validate spellings but cannot open native handles.
-vi.mock("../windows-stamp-targets.js", async original => {
-  const actual = await original<typeof import("../windows-stamp-targets.js")>();
-  const host = process.platform;
-  return { ...actual, pinWindowsFilesystemConfig: (filesystem: Parameters<typeof actual.pinWindowsFilesystemConfig>[0]) => {
-    if (host === "win32") return actual.pinWindowsFilesystemConfig(filesystem);
-    for (const entries of [filesystem?.allowRead, filesystem?.allowWrite, filesystem?.denyRead, filesystem?.denyWrite]) {
-      for (const entry of entries ?? []) {
-        const path = typeof entry === "string" ? entry : entry.path;
-        if (/[A-Za-z]:/.test(path) && !actual.isPlainWindowsStampPath(path.replace(/\//g, "\\"))) throw new Error("Invalid simulated drive path");
-      }
-    }
-    return filesystem;
-  } };
-});
+// Simulated win32 on a POSIX host: drive-path math, an empty simulated drive, ASRT resolved on it, and spelling-only stamp pins.
+vi.mock("node:path", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDrivePath(await original()));
+vi.mock("node:fs", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveFs(await original()));
+vi.mock("node:module", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedDriveModule(await original()));
+vi.mock("../windows-stamp-targets.js", async original => (await import("../../__tests__/support/simulated-win32-drive.js")).simulatedStampTargets(await original()));
 
 const h = vi.hoisted(() => ({
   initialize: vi.fn(),
