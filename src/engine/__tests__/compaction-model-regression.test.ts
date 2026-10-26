@@ -162,3 +162,46 @@ describe("explicit compaction model failure", () => {
     expect(loop.isCompacting).toBe(false);
   });
 });
+
+
+describe("automatic compaction failure visibility", () => {
+  it("reports summary-model exhaustion without terminating a usable chat route", async () => {
+    const { loop, calls } = fixture();
+    vi.mocked(compactWithBoundary).mockImplementationOnce(async ({ memoryReviewer }) => {
+      await memoryReviewer.review("recap", "history");
+      throw new Error("Summary unexpectedly succeeded");
+    });
+    vi.spyOn(loop, "estimateCurrentRequestProjection").mockReturnValue({
+      totalTokens: 90_000, systemPromptTokens: 0, messageTokens: 90_000, toolSchemaTokens: 0,
+    });
+    const onError = vi.fn();
+    const onTextDelta = vi.fn();
+    const result = await settle(loop.runTurn("hello", { onError, onTextDelta }, undefined, { inputOrigin: "user-keyboard" }));
+    expect(calls.filter((call) => call.model === "summary-model")).toHaveLength(5);
+    expect(calls.some((call) => call.model === "fallback-model")).toBe(false);
+    expect(onError).toHaveBeenCalledExactlyOnceWith("Automatic compaction failed", undefined, undefined, "compaction");
+    expect(onTextDelta).toHaveBeenCalledWith("available summary");
+    expect(result.stopReason).toBe("end_turn");
+  });
+});
+
+
+describe("cancelled compaction", () => {
+  it("does not publish a maintenance failure for a user cancellation", async () => {
+    const { loop } = fixture();
+    loop.history.append({ role: "user", content: "question" });
+    loop.history.append({ role: "assistant", content: "answer" });
+    const before = loop.history.getMessages();
+    const controller = new AbortController();
+    vi.mocked(compactWithBoundary).mockImplementationOnce(async () => {
+      controller.abort();
+      throw new Error("cancelled");
+    });
+    const scope = loop.resolveToolScope("");
+    const projection = loop.createRequestProjectionContext(scope, null, undefined, loop.rebuildToolSchemas(scope));
+    const onError = vi.fn();
+    await expect(loop.runPreflightGuard(projection, controller.signal, { onError }, { forceReason: "rate-limit" })).resolves.toBe(false);
+    expect(onError).not.toHaveBeenCalled();
+    expect(loop.history.getMessages()).toEqual(before);
+  });
+});

@@ -545,3 +545,62 @@ describe("queue completed-turn replay cancellation", () => {
     expect(f.result.current.messageQueueStore.getPending()).toHaveLength(2);
   });
 });
+
+
+describe("queue disposition before guide acceptance", () => {
+  it.each(["drop-before-done", "done-before-drop"])("drains a dropped reserved batch exactly once after a late acceptance: %s", async (order) => {
+    const f = makeDeferredQueueGuide();
+    const store = f.result.current.messageQueueStore;
+    f.emit({ type: "tool_end" });
+    const text = f.inject.mock.calls[0][0];
+    if (order === "done-before-drop") f.emit({ type: "done" });
+    f.emit({ type: "guidance_dropped", text });
+    if (order === "drop-before-done") f.emit({ type: "done" });
+    await f.accept();
+    await act(async () => { await Promise.resolve(); });
+    expect(f.onAsk).toHaveBeenCalledTimes(1);
+    expect(f.onAsk.mock.calls[0][0]).toBe(text);
+    expect(store.getItems()).toEqual([]);
+    expect(f.guide.onError).not.toHaveBeenCalled();
+    f.emit({ type: "done" });
+    expect(f.onAsk).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears a delivered reserved batch before a late acceptance without retrying", async () => {
+    const f = makeDeferredQueueGuide();
+    f.emit({ type: "tool_end" });
+    f.emit({ type: "guidance_injected", text: f.inject.mock.calls[0][0] });
+    f.emit({ type: "done" });
+    await f.accept();
+    expect(f.onAsk).not.toHaveBeenCalled();
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+  });
+
+  it("does not attach an unrelated dropped message to the active reservation", async () => {
+    const f = makeDeferredQueueGuide();
+    f.emit({ type: "tool_end" });
+    f.emit({ type: "guidance_dropped", text: "unrelated guidance" });
+    f.emit({ type: "done" });
+    await f.accept();
+    expect(f.onAsk).not.toHaveBeenCalled();
+    expect(f.result.current.messageQueueStore.getItems().every((item) => item.handedOffAs !== undefined)).toBe(true);
+  });
+});
+
+
+describe("delivered guidance before invoke failure", () => {
+  it.each(["denied", "error"])("keeps delivery authoritative after a late %s reply", async (outcome) => {
+    const f = makeDeferredQueueGuide();
+    f.emit({ type: "tool_end" });
+    f.emit({ type: "guidance_injected", text: f.inject.mock.calls[0][0] });
+    f.emit({ type: "done" });
+    await act(async () => {
+      if (outcome === "denied") f.pending.resolve({ ok: false, error: "no-active-turn" });
+      else f.pending.reject(new Error("transport closed"));
+      await f.pending.promise.catch(() => {});
+    });
+    expect(f.onAsk).not.toHaveBeenCalled();
+    expect(f.guide.onError).not.toHaveBeenCalled();
+    expect(f.result.current.messageQueueStore.getItems()).toEqual([]);
+  });
+});

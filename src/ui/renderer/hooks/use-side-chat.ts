@@ -281,6 +281,8 @@ export function useSideChat(api: AveApi, options?: UseSideChatOptions): UseSideC
         thoughtRef.current = "";
       } else if (isTranscriptFrame(ev)) {
         setEntries((p) => applyTranscriptFrame(p, ev));
+      } else if (ev.type === "compact_failed") {
+        setEntries((p) => [...p, { kind: "system", text: t("useChatState.autoCompactFailed") }]);
       } else if (ev.type === "error") {
         terminalStreamClosedRef.current = true;
         // Read the accumulated thought HERE, not inside the updater: React runs the updater at flush time, by which point the

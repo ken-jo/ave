@@ -17,6 +17,7 @@ export const en = {
   "shellTasks.output": "Output",
   "shellTasks.outputPreview": "Recent output preview. Read the command result or background output tool for retained details.",
   "shellTasks.sessionChanged": "The conversation changed. Open its commands again before continuing.",
+  "useChatState.autoCompactFailed": "Automatic compaction failed. The conversation will continue with its current history.",
   "compactionSettings.title": "Compaction",
   "compactionSettings.model": "Compaction model",
   "compactionSettings.currentModel": "Current chat model",

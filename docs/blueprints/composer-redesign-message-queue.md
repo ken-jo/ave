@@ -34,6 +34,10 @@ destructive icon and omit the automatic-compaction promise. Unknown policy also
 omits that promise. Side chats estimate their own transcript and draft against
 the selected model route's context window and prompt-input cap.
 
+A failed automatic compaction adds a localized notice to the owning transcript,
+clears its progress indicator and leaves the current history and chat stream
+intact. It never raises a window-wide strip.
+
 Compaction is one transcript unit: an unadorned divider label, quiet secondary
 navigation buttons and a collapsible summary body inside one shared frame.
 The summary has no separate card border or accent bar. Available navigation

@@ -104,7 +104,7 @@ export function useMessageQueue({
 
   const queueAutoInflightRef = useRef(false);
   /** A guide hand-off is awaiting its result — do not send the same items again. */
-  const guideFlushInflightRef = useRef<string | null>(null);
+  const guideFlushInflightRef = useRef<{ id: string; text: string; disposition?: "dropped" | "delivered" } | null>(null);
   /** The engine refused this turn's hand-off — stop retrying until the turn ends. */
   const guideFlushBlockedRef = useRef(false);
   const turnEpochRef = useRef(0);
@@ -186,7 +186,8 @@ export function useMessageQueue({
     const count = reservation.items.length;
     const formatted = formatQueueInject(reservation.items);
     const turnEpoch = turnEpochRef.current;
-    guideFlushInflightRef.current = reservation.id;
+    const handoff = { id: reservation.id, text: formatted, disposition: undefined as "dropped" | "delivered" | undefined };
+    guideFlushInflightRef.current = handoff;
     void (async () => {
       let accepted = false;
       const reportFailure = (reason: string) => {
@@ -202,18 +203,20 @@ export function useMessageQueue({
       };
       try {
         const result = await guide.inject(formatted);
-        if (guideFlushInflightRef.current !== reservation.id) return;
-        if (result?.ok === true) {
+        if (guideFlushInflightRef.current !== handoff) return;
+        if (handoff.disposition === "delivered" || result?.ok === true) {
+          if (handoff.disposition === "dropped") return;
           accepted = true;
           messageQueueStore.settleReservation(reservation.id, formatted);
           return;
         }
         reportFailure(result?.error ?? "unknown");
       } catch {
-        if (guideFlushInflightRef.current === reservation.id) reportFailure("unknown");
+        if (handoff.disposition === "delivered") accepted = true;
+        else if (guideFlushInflightRef.current === handoff) reportFailure("unknown");
       } finally {
         messageQueueStore.settleReservation(reservation.id);
-        if (guideFlushInflightRef.current === reservation.id) {
+        if (guideFlushInflightRef.current === handoff) {
           guideFlushInflightRef.current = null;
           if (!accepted && completedTurnEpochRef.current === turnEpoch) {
             // A done frame may have arrived while these rows were reserved. Retry its drain only if no newer turn owns the surface.
@@ -246,12 +249,21 @@ export function useMessageQueue({
         // Delivered. The text is a user bubble in the transcript now, so the row has somewhere to have gone — this is the only
         // place it is cleared after a hand-off.
         const text = typeof ev.text === "string" ? ev.text : "";
-        if (text.length > 0) messageQueueStore.clearDelivered(text);
+        if (text.length > 0) {
+          const handoff = guideFlushInflightRef.current;
+          if (handoff && text.includes(handoff.text)) {
+            handoff.disposition = "delivered";
+            messageQueueStore.settleReservation(handoff.id, handoff.text);
+          }
+          messageQueueStore.clearDelivered(text);
+        }
         return;
       }
       if (ev.type === "guidance_dropped") {
         // The engine took it but could not deliver it. The rows are the user's again so the end-of-turn drain below picks them up
         // — the `done` that follows this event does exactly that.
+        const handoff = guideFlushInflightRef.current;
+        if (handoff && (!ev.text || ev.text.includes(handoff.text))) handoff.disposition = "dropped";
         messageQueueStore.releaseHandedOff();
         return;
       }

@@ -19,6 +19,7 @@ export const ko: Record<SeedMessageKey, string> = {
   "shellTasks.output": "출력",
   "shellTasks.outputPreview": "최근 출력 미리보기입니다. 보관된 자세한 내용은 명령 결과나 백그라운드 출력 조회 도구에서 확인할 수 있습니다.",
   "shellTasks.sessionChanged": "대화가 변경되었습니다. 실행 명령을 다시 열어 확인한 후 진행해 주세요.",
+  "useChatState.autoCompactFailed": "자동 압축에 실패했습니다. 현재 대화 기록을 유지한 채 계속 진행합니다.",
   "compactionSettings.title": "대화 압축",
   "compactionSettings.model": "압축 모델",
   "compactionSettings.currentModel": "현재 채팅 모델",

@@ -727,9 +727,10 @@ export async function runPreflightGuard(
       });
       return true;
     } catch (err) {
-      // Failed compaction leaves the turn running; context-error handling supplies user guidance.
+      // Failed compaction leaves history and the chat turn intact; report a nonterminal maintenance notice.
       log.warn(`preflight: LLM compact failed — ${(err as Error).message}. Delegating to context_error safety net.`);
       self.tracer.step("COMPACTION_RESULT", { status: "error", triggerSource, message: (err as Error).message });
+      if (!abortSignal?.aborted) callbacks?.onError?.("Automatic compaction failed", undefined, undefined, "compaction");
       return false;
     } finally {
       self.isCompacting = false;
