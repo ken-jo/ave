@@ -827,6 +827,7 @@ export function FileBrowserWorkspace({
       createdOrder: Number.MAX_SAFE_INTEGER, path: normalized, ...(previewRoot ? { workspaceRoot: previewRoot } : {}), canOpenExternal: false };
   }, [selectedPath, selectedTarget, fsRoot, changes.workspaceRoot]);
   const openFile = useCallback((path: string, matchedFile?: WorkspaceFileItem, root?: string) => {
+    changes.onRefresh?.();
     setFsPath(path);
     const normalizedRoot = root ? normalizeWorkspaceTreePath(root, null) : null;
     setFsRoot(normalizedRoot && isPathWithinRoot(normalizedRoot, path) ? normalizedRoot : null);
@@ -834,12 +835,16 @@ export function FileBrowserWorkspace({
     if (sessionFile?.previewTargetId) onSelect(sessionFile.previewTargetId);
     setDetailVisible(true);
     requestAnimationFrame(() => detailRef.current?.focus());
-  }, [files, onSelect]);
+  }, [files, onSelect, changes.onRefresh]);
   const appliedRevealRef = useRef<FileWorkspaceReveal | null>(null);
+  useEffect(() => {
+    if (!revealRequest) providedChanges?.onRefresh?.();
+  }, [providedChanges?.onRefresh, sessionId, revealRequest]);
   useEffect(() => { setFsPath(null); setFsRoot(null); setQuery(""); setFilter("all"); setDetailVisible(false); }, [sessionId]);
   useEffect(() => {
     if (!revealRequest || (appliedRevealRef.current?.token === revealRequest.token && appliedRevealRef.current.path === revealRequest.path)) return;
     appliedRevealRef.current = revealRequest;
+    changes.onRefresh?.();
     setQuery("");
     setFilter("changed");
     const revealed = changes.changedFiles.find((change) => change.path === revealRequest.path || change.displayPath === revealRequest.path);
@@ -847,7 +852,7 @@ export function FileBrowserWorkspace({
     setFsRoot(changes.review?.workspaceRoot ?? null);
     if (revealed?.file?.previewTargetId) onSelect(revealed.file.previewTargetId);
     setDetailVisible(false);
-  }, [revealRequest, changes.changedFiles, onSelect]);
+  }, [revealRequest, changes.changedFiles, changes.onRefresh, onSelect]);
   const goBack = () => { setDetailVisible(false); setFocusSelectedToken((token) => token + 1); };
   const focusTree = () => {
     const row = treeRef.current?.querySelector<HTMLElement>('[role="treeitem"][aria-selected="true"]') ?? treeRef.current?.querySelector<HTMLElement>('[role="treeitem"][tabindex="0"]');

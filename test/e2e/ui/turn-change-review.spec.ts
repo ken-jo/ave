@@ -98,6 +98,7 @@ for (const width of [900, 1243]) {
     const detail = page.getByTestId("turn-change-detail");
     await expect(detail).toBeVisible();
     const hunk = detail.getByRole("button", { name: "Reference hunk 2 in src/Composer.tsx, lines 3–3", exact: true });
+    await expect(hunk).toBeEnabled();
     await hunk.focus();
     await page.keyboard.press("Enter");
     const textarea = page.locator('[data-testid="composer-textarea"][data-composer-surface="main"]');

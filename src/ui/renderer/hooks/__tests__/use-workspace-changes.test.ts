@@ -26,8 +26,10 @@ describe("shared workspace changes", () => {
     let finish!: (result: TurnReviewResult) => void;
     const api = { chatGetTurnReview: vi.fn(async (_session: string): Promise<TurnReviewResult> => new Promise((resolve) => { finish = resolve; })) };
     const { result, rerender } = renderHook(({ sessionId }) => useWorkspaceChanges({ api, sessionId, streaming: false, turnKey: "turn", files, targets }), { initialProps: { sessionId: "old" } });
+    await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(1));
     const oldFinish = finish;
     rerender({ sessionId: "new" });
+    await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(2));
     await act(async () => { oldFinish(review("old")); finish({ ok: false, error: "turn-review-unavailable" }); });
     expect(result.current.latestFiles).toEqual([]);
   });
@@ -50,6 +52,22 @@ it("waits for refreshed data after same-turn regeneration instead of reviving th
   api.chatGetTurnReview.mockImplementationOnce(async () => new Promise((resolve) => { resolveRefresh = resolve; }));
   rerender({ streaming: false });
   expect(result.current.latestFiles).toHaveLength(0);
+  await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(2));
   await act(async () => { resolveRefresh(review("session", "same-turn")); });
   expect(result.current.latestFiles).toHaveLength(1);
+});
+
+it("refreshes current details without replacing recorded totals or overlapping reads", async () => {
+  let finish!: (result: TurnReviewResult) => void;
+  const api = { chatGetTurnReview: vi.fn(async (session: string) => review(session)) };
+  const { result } = renderHook(() => useWorkspaceChanges({ api, sessionId: "session", streaming: false, turnKey: "same-turn", files, targets }));
+  await waitFor(() => expect(result.current.latestFiles).toHaveLength(1));
+  api.chatGetTurnReview.mockImplementationOnce(async () => new Promise((resolve) => { finish = resolve; }));
+  act(() => { result.current.onRefresh?.(); result.current.onRefresh?.(); });
+  await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(2));
+  expect(result.current.added).toBe(1);
+  expect(result.current.latestFiles[0]?.review?.referenceable).toBe(false);
+  await act(async () => { finish(review("session")); });
+  await waitFor(() => expect(api.chatGetTurnReview).toHaveBeenCalledTimes(3));
+  await waitFor(() => expect(result.current.latestFiles[0]?.review?.referenceable).toBe(true));
 });

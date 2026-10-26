@@ -16,6 +16,7 @@ export interface WorkspaceChangeFile {
   turnId?: string;
 }
 export interface WorkspaceChanges {
+  onRefresh?: () => void;
   workspaceRoot?: string;
   latestFiles: WorkspaceChangeFile[];
   changedFiles: WorkspaceChangeFile[];
