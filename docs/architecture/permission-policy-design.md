@@ -268,6 +268,14 @@ complete grammar and its refusal tests, never by adding a denylist exception.
 If any stage is unproven, the whole command input is unproven; a proven sibling
 does not leave behind a separately reusable allow result.
 
+Command resolution is a finite grammar context, separate from the input quoting
+dialect. A direct shell command may use its registered builtin or cmdlet grammar.
+External delegation through `env`, a package runner or Bash `exec` permanently
+switches the child range to native-executable grammar: a native program does not
+inherit the parent's builtin, cmdlet or alias grammar. Bash `command` preserves
+its shell context, and `builtin` accepts only the registered Bash builtin subset.
+Unknown delegated names remain unproven even if they spell a known cmdlet.
+
 The grammar's `changesState` flag is a conservative command-family property,
 not an inference about this invocation's effects. For families that can write
 through implicit or alternate modes, every admitted form is possible-write. The
