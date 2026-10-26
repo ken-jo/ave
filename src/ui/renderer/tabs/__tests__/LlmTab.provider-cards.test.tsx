@@ -507,6 +507,41 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("opens subscription setup from its grouped entry", async () => {
+    installSubscription([codexView(), claudeCodeView()]);
+    await renderTab(profileApi({}).api);
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:claude-code"));
+    expect(await screen.findByTestId("subscription-provider:claude-code:billing-disclosure")).toBeVisible();
+  });
+
+  it("offers every custom API format and saves the selected format on its connection", async () => {
+    const { hooks } = await renderTab(profileApi({}).api);
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    fireEvent.click(await screen.findByTestId("llm-tab:add-provider-item:openai-compatible"));
+    const trigger = await screen.findByTestId("llm-tab:custom-wire");
+    fireEvent.click(trigger);
+    const option = await screen.findByRole("option", { name: "Anthropic Messages" });
+    fireEvent.click(option);
+    fireEvent.change(screen.getByTestId("llm-base-url-input"), { target: { value: "https://custom.example/v1" } });
+    const save = within(screen.getByTestId("llm-tab:manual-section")).getByRole("button", { name: t("llmTab.save") });
+    fireEvent.click(save);
+    await waitFor(() => expect(hooks.onSaveProviderCredential).toHaveBeenCalledWith(expect.objectContaining({
+      credentialProviderId: "openai-compatible",
+      vendorBlock: { baseUrl: "https://custom.example/v1", wire: "anthropic-messages" },
+    })));
+  });
+
+  it("renders the four provider groups in order with the custom footer", async () => {
+    await renderTab(profileApi({}).api);
+    openMenu(screen.getByTestId("llm-tab:add-provider"));
+    const menu = await screen.findByRole("menu");
+    expect(Array.from(menu.querySelectorAll("[data-provider-group]")).map((node) => node.getAttribute("data-provider-group")))
+      .toEqual(["subscription", "api", "local", "custom"]);
+    expect(within(menu).getByTestId("llm-tab:add-provider-item:openai-compatible")).toHaveTextContent(t("llmTab.addCustomProvider"));
+    expect(within(menu).getByTestId("llm-tab:add-provider-item:deepseek")).toBeVisible();
+  });
+
   it("shows compaction uses the current model when the runtime cannot choose another one", async () => {
     installSubscription([], {}, { kind: "subscription", provider: "kimi-code" });
     await renderTab(makeApi());
@@ -2217,7 +2252,7 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
   it.each([
     ["codex", "OpenAI", "ChatGPT", () => codexView()],
     ["claude-code", "Anthropic Claude", "Claude", () => claudeCodeView()],
-  ] as const)("%s: chooses nothing until asked, then shows only the chosen method", async (rowId, company, plan, view) => {
+  ] as const)("%s: selecting a subscription entry opens its setup, then allows changing the method", async (rowId, company, plan, view) => {
     installSubscription([view()], { beginLogin: vi.fn(), refreshStatus: vi.fn() });
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });
 
@@ -2229,14 +2264,13 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     }
     expect(card).toHaveTextContent(company);
 
-    // Nothing configured: the card asks, and shows neither a key field nor sign-in.
-    expect(method(rowId, "subscription")).toHaveAttribute("aria-checked", "false");
+    expect(method(rowId, "subscription")).toHaveAttribute("aria-checked", "true");
     expect(method(rowId, "api")).toHaveAttribute("aria-checked", "false");
     expect(method(rowId, "subscription")).toHaveAccessibleName(
       t("subscriptionProvidersSection.methodSubscription", { plan }),
     );
     expect(within(card).queryByTestId("llm-api-key-input")).toBeNull();
-    expect(within(card).queryByTestId(`subscription-provider:${rowId}:login-browser`)).toBeNull();
+    expect(within(card).getByTestId(`subscription-provider:${rowId}:login-browser`)).toBeVisible();
 
     fireEvent.click(method(rowId, "api"));
     expect(await within(card).findByTestId("llm-api-key-input")).toBeInTheDocument();
@@ -2352,7 +2386,7 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     expect(screen.getByTestId("llm-api-key-input")).toBeInTheDocument();
   });
 
-  it("offers each company once in 'add a provider', and never a runtime by name", async () => {
+  it("offers subscription and API routes separately with consistent subscription labels", async () => {
     installSubscription([codexView(), claudeCodeView()]);
     await renderTab(makeApi(), { vendor: "openrouter", model: "" });
     openMenu(screen.getByTestId("llm-tab:add-provider"));
@@ -2363,8 +2397,8 @@ describe("LlmTab asks how to sign in to a provider reached two ways", () => {
     expect(labels.filter((label) => label === "Anthropic Claude")).toHaveLength(1);
     expect(labels.filter((label) => label === "OpenAI")).toHaveLength(1);
     expect(labels.join("\n")).not.toMatch(/Codex|Claude Code/);
-    // The Anthropic API vendor is that row's API-key method, not a second row.
-    expect(screen.queryByTestId("llm-tab:add-provider-item:claude")).toBeNull();
+    expect(screen.getByTestId("llm-tab:add-provider-item:claude")).toBeVisible();
+    expect(screen.getByTestId("llm-tab:add-provider-item:codex")).toHaveTextContent(t("subscriptionProvidersSection.subscriptionModels", { company: "OpenAI", plan: "ChatGPT" }));
   });
 });
 

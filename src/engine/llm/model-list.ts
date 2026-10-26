@@ -1,3 +1,4 @@
+import { customProviderWire } from "../../shared/custom-provider.js";
 import type { SettingsService } from "../../data/settings-store.js";
 import type {
   LlmModelListCache,
@@ -14,6 +15,7 @@ import {
   type LLMVendorSettingsMap,
 } from "../../shared/llm-vendor-defaults.js";
 import {
+  isAllowedProviderBaseUrl,
   isMarketplaceProviderPresetId,
   marketplaceProviderPresetSecretKey,
   modelDiscoveryPolicyAllowsFetch,
@@ -735,6 +737,15 @@ export async function listLlmModelsFromSettings(
   let endpoint: string;
   try {
     endpoint = modelListEndpointFromBaseUrl(resolved.baseUrl);
+    if (request.vendor === "openai-compatible" && !request.credentialScope
+      && !isAllowedProviderBaseUrl(resolved.baseUrl, false)) {
+      return {
+        ok: false,
+        error: "invalid-model-list-endpoint",
+        endpoint,
+        message: "Custom provider baseUrl must use https or loopback http.",
+      };
+    }
   } catch (err) {
     if (err instanceof ModelListError) {
       return { ok: false, error: err.code, message: err.message };
@@ -772,9 +783,14 @@ export async function listLlmModelsFromSettings(
       message: "Credentialed model list endpoints must use https.",
     };
   }
+  const wire = request.vendor === "openai-compatible" && !request.credentialScope
+    ? customProviderWire(getLlmVendorSettings(settingsService.get("llm").vendors, "openai-compatible").wire)
+    : undefined;
+  const listingVendor = wire === "anthropic-messages" ? "claude"
+    : wire === "google-gemini" ? "gemini" : request.vendor;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    ...modelListAuthHeaders(request.vendor, apiKey),
+    ...modelListAuthHeaders(listingVendor, apiKey),
   };
 
   let requestEndpoint = endpoint;
@@ -790,7 +806,7 @@ export async function listLlmModelsFromSettings(
     let cursor: string | null = null;
     let lastPayload: unknown;
     for (let page = 0; page < MAX_MODEL_LIST_PAGES; page += 1) {
-      const pageUrl = modelListPageUrl(request.vendor, requestEndpoint, cursor);
+      const pageUrl = modelListPageUrl(listingVendor, requestEndpoint, cursor);
       const response = await (
         options.fetchPublicHttpResponseImpl ?? fetchPublicHttpResponse
       )(pageUrl, {
@@ -823,8 +839,8 @@ export async function listLlmModelsFromSettings(
           "model list response must be valid JSON",
         );
       }
-      rows.push(...modelListPageRows(request.vendor, lastPayload));
-      cursor = modelListNextCursor(request.vendor, lastPayload);
+      rows.push(...modelListPageRows(listingVendor, lastPayload));
+      cursor = modelListNextCursor(listingVendor, lastPayload);
       if (cursor === null || rows.length >= MAX_MODEL_IDS) break;
     }
     const modelEntries = parseStandardModelListEntries({ data: rows });

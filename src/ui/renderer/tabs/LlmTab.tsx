@@ -1,3 +1,5 @@
+import { CUSTOM_PROVIDER_WIRES, customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
+import { PROVIDER_PICKER_GROUPS, providerPickerEntries } from "../../../shared/provider-picker.js";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "../../../components/ui/badge.js";
 import { Button } from "../../../components/ui/button.js";
@@ -20,6 +22,7 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "../../../components/ui/dropdown-menu.js";
 import {
@@ -106,6 +109,20 @@ import {
 } from "../../../shared/context-budget.js";
 import { planReasoning } from "../../../engine/llm/reasoning-plan.js";
 
+const PROVIDER_GROUP_LABEL_KEYS = {
+  subscription: "llmTab.modeSubscription",
+  api: "llmTab.groupApi",
+  local: "llmTab.groupLocal",
+  custom: "llmTab.groupCustom",
+} as const;
+
+const CUSTOM_WIRE_LABEL_KEYS = {
+  "openai-chat": "llmTab.wireOpenaiChat",
+  "openai-responses": "llmTab.wireOpenaiResponses",
+  "anthropic-messages": "llmTab.wireAnthropicMessages",
+  "google-gemini": "llmTab.wireGoogleGemini",
+} as const;
+
 export interface FallbackEntry {
   provider: LLMVendor;
   model: string;
@@ -122,6 +139,7 @@ export interface ProviderCredentialDraft {
   readonly presetId: string;
   readonly keyInput: string;
   readonly baseUrl: string;
+  readonly wire?: CustomProviderWire;
   readonly vertexProject: string;
   readonly vertexLocation: string;
 }
@@ -137,6 +155,7 @@ export interface ProviderCredentialSave {
    * carries its own. Writing a block for those would overwrite an endpoint that belongs to another row. */
   vendorBlock?: {
     baseUrl?: string | undefined;
+    wire?: CustomProviderWire;
     vertexProject?: string | undefined;
     vertexLocation?: string | undefined;
   };
@@ -281,7 +300,6 @@ interface ProviderSelectProps {
   triggerTestId?: string;
   placeholder?: string;
   vendorOptions?: readonly ProviderOption[];
-  marketplaceProviderIds?: readonly string[];
 }
 
 type ProviderOption = Omit<VendorOption, "id"> & {
@@ -302,23 +320,18 @@ function ProviderSelect({
   triggerTestId,
   placeholder,
   vendorOptions = VENDORS,
-  marketplaceProviderIds = [],
 }: ProviderSelectProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
-  const marketplaceProviderIdSet = useMemo(
-    () => new Set(marketplaceProviderIds),
-    [marketplaceProviderIds],
-  );
 
   const options = useMemo(
     () => vendorOptions.map((vendor) => ({
       id: vendor.id,
       label: vendor.label,
       searchText: `${vendor.id} ${vendor.label}`,
-      marketplaceInstalled: marketplaceProviderIdSet.has(vendor.id),
+      marketplaceInstalled: marketplaceProviderPresetIdFromSecretId(vendor.id) !== undefined,
     })),
-    [marketplaceProviderIdSet, vendorOptions],
+    [vendorOptions],
   );
 
   const normalizedQuery = normalizeProviderSearch(query);
@@ -1301,7 +1314,6 @@ export function LlmTab(props: LlmTabProps) {
   const hasOnSave = typeof onSave === "function";
   const trimmedModel = model.trim();
   const activeModelValue = trimmedModel;
-  const [marketplaceProviderIds, setMarketplaceProviderIds] = useState<readonly string[]>([]);
   /** What is actually stored for each vendor, mirrored so the typed fields can say whether they still hold something uncommitted. */
   const [savedVendorBlocks, setSavedVendorBlocks] = useState<
     Readonly<Record<string, {
@@ -1310,6 +1322,7 @@ export function LlmTab(props: LlmTabProps) {
       imageInput?: LLMVendorSettings["imageInput"];
       presetModels?: Record<string, string>;
       baseUrl?: string;
+      wire?: CustomProviderWire;
       vertexProject?: string;
       vertexLocation?: string;
     }>>
@@ -1574,8 +1587,6 @@ export function LlmTab(props: LlmTabProps) {
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
     const applySettings = (settings: Awaited<ReturnType<AveApi["getSettings"]>>) => {
-      const ids = settings.marketplace?.installedProviderIds;
-      setMarketplaceProviderIds(Array.isArray(ids) ? ids : []);
       // Content-compared, like the credential set below it: a broadcast arrives for every settings write, and a fresh object identity
       // each time would re-run every effect that reads a row's endpoint; including the one that asks endpoints for their catalogues.
       setSavedVendorBlocks((current) => {
@@ -1622,10 +1633,10 @@ export function LlmTab(props: LlmTabProps) {
   }, [api, marketplaceProviderPresets]);
   const providerSelectOptions = useMemo(
     () => [
-      ...visibleVendorsFor([vendor, ...marketplaceProviderIds]),
+      ...visibleVendorsFor(),
       ...marketplaceProviderPresetOptions,
     ],
-    [marketplaceProviderIds, marketplaceProviderPresetOptions, vendor],
+    [marketplaceProviderPresetOptions],
   );
   // Every provider that could own a row, including the API counterparts of the subscription runtimes; a
   // paired provider's key belongs to its runtime's row, and that runtime need not be in the vendor catalogue.
@@ -1676,11 +1687,10 @@ export function LlmTab(props: LlmTabProps) {
   // dropdown; the dropdown is gone, but where a provider CAME FROM is still something the user needs to be able to see.
   const marketplaceVendorIds = useMemo(
     () => new Set<string>([
-      ...marketplaceProviderIds,
       ...marketplaceProviderPresets.map((preset) =>
         marketplaceProviderPresetSecretId(preset.providerId)),
     ]),
-    [marketplaceProviderIds, marketplaceProviderPresets],
+    [marketplaceProviderPresets],
   );
   // ONE list. A provider a user recognises as one company is one row, whether it is reached with an API key, by signing in to its subscription runtime, or both; `SUBSCRIPTION_RUNTIME_API_COUNTERPART` is the join that says which pairs are the same company. One configured API route: a vendor,
   // plus the marketplace preset it is reached THROUGH when there is one, plus the `modelLists` key whose handshake belongs to it. Two presets are two routes through the same `openai-compatible` vendor, so a route; not a vendor id; is what a row is built from, and what its facts are looked up by.
@@ -1790,11 +1800,6 @@ export function LlmTab(props: LlmTabProps) {
     credentialedProviderIds, installedPresetById, rowModelListBaseUrl,
   ]);
 
-  const configuredRowIds = useMemo(
-    () => new Set(configuredApiRoutes.map(apiRouteRowId)),
-    [configuredApiRoutes],
-  );
-
   /** This row's draft, or undefined when the row is holding nothing. */
   const draftForRow = useCallback(
     (rowId: string): ProviderCredentialDraft | undefined =>
@@ -1838,7 +1843,9 @@ export function LlmTab(props: LlmTabProps) {
         || draft.vertexLocation.trim() !== (saved?.vertexLocation ?? "").trim();
     }
     return endpointIsUserSupplied(draft.vendorId, draftProviderOption(draft), Boolean(draft.presetId))
-      && draft.baseUrl.trim() !== (saved?.baseUrl ?? "").trim();
+      && (draft.baseUrl.trim() !== (saved?.baseUrl ?? "").trim()
+        || (draft.vendorId === "openai-compatible" && !draft.presetId
+          && customProviderWire(draft.wire) !== customProviderWire(saved?.wire)));
   }, [draftForRow, draftProviderOption, savedVendorBlocks]);
 
   /** The row the ACTIVE API provider is drawn on. A preset id only names the route while chat is on the vendor presets are reached through; the
@@ -1997,18 +2004,7 @@ export function LlmTab(props: LlmTabProps) {
   const visibleRowKey = visibleRows.map((row) => row.id).join("\n");
   // Everything else goes behind "add a provider". The catalogue keeps growing with marketplace presets, so
   // the list's length has to track the number of providers the user actually USES, not the number that exist.
-  const addableRows = connections.filter(
-    (row) => !row.connected && !pinnedRowIds.includes(row.id),
-  );
-  const addableVendors = useMemo(
-    () => providerSelectOptions.filter((option) =>
-      !configuredRowIds.has(option.id)
-      && !pinnedRowIds.includes(option.id)
-      // A preset row is matched by its OWN id; only a plain vendor row claims the vendor option, or every preset would hide the generic provider.
-      && !connections.some((row) =>
-        row.id === option.id || (!row.presetId && row.apiVendorId === option.id))),
-    [providerSelectOptions, configuredRowIds, connections, pinnedRowIds],
-  );
+  const pickerEntries = providerPickerEntries(marketplaceProviderPresets);
 
   /** Whether this row is the API provider chat is running on. This is the row's own question about the ACTIVE provider, and it is no longer the same question
    * as "is this row's form open"; opening a card used to move the active provider, so one predicate answered both and every opened card claimed to be live. */
@@ -2322,6 +2318,7 @@ export function LlmTab(props: LlmTabProps) {
       keyInput: "",
       // A preset ships the one address it serves from; every other row's endpoint is whatever that vendor has stored.
       baseUrl: preset ? preset.baseUrl : saved?.baseUrl ?? "",
+      ...(target.vendorId === "openai-compatible" && !preset ? { wire: customProviderWire(saved?.wire) } : {}),
       vertexProject: saved?.vertexProject ?? "",
       vertexLocation: saved?.vertexLocation ?? "",
     });
@@ -2456,7 +2453,9 @@ export function LlmTab(props: LlmTabProps) {
         vertexLocation: draft.vertexLocation.trim() || undefined,
       }
       : endpointIsUserSupplied(draft.vendorId, rowInfo, Boolean(row.presetId))
-        ? { baseUrl: draft.baseUrl.trim() || undefined }
+        ? { baseUrl: draft.baseUrl.trim() || undefined,
+            ...(draft.vendorId === "openai-compatible" && !row.presetId ? { wire: customProviderWire(draft.wire) } : {}),
+          }
         : undefined;
     const saved = await onSaveProviderCredential({
       credentialProviderId: rowCredentialId(row),
@@ -2586,6 +2585,20 @@ export function LlmTab(props: LlmTabProps) {
       putDraft({ ...draft, ...next });
     return (
       <div className="space-y-3" data-testid="llm-tab:manual-section">
+        {rowVendorId === "openai-compatible" && !rowEndpointLocked && (
+          <div className="space-y-2">
+            <Label htmlFor="custom-provider-wire">{t("llmTab.apiFormat")}</Label>
+            <Select value={customProviderWire(draft.wire)} onValueChange={(value) => patchDraft({ wire: customProviderWire(value) })}>
+              <SelectTrigger id="custom-provider-wire" data-testid="llm-tab:custom-wire"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {CUSTOM_PROVIDER_WIRES.map((wire) => (
+                  <SelectItem key={wire} value={wire}>{t(CUSTOM_WIRE_LABEL_KEYS[wire])}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-[11px] text-muted-foreground">{t("llmTab.apiFormatModelList")}</p>
+          </div>
+        )}
         {rowVendorId !== "vertex-ai" && endpointIsUserSupplied(rowVendorId, rowInfo, rowEndpointLocked) && (
           <div className="space-y-2">
             <Label className="text-sm font-medium">
@@ -3047,34 +3060,48 @@ export function LlmTab(props: LlmTabProps) {
               setRowToReveal(revealed);
             }}
           >
-            {addableRows.map((row) => (
-              <DropdownMenuItem
-                key={row.id}
-                data-testid={`llm-tab:add-provider-item:${row.id}`}
-                onClick={() => {
-                  revealRowFromAddMenu(row.id);
-                  openRow(row);
-                }}
-              >
-                {row.label}
-              </DropdownMenuItem>
-            ))}
-            {addableVendors.map((option) => (
-              <DropdownMenuItem
-                key={option.id}
-                data-testid={`llm-tab:add-provider-item:${option.id}`}
-                onClick={() => {
-                  revealRowFromAddMenu(option.id);
-                  const presetId = marketplaceProviderPresetIdFromSecretId(option.id) ?? "";
-                  openRowCredentialForm({
-                    rowId: option.id,
-                    vendorId: presetId ? "openai-compatible" : option.id,
-                    presetId,
-                  });
-                }}
-              >
-                {option.label}
-              </DropdownMenuItem>
+            {PROVIDER_PICKER_GROUPS.map((group) => (
+              <div key={group}>
+                {group === "custom" ? <DropdownMenuSeparator /> : null}
+                <h3 className="px-2 py-1.5 text-xs font-semibold text-muted-foreground" data-provider-group={group}>{t(PROVIDER_GROUP_LABEL_KEYS[group])}</h3>
+                {pickerEntries.filter((entry) => entry.group === group).map((entry) => {
+                  const runtime = isSubscriptionRuntimeId(entry.id) ? entry.id : undefined;
+                  const runtimeRowId = runtime ? SUBSCRIPTION_RUNTIME_ROW_PARTNER[runtime] ?? runtime : undefined;
+                  const row = connections.find((candidate) => runtimeRowId
+                    ? candidate.id === runtimeRowId
+                    : candidate.id === entry.id || (!candidate.presetId && candidate.apiVendorId === entry.id));
+                  const option = providerSelectOptions.find((candidate) => candidate.id === entry.id);
+                  const view = runtime ? subscription.providers.find((candidate) => candidate.descriptor.id === runtime) : undefined;
+                  const label = runtime ? subscriptionModelsLabel(t, view ?? {
+                    descriptor: { ...subscriptionRuntimeDescriptor(runtime), description: "" },
+                  }) : option?.label;
+                  if (!label) return null;
+                  if (group !== "custom" && !runtime && (row?.apiConfigured || pinnedRowIds.includes(row?.id ?? entry.id))) return null;
+                  return (
+                    <DropdownMenuItem
+                      key={entry.id}
+                      data-testid={`llm-tab:add-provider-item:${entry.id}`}
+                      disabled={Boolean(runtime && !row)}
+                      onClick={() => {
+                        const rowId = row?.id ?? entry.id;
+                        revealRowFromAddMenu(rowId);
+                        if (runtime && row) {
+                          chooseAuthMethod(row, runtime === "chatgpt-plan" ? "plan" : "subscription");
+                          setOpenRowIds((current) => current.includes(rowId) ? current : [...current, rowId]);
+                        } else if (row) {
+                          chooseAuthMethod(row, "api");
+                          openRowCredentialForm({ rowId, vendorId: row.apiVendorId!, presetId: row.presetId ?? "" });
+                        } else {
+                          const presetId = marketplaceProviderPresetIdFromSecretId(entry.id) ?? "";
+                          openRowCredentialForm({ rowId, vendorId: presetId ? "openai-compatible" : entry.id, presetId });
+                        }
+                      }}
+                    >
+                      {group === "custom" ? t("llmTab.addCustomProvider") : label}
+                    </DropdownMenuItem>
+                  );
+                })}
+              </div>
             ))}
           </DropdownMenuContent>
         </DropdownMenu>
@@ -3347,11 +3374,7 @@ export function LlmTab(props: LlmTabProps) {
                         setFallbackChain(next);
                       }}
                       triggerClassName="w-full text-xs sm:w-36"
-                      vendorOptions={visibleVendorsFor([
-                        entry.provider,
-                        ...marketplaceProviderIds,
-                      ])}
-                      marketplaceProviderIds={marketplaceProviderIds}
+                      vendorOptions={visibleVendorsFor()}
                     />
                     <Select
                       value={fallbackModelValue}

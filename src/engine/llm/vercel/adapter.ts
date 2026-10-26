@@ -8,6 +8,8 @@
  * consumer — splitting them into separate files was a filing label, not a
  * machinery boundary.
  */
+import { customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
+import { isAllowedProviderBaseUrl } from "../../../shared/marketplace-package-assets.js";
 import {
   streamText,
   jsonSchema,
@@ -292,6 +294,7 @@ export interface VercelProviderExtras {
    * outside the known Responses families can never select Chat Completions.
    */
   openaiWire?: "responses";
+  wire?: CustomProviderWire;
 }
 
 export class VercelUnifiedProvider implements LLMProvider {
@@ -320,10 +323,19 @@ export class VercelUnifiedProvider implements LLMProvider {
     this.providerMetadata = providerMetadata;
   }
 
-  async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
-    const slot = this.vendorSlot;
+  private protocolVendor(): VercelVendor {
+    if (this.vendorSlot !== "openai-compatible" || this.providerMetadata) return this.vendorSlot;
+    switch (customProviderWire(this.extras.wire)) {
+      case "anthropic-messages": return "claude";
+      case "google-gemini": return "gemini";
+      case "openai-responses": return "openai";
+      case "openai-chat": return "openai-compatible";
+    }
+  }
 
+  async *streamTurn(params: StreamTurnParams): AsyncIterable<StreamEvent> {
     try {
+      const slot = this.protocolVendor();
       // The endpoint that establishes model identity; an SDK-managed route has none.
       const baseUrl = slot === "vertex-ai" ? undefined : this.providerMetadata?.baseUrl ?? this.baseUrl;
       // A caller without a resolved route (a fallback, a direct call) gets the
@@ -349,10 +361,10 @@ export class VercelUnifiedProvider implements LLMProvider {
         useOpenAIResponsesAliases
           ? remapGenericMessagesForOpenAIResponses(rows)
           : rows,
-        this.vendor,
+        slot,
         {
           toolResultImageWire:
-            useOpenAIResponsesAliases || usesNativeToolResultImageWire(this.vendor)
+            useOpenAIResponsesAliases || usesNativeToolResultImageWire(slot)
               ? "native"
               : "derived-user",
         },
@@ -403,7 +415,7 @@ export class VercelUnifiedProvider implements LLMProvider {
       // Explicitly declared effort remains available on tool turns; the
       // selected protocol determines its field on the wire.
       const reasoningPlan = planReasoning({
-        vendor: this.vendor,
+        vendor: slot,
         model: params.model,
         enableThinking: params.enableThinking === true,
         budgetTokens: budget,
@@ -706,6 +718,9 @@ export class VercelUnifiedProvider implements LLMProvider {
     reasoning: Parameters<typeof usesOpenAIResponsesWire>[2],
     baseUrl: string | undefined,
   ): boolean {
+    if (this.vendorSlot === "openai-compatible" && !this.providerMetadata) {
+      return customProviderWire(this.extras.wire) === "openai-responses";
+    }
     return (this.vendorSlot === "openai" && this.extras.openaiWire === "responses")
       || usesOpenAIResponsesWire(this.vendorSlot, modelId, reasoning, baseUrl);
   }
@@ -716,13 +731,17 @@ export class VercelUnifiedProvider implements LLMProvider {
     outputProjection?: NativeOutputProjection,
     onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
-    const slot = this.vendorSlot;
+    const slot = this.protocolVendor();
     assertCredentialedBaseUrlUsesHttps(
-      slot,
-      this.providerMetadata?.baseUrl ?? this.baseUrl,
-      this.apiKey,
-      this.customFetch,
+      slot, this.providerMetadata?.baseUrl ?? this.baseUrl, this.apiKey, this.customFetch,
     );
+    if (this.vendorSlot === "openai-compatible" && !this.providerMetadata) {
+      if (!this.baseUrl || !isAllowedProviderBaseUrl(this.baseUrl, false)) {
+        throw new Error("Custom provider baseUrl must use https or loopback http");
+      }
+      const url = new URL(this.baseUrl);
+      if (url.username || url.password) throw new Error("Custom provider baseUrl must not contain credentials");
+    }
 
     if (slot === "claude") {
       const nativeFetch = onRequestControls

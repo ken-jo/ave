@@ -66,6 +66,94 @@ function currentSettingsJson(settings: Record<string, unknown>): string {
   return JSON.stringify({ ...settings, appliedMigrations: currentMigrations });
 }
 
+describe("bundled provider settings", () => {
+  it("reports malformed legacy installation state", () => {
+    expect(() => normalizeMarketplace({ installedProviderIds: "groq" })).toThrow(/installedProviderIds/);
+  });
+
+  it("rejects malformed stored installation state without overwriting settings", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "provider-installation-invalid-"));
+    try {
+      const path = join(userDataPath, "ave-settings.json");
+      const stored = currentSettingsJson({ marketplace: { installedProviderIds: "groq" } });
+      writeFileSync(path, stored);
+      expect(() => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath })).toThrow(/installedProviderIds/);
+      expect(readFileSync(path, "utf8")).toBe(stored);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("preserves a native model cache on reload and clears it when the format changes", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "custom-provider-cache-"));
+    try {
+      const baseUrl = "https://custom.example/v1";
+      const key = llmModelListCacheKey("openai-compatible", baseUrl);
+      const otherKey = llmModelListCacheKey("openai", "");
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({ llm: {
+        provider: "openai-compatible",
+        vendors: { "openai-compatible": { baseUrl, model: "fixture", wire: "anthropic-messages" } },
+        modelListCache: {
+          [key]: { vendor: "openai-compatible", baseUrl, endpoint: baseUrl + "/models", models: ["fixture"], fetchedAt: "2026-01-01T00:00:00.000Z" },
+          [otherKey]: { vendor: "openai", endpoint: "https://api.openai.com/v1/models", models: ["fixture-other"], fetchedAt: "2026-01-01T00:00:00.000Z" },
+        },
+      } }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(service.get("llm").modelListCache[key]?.models).toEqual(["fixture"]);
+      await service.patch({ llm: { vendors: { "openai-compatible": { wire: "google-gemini" } } } });
+      expect(service.get("llm").modelListCache).not.toHaveProperty(key);
+      expect(service.get("llm").modelListCache[otherKey]?.models).toEqual(["fixture-other"]);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("loads legacy installations and retains bundled routes without them", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "bundled-providers-"));
+    try {
+      writeFileSync(join(userDataPath, "ave-settings.json"), currentSettingsJson({
+        marketplace: { installedProviderIds: ["groq"] },
+        llm: { provider: "deepseek", vendors: { deepseek: { model: "fixture-model" } } },
+      }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      expect(service.get("marketplace").installedProviderIds).toEqual(["groq"]);
+      expect(service.get("llm").provider).toBe("deepseek");
+      await service.patch({ llm: { provider: "ollama", vendors: { ollama: { model: "fixture-local" } } } });
+      expect(service.get("llm").provider).toBe("ollama");
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("writes the explicit chat format when loading an existing custom connection", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "custom-provider-migration-"));
+    try {
+      const path = join(userDataPath, "ave-settings.json");
+      writeFileSync(path, currentSettingsJson({ llm: {
+        provider: "openai-compatible", vendors: { "openai-compatible": { baseUrl: "https://custom.example/v1", model: "fixture" } },
+      } }));
+      const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
+      await vi.waitFor(() => expect(JSON.parse(readFileSync(path, "utf8")).llm.vendors["openai-compatible"].wire).toBe("openai-chat"));
+      expect(getLlmVendorSettings(service.get("llm").vendors, "openai-compatible").wire).toBe("openai-chat");
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+
+  it("rejects unknown stored custom formats without rewriting the file", async () => {
+    const userDataPath = mkdtempSync(join(tmpdir(), "custom-provider-invalid-"));
+    try {
+      const path = join(userDataPath, "ave-settings.json");
+      const stored = currentSettingsJson({ llm: { provider: "openai-compatible", vendors: { "openai-compatible": { wire: "unknown" } } } });
+      writeFileSync(path, stored);
+      expect(() => new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath })).toThrow(/wire/);
+      expect(readFileSync(path, "utf8")).toBe(stored);
+    } finally {
+      await cleanupTmpDir(userDataPath);
+    }
+  });
+});
+
 describe("SettingsService upstream proxy (main-owned)", () => {
   let userDataPath: string;
 
@@ -1319,14 +1407,14 @@ describe("SettingsService marketplace defaults", () => {
       llm: { provider: "openai", vendors: { groq: { imageInput: { [key]: false } } } },
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
-    expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("marketplace").installedProviderIds).toEqual([]);
     expect(service.get("llm").vendors.groq?.model).toBe("");
     expect(service.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
     await service.patch({ llm: { provider: "groq" } });
     await service.patch({ llm: { provider: "openai" } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(reloaded.get("llm").provider).toBe("openai");
-    expect(reloaded.get("marketplace").installedProviderIds).toContain("groq");
+    expect(reloaded.get("marketplace").installedProviderIds).toEqual([]);
     expect(reloaded.get("llm").vendors.groq?.model).toBe("");
     expect(reloaded.get("llm").vendors.groq?.imageInput).toEqual({ [key]: false });
   });
@@ -1812,7 +1900,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     }));
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     expect(service.get("llm").vendors.groq).toMatchObject({ outputTokenLimit: 64_000, thinkingBudgetTokens: 8_000 });
-    expect(service.get("marketplace").installedProviderIds).toContain("groq");
+    expect(service.get("marketplace").installedProviderIds).toEqual([]);
     await service.patch({ llm: { provider: "groq" } });
     await service.patch({ llm: { provider: "openai" } });
     const reloaded = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
@@ -1984,7 +2072,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     expect(service.getSecret("llm.apiKey.openai")).toBe("existing-api-key");
   });
 
-  it("prunes legacy default marketplace vendor blocks while preserving custom ones", () => {
+  it("retains stored bundled vendor blocks without inferring installations", () => {
     const legacyVendors = freshAllVendorBlocks();
     legacyVendors.groq.model = "llama-3.3-70b-versatile";
     writeFileSync(
@@ -2002,15 +2090,15 @@ describe("SettingsService LLM per-vendor patching", () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
     const settings = service.getAll();
 
-    expect(settings.llm.vendors["azure-foundry"]).toBeUndefined();
-    expect(settings.llm.vendors.ollama).toBeUndefined();
+    expect(settings.llm.vendors["azure-foundry"]?.model).toBe("");
+    expect(settings.llm.vendors.ollama?.model).toBe("");
     expect(getLlmVendorSettings(settings.llm.vendors, "groq").model).toBe(
       "llama-3.3-70b-versatile",
     );
-    expect(settings.marketplace.installedProviderIds).toEqual(["groq"]);
+    expect(settings.marketplace.installedProviderIds).toEqual([]);
   });
 
-  it("rejects uninstalled marketplace providers as active or fallback providers", async () => {
+  it("accepts bundled providers as active or fallback providers without installation", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
     await service.patch({
@@ -2022,14 +2110,14 @@ describe("SettingsService LLM per-vendor patching", () => {
     });
 
     const llm = service.get("llm");
-    expect(llm.provider).toBe(DEFAULT_LLM_VENDOR);
-    expect(llm.fallbackChain).toEqual([]);
-    expect(llm.vendors.groq).toBeUndefined();
-    expect(llm.vendors.ollama).toBeUndefined();
+    expect(llm.provider).toBe("groq");
+    expect(llm.fallbackChain).toEqual([{ provider: "ollama", model: "llama3.3" }]);
+    expect(llm.vendors.groq?.model).toBe("llama-3.3-70b-versatile");
+    expect(getLlmVendorSettings(llm.vendors, "ollama").baseUrl).toBe("http://localhost:11434/v1");
     expect(service.get("marketplace").installedProviderIds).toEqual([]);
   });
 
-  it("persists model list cache and prunes uninstalled marketplace provider caches", async () => {
+  it("persists bundled provider model caches independently of legacy installation state", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
     await service.patch({
@@ -2079,6 +2167,10 @@ describe("SettingsService LLM per-vendor patching", () => {
     await service.patch({ marketplace: { installedProviderIds: [] } });
 
     expect(service.get("llm").modelListCache).toEqual({
+      [llmModelListCacheKey("groq")]: {
+        vendor: "groq", endpoint: "https://api.groq.com/openai/v1/models",
+        models: ["llama-3.3-70b-versatile"], fetchedAt: "2026-07-06T00:00:00.000Z",
+      },
       [llmModelListCacheKey("openrouter")]: {
         vendor: "openrouter",
         endpoint: "https://openrouter.ai/api/v1/models",
@@ -2190,7 +2282,7 @@ describe("SettingsService LLM per-vendor patching", () => {
     });
   });
 
-  it("allows installed marketplace providers and removes them durably on uninstall", async () => {
+  it("retains bundled routes when legacy installation state is cleared", async () => {
     const service = new SettingsService({ encryption: mockedElectron.safeStorage, userDataPath });
 
     await service.patch({
@@ -2210,10 +2302,9 @@ describe("SettingsService LLM per-vendor patching", () => {
       marketplace: { installedProviderIds: [] },
     });
     const settings = service.getAll();
-    expect(settings.llm.provider).toBe(DEFAULT_LLM_VENDOR);
-    expect(settings.llm.fallbackChain).toEqual([]);
-    expect(settings.llm.vendors.groq).toBeUndefined();
-    expect(settings.llm.vendors.ollama).toBeUndefined();
+    expect(settings.llm.provider).toBe("groq");
+    expect(settings.llm.fallbackChain).toEqual([{ provider: "ollama", model: "llama3.3" }]);
+    expect(settings.llm.vendors.groq?.model).toBe("llama-3.3-70b-versatile");
     expect(settings.marketplace.installedProviderIds).toEqual([]);
   });
 
@@ -4128,7 +4219,7 @@ describe("retired vendor profile migration", () => {
   });
 
   it.each([
-    { provider: "deepseek" },
+    { provider: "unknown-provider" },
     { provider: "openai-compatible", marketplaceProviderPresetId: "missing-preset" },
   ])("retains the retirement marker when a provider selection is unavailable: %j", async (llmPatch) => {
     writeCopilotProfile();

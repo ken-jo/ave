@@ -245,7 +245,7 @@ function usesHttpsUrl(value: string): boolean {
   }
 }
 
-function isAllowedProviderBaseUrl(value: string, requiresApiKey: boolean): boolean {
+export function isAllowedProviderBaseUrl(value: string, requiresApiKey: boolean): boolean {
   return usesHttpsUrl(value) || (!requiresApiKey && isLoopbackHttpUrl(value));
 }
 

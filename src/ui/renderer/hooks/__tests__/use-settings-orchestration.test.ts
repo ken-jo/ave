@@ -98,7 +98,7 @@ describe("useSettingsOrchestration", () => {
     api.updateSettings = vi.fn(async (patch: Parameters<AveApi["updateSettings"]>[0]) => {
       settings = {
         ...settings,
-        llm: mergeLlmPatch(settings.llm, patch.llm as LLMSettingsPatch ?? {}, settings.marketplace.installedProviderIds, settings.marketplace.installedProviderPresets),
+        llm: mergeLlmPatch(settings.llm, patch.llm as LLMSettingsPatch ?? {}, settings.marketplace.installedProviderPresets),
       };
       return settings;
     });
@@ -117,7 +117,7 @@ describe("useSettingsOrchestration", () => {
     api.updateSettings = vi.fn(async (patch: Parameters<AveApi["updateSettings"]>[0]) => {
       settings = {
         ...settings,
-        llm: mergeLlmPatch(settings.llm, patch.llm as LLMSettingsPatch ?? {}, settings.marketplace.installedProviderIds, settings.marketplace.installedProviderPresets),
+        llm: mergeLlmPatch(settings.llm, patch.llm as LLMSettingsPatch ?? {}, settings.marketplace.installedProviderPresets),
       };
       return settings;
     });
