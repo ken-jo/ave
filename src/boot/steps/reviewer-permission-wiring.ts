@@ -104,6 +104,7 @@ export function wireReviewerAndPermissions(ctx: BootContext): void {
       model: selectedModel ?? llmRouteModel(block, marketplaceProviderPreset?.providerId),
       ...(providerFetch ? { fetch: providerFetch } : {}),
       ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
+      ...(llmVendor === "openai-compatible" && !marketplaceProviderPreset ? { wire: block.wire } : {}),
       ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
       ...(block.vertexProject ? { vertexProject: block.vertexProject } : {}),
       ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),

@@ -186,6 +186,7 @@ export function buildProvider(
         // Child model overrides take precedence; absent overrides retain the configured vendor model.
         model: effectiveModel,
         ...(effectiveBaseUrl ? { baseUrl: effectiveBaseUrl } : {}),
+        ...(vendor === "openai-compatible" && !marketplaceProviderPreset ? { wire: block.wire } : {}),
         ...(block.vertexProject ? { vertexProject: block.vertexProject } : {}),
         ...(block.vertexLocation ? { vertexLocation: block.vertexLocation } : {}),
         ...(marketplaceProviderPreset ? { providerMetadata: marketplaceProviderPreset } : {}),
@@ -204,6 +205,7 @@ export function buildProvider(
           return {
             ...entry,
             ...(fallbackBlock?.baseUrl ? { baseUrl: fallbackBlock.baseUrl } : {}),
+            ...(entry.provider === "openai-compatible" ? { wire: fallbackBlock.wire } : {}),
             ...(fallbackBlock?.vertexProject ? { vertexProject: fallbackBlock.vertexProject } : {}),
             ...(fallbackBlock?.vertexLocation ? { vertexLocation: fallbackBlock.vertexLocation } : {}),
           };

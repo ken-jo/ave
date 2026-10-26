@@ -12,7 +12,7 @@ export const en = {
   // VENDOR_UI labels/placeholders
   "constants.vendorAzureFoundryPlaceholder": "Azure API key...",
   "constants.vendorVertexAiPlaceholder": "service account (unused — uses ADC)",
-  "constants.vendorOpenAiCompatibleLabel": "Custom (OpenAI-compatible)",
+  "constants.vendorOpenAiCompatibleLabel": "Custom provider",
   "constants.vendorOpenAiCompatiblePlaceholder": "API key (or any value if unauthenticated)",
 
   // EXEC_MODE_OPTIONS
@@ -45,7 +45,7 @@ export const ko: Record<keyof typeof en, string> = {
   // VENDOR_UI labels/placeholders
   "constants.vendorAzureFoundryPlaceholder": "Azure API 키...",
   "constants.vendorVertexAiPlaceholder": "서비스 계정 (미사용 — ADC 사용)",
-  "constants.vendorOpenAiCompatibleLabel": "사용자 지정 (OpenAI 호환)",
+  "constants.vendorOpenAiCompatibleLabel": "사용자 지정 제공업체",
   "constants.vendorOpenAiCompatiblePlaceholder": "API 키 (인증이 없으면 임의 값 가능)",
 
   // EXEC_MODE_OPTIONS

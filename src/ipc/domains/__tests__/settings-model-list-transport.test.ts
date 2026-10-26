@@ -51,6 +51,20 @@ beforeEach(() => {
 });
 
 describe("model list IPC transport injection", () => {
+  it("passes a draft custom endpoint and its wire together", async () => {
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(makeDeps(vi.fn() as unknown as typeof fetch) as never);
+    await invoke(CHANNELS.settings.listLlmModels, { vendor: "openai-compatible", baseUrl: "https://draft.example/v1", wire: "google-gemini" });
+    expect(listLlmModelsFromSettingsMock.mock.calls[0]?.[1]).toMatchObject({ baseUrl: "https://draft.example/v1", wire: "google-gemini" });
+  });
+
+  it("rejects an unknown draft wire before model discovery", async () => {
+    const { registerSettingsHandlers } = await import("../settings.js");
+    registerSettingsHandlers(makeDeps(vi.fn() as unknown as typeof fetch) as never);
+    await expect(invoke(CHANNELS.settings.listLlmModels, { vendor: "openai-compatible", baseUrl: "https://draft.example/v1", wire: "invalid" })).rejects.toThrow(/wire/);
+    expect(listLlmModelsFromSettingsMock).not.toHaveBeenCalled();
+  });
+
   it("passes the host transport into the engine as fetchImpl", async () => {
     const { registerSettingsHandlers } = await import("../settings.js");
     const singleHopNetworkFetch = vi.fn() as unknown as typeof fetch;

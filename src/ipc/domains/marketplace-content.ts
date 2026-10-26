@@ -77,30 +77,6 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       log.warn({ err: errorMessage(error) }, `${what}: settings saved, broadcast failed`);
     }
   };
-  // Remove the address-bound key before changing settings and restore it if the write fails.
-  const withoutVendorKey = async <T>(vendorId: string, write: () => Promise<T>): Promise<T> => {
-    const secretKey = `llm.apiKey.${vendorId}`;
-    let saved: string | null = null;
-    let present = true;
-    try {
-      saved = settings.getSecret(secretKey);
-      present = saved !== null;
-    } catch (error) {
-      // A key that cannot be decrypted is unusable anyway: remove it, with nothing to put back.
-      log.warn({ err: errorMessage(error) }, `the saved ${vendorId} key cannot be read; removing it`);
-    }
-    if (present) await settings.deleteSecret(secretKey);
-    try {
-      return await write();
-    } catch (error) {
-      if (saved !== null) {
-        await settings.setSecret(secretKey, saved).catch((restoreError: unknown) => {
-          log.error({ err: errorMessage(restoreError) }, `could not restore the ${vendorId} key after a failed settings write`);
-        });
-      }
-      throw error;
-    }
-  };
   const connectionsWithout = (connectionId: string) =>
     settings.get("marketplace").installedMessagingConnections.filter((entry) => entry.connectionId !== connectionId);
   const heldBySettings = (content: ParsedContent): boolean => {
@@ -145,18 +121,8 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
         if (held) throw new MarketplaceError("PACKAGE_ID_CONFLICT", `${held} already defines ${content.kind} ${entry.name}; rename or remove it first`);
       }
       if (content.kind === "provider" && "vendor" in content) {
-        const { providerId, defaultModel, baseUrl } = content.vendor;
-        const installed = settings.get("marketplace").installedProviderIds;
-        const vendor = { ...(defaultModel ? { model: defaultModel } : {}), ...(baseUrl ? { baseUrl } : {}) };
-        const write = () =>
-          settings.patch({
-            marketplace: { installedProviderIds: installed.includes(providerId) ? installed : [...installed, providerId] },
-            ...(Object.keys(vendor).length > 0 ? { llm: { vendors: { [providerId]: vendor } } } : {}),
-          });
-        // Changing a provider address drops its saved key so credentials cannot reach a new host.
-        const moves = baseUrl !== undefined && settings.get("llm").vendors[providerId]?.baseUrl !== baseUrl;
-        const { finishError } = await mutateMarketplaceProviderPresets(deps, () => (moves ? withoutVendorKey(providerId, write) : write()));
-        await afterPersist(`activating ${entry.name}`, finishError);
+        // Bundled vendor configuration belongs to Settings, independent of package metadata.
+        return { retired: Promise.resolve() };
       } else if (content.kind === "provider") {
         const { finishError } = await mutateMarketplaceProviderPresets(deps, () => settings.installMarketplaceProviderPreset(content.preset));
         await afterPersist(`activating ${entry.name}`, finishError);
@@ -177,12 +143,9 @@ export function createContentActivation(deps: IpcDeps, mcpRuntime?: AgentPluginM
       const appearance = settings.get("appearance");
       const what = `deactivating ${entry.name}`;
       if (entry.kind === "provider") {
-        // Removing an unlocked provider also removes its address-bound key so later activation cannot send it elsewhere.
         const { finishError } = await mutateMarketplaceProviderPresets(deps, () =>
           isMarketplaceEligibleLLMVendor(entry.name)
-            ? withoutVendorKey(entry.name, () =>
-                settings.patch({ marketplace: { installedProviderIds: settings.get("marketplace").installedProviderIds.filter((id) => id !== entry.name) } }),
-              )
+            ? settings.patch({ marketplace: { installedProviderIds: settings.get("marketplace").installedProviderIds.filter((id) => id !== entry.name) } })
             : settings.uninstallMarketplaceProviderPreset(entry.name),
         );
         await afterPersist(what, finishError);

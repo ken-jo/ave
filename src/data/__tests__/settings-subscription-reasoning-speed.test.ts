@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_SETTINGS } from "../settings-defaults.js";
-import { mergeLlmPatch, pruneLazyLlmVendorBlocks } from "../settings-normalization.js";
+import { mergeLlmPatch } from "../settings-normalization.js";
 import type { LLMSettings } from "../settings-store.js";
 
 const base = (): LLMSettings => structuredClone(DEFAULT_SETTINGS.llm);
@@ -11,17 +11,17 @@ describe("llm.subscriptionReasoningSpeed", () => {
   });
 
   it("keeps a chosen speed and leaves it alone on unrelated patches", () => {
-    const chosen = mergeLlmPatch(base(), { subscriptionReasoningSpeed: "high" }, [], []);
+    const chosen = mergeLlmPatch(base(), { subscriptionReasoningSpeed: "high" }, []);
     expect(chosen.subscriptionReasoningSpeed).toBe("high");
-    expect(mergeLlmPatch(chosen, { pinnedModels: ["gpt-6.1-sol"] }, [], []).subscriptionReasoningSpeed).toBe("high");
+    expect(mergeLlmPatch(chosen, { pinnedModels: ["gpt-6.1-sol"] }, []).subscriptionReasoningSpeed).toBe("high");
   });
 
   it("reads a stored value outside the menu as the default, never as an effort", () => {
     const stored = { ...base(), subscriptionReasoningSpeed: "xhigh" } as unknown as LLMSettings;
-    expect(pruneLazyLlmVendorBlocks(stored, [], [], { inferInstalledFromCustom: false }).llm.subscriptionReasoningSpeed)
+    expect(mergeLlmPatch(stored, {}, []).subscriptionReasoningSpeed)
       .toBe("medium");
     const { subscriptionReasoningSpeed: _absent, ...legacy } = base();
-    expect(pruneLazyLlmVendorBlocks(legacy as LLMSettings, [], [], { inferInstalledFromCustom: false }).llm.subscriptionReasoningSpeed)
+    expect(mergeLlmPatch(legacy as LLMSettings, {}, []).subscriptionReasoningSpeed)
       .toBe("medium");
   });
 });

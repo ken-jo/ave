@@ -17,6 +17,7 @@ import {
 } from "../shared/side-panel.js";
 import { normalizeShutdownCleanupTimeoutMs } from "../shared/tool-timeout-policy.js";
 import type { PricingOverride } from "../shared/pricing-overrides.js";
+import { LlmProviderSettingsError } from "../shared/custom-provider.js";
 import { compactionModelRouteKey } from "../shared/compaction-model.js";
 import {
   sanitizePluginConfig,
@@ -27,8 +28,8 @@ import {
 import type { AlertSettings, RetiredPluginConfigRecord } from "../shared/alerts-types.js";
 import type { UpstreamProxySettings } from "../shared/upstream-proxy.js";
 import {
-  isMarketplaceEligibleLLMVendor,
   activeLlmRouteModel,
+  getLlmVendorSettings,
   isRetiredLLMVendor,
   LLM_VENDORS,
   RETIRED_LLM_VENDOR_IDS,
@@ -99,7 +100,6 @@ import {
   normalizeMarketplace,
   normalizeProjectRootList,
   normalizeProjectLabels,
-  pruneLazyLlmVendorBlocks,
   withoutMirroredMarketplaceProviderPresetEndpoint,
   withMarketplaceProviderPresetModelSlot,
   withRenamedLlmVendorIds,
@@ -1080,9 +1080,14 @@ export class SettingsService {
       const nextLlm = mergeLlmPatch(
         this.settings.llm,
         partial.llm,
-        nextMarketplace.installedProviderIds,
         nextMarketplace.installedProviderPresets,
       );
+      if (getLlmVendorSettings(nextLlm.vendors, "openai-compatible").wire
+        !== getLlmVendorSettings(this.settings.llm.vendors, "openai-compatible").wire) {
+        for (const [key, entry] of Object.entries(nextLlm.modelListCache)) {
+          if (entry.vendor === "openai-compatible" && !entry.credentialScope) delete nextLlm.modelListCache[key];
+        }
+      }
       if (Object.hasOwn(partial.llm, "compactionModel")) {
         const route = compactionModelRouteKey(nextLlm, nextMarketplace.installedProviderPresets);
         if (Object.hasOwn(partial.llm, "compactionModelRoute") && partial.llm.compactionModelRoute !== route) {
@@ -1098,13 +1103,12 @@ export class SettingsService {
     if (partial.webSearch) this.settings.webSearch = { ...this.settings.webSearch, ...partial.webSearch };
     if (partial.marketplace) {
       this.settings.marketplace = nextMarketplace;
-      const prunedLlm = pruneLazyLlmVendorBlocks(
+      const normalizedLlm = mergeLlmPatch(
         this.settings.llm,
-        nextMarketplace.installedProviderIds,
+        {},
         nextMarketplace.installedProviderPresets,
-        { inferInstalledFromCustom: false },
       );
-      this.settings.llm = prunedLlm.llm;
+      this.settings.llm = normalizedLlm;
       this.settings.llm = withoutMarketplaceDefaultModels(
         this.settings.llm,
         nextMarketplace.installedProviderPresets,
@@ -1407,13 +1411,12 @@ export class SettingsService {
         nextMarketplace.installedProviderPresets,
       );
       this.settings.marketplace = nextMarketplace;
-      const prunedLlm = pruneLazyLlmVendorBlocks(
+      const normalizedLlm = mergeLlmPatch(
         this.settings.llm,
-        nextMarketplace.installedProviderIds,
+        {},
         nextMarketplace.installedProviderPresets,
-        { inferInstalledFromCustom: false },
       );
-      this.settings.llm = prunedLlm.llm;
+      this.settings.llm = normalizedLlm;
       this.settings.llm = withoutMarketplaceDefaultModels(
         this.settings.llm,
         nextMarketplace.installedProviderPresets,
@@ -1741,15 +1744,16 @@ export class SettingsService {
       }
 
       const rawLlm = parsed.llm;
+      const storedCustom = rawLlm?.vendors?.["openai-compatible"];
+      if (storedCustom && !Object.hasOwn(storedCustom, "wire")) migrationWriteBack = true;
       let llm = mergeLlmPatch(
         DEFAULT_SETTINGS.llm,
         rawLlm !== null && typeof rawLlm === "object" && !Array.isArray(rawLlm)
           ? rawLlm as LLMSettingsPatch
           : {},
-        LLM_VENDORS.filter(isMarketplaceEligibleLLMVendor),
         undefined,
       );
-      // Clear before retirement detection and custom-block pruning: the old built-in model alone must not keep an otherwise unconfigured route.
+      // Clear before retirement detection: the old built-in model alone must not keep an otherwise unconfigured route.
       if (!appliedMigrations.includes(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION)) {
         llm = withoutBuiltInDefaultModels(llm);
         appliedMigrations.push(BUILT_IN_DEFAULT_MODELS_CLEARED_MIGRATION);
@@ -1784,18 +1788,13 @@ export class SettingsService {
         onDisk.schemaVersion !== 2 &&
         (typeof onDisk.theme === "string" || typeof onDisk.chatTheme === "string" || typeof onDisk.codeTheme === "string");
 
-      let marketplace = normalizeMarketplace(marketplaceParsed);
-      const prunedLlm = pruneLazyLlmVendorBlocks(
+      const marketplace = normalizeMarketplace(marketplaceParsed);
+      const normalizedLlm = mergeLlmPatch(
         llm,
-        marketplace.installedProviderIds,
+        {},
         marketplace.installedProviderPresets,
-        { inferInstalledFromCustom: true },
       );
-      llm = prunedLlm.llm;
-      marketplace = {
-        ...marketplace,
-        installedProviderIds: prunedLlm.installedProviderIds,
-      };
+      llm = normalizedLlm;
 
       const appearance = normalizeAppearance(parsed.appearance);
 
@@ -1873,7 +1872,8 @@ export class SettingsService {
         appliedMigrations,
       };
       return { settings: result, writeBack: needsV2WriteBack || migrationWriteBack };
-    } catch {
+    } catch (error) {
+      if (error instanceof LlmProviderSettingsError) throw error;
       const defaults = structuredClone(DEFAULT_SETTINGS);
       defaults.appliedMigrations = [...KNOWN_MIGRATIONS];
       return { settings: defaults, writeBack: false };

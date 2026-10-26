@@ -1,6 +1,8 @@
 /** English message catalog; the canonical key set for the whole app. Every other locale (see {@link ./ko}) must provide a translation for each key here; missing keys fall back to this English text at runtime and are a type error at build time.
  * Keys are dot-namespaced by surface/component (`settings.appearance.*`, `chatView.*`, …). Placeholders use single braces: `"Hello {name}"`. This file is the seed; surface-specific keys are appended as each module is migrated off hardcoded strings. */
 export const en = {
+  "providerSettingsError.title": "Unable to load provider settings",
+  "providerSettingsError.detail": "The settings file contains an invalid field.\n\nFile: {path}\nField: {field}\n\nCorrect this field and restart Ave. The file has not been changed.",
   "mainToolbar.hideSidebar": "Hide sidebar",
   "mainToolbar.showSidebar": "Show sidebar",
   "sidebar.generalLabel": "General",
