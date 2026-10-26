@@ -44,7 +44,7 @@ export function makeTestPolicy(overrides: Partial<PolicyFile> = {}): PolicyFile 
 
 // Windows: `checkAsrtDependencies` only proves the srt-win binary + a provisioned `srt-sandbox` user exist — it does NOT prove the box can actually SPAWN a process as that user. `CreateProcessWithLogonW` is denied on managed Windows where a GPO or EDR blocks secondary-logon-as-another-user, so the account + WFP can be fully provisioned yet every wrapped spawn fails access-denied. Probe the real egress fence once (the same call `SandboxManager.initialize` makes); a throw means the sandbox cannot initialize on THIS machine. Memoized — the capability is machine-level and never changes within a run.
 let _winSpawnProbe: Promise<boolean> | undefined;
-async function windowsSandboxCanSpawn(): Promise<boolean> {
+export async function windowsSandboxCanSpawn(): Promise<boolean> {
   if (_winSpawnProbe === undefined) {
     _winSpawnProbe = (async () => {
       const previousCwd = process.cwd();

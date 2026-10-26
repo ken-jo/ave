@@ -21,7 +21,7 @@ import type { SandboxManager as SandboxManagerType, SandboxRuntimeConfig } from 
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, renameSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import * as os from "node:os";
-import { basename, dirname, join, parse, resolve, sep } from "node:path";
+import { basename, dirname, join, parse, relative, resolve, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
 import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
@@ -103,6 +103,33 @@ let originalAsrtTestHome: string | undefined;
 let originalAveHome: string | undefined;
 let originalHome: string | undefined;
 let isolatedWindowsHome: string | undefined;
+const nativeFixtureSpies: MockInstance[] = [];
+
+beforeAll(async () => {
+  if (process.platform !== "win32") return;
+  const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+  const initialize = SandboxManager.initialize.bind(SandboxManager);
+  const wrap = SandboxManager.wrapWithSandboxArgv.bind(SandboxManager);
+  const inside = (entry: import("@anthropic-ai/sandbox-runtime").FilesystemPathEntry) => {
+    const path = typeof entry === "string" ? entry : entry.path;
+    const rel = relative(tmpdir(), path);
+    return rel === "" || (!rel.startsWith("..") && !rel.includes(":"));
+  };
+  nativeFixtureSpies.push(
+    vi.spyOn(SandboxManager, "initialize").mockImplementation((config, ask, monitor) =>
+      initialize({ ...config, filesystem: { ...config.filesystem,
+        denyRead: config.filesystem.denyRead.filter(inside), denyWrite: config.filesystem.denyWrite.filter(inside),
+      } }, ask, monitor)),
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation((command, shell, custom, ...rest) =>
+      wrap(command, shell, custom?.filesystem ? { ...custom, filesystem: { ...custom.filesystem,
+        denyRead: custom.filesystem.denyRead?.filter(inside), denyWrite: custom.filesystem.denyWrite?.filter(inside),
+      } } : custom, ...rest)),
+  );
+});
+
+afterAll(() => {
+  for (const spy of nativeFixtureSpies) spy.mockRestore();
+});
 
 beforeAll(() => {
   if (process.platform !== "win32") return;
@@ -141,6 +168,7 @@ afterAll(async () => {
     await retryOnTransientFsLock(async () => {
       for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(directory, name), { force: true });
       if (existsSync(directory)) rmdirSync(directory);
+      if (existsSync(dirname(directory))) rmdirSync(dirname(directory));
     });
   }
 });
@@ -157,12 +185,12 @@ function bare(paths: readonly unknown[]): string[] {
   return paths.map((path) => String(path).replace(/[\\/]$/, ""));
 }
 
-// Expected rows for the absent, ungranted profile targets in these config-only tests.
+// Windows also omits absent targets at the handoff.
 function reachesAsrt(path: string): boolean {
   if (process.platform !== "win32") return true;
   const home = homedir().toLowerCase();
   const folded = path.toLowerCase();
-  return !path.startsWith("/") && folded !== home && !folded.startsWith(home.endsWith(sep) ? home : home + sep);
+  return existsSync(path) && !path.startsWith("/") && folded !== home && !folded.startsWith(home.endsWith(sep) ? home : home + sep);
 }
 
 const ORIGINAL_PLATFORM_FOR_DENY_TEST = process.platform;
@@ -1127,6 +1155,10 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
       expect(bare(config.filesystem.denyWrite)).toContain(dirname(executable));
       expect(() => buildSandboxConfig({ allowWrite: [dirname(dirname(executable))] }))
         .toThrow("Windows filesystem grant overlaps a private helper image");
+      expect(() => buildSandboxConfig({ allowWrite: [dirname(dirname(dirname(executable)))] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
+      expect(() => buildSandboxConfig({ allowWrite: [join(dirname(dirname(executable)), "sibling")] }))
+        .toThrow("Windows filesystem grant overlaps a private helper image");
       expect(() => buildSandboxConfig({ allowRead: [dirname(executable)] }))
         .toThrow("Windows filesystem grant overlaps a private helper image");
     } finally {
@@ -1145,7 +1177,7 @@ describe("asrt-sandbox — proxyPortRange single SOT (install↔config consisten
     try {
       setProcessPlatform("win32");
       const executable = buildSandboxConfig({ allowedDomains: [] }).windows!.srtWin!.path;
-      const root = dirname(dirname(executable));
+      const root = dirname(dirname(dirname(executable)));
       filler = mkdtempSync(join(root, "scan-budget-"));
       for (let group = 0; group < 180; group += 1) {
         mkdirSync(join(filler, `g${group}`));
@@ -1177,6 +1209,12 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   // getDefaultSensitiveReadDenyPaths derives `~/.ave/*` from aveHome (which honors the AVE_HOME env override) and the standard credential stores from os.homedir. Pin AVE_HOME to a deterministic value so the ~/.ave assertions are stable across machines; restore it after each test.
   const FAKE_AVE_HOME = join(tmpdir(), "ave-readdeny-test-home", ".ave");
   let prevAveHome: string | undefined;
+
+  beforeAll(() => {
+    for (const name of ["secrets", "keys", "sessions"]) mkdirSync(join(FAKE_AVE_HOME, name), { recursive: true });
+    writeFileSync(join(FAKE_AVE_HOME, "settings.json"), "fixture");
+  });
+  afterAll(() => rmSync(dirname(FAKE_AVE_HOME), { recursive: true, force: true }));
 
   beforeEach(() => {
     prevAveHome = process.env.AVE_HOME;
@@ -1357,6 +1395,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
     const profile = join(tmpdir(), "ave-subscription-custom-profile");
+    mkdirSync(join(profile, "subscription-runtimes"), { recursive: true });
     vi.stubEnv("AVE_HOME", profile);
     try {
       const runtime = join(profile, "subscription-runtimes") + (process.platform === "win32" ? sep : "");
@@ -1369,6 +1408,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(config.filesystem.denyWrite).not.toContain(profile);
     } finally {
       vi.unstubAllEnvs();
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
@@ -1418,11 +1458,13 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("FIX 2 — buildSandboxConfig threads userDataDir into deny-list", () => {
     const customUserData = join(tmpdir(), "threaded-userData-deny-test");
+    mkdirSync(customUserData, { recursive: true });
     const config = buildSandboxConfig({
       allowedDomains: [],
       userDataDir: customUserData,
     });
     expect(bare(config.filesystem.denyRead)).toContain(customUserData);
+    rmSync(customUserData, { recursive: true, force: true });
   });
 
   it("buildSandboxConfig unions the sensitive deny-list into filesystem.denyRead", () => {
@@ -1440,6 +1482,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("buildSandboxConfig keeps a caller-supplied denyRead AND adds the sensitive floor (union, deduped)", () => {
     const extra = join(tmpdir(), "caller-supplied-deny-xyz");
+    writeFileSync(extra, "fixture");
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [extra] });
     // Caller entry survives.
     expect(config.filesystem.denyRead).toContain(extra);
@@ -1454,6 +1497,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       (p) => p === join(FAKE_AVE_HOME, "secrets"),
     ).length;
     expect(occurrences).toBe(1);
+    rmSync(extra);
   });
 
   it("buildSandboxConfig unions the sensitive write deny-list into filesystem.denyWrite", () => {
@@ -1470,6 +1514,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("buildSandboxConfig keeps caller-supplied denyWrite AND adds the sensitive write floor", () => {
     const extra = join(tmpdir(), "caller-supplied-write-deny-xyz");
+    writeFileSync(extra, "fixture");
     const config = buildSandboxConfig({ allowedDomains: [], denyWrite: [extra] });
     expect(config.filesystem.denyWrite).toContain(extra);
     if (reachesAsrt(join(homedir(), ".config"))) {
@@ -1479,6 +1524,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const dup = join(homedir(), ".config");
     const dupConfig = buildSandboxConfig({ allowedDomains: [], denyWrite: [dup] });
     expect(bare(dupConfig.filesystem.denyWrite).filter((p) => p === dup)).toHaveLength(reachesAsrt(dup) ? 1 : 0);
+    rmSync(extra);
   });
 
   it("Windows: directory denies reach srt-win as directories, and POSIX rows do not reach it", () => {
@@ -1488,7 +1534,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     try {
       const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true });
       const denyWrite = config.filesystem.denyWrite.map(String);
-      // A missing target is created by `srt-win acl stamp`: a trailing separator makes it a directory instead of a 0-byte file. The floor appends the host separator (a backslash on a real Windows host).
+      // Existing directory targets retain their trailing separator.
       expect(denyWrite).toContain(`${join(FAKE_AVE_HOME, "keys")}${sep}`);
       expect(denyWrite).toContain(join(FAKE_AVE_HOME, "settings.json"));
       // `/etc/shadow` would become `<drive>:\etc\shadow`.
@@ -1511,6 +1557,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       const privateFile = join(profile, "private-file");
       const missing = join(profile, "missing-file");
       const failed = join(profile, ".ssh", "failed-file");
+      mkdirSync(join(profile, ".ssh"), { recursive: true });
+      for (const target of [exposed, privateFile, failed]) writeFileSync(target, "fixture");
       const evidence = new Map<string, WindowsReadDenyEvidence>([
         [exposed.toLowerCase(), { status: "readable", principals: ["Everyone"] } as const],
         [privateFile.toLowerCase(), { status: "private" } as const],
@@ -1527,6 +1575,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = previousHome;
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
@@ -1537,6 +1586,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     setProcessPlatform("win32");
     try {
       const target = join(profile, ".ssh", "linked-secret");
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, "fixture");
       const config = buildPerCommandSandboxCustomConfig({ denyRead: [target] }, undefined, undefined,
         new Map([[target.toLowerCase(), { status: "reparse" } as const]]));
       expect(config?.filesystem?.denyRead).toContain(target);
@@ -1544,6 +1595,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = previousHome;
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
@@ -1554,6 +1606,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     setProcessPlatform("win32");
     try {
       const target = join(profile, ".ssh", "unreadable-secret");
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, "fixture");
       const config = buildSandboxConfig({ denyRead: [target] },
         new Map([[target.toLowerCase(), { status: "error", reason: "Access denied" } as const]]));
       expect(config.filesystem.denyRead).toContain(target);
@@ -1561,6 +1615,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (previousHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = previousHome;
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
@@ -1604,7 +1659,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     }
   });
 
-  it("Windows: missing profile denies reach srt-win only when overlapping a grant", () => {
+  it("Windows: missing profile denies stay protected when overlapping a write grant", () => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-windeny-profile");
     process.env.AVE_ASRT_TEST_HOME = profile;
@@ -1618,7 +1673,6 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
         denyWrite: [join(work, "locked")],
       });
       const denies = [...config.filesystem.denyRead, ...config.filesystem.denyWrite].map(String);
-      // Under the grant: kept, the sandbox user could otherwise reach it.
       expect(denies).toContain(join(work, "locked"));
       // Missing disjoint rows would create placeholders and stamp the profile itself as the parent.
       expect(denies.filter((p) => p.startsWith(profile) && !p.startsWith(work))).toEqual([]);
@@ -1639,12 +1693,15 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     setProcessPlatform("win32");
     try {
       const locked = join(tmpdir(), "ave-root-profile-deny", "locked");
+      mkdirSync(dirname(locked), { recursive: true });
+      writeFileSync(locked, "fixture");
       const config = buildSandboxConfig({ allowedDomains: [], strictAllowlist: true, denyWrite: [locked] });
       expect(bare(config.filesystem.denyWrite)).toContain(locked);
     } finally {
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+      rmSync(join(tmpdir(), "ave-root-profile-deny"), { recursive: true, force: true });
     }
   });
 
@@ -1663,7 +1720,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     ["profile roots", "C:\\Users\\tester", "C:\\Users\\tester\\", "C:\\Users\\tester\\locked", true],
     ["network paths", "\\\\server\\profiles\\tester", "//SERVER/profiles/tester/work/", "\\\\server\\profiles\\tester\\work\\locked", true],
     ["network share boundaries", "\\\\server\\profiles\\tester", "\\\\server\\profiles\\tester\\work", "\\\\server\\profiles\\tester\\work-neighbor\\locked", false],
-  ])("Windows: profile deny coverage respects %s", (_name, profile, grant, target, kept) => {
+  ])("Windows: absent profile denies respect %s", (_name, profile, grant, target, kept) => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     process.env.AVE_ASRT_TEST_HOME = profile;
     setProcessPlatform("win32");
@@ -1713,8 +1770,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     ["normalized escapes", "work", "work/../locked", false],
     ["sibling boundaries", "work", "work-neighbor/locked", false],
     ["unresolved patterns", "work", "other/*", true],
-    ["unresolved short names", "work", "OTHER~1/locked", true],
-    ["unresolved grant patterns", "work/*", "other/locked", true],
+    ["unresolved short names", "work", "OTHER~1/locked", false],
+    ["unresolved grant patterns", "work/*", "other/locked", false],
   ] as const)("Windows: native profile deny coverage respects %s", (_name, grantSuffix, targetSuffix, kept) => {
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-windeny-profile");
@@ -1722,18 +1779,24 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     setProcessPlatform("win32");
     try {
       const target = join(profile, ...targetSuffix.split("/"));
+      if (!/[*~]/.test(targetSuffix)) mkdirSync(target, { recursive: true });
+      const stat = lstatSync(target, { bigint: true, throwIfNoEntry: false });
+      const snapshot = new Map<string, WindowsReadDenyEvidence>([[windowsReadDenyKey(target), stat === undefined
+        ? { status: "missing" }
+        : { status: "private", identity: { volumeSerialNumber: stat.dev.toString(), fileId: stat.ino.toString() } }]]);
       const config = buildSandboxConfig({
         allowedDomains: [],
         allowWrite: [join(profile, ...grantSuffix.split("/"))],
         denyRead: [target],
         denyWrite: [target],
-      });
+      }, snapshot);
       expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
       expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
     } finally {
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
@@ -1744,6 +1807,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     setProcessPlatform("win32");
     try {
       const target = join(profile, ".config");
+      mkdirSync(join(target, "project"), { recursive: true });
       for (const access of ["allowRead", "allowWrite"] as const) {
         const config = buildSandboxConfig({
           allowedDomains: [],
@@ -1757,6 +1821,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
@@ -1764,6 +1829,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     const prevTestHome = process.env.AVE_ASRT_TEST_HOME;
     const profile = join(tmpdir(), "ave-windeny-profile");
     const target = join(profile, "locked");
+    mkdirSync(target, { recursive: true });
     const canonicalize = sensitivePaths.canonicalizePathForMatch;
     const spy = vi.spyOn(sensitivePaths, "canonicalizePathForMatch").mockImplementation((path) => {
       if (path === target) throw new Error("Path identity unavailable");
@@ -1780,6 +1846,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
@@ -1791,6 +1858,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     try {
       const configRoot = join(profile, ".config");
       const project = join(configRoot, "project");
+      mkdirSync(project, { recursive: true });
       const config = buildSandboxConfig({
         allowedDomains: [],
         allowWrite: [project],
@@ -1810,6 +1878,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
       else process.env.AVE_ASRT_TEST_HOME = prevTestHome;
+      rmSync(profile, { recursive: true, force: true });
     }
   });
 
