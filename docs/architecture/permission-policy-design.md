@@ -219,10 +219,12 @@ lifecycle coverage are described in the architecture contract.
 
 ## Shell Credential And Sink Classification
 
-Host-shell credential and exfiltration analysis and its work limits apply to
-sandboxed calls and unsandboxed inputs within the length limit. Over-limit
-unsandboxed input immediately asks or denies without running these inspections.
-An identified floor takes precedence over an ordinary reason in the same input.
+Host-shell credential/sink classification is separate from exact raw-word
+identity. Unsandboxed input over 2,000 characters asks, or denies headless,
+before command-dependent work. Floor inspection has an independent
+8,000-character pre-inspection input limit; that limit or actual floor-analysis
+budget exhaustion forces per-call modal approval and cannot auto-allow. An
+identified floor takes precedence over an ordinary reason in the same input.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
 

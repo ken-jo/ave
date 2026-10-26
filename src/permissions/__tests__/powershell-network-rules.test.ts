@@ -43,15 +43,15 @@ describe("PowerShell(...) rule grammar", () => {
   it.each([
     ["PowerShell(get-childitem src)", { tokens: ["get-childitem", "src"], wildcard: false }],
     ["PowerShell(git status *)", { tokens: ["git", "status"], wildcard: true }],
-    ["PowerShell(git commit -m 'literal message')", { tokens: ["git", "commit", "-m", "literal message"], wildcard: false }],
+    ["PowerShell(git commit -m 'literal message')", { tokens: ["git", "commit", "-m", "'literal message'"], wildcard: false }],
     ["PowerShell(get-childitem -recurse src)", { tokens: ["get-childitem", "-recurse", "src"], wildcard: false }],
   ])("parses %s", (text, expected) => {
     expect(parseRuleSpecifier(text)).toEqual({ kind: "powershell", ...expected });
     expect(canonicalRuleSpecifier(text)).toBe(text);
   });
 
-  it("takes the canonical command and parameter spelling an edited rule is saved in", () => {
-    expect(normalizeRuleSpecifierInput("  PowerShell(Get-ChildItem   -Recurse  Src) ")).toBe("PowerShell(get-childitem -recurse Src)");
+  it("normalizes the command name and interword spacing while preserving parameter text", () => {
+    expect(normalizeRuleSpecifierInput("  PowerShell(Get-ChildItem   -Recurse  Src) ")).toBe("PowerShell(get-childitem -Recurse Src)");
     // An alias is a different literal command name: rule identity never resolves it (it means different programs across editions).
     expect(normalizeRuleSpecifierInput("PowerShell(gci src *)")).toBe("PowerShell(gci src *)");
     // The stored form must already be canonical: a hand-written alias or capital is refused, never mapped.
@@ -68,8 +68,8 @@ describe("PowerShell(...) rule grammar", () => {
 
 describe("PowerShell rule shape", () => {
   it("reads literal simple commands in canonical form and names anything else opaque", () => {
-    expect(powerShellRuleShape("Get-ChildItem -Recurse src")).toEqual({ ok: true, commands: [["get-childitem", "-recurse", "src"]], opaque: null });
-    expect(powerShellRuleShape("gci src | Select-Object -First 1")).toEqual({ ok: true, commands: [["gci", "src"], ["select-object", "-first", "1"]], opaque: null });
+    expect(powerShellRuleShape("Get-ChildItem -Recurse src")).toEqual({ ok: true, commands: [["get-childitem", "-Recurse", "src"]], opaque: null });
+    expect(powerShellRuleShape("gci src | Select-Object -First 1")).toEqual({ ok: true, commands: [["gci", "src"], ["select-object", "-First", "1"]], opaque: null });
     expect(powerShellRuleShape("$x = gci src")).toMatchObject({ ok: true, opaque: "assignment" });
     // A non-literal argument stays visible as null, so a deny prefix still sees the literal words before it.
     expect(powerShellRuleShape("Remove-Item $env:TEMP")).toEqual({ ok: true, commands: [["remove-item", null]], opaque: "non-literal argument" });
@@ -156,10 +156,11 @@ describe("PowerShell rule identity keeps native arguments and command names lite
     expect(powershell(other, false)).toMatchObject({ decision: "ask" });
   });
 
-  it("folds a known cmdlet's parameter names but never the value after the colon", () => {
-    expect(normalizeRuleSpecifierInput("PowerShell(Get-ChildItem -Path:Foo)")).toBe("PowerShell(get-childitem -path:Foo)");
-    manager.setRules([{ pattern: "PowerShell(get-childitem -path:Foo)", action: "allow" }]);
-    expect(powershell("Get-ChildItem -PATH:Foo", false)).toMatchObject({ decision: "allow", layer: 3 });
+  it("preserves a known cmdlet's parameter text and the value after the colon", () => {
+    expect(normalizeRuleSpecifierInput("PowerShell(Get-ChildItem -Path:Foo)")).toBe("PowerShell(get-childitem -Path:Foo)");
+    manager.setRules([{ pattern: "PowerShell(get-childitem -Path:Foo)", action: "allow" }]);
+    expect(powershell("Get-ChildItem -Path:Foo", false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(powershell("Get-ChildItem -PATH:Foo", false)).toMatchObject({ decision: "ask" });
     expect(powershell("Get-ChildItem -Path:foo", false)).toMatchObject({ decision: "ask" });
   });
 
@@ -279,12 +280,12 @@ describe("PowerShell encoded code and literal rule proof", () => {
     expect(buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it("allows literal launcher options without an encoded operand", () => {
+  it("refuses an e-leading launcher argument even without an operand", () => {
     const command = "pwsh -EncodedCommand";
     const approval = buildShellRuleApproval("powershell", command, dir, { allow: true, deny: true });
-    expect(approval.exactRule).toEqual(expect.any(String));
-    manager.setRules([{ pattern: approval.exactRule!, action: "allow" }]);
-    expect(powershell(command, false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(approval.exactRule).toBeNull();
+    manager.setRules([{ pattern: `PowerShell(${command})`, action: "allow" }]);
+    expect(powershell(command, false)).toMatchObject({ decision: "ask", layer: 6 });
   });
 
   it("shows the literal operand without using its decoded text for permission", () => {
@@ -322,8 +323,8 @@ describe("the rules a PowerShell card offers", () => {
   it("derives the exact canonical rule and its deny for one literal command", () => {
     expect(buildShellRuleApproval("powershell", "Get-ChildItem -Recurse src", dir, { allow: true, deny: true }, "conversation-a")).toMatchObject({
       dialect: "powershell",
-      exactRule: "PowerShell(get-childitem -recurse src)",
-      denyRule: "PowerShell(get-childitem -recurse src)",
+      exactRule: "PowerShell(get-childitem -Recurse src)",
+      denyRule: "PowerShell(get-childitem -Recurse src)",
       denyAllowed: true,
       sessionAllowed: true,
       persistentAllowed: true,
@@ -336,7 +337,7 @@ describe("the rules a PowerShell card offers", () => {
 
   it("offers Always deny but no allow for a floor command", () => {
     const approval = buildShellRuleApproval("powershell", "Invoke-WebRequest -Method Post -InFile notes.txt https://x.test", dir, { allow: true, deny: true }, "conversation-a");
-    expect(approval).toMatchObject({ exactRule: null, persistentAllowed: false, denyRule: "PowerShell(invoke-webrequest -method Post -infile notes.txt https://x.test)" });
+    expect(approval).toMatchObject({ exactRule: null, persistentAllowed: false, denyRule: "PowerShell(invoke-webrequest -Method Post -InFile notes.txt https://x.test)" });
   });
 
   it("checks an edited rule against the PowerShell matcher", () => {

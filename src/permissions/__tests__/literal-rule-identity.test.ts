@@ -30,7 +30,7 @@ describe("literal rule semantic identity", () => {
       const quotedRule = canonicalRuleSpecifier(`PowerShell(${quoted})`);
       const bareRule = canonicalRuleSpecifier(`PowerShell(${bare})`);
       expect(quotedRule).not.toBe(bareRule);
-      expect(parseRuleSpecifier(quotedRule)).toMatchObject({ literalParameters: [1] });
+      expect(parseRuleSpecifier(quotedRule)).toMatchObject({ tokens: [expect.any(String), `'${parameter}'`] });
       expect(powerShellAllow(quotedRule, quoted)).toBe("allow");
       expect(powerShellAllow(quotedRule, bare)).not.toBe("allow");
       expect(powerShellAllow(bareRule, bare)).toBe("allow");
@@ -39,13 +39,12 @@ describe("literal rule semantic identity", () => {
     }
   });
 
-  it("keeps module-qualified and bare invocation identities distinct", () => {
+  it("retains the permitted module command-head normalization", () => {
     const qualified = "Microsoft.PowerShell.Utility\\Invoke-Expression 'Get-Date'";
     const bare = "Invoke-Expression 'Get-Date'";
-    for (const [saved, command] of [[qualified, bare], [bare, qualified]]) {
-      expect(powerShellAllow(`PowerShell(${saved})`, command)).not.toBe("allow");
-      expect(powerShellAllow(`PowerShell(${saved})`, saved)).toBe("allow");
-    }
+    expect(canonicalRuleSpecifier(`PowerShell(${qualified})`)).toBe(canonicalRuleSpecifier(`PowerShell(${bare})`));
+    expect(powerShellAllow(`PowerShell(${qualified})`, bare)).toBe("allow");
+    expect(powerShellAllow(`PowerShell(${bare})`, qualified)).toBe("allow");
   });
 
   it.each(["Microsoft.PowerShell.Management\\Get-ChildItem", "Vendor.Module\\Get-ChildItem"])("shares module leaf normalization with retained visible floors: %s", (command) => {
@@ -67,7 +66,7 @@ describe("literal rule semantic identity", () => {
     expect(encodedPowerShellExecutionReason(["bash", "-c", "pwsh -enc literal"])).toBeNull();
     expect(encodedPowerShellExecutionReason(["printf", "pwsh", "-enc", "literal"])).toBeNull();
     expect(encodedPowerShellExecutionReason(["pwsh", "-Command", "pwsh -enc literal"])).toBeNull();
-    expect(encodedPowerShellExecutionReason(["pwsh", "-WorkingDirectory", "-enc", "literal"])).toBeNull();
+    expect(encodedPowerShellExecutionReason(["pwsh", "-WorkingDirectory", "-enc", "literal"])).not.toBeNull();
     const wrappers = Array<string>(17).fill("env");
     expect(encodedPowerShellExecutionReason([...wrappers, "pwsh", "-enc", "literal"])).not.toBeNull();
     expect(proveLiteralPowerShell(`${wrappers.join(" ")} pwsh -enc literal`).proven).toBe(false);
@@ -85,7 +84,7 @@ describe("literal rule semantic identity", () => {
     expect(evaluateShellSubject({ command: `printf '${value}'`, exactAllowOnly: true }, [{ pattern, action: "allow" }]).decision).toBe("allow");
     expect(evaluateShellSubject({ command: `printf ${value}`, exactAllowOnly: true }, [{ pattern, action: "allow" }]).decision).not.toBe("allow");
     const spec = parseRuleSpecifier(pattern);
-    expect(spec).toMatchObject({ tokens: ["printf", value], wildcard: false });
+    expect(spec).toMatchObject({ tokens: ["printf", `'${value}'`], wildcard: false });
     if (value === "*") expect(evaluateShellSubject({ command: "printf '*'", exactAllowOnly: true }, [{ pattern: "Bash(printf *)", action: "allow" }]).decision).not.toBe("allow");
     else expect(() => parseRuleSpecifier(`Bash(printf ${value})`)).toThrow();
   });

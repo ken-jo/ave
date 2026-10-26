@@ -53,7 +53,7 @@ function exactBashRule(command: string, projectCwd: string): string | null {
     || (shape.ok && shape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv) !== null))
     || shellExfiltrationSignal(parsed, projectCwd) !== null || shellSensitivePathSignal(parsed, projectCwd) !== null;
   if (floor || !proof.proven || proof.commands.length !== 1 || !proof.commands[0]) return null;
-  const tokens = literalTokens(proof.commands[0].argv);
+  const tokens = literalTokens(proof.commands[0].rawWords);
   try {
     return tokens ? canonicalRuleSpecifier(formatRuleSpecifier({ kind: "bash", tokens, wildcard: false })) : null;
   } catch { return null; }
@@ -67,7 +67,7 @@ function exactPowerShellRule(command: string, projectCwd: string): string | null
   const tokens = literalTokens(proof.commands[0]!);
   if (tokens === null) return null;
   try {
-    const pattern = formatRuleSpecifier({ kind: "powershell", tokens, wildcard: false, ...(proof.literalParameters?.[0] ? { literalParameters: proof.literalParameters[0] } : {}) });
+    const pattern = formatRuleSpecifier({ kind: "powershell", tokens, wildcard: false });
     // The literal argv must also be a storable rule (no syntax the grammar refuses).
     return canonicalRuleSpecifier(pattern) === pattern ? pattern : null;
   } catch {
@@ -84,20 +84,18 @@ function literalTokens(argv: readonly (string | null | undefined)[]): string[] |
 function literalCommandRule(dialect: ShellRuleDialect, command: string): string | null {
   if (command.length > MAX_LITERAL_COMMAND_LENGTH) return null;
   let tokens: string[] | null = null;
-  let literalParameters: readonly number[] | undefined;
   if (dialect === "bash") {
     const shape = analyzeShellForRules(parseShellCommand(command));
-    if (shape.ok && shape.hidden.length === 0 && shape.commands.length === 1) tokens = literalTokens(shape.commands[0]!.argv);
+    if (shape.ok && shape.hidden.length === 0 && shape.commands.length === 1) tokens = literalTokens(shape.commands[0]!.rawWords);
   } else {
     const shape = powerShellRuleShape(command);
     if (shape.ok && shape.opaque === null && shape.commands.length === 1) {
       tokens = literalTokens(shape.commands[0]!);
-      literalParameters = shape.literalParameters?.[0];
     }
   }
   if (tokens === null || tokens.length === 0) return null;
   try {
-    const pattern = formatRuleSpecifier({ kind: dialect, tokens: [...tokens], wildcard: false, ...(literalParameters ? { literalParameters } : {}) });
+    const pattern = formatRuleSpecifier({ kind: dialect, tokens: [...tokens], wildcard: false });
     return canonicalRuleSpecifier(pattern) === pattern ? pattern : null;
   } catch {
     return null;

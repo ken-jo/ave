@@ -64,10 +64,10 @@ describe("literal exact-rule proof", () => {
     expect(proveLiteralShell(command).proven).toBe(true);
   });
 
-  it("canonicalizes quote spelling without changing quoted whitespace", () => {
-    expect(canonicalRuleSpecifier('Bash(git commit -m "two  spaces")')).toBe("Bash(git commit -m 'two  spaces')");
-    expect(normalizeRuleSpecifierInput(' Bash( git   commit -m "two  spaces" ) ')).toBe("Bash(git commit -m 'two  spaces')");
-    expect(parseRuleSpecifier("Bash(printf '*')")).toMatchObject({ tokens: ["printf", "*"], wildcard: false });
+  it("preserves raw quote spelling and quoted whitespace", () => {
+    expect(canonicalRuleSpecifier('Bash(git commit -m "two  spaces")')).toBe('Bash(git commit -m "two  spaces")');
+    expect(normalizeRuleSpecifierInput(' Bash( git   commit -m "two  spaces" ) ')).toBe('Bash(git commit -m "two  spaces")');
+    expect(parseRuleSpecifier("Bash(printf '*')")).toMatchObject({ tokens: ["printf", "'*'"], wildcard: false });
     const command = `git commit -m 'say '"'"'hello'"'"' and "ready" $HOME'`;
     expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBe(`Bash(${command})`);
   });
@@ -166,6 +166,6 @@ describe("literal exact-rule proof", () => {
     const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed: false } };
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, context).decision).toBe("ask");
     expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("deny");
-    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow", layer: 3 });
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 });

@@ -29,6 +29,8 @@ type BashRuleSpecifier = Extract<RuleSpecifier, { kind: "bash" }>;
 interface ShellRuleCommand {
   // One entry per word; `undefined` where the word is not a static literal.
   argv: readonly (string | undefined)[];
+  // Exact identity preserves each original literal word, including its quote spelling.
+  rawWords: readonly (string | undefined)[];
   raw: string;
   // Reasons this simple command can never be covered by an allow rule.
   allowBlockers: readonly string[];
@@ -136,7 +138,8 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
           const inner = wrapperPrefixLength(argv);
           if (inner > 0 && inner < argv.length && argv[inner] === undefined) ordinaryAsk ??= "dynamic program name behind a wrapper";
         }
-        commands.push({ argv, raw: statement.source.raw, allowBlockers: blockers, ...(downstream > 0 ? { piped: true as const } : {}) });
+        const rawWords = statement.words.map((word) => literalRuleWord(word.source.raw, "bash") === undefined ? undefined : word.source.raw);
+        commands.push({ argv, rawWords, raw: statement.source.raw, allowBlockers: blockers, ...(downstream > 0 ? { piped: true as const } : {}) });
         return;
       }
       case "sequence":
@@ -236,7 +239,9 @@ function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (
   const matchesWindow = (window: readonly (string | undefined)[]): boolean => {
     if (window.length < spec.tokens.length) return false;
     if (!spec.wildcard && window.length !== spec.tokens.length) return false;
-    return spec.tokens.every((token, offset) => {
+    return spec.tokens.every((rawToken, offset) => {
+      const token = literalRuleWord(rawToken, "bash");
+      if (token === undefined) return false;
       const actual = window[offset];
       if (actual === undefined) return false;
       return offset === 0 ? actual === token || baseProgram(actual) === token : actual === token;
@@ -314,7 +319,7 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   const patterns: string[] = [];
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
-    const rule = rules.allow.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.argv));
+    const rule = rules.allow.find((candidate) => matchesBashRuleExact(candidate.spec, cmd.rawWords));
     if (!rule) return { decision: null, reason: "a subcommand is not covered by any allow rule" };
     if (!patterns.includes(rule.pattern)) patterns.push(rule.pattern);
   }
