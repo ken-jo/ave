@@ -1,10 +1,15 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useId } from "react";
 import { ChevronDown, ChevronRight, FilePlus2, FilePenLine } from "lucide-react";
 import type { FileEditDiffData, FileEditHunk } from "../utils/file-diff.js";
 import { countDiffLines } from "../utils/file-diff.js";
 import { getApi } from "../api-client.js";
 import { useTranslation } from "../../../i18n/react.js";
 import { errorMessage } from "../../../shared/error-message.js";
+import type { TurnReviewHunk } from "../../../shared/turn-change-review.js";
+import type { FileMentionReference } from "../../../shared/file-mention-reference.js";
+
+const REVIEW_PREVIEW_MAX_LINES = 100;
+const REVIEW_PREVIEW_MAX_CHARACTERS = 8192;
 
 const VERB_KEY_BY_TOOL: Record<FileEditDiffData["tool"], string> = {
   edit_file: "fileEditDiff.verbEdit",
@@ -12,32 +17,35 @@ const VERB_KEY_BY_TOOL: Record<FileEditDiffData["tool"], string> = {
   write_file: "fileEditDiff.verbWrite",
 };
 
-export function FileEditDiff({ data }: { data: FileEditDiffData }) {
+export interface FileEditDiffReview {
+  hunks: TurnReviewHunk[];
+  hunkOffset?: number;
+  turnId: string;
+  referenceable: boolean;
+  onReference?: (reference: FileMentionReference) => void;
+}
+
+export function FileEditDiff({ data, review }: { data: FileEditDiffData; review?: FileEditDiffReview }) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(true);
+  const contentId = useId();
+  if (review) {
+    return (
+      <div className="min-w-0 space-y-2.5" data-testid="file-edit-diff" data-tool={data.tool}>
+        {data.hunks.map((hunk, index) => (
+          <DiffHunk key={review.hunks[index]?.id ?? index} hunk={hunk} startLine={review.hunks[index]?.oldStartLine ?? 1}
+            separator={false} reviewHunk={review.hunks[index]} review={review} path={data.path}
+            hunkNumber={(review.hunkOffset ?? 0) + index + 1} />
+        ))}
+        {data.hunks.length === 0 && <p className="text-xs text-muted-foreground">{t("fileEditDiff.noChanges")}</p>}
+      </div>
+    );
+  }
   const totals = computeLineTotals(data.hunks);
   const verb = t(data.isNewFile ? "fileEditDiff.verbCreate" : VERB_KEY_BY_TOOL[data.tool]);
   const Icon = data.isNewFile ? FilePlus2 : FilePenLine;
-
-  return (
-    <div
-      className="overflow-hidden rounded border border-border bg-background"
-      data-testid="file-edit-diff"
-      data-tool={data.tool}
-      data-new-file={data.isNewFile ? "true" : "false"}
-      data-truncated={data.truncated ? "true" : "false"}
-    >
-      <button
-        type="button"
-        onClick={() => setOpen((o) => !o)}
-        className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-[11px] text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
-        aria-expanded={open}
-      >
-        {open ? (
-          <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
-        ) : (
-          <ChevronRight className="h-3 w-3 shrink-0 opacity-70" />
-        )}
+  const headerContent = (
+    <>
         <Icon className="h-3 w-3 shrink-0 opacity-70" />
         <span className="min-w-0 truncate text-left">
           <span className="font-medium">{verb}</span>
@@ -72,15 +80,41 @@ export function FileEditDiff({ data }: { data: FileEditDiffData }) {
             </span>
           )}
         </span>
+    </>
+  );
+
+  return (
+    <div
+      className="overflow-hidden rounded border border-border bg-background"
+      data-testid="file-edit-diff"
+      data-tool={data.tool}
+      data-new-file={data.isNewFile ? "true" : "false"}
+      data-truncated={data.truncated ? "true" : "false"}
+    >
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full min-w-0 items-center gap-2 border-b border-border bg-muted/(--opacity-muted) px-3 py-1.5 text-[11px] text-foreground/(--opacity-near) hover:bg-muted/(--opacity-half)"
+        aria-expanded={open}
+        aria-controls={contentId}
+      >
+        {open ? (
+          <ChevronDown className="h-3 w-3 shrink-0 opacity-70" />
+        ) : (
+          <ChevronRight className="h-3 w-3 shrink-0 opacity-70" />
+        )}
+            {headerContent}
       </button>
       {open && (
-        <div className="font-mono text-xs leading-[1.55]">
+        <div id={contentId} className="font-mono text-xs leading-[1.55]">
           {data.hunks.map((hunk, i) => (
             <DiffHunk
               key={i}
               hunk={hunk}
               startLine={hunkStartLine(data.hunks, i)}
               separator={data.hunks.length > 1 && i > 0}
+              path={data.path}
+              hunkNumber={i + 1}
             />
           ))}
           {totals.added === 0 && totals.removed === 0 && (
@@ -98,42 +132,102 @@ function DiffHunk({
   hunk,
   startLine,
   separator,
+  reviewHunk,
+  review,
+  path,
+  hunkNumber,
 }: {
   hunk: FileEditHunk;
   startLine: number;
   separator: boolean;
+  reviewHunk?: TurnReviewHunk;
+  review?: FileEditDiffReview;
+  path: string;
+  hunkNumber: number;
 }) {
   const { t } = useTranslation();
-  const removed = hunk.oldText.length > 0 ? hunk.oldText.split("\n") : [];
-  const added = hunk.newText.length > 0 ? hunk.newText.split("\n") : [];
-  let line = startLine;
+  const hasReviewHunk = reviewHunk !== undefined;
+  const preview = useMemo(() => hasReviewHunk ? {
+    old: reviewPreview(hunk.oldText), next: reviewPreview(hunk.newText),
+    oldCount: countReviewLines(hunk.oldText), newCount: countReviewLines(hunk.newText),
+  } : undefined, [hasReviewHunk, hunk.oldText, hunk.newText]);
+  const oldPreview = preview?.old;
+  const newPreview = preview?.next;
+  const removed = oldPreview?.lines ?? (hunk.oldText.length > 0 ? hunk.oldText.split("\n") : []);
+  const added = newPreview?.lines ?? (hunk.newText.length > 0 ? hunk.newText.split("\n") : []);
+  let oldLine = reviewHunk?.oldStartLine ?? startLine;
+  let newLine = reviewHunk?.newStartLine ?? startLine + removed.length;
+  if (reviewHunk && review) {
+    const disabled = !review.referenceable || !review.onReference;
+    return (
+      <button type="button" disabled={disabled} data-hunk-id={reviewHunk.id}
+        aria-label={t("fileEditDiff.reviewReferenceHunk", { number: hunkNumber, path, start: reviewHunk.startLine, end: reviewHunk.endLine })}
+        onClick={() => review.onReference?.({ path, startLine: reviewHunk.startLine, endLine: reviewHunk.endLine,
+          turnId: review.turnId, hunkId: reviewHunk.id })}
+        className="group block w-full min-w-0 overflow-hidden rounded-[10px] border border-border bg-background text-left outline-none enabled:hover:border-(--file-reference-fg) focus-visible:border-(--file-reference-fg) focus-visible:ring-2 focus-visible:ring-(--file-reference-fg) disabled:cursor-default">
+        <span className="flex min-w-0 items-center gap-2 bg-muted/(--opacity-muted) px-2.5 py-1.5 font-mono text-[11px] text-muted-foreground">
+          <span className="min-w-0 flex-1 truncate">@@ -{reviewHunk.oldStartLine},{preview?.oldCount} +{reviewHunk.newStartLine},{preview?.newCount} @@</span>
+          {!disabled && <span className="shrink-0 font-sans font-medium text-(--file-reference-fg) opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100 motion-reduce:transition-none">
+            {t("fileEditDiff.hunkReferenceCue", { start: reviewHunk.startLine, end: reviewHunk.endLine })}
+          </span>}
+        </span>
+        <span className="block font-mono text-xs leading-5">
+          {removed.map((text, index) => <DiffLine key={`r-${index}`} kind="removed" lineNo={oldLine++} text={text} columns />)}
+          {added.map((text, index) => <DiffLine key={`a-${index}`} kind="added" lineNo={newLine++} text={text} columns />)}
+        </span>
+        {(oldPreview?.truncated || newPreview?.truncated) && (
+          <span className="block px-2.5 py-1 font-sans text-[11px] text-muted-foreground">{t("fileEditDiff.reviewPreviewTruncated")}</span>
+        )}
+      </button>
+    );
+  }
   return (
-    <>
+    <div>
       {separator && (
         <div className="border-t border-dashed border-border/(--opacity-strong) bg-muted/(--opacity-light) px-3 py-0.5 text-[10px] text-muted-foreground">
           @@ {t("fileEditDiff.nextHunk")}
         </div>
       )}
       {removed.map((text, i) => {
-        const n = line++;
+        const n = oldLine++;
         return <DiffLine key={`r-${i}`} kind="removed" lineNo={n} text={text} />;
       })}
       {added.map((text, i) => {
-        const n = line++;
+        const n = newLine++;
         return <DiffLine key={`a-${i}`} kind="added" lineNo={n} text={text} />;
       })}
-    </>
+      {(oldPreview?.truncated || newPreview?.truncated) && (
+        <p className="px-3 py-1 font-sans text-[11px] text-warning">{t("fileEditDiff.reviewPreviewTruncated")}</p>
+      )}
+    </div>
   );
+}
+
+function reviewPreview(text: string): { lines: string[]; truncated: boolean } {
+  const excerpt = text.slice(0, REVIEW_PREVIEW_MAX_CHARACTERS);
+  const lines = [...excerpt.matchAll(/([^\r\n]*)(?:\r\n|\r|\n)|([^\r\n]+)$/g)].map((line) => line[1] ?? line[2] ?? "");
+  return {
+    lines: lines.slice(0, REVIEW_PREVIEW_MAX_LINES),
+    truncated: excerpt.length < text.length || lines.length > REVIEW_PREVIEW_MAX_LINES,
+  };
+}
+
+function countReviewLines(text: string): number {
+  let count = 0;
+  for (const _line of text.matchAll(/[^\r\n]*(?:\r\n|\r|\n)|[^\r\n]+$/g)) count++;
+  return count;
 }
 
 function DiffLine({
   kind,
   lineNo,
   text,
+  columns = false,
 }: {
   kind: "added" | "removed";
   lineNo: number;
   text: string;
+  columns?: boolean;
 }) {
   // Status foreground tokens are designed for solid buttons/badges. Reusing
   // them on a translucent diff wash can produce white-on-pastel text in light
@@ -143,6 +237,16 @@ function DiffLine({
     ? { background: "var(--diff-add)", accent: "var(--diff-add-fg)" }
     : { background: "var(--diff-remove)", accent: "var(--diff-remove-fg)" };
   const sigil = kind === "added" ? "+" : "−";
+  if (columns) {
+    return (
+      <span className="flex min-w-0 text-foreground" style={{ backgroundColor: colors.background }} data-diff-kind={kind}>
+        <span data-line-column="old" className="w-8 shrink-0 select-none pr-1.5 text-right text-[11px] text-foreground">{kind === "removed" ? lineNo : ""}</span>
+        <span data-line-column="new" className="w-8 shrink-0 select-none pr-1.5 text-right text-[11px] text-foreground">{kind === "added" ? lineNo : ""}</span>
+        <span aria-hidden="true" className="w-4 shrink-0 select-none font-semibold">{sigil}</span>
+        <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-2.5 [overflow-wrap:anywhere]">{text || " "}</span>
+      </span>
+    );
+  }
   return (
     <div
       className="flex min-w-0 gap-2 border-l-[3px] px-3 text-foreground"

@@ -9,6 +9,8 @@ import {
   normalizeSidePanelSplitPercent,
   normalizeSidePanelWidth,
   normalizeSidebarWidth,
+  normalizeFileTreeWidth,
+  fileTreeWidthFromLegacySplit,
 } from "../shared/side-panel.js";
 import {
   sanitizePluginConfig,
@@ -1135,7 +1137,6 @@ export function normalizeProjectLabels(raw: unknown): Record<string, string> {
 }
 
 export const SIDE_PANEL_SPLIT_KEYS = [
-  "sidePanelSplitFilePercent",
   "sidePanelSplitPreviewPercent",
   "sidePanelSplitSubagentPercent",
 ] as const satisfies readonly (keyof SystemSettings)[];
@@ -1196,6 +1197,8 @@ export function normalizeSystem(input: unknown): SystemSettings {
     result, "sidebarWidth", obj.sidebarWidth,
     normalizeSidebarWidth, "system", STORED_FIELD,
   );
+  result.sidePanelFileTreeWidth = normalizeFileTreeWidth(obj.sidePanelFileTreeWidth)
+    ?? fileTreeWidthFromLegacySplit(obj.sidePanelSplitFilePercent);
   for (const key of SIDE_PANEL_SPLIT_KEYS) {
     acceptNormalizedField(
       result, key, obj[key],

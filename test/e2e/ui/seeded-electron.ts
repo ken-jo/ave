@@ -1,5 +1,6 @@
 import { _electron as electron, type ElectronApplication, type Page,
 } from "playwright";
+import { once } from "node:events";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -297,7 +298,15 @@ export async function launchSeededElectron(opts: {
 
 export async function teardownSeededElectron(
   ctx: SeededElectronContext,
+  options: { terminate?: boolean } = {},
 ): Promise<void> {
+  // Terminate only the owned fixture when the spec does not exercise runtime shutdown.
+  const child = ctx.app.process();
+  if (options.terminate && child.exitCode === null && child.signalCode === null) {
+    const exited = once(child, "exit");
+    child.kill("SIGKILL");
+    await exited;
+  }
   await ctx.app.close().catch(() => {});
   removeSeededElectronDirectories(ctx.userDataDir, ctx.tempHome);
 }

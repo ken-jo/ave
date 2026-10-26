@@ -19,6 +19,9 @@ export const CHROME_GAP_TIGHT = 4;
 /** Share the card/content gutter with --chrome-gap and --shell-card-inset in CSS. */
 export const SHELL_GUTTER = 8;
 
+/** Files need readable tree and detail columns; narrower workspaces use tree-to-detail navigation. */
+export const FILE_WORKSPACE_COLUMNS_MIN_WIDTH = 520;
+
 /** Window controls sit flush on win/linux, so those bands must not add trailing padding. */
 export const BAND_EDGE_PAD = 12;
 

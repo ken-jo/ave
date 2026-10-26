@@ -333,6 +333,7 @@ describe("preload contextBridge world shape lock", () => {
           "chatFork": "function",
           "chatGetHistory": "function",
           "chatGetSubAgentTranscript": "function",
+          "chatGetTurnReview": "function",
           "chatGetVerbatimToolResult": "function",
           "chatGetWriteDiff": "function",
           "chatGroup": "function",

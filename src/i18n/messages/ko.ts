@@ -3,6 +3,7 @@
 import type { SeedMessageKey } from "./en.js";
 
 export const ko: Record<SeedMessageKey, string> = {
+  "sidebar.generalLabel": "일반",
   "shellTasks.title": "실행 명령",
   "shellTasks.shortcut": "Ctrl+B를 누르면 현재 실행 중인 명령을 백그라운드로 보냅니다.",
   "shellTasks.limits": "격리 및 승인 범위를 유지해야 하는 명령은 포그라운드에서 완료됩니다. 백그라운드 명령은 세션이 종료되면 중지됩니다. Ctrl+B로 전환한 명령은 원래 제한 시간도 유지됩니다.",

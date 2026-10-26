@@ -13,6 +13,7 @@ import {
   normalizeSidePanelSplitPercent,
   normalizeSidePanelWidth,
   normalizeSidebarWidth,
+  normalizeFileTreeWidth,
 } from "../shared/side-panel.js";
 import { normalizeShutdownCleanupTimeoutMs } from "../shared/tool-timeout-policy.js";
 import type { PricingOverride } from "../shared/pricing-overrides.js";
@@ -685,9 +686,10 @@ export interface SystemSettings {
   /** Persisted width (px) of the primary (left) navigation sidebar card, set by the inner-edge drag handle. Durable shell-layout preference;
    * clamped to [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH] at drag time in the renderer. Default 232 (matches the historical expanded rail padding reserve). */
   sidebarWidth?: number;
-  /** Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer) split, one field per tab kind whose body is a list-over-viewer layout (file-browser / preview / subagent). A browser
+  /** Persisted Files tree column width in pixels; clamped to the shared file-tree range. Default 300. */
+  sidePanelFileTreeWidth?: number;
+  /** Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer) split, one field per tab kind whose body is a list-over-viewer layout (preview / subagent). A browser
    * tab is its address row and page only, so it has no split. Clamped to the [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at drag time in the renderer. Default 45. */
-  sidePanelSplitFilePercent?: number;
   sidePanelSplitPreviewPercent?: number;
   sidePanelSplitSubagentPercent?: number;
   /** Persisted active sidebar tab ("chats" = the plain ungrouped conversation list, "projects" = named-project groups). Durable
@@ -1293,6 +1295,10 @@ export class SettingsService {
         next, "sidebarWidth", partial.system.sidebarWidth,
         normalizeSidebarWidth, "system", PATCHED_FIELD,
       );
+      acceptNormalizedField(
+        next, "sidePanelFileTreeWidth", partial.system.sidePanelFileTreeWidth,
+        normalizeFileTreeWidth, "system", PATCHED_FIELD,
+      );
       // Per-tab vertical split percents; each normalized independently through the shared clamp so an
       // out-of-range or non-finite value is ignored while a valid sibling is preserved (mirrors the width path above).
       for (const key of SIDE_PANEL_SPLIT_KEYS) {
@@ -1715,6 +1721,9 @@ export class SettingsService {
         ? stored.appliedMigrations.filter((m): m is string => typeof m === "string")
         : [];
       let migrationWriteBack = false;
+      // The retired percent is consumed by normalizeSystem, then the next save retains only the pixel width.
+      if (stored.system !== null && typeof stored.system === "object"
+        && Object.hasOwn(stored.system, "sidePanelSplitFilePercent")) migrationWriteBack = true;
 
       // One-time rename of built-in vendor ids. It has to rewrite the file as read, ahead of everything below: each normalizer drops a vendor id this build does not know.
       let parsed = stored;

@@ -102,5 +102,7 @@ function asString(value: unknown): string | null {
 
 export function countDiffLines(text: string): number {
   if (text.length === 0) return 0;
-  return text.split("\n").length;
+  let count = 1;
+  for (let offset = text.indexOf("\n"); offset !== -1; offset = text.indexOf("\n", offset + 1)) count++;
+  return count;
 }
