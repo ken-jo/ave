@@ -222,9 +222,10 @@ lifecycle coverage are described in the architecture contract.
 Host-shell credential/sink classification is separate from exact raw-word
 identity. Unsandboxed input over 2,000 characters asks, or denies headless,
 before command-dependent work. Lane A retains an 8,000-character executable
-envelope limit, with verified quoted literal Bash heredoc bodies separately
-bounded at an aggregate 65,536 bytes. Shared work-budget exhaustion immediately
-stops all analysis: Lane B asks/L6 or denies headless; Lane A requires modal
+envelope limit. Bash heredoc bodies receive a separate aggregate 65,536-byte
+data allowance only when every heredoc operator in the original command has a
+quoted delimiter and no known code-consuming receiver is present. Shared
+work-budget exhaustion immediately stops all analysis: Lane B asks/L6 or denies headless; Lane A requires modal
 approval/L2. No fallback, later candidate, floor, rule, proof or reviewer work
 continues. Exceeding Lane A input/data bounds likewise requires modal approval. An
 identified floor takes precedence over an ordinary reason in the same input.
@@ -339,28 +340,54 @@ reads and unrelated writes preserve them without stamping a current version.
 No migration, new error or UI marker is introduced. Deny and ask rules retain
 their narrowing authority regardless of version.
 
-PowerShell launcher detection checks semantic values and raw words across the
-whole command in bounded linear scans, including lexical words inside quoted strings. Once a
-launcher word is seen, every later word is trimmed, stripped of leading
-hyphen/slash/U+2013/U+2014/U+2015 and lowercased; an e-leading result is unproven.
-The check crosses pipelines, sequences, `-File`, `--` and quoted separators,
-requires no operand, and uses no wrapper list or recursive dialect parser.
-Module/basename, executable-extension and case normalization are detection-only.
-Visible literal code and file/stdin/network indirection otherwise remain
-eligible subject to completed visible-floor inspection and exact raw identity.
+PowerShell launcher detection checks the whole command, including launcher
+names inside quoted strings and across pipelines or sequences. Once a launcher
+word is seen, every later token must pass a positive character proof after shell
+quote removal: each code point must be a Unicode letter, number, punctuation,
+symbol, or U+0020 ASCII space. Other separators, controls, combining marks and
+unassigned code points make the command unproven. Hangul letters remain literal.
+This proof does not infer an argument binder's whitespace behavior.
 
-Only semantically verified quoted literal Bash heredocs with no known
-code-consuming receiver receive the separate Lane A data allowance. Existing
-floor classification, including retained wrapper/subshell/pipeline views,
-identifies those receivers without a new name list or Lane B carrier gate.
-Known consumers keep normal full-body floor analysis and the 8,000-character
-cap; unknown-program stdin remains an accepted indirection limit. Literal
-`cat`/`tee -a` data writes remain eligible. Aggregate body bytes stay within
-64 KiB and the executable envelope within 8,000 characters. Projected grammar
-and quote semantics are verified under the shared prepaid budget. Exempt bodies
-receive only a linear metered data pass, never general code/floor inspection.
-Unquoted heredocs keep the normal cap; unsafe or ambiguous syntax fails closed.
-Lane B always caps the complete original command at 2,000 characters.
+Only tokens that pass the character proof receive the deliberate encoded-option
+overmatch: remove leading ASCII hyphens, slashes and U+2013/U+2014/U+2015 dashes,
+then lowercase; an e-leading result is unproven. Thus `-ExecutionPolicy` also
+asks. The scan never stops at `-File`, `--` or quoted separators, requires no
+operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+executable-extension and case normalization are detection-only. Visible literal
+code and file/stdin/network indirection otherwise remain eligible subject to
+completed visible-floor inspection and exact raw identity.
+
+The Lane A heredoc data allowance requires every heredoc operator in the whole
+original command to have a quoted delimiter, including `<<'X'`, `<<"X"` and
+`<<\X`. One unquoted delimiter cancels the allowance for every body. In that
+case, all text after the first heredoc operator's line receives the normal
+literal checks and the command remains within the normal 8,000-character cap.
+Plain unquoted bodies without expansion remain eligible through those checks.
+Body extent comes from analysis of the original source: no body is deleted, no
+remaining text is reparsed as proof, and no separate line-continuation reader is
+used. Unsafe or ambiguous syntax fails closed.
+
+Quoted bodies also require no known code-consuming receiver. Existing floor
+classification, including retained wrapper/subshell/pipeline views, identifies
+those receivers without a new name list or Lane B carrier gate. Known consumers
+keep normal full-body floor analysis and the 8,000-character cap;
+unknown-program stdin remains an accepted indirection limit. Literal
+`cat`/`tee -a` data writes remain eligible. Aggregate data body bytes stay
+within 64 KiB and the executable envelope within 8,000 characters. Eligible
+bodies receive only a linear metered data pass, never general code/floor
+inspection. Lane B always caps the complete original command at 2,000 characters.
+
+The shared analysis budget charges lexer steps actually taken and subsequent
+analysis work. Its ceiling is linear in the bounded input length; whitespace
+spans do not reserve speculative work. The original grammar enforces an optional permission-only bound of 64 actual
+argument-word records per command. Nested commands keep separate records without
+resetting their containing command. The same lexer counts its actual rune and
+token advances against the linear ceiling and reports completed work to the
+shared budget. No host-side shadow lexer predicts grammar work or heredoc
+extents. General structural parsing retains its existing default limits. Filesystem ancestry
+walks and pattern comparisons charge each attempted operation instead of their
+maximum possible work. Exhaustion is sticky and terminates all
+remaining analysis with the lane-specific closed result described above.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS

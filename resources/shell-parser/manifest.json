@@ -5,19 +5,20 @@
   "moduleSum": "h1:bXkhQWNHCs0KZEChF8hYS6FC+T2N9mUZLbQv9blditI=",
   "moduleGoModSum": "h1:syYCoFET8w9tvevxiXUtY8/ICrU+l26jHmhJDra3Vwo=",
   "sourceInputs": {
-    "build.mjs": "acec36dc86328906513db70beef9c0bf447112325796c3beb72b1dfb5c8822ff",
-    "main.go": "3b764d573603a6c3ab41a6505c3671d97e028cfc055f81106ffd35c941e686a0",
+    "build.mjs": "93d8ed597fb9e22b236cc64fc92d11ad11b410dcfa8892bb951a245728b9cdee",
+    "main.go": "e8ed5987d806e22214a097d028e8d2ffe850b912b58cfc0eda2b901477c88a6d",
     "go.mod": "4f61e00eb6bdcc0b07229ad5ea30e4b0690d071ecbcd87778f9225e9756da405",
     "go.sum": "816811ceede3e018d293b5097e3cfea283ce6205309d387c21fce95846e2215b",
     "exact-bash-lexing.patch": "157dc27d0f47b0ffdaf148edfcb5a1aeafd8a35eaf0b3b46084d77fbe505d1e6",
     "bounded-parser-recursion.patch": "238adafff0a2fea7c209fc786ac887e083279c6a015fd88f3c9548a6d4387274",
     "bounded-brace-work.patch": "5122016969fbcce8d61b4c5b15100f5084eed0979e5019535873103655cd986b",
     "logical-shell-input.patch": "26d1be08ee4b8c3402deb77063770cf12a32a63191584854d2fd28c32e16163e",
+    "bounded-lexer-work.patch": "89200445ec989d6121f8de7697a56a9251ce03e4d0865f47cc0ea835169de605",
     "LICENSE.runtime": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad",
-    "README.md": "c103fda0241aacbe856efcad76cd792790612b611f721928986b596bee563402"
+    "README.md": "abbfd2921b3e2b03a729952e69b824b49dd17b07ba3c90795f774e3b3b904eb6"
   },
   "upstreamLexerSha256": "f7d3135c68a98870b5958b305ef03d7ca307725dbd261ccbd2eaaba5cb9a4444",
-  "patchedLexerSha256": "71aa414bdcb4e2262854cf147b7c81f70ad5d3334b9ed4dc0542d949f956b363",
+  "patchedLexerSha256": "1bb7fcb227f65378a828bbd3be0d2cd09c4bbf3890a31cc008a88ce452ac9162",
   "buildFlags": [
     "GOOS=js",
     "GOARCH=wasm",
@@ -27,11 +28,11 @@
   "grammarFiles": {
     "syntax/lexer.go": {
       "original": "f7d3135c68a98870b5958b305ef03d7ca307725dbd261ccbd2eaaba5cb9a4444",
-      "patched": "71aa414bdcb4e2262854cf147b7c81f70ad5d3334b9ed4dc0542d949f956b363"
+      "patched": "1bb7fcb227f65378a828bbd3be0d2cd09c4bbf3890a31cc008a88ce452ac9162"
     },
     "syntax/parser.go": {
       "original": "5578ab42326a993385ff8736d26f80dfbd9c148a7aedfbbdb9abcf9eed3b862b",
-      "patched": "d4cbfc998452a07b9c8b40a2407343aaa4a67e567c689c80e188815b8d9decd8"
+      "patched": "6aec47f21d0eace25e6ab001c775335fdbc5c98815552ca35c7f449f79fb37b6"
     },
     "syntax/parser_arithm.go": {
       "original": "b40f7c22c74dd948a3cd95fd864fdb3847f33dac3aa9444ca1e0d6b0e6a82840",
@@ -50,6 +51,6 @@
       "patched": "380b017284a648fb44d4458bc2a02e0b79951713a3712051ec55eefd5f570076"
     }
   },
-  "wasmSha256": "85830b618617b4e738f1915018afd4ea84d370324d84e544e19b3cd7bbc1f0c5",
+  "wasmSha256": "789b0803fcf697ab0a7c030fa3f2a53b6c0ceb707c9098bf431ada732ded2df6",
   "runtimeSha256": "0c949f4996f9a89698e4b5c586de32249c3b69b7baadb64d220073cc04acba14"
 }

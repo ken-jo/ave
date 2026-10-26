@@ -27,30 +27,39 @@ afterEach(() => {
   rmSync(stateRoot, { recursive: true, force: true });
 });
 
-function distinctRelativePaths(length: number): string {
+function distinctRelativePaths(length: number, radix: number, nested = false): string {
   let command = "echo hi > out.txt; cd a0; cd a1; cd a2; cd a3; printf %s";
-  for (let index = 0; command.length < length; index += 1) command += ` ./p${index}`;
+  for (let index = 0; command.length < length; index += 1) {
+    if (nested && index > 0 && index % 40 === 0) command += " $(:)";
+    command += ` ./p${index.toString(radix)}`;
+  }
   return command.slice(0, length);
 }
 
-const TIMING_CASES = (["bash", "powershell"] as const).flatMap((dialect) =>
-  [false, true].flatMap((runsSandboxed) => [1, 2, 3].map((observation) => ({
-    dialect,
-    runsSandboxed,
-    observation,
-    length: runsSandboxed ? 7_999 : 1_999,
-  }))),
-);
+const TIMING_CASES = [
+  ...(["bash", "powershell"] as const).flatMap((dialect) =>
+    [false, true].flatMap((runsSandboxed) => [10, 36].map((radix) => ({ dialect, runsSandboxed, radix, nested: false, length: runsSandboxed ? 7_999 : 1_999 }))),
+  ),
+  ...[false, true].map((runsSandboxed) => ({ dialect: "bash" as const, runsSandboxed, radix: 36, nested: true, length: runsSandboxed ? 7_999 : 1_999 })),
+];
 
 describe("adversarial complete manager timing", () => {
-  it.each(TIMING_CASES)("$dialect sandboxed=$runsSandboxed observation=$observation", ({ dialect, runsSandboxed, observation, length }) => {
-    const command = distinctRelativePaths(length);
+  it.each(TIMING_CASES)("$dialect sandboxed=$runsSandboxed radix=$radix nested=$nested", ({ dialect, runsSandboxed, radix, nested, length }) => {
+    const command = distinctRelativePaths(length, radix, nested);
     expect(command.length).toBe(length);
-    const start = performance.now();
-    const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
-    const elapsed = performance.now() - start;
-    process.stdout.write(`permission adversarial timing ${dialect} sandboxed=${runsSandboxed} chars=${length} observation=${observation} decision=${result.decision} layer=${result.layer} modal=${result.forceModal === true} ms=${elapsed.toFixed(3)}\n`);
-    expect(result.decision).toBe("ask");
-    expect(elapsed).toBeLessThan(50);
+    const samples: number[] = [];
+    const results = [];
+    for (let observation = 0; observation < 3; observation += 1) {
+      const start = performance.now();
+      const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed);
+      samples.push(performance.now() - start);
+      results.push(result);
+    }
+    const median = [...samples].sort((left, right) => left - right)[1]!;
+    process.stdout.write(`permission adversarial timing ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
+    for (const result of results) expect(result).toMatchObject(runsSandboxed
+      ? { decision: "ask", layer: 2, forceModal: true }
+      : { decision: "ask", layer: 6 });
+    expect(median).toBeLessThan(2);
   });
 });

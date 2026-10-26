@@ -291,7 +291,7 @@ const OPAQUE_CARRIER_CASES: readonly EncodedCase[] = [
   ...(["bash", "powershell"] as const).flatMap((dialect) => [
     { name: "quoted padding remains literal data", dialect, command: `printf %s '${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "printf *", exactAllowed: true },
     { name: "quoted padding remains a carrier operand", dialect, command: `pwsh -enc '${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
-    { name: "literal operand after sixty-four decoys", floorLimited: dialect === "powershell", dialect, command: `# ${Array.from({ length: 64 }, (_, index) => encodeScript(`Write-Output decoy${index}`)).join(" ")}
+    { name: "literal operand after sixty-four decoys", dialect, command: `# ${Array.from({ length: 64 }, (_, index) => encodeScript(`Write-Output decoy${index}`)).join(" ")}
 pwsh -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: "pwsh *" },
   ]),
 ];

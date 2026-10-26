@@ -8,7 +8,8 @@ interface ParserRuntime {
   run(instance: WebAssembly.Instance): Promise<void>;
 }
 interface ParserLimits { sourceBytes: number; nodes: number; depth: number; outputBytes: number }
-type ParseFunction = (source: string) => string;
+export interface ShellParserWorkLimits { commandWords: number; lexerSteps: number; onLexerSteps?: (steps: number) => void }
+type ParseFunction = (source: string, limits?: ShellParserWorkLimits) => string;
 const runtimeGlobal = globalThis as typeof globalThis & {
   Go?: new () => ParserRuntime;
   _aveShellParserBridge?: { ready: (parse: ParseFunction, limits: ParserLimits) => void };
@@ -61,22 +62,35 @@ export interface ShellSyntaxNode {
 }
 
 /** Every call uses the initialized grammar; no source or syntax cache is kept. */
-export function parseShellSyntax(source: string): ShellSyntaxNode {
+export function parseShellSyntax(source: string, workLimits?: ShellParserWorkLimits): ShellSyntaxNode {
+  const result = parseShellSyntaxResult(source, workLimits);
+  // Analysis exhaustion belongs to the caller, never to runtime integrity.
+  workLimits?.onLexerSteps?.(result.lexerSteps);
+  if ("error" in result) throw new ShellAnalysisError(result.error);
+  return result.tree;
+}
+
+type ShellParserResult = { tree: ShellSyntaxNode; lexerSteps: number } | { error: string; lexerSteps: number };
+
+function parseShellSyntaxResult(source: string, workLimits?: ShellParserWorkLimits): ShellParserResult {
   if (runtime.exited && !runtimeFailure) runtimeFailure = new Error("Shell parser runtime exited");
   if (runtimeFailure) throw runtimeFailure;
+  // Preserve source identity before crossing the UTF-8 runtime boundary.
+  if (/\p{Cs}/u.test(source)) throw new ShellAnalysisError("Shell command contains an unpaired surrogate");
   if (Buffer.byteLength(source, "utf8") > SHELL_ANALYSIS_LIMITS.sourceBytes) throw new ShellAnalysisError("Shell analysis source limit exceeded");
   const bytes = Buffer.from(source, "utf8");
   try {
-    const serialized = parse(source);
+    const serialized = workLimits === undefined ? parse(source) : parse(source, workLimits);
     if (typeof serialized !== "string" || Buffer.byteLength(serialized, "utf8") > SHELL_ANALYSIS_LIMITS.outputBytes) throw new Error("Invalid shell parser output");
     const result: unknown = JSON.parse(serialized);
     if (!result || typeof result !== "object" || Array.isArray(result)) throw new Error("Invalid shell parser result");
     const keys = Object.keys(result);
+    if (!("lexerSteps" in result) || !Number.isSafeInteger(result.lexerSteps) || (result.lexerSteps as number) < 0) throw new Error("Invalid shell parser work count");
     if ("error" in result) {
-      if (keys.length !== 1 || typeof result.error !== "string" || !result.error) throw new Error("Invalid shell parser failure");
-      throw new ShellAnalysisError(result.error);
+      if (keys.length !== 2 || typeof result.error !== "string" || !result.error) throw new Error("Invalid shell parser failure");
+      return { error: result.error, lexerSteps: result.lexerSteps as number };
     }
-    if (keys.length !== 3 || !("tree" in result) || !result.tree || typeof result.tree !== "object" || Array.isArray(result.tree)
+    if (keys.length !== 4 || !("tree" in result) || !result.tree || typeof result.tree !== "object" || Array.isArray(result.tree)
       || !("Type" in result.tree) || result.tree.Type !== "File"
       || !("braceWords" in result) || !Array.isArray(result.braceWords)
       || !("escapedStrings" in result) || !result.escapedStrings || typeof result.escapedStrings !== "object" || Array.isArray(result.escapedStrings)) throw new Error("Missing shell syntax tree");
@@ -87,7 +101,7 @@ export function parseShellSyntax(source: string): ShellSyntaxNode {
     if (result.braceWords.length > SHELL_ANALYSIS_LIMITS.nodes || !result.braceWords.every(validRange)) throw new Error("Invalid shell brace annotations");
     const strings = Object.entries(result.escapedStrings);
     if (strings.length > SHELL_ANALYSIS_LIMITS.nodes || strings.some(([range, value]) => !validRange(JSON.parse(range)) || typeof value !== "string" || value.includes("\0"))) throw new Error("Invalid shell string annotations");
-    return { ...result.tree, BraceWords: result.braceWords, EscapedStrings: result.escapedStrings } as ShellSyntaxNode;
+    return { tree: { ...result.tree, BraceWords: result.braceWords, EscapedStrings: result.escapedStrings } as ShellSyntaxNode, lexerSteps: result.lexerSteps as number };
   } catch (error) {
     if (error instanceof ShellAnalysisError) throw error;
     // A runtime trap or broken ABI may poison the runtime; never re-enter it.

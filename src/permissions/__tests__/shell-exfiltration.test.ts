@@ -239,12 +239,13 @@ describe("credential-exfiltration signal", () => {
           Object.defineProperty(part, "value", { get: () => { reads += 1; return value; } });
         }
       }
-      expect(shellExfiltrationSignal(parsed, CWD)).toBeNull();
+      expect(shellExfiltrationSignal(parsed, CWD)).toBe(repetitions < 64 ? null : SHELL_FLOOR_BUDGET_REASON);
       return reads;
     };
     const small = countReads(32);
     const large = countReads(64);
-    expect(large).toBeLessThan(small * 3);
+    expect(small).toBeGreaterThan(0);
+    expect(large).toBe(0);
   });
 
   it("closes repeated sender work and preserves uploads found before exhaustion", () => {

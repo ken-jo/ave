@@ -15,7 +15,6 @@ import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import {
   SENSITIVE_PATH_ENTRIES,
   SENSITIVE_PATH_PATTERNS,
-  MAX_WALK_UP,
   canonicalizePathForMatch,
   caseFoldForMatch,
   createSensitivePathMatcher,
@@ -503,7 +502,7 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   const absolute = isAbsolute(glob) ? glob : resolve(cwd ?? "/", glob);
   if (!hasWildcard(absolute)) {
     const path = unescapeGlob(absolute);
-    spend?.(canonical ? MAX_WALK_UP + 1 : 1, path.length);
+    spend?.(1, path.length);
     return match(caseFoldForMatch(canonical ? canonicalFloorPath(path, work) : foldCanonicalPathSeparators(path)));
   }
   const segments = absolute.split(/[\\/]/);
@@ -513,7 +512,7 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   const firstWild = segments.findIndex(hasWildcard);
   if (firstWild > 0) {
     const prefix = unescapeGlob(segments.slice(0, firstWild).join("/")) || "/";
-    spend?.(canonical ? MAX_WALK_UP + 1 : 1, prefix.length);
+    spend?.(1, prefix.length);
     const hit = match(caseFoldForMatch(canonical ? canonicalFloorPath(prefix, work) : foldCanonicalPathSeparators(prefix)));
     if (hit) return hit;
   }
@@ -547,8 +546,8 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
     instances = next;
   }
   for (const parts of instances) {
-    // Canonicalization has a bounded ancestor walk; reserve its maximum work.
-    spend?.(canonical ? MAX_WALK_UP + 1 : 1, parts.reduce((length, part) => length + part.length + 1, 0));
+    // The ancestor walk charges each filesystem lookup when it occurs.
+    spend?.(1, parts.reduce((length, part) => length + part.length + 1, 0));
     const path = parts.join("/") || "/";
     const hit = match(caseFoldForMatch(canonical ? canonicalFloorPath(path, work) : foldCanonicalPathSeparators(path)));
     if (hit) return hit;
@@ -704,7 +703,7 @@ function canonicalFloorPath(path: string, work?: ShellFloorWorkBudget): string {
   if (!results) { results = new Map(); floorCanonicalPaths.set(work, results); }
   const cached = results.get(path);
   if (cached !== undefined) return cached;
-  const result = canonicalizePathForMatch(path);
+  const result = canonicalizePathForMatch(path, () => work.spend());
   results.set(path, result);
   return result;
 }
@@ -716,13 +715,11 @@ function createScanState(cwd: string | undefined, dotglob: boolean, spend?: Scan
   let matcher = floorPathMatchers.get(workBudget);
   if (!matcher) {
     workBudget.spend(SENSITIVE_PATH_PATTERNS.length);
-    const match = createSensitivePathMatcher("read");
+    const match = createSensitivePathMatcher("read", () => workBudget.spend());
     const results = new Map<string, string | null>();
     matcher = (path) => {
       workBudget.spend(1, path.length);
       if (results.has(path)) return results.get(path)!;
-      // Each match checks both the absolute location and its home-relative projection.
-      workBudget.spend(SENSITIVE_PATH_PATTERNS.length * 2);
       const result = match(path);
       results.set(path, result);
       return result;
@@ -1198,7 +1195,7 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
     }
     // Without a working directory a relative root names no location; the decision path always supplies one.
     for (const cwd of isAbsolute(root) ? [undefined] : state.cwds.filter((dir) => dir !== undefined)) {
-      state.spend?.(MAX_WALK_UP + 1, cwd?.length ?? 0);
+      state.spend?.(1, cwd?.length ?? 0);
       searchRoot(isAbsolute(root) ? root : resolve(cwd!, root), shape, state);
       if (state.sensitive) return;
     }
@@ -1210,7 +1207,7 @@ function xargsUpstreamReach(state: ScanState): string | null {
   if (state.cwdUnknown) return "a stage after a cd whose target is not static";
   const cwds = state.cwds.filter((dir): dir is string => dir !== undefined);
   const reaches = (absolute: string): string | null => {
-    state.spend?.(MAX_WALK_UP + 1, absolute.length);
+    state.spend?.(1, absolute.length);
     const canonical = caseFoldForMatch(canonicalFloorPath(absolute, state.workBudget));
     const hit = state.match(canonical) ?? sensitiveLocationUnder(canonical);
     return hit ? `${absolute} (reaches ${hit})` : null;
@@ -1247,7 +1244,7 @@ function xargsUpstreamReach(state: ScanState): string | null {
 }
 
 function searchRoot(absolute: string, shape: SearchShape, state: ScanState): void {
-  state.spend?.(MAX_WALK_UP + 1, absolute.length);
+  state.spend?.(1, absolute.length);
   const canonical = caseFoldForMatch(canonicalFloorPath(absolute, state.workBudget));
   // A content search reads every file below its root.
   const above = shape.ancestorFloor ? sensitiveLocationUnder(canonical) : null;
@@ -1687,8 +1684,7 @@ function staticFeederText(cmd: ShellCommand): string | undefined {
 function signalFor(command: string, ctx: Context): string | null {
   ctx.scan.spend?.(1, command.length);
   if (shellFloorInputExceeded(command)) throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
-  ctx.scan.workBudget.reserveSource(command);
-  const parsed = floorParsedCommand(command);
+  const parsed = floorParsedCommand(command, ctx.scan.workBudget);
   floorWorkBudgets.set(parsed, ctx.scan.workBudget);
   const specific = signalForParsed(parsed, ctx);
   if (specific) return specific;
@@ -1759,15 +1755,14 @@ function withFloorWork<T>(input: ShellCommandInput, budget: ShellFloorWorkBudget
   }
 }
 
-export function parseShellFloorCommand(input: ShellCommandInput, budget: ShellFloorWorkBudget): ParsedShellCommand {
+export function parseShellFloorCommand(input: ShellCommandInput, budget: ShellFloorWorkBudget, maxInputLength = 8_000): ParsedShellCommand {
   budget.spend(0);
-  if (shellFloorInputExceeded(input)) {
+  if ((typeof input === "string" ? input : input.command).length > maxInputLength && shellFloorInputExceeded(input)) {
     budget.exhausted = true;
     throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
   }
   if (typeof input !== "string" && floorWorkBudgets.get(input) === budget) return input;
-  budget.reserveSource(typeof input === "string" ? input : input.command);
-  const parsed = floorParsedCommand(input);
+  const parsed = floorParsedCommand(input, budget);
   floorWorkBudgets.set(parsed, budget);
   if (!parsed.analysis.ok && shellFloorParserBudgetExceeded(parsed.analysis.reason)) {
     budget.exhausted = true;
@@ -1776,13 +1771,33 @@ export function parseShellFloorCommand(input: ShellCommandInput, budget: ShellFl
   return parsed;
 }
 
+// Already parsed inputs retain their original grammar and argv records. Enforce
+// the same command bound without invoking a second parse or reading source text.
+function checkParsedCommandWork(program: ShellStatement, budget: ShellFloorWorkBudget): void {
+  const pending: object[] = [program];
+  while (pending.length > 0) {
+    budget.spend();
+    const node = pending.pop()!;
+    if ("kind" in node && node.kind === "command" && "words" in node && Array.isArray(node.words)) budget.checkCommandTokens(node.words.length);
+    for (const value of Object.values(node)) {
+      budget.spend();
+      if (value !== null && typeof value === "object") pending.push(value);
+    }
+  }
+}
+
 // Floor work has its own input bound; the literal-rule parser's smaller limit does not truncate sandbox inspection.
-function floorParsedCommand(input: ShellCommandInput): ParsedShellCommand {
-  if (typeof input !== "string" && (input.analysis.ok || input.analysis.reason !== "literal command length limit exceeded")) return input;
+function floorParsedCommand(input: ShellCommandInput, budget: ShellFloorWorkBudget): ParsedShellCommand {
+  if (typeof input !== "string" && (input.analysis.ok || input.analysis.reason !== "literal command length limit exceeded")) {
+    budget.enterSource(input.command);
+    if (input.analysis.ok) checkParsedCommandWork(input.analysis.program, budget);
+    return input;
+  }
   const command = typeof input === "string" ? input : input.command;
   try {
-    return { command, analysis: analyzeShell(command, "bash"), facts: new Map() };
+    return { command, analysis: analyzeShell(command, "bash", budget.parserWorkLimits(command)), facts: new Map() };
   } catch (error) {
+    if (error instanceof ShellFloorWorkBudgetError) throw error;
     return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError: error, facts: new Map() };
   }
 }

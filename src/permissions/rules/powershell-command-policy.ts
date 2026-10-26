@@ -389,12 +389,15 @@ export class PowerShellAnalysisBudget {
   exhausted = false;
   private readonly frames: number[] = [];
   private expressionDepth = 0;
+  private stepLimit: number = POWERSHELL_ANALYSIS_LIMITS.steps;
+  private charLimit: number = POWERSHELL_ANALYSIS_LIMITS.chars;
+  private readonly frameLimits: number[] = [];
   constructor(private readonly disabled: ReadonlySet<PowerShellExpressionKind> = new Set()) {}
 
   spend(steps = 1, chars = 0): void {
     const frame = this.frames.length - 1;
-    if (this.steps + steps > POWERSHELL_ANALYSIS_LIMITS.steps || this.chars + chars > POWERSHELL_ANALYSIS_LIMITS.chars
-      || (frame >= 0 && this.frames[frame]! + steps > POWERSHELL_ANALYSIS_LIMITS.frameSteps)) this.exceed();
+    if (this.steps + steps > this.stepLimit || this.chars + chars > this.charLimit
+      || (frame >= 0 && this.frames[frame]! + steps > this.frameLimits[frame]!)) this.exceed();
     this.steps += steps;
     this.chars += chars;
     if (frame >= 0) this.frames[frame]! += steps;
@@ -402,11 +405,18 @@ export class PowerShellAnalysisBudget {
 
   enter(source: string): void {
     if (source.length > POWERSHELL_ANALYSIS_LIMITS.inputChars || this.frames.length >= POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
+    if (this.frames.length === 0) {
+      this.stepLimit = Math.max(this.stepLimit, source.length * 128);
+      this.charLimit = Math.max(this.charLimit, source.length * 128);
+    }
     this.frames.push(0);
+    this.frameLimits.push(Math.max(POWERSHELL_ANALYSIS_LIMITS.frameSteps, source.length * 128));
     this.spend(1, source.length);
   }
 
-  leave(): void { this.frames.pop(); }
+  leave(): void { this.frames.pop(); this.frameLimits.pop(); }
+
+  get workLimits(): { steps: number; chars: number } { return { steps: this.stepLimit, chars: this.charLimit }; }
 
   expression<T>(tokens: number, read: () => T): T {
     if (this.expressionDepth >= POWERSHELL_ANALYSIS_LIMITS.expressionDepth) this.exceed();

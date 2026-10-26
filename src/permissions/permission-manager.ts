@@ -1243,7 +1243,7 @@ export class PermissionManager {
         if (!(error instanceof ShellFloorWorkBudgetError)) throw error;
         return closeShellAnalysis();
       }
-      if (floorInput === null || shellFloorInputExceeded(floorInput.command)) return closeShellAnalysis();
+      if (floorInput === null || shellFloorInputExceeded(floorInput.parsed ?? floorInput.command)) return closeShellAnalysis();
     }
     const trust = this.resolveTrust(toolName, source);
     // Strict patterns, owned by `shared/staged-origins.ts` — the same table the send gate, the stream derivation, and the model-facing guidance read. Loose `startsWith` would accept malformed values like "overlay:Bad/Path" or "app:" that no upstream gate emits but a future hand-injected codepath might; fail-closed on malformed input. THIS is the one enforcement site — grep `isStagedTurnSource` to find it.
@@ -1333,7 +1333,7 @@ export class PermissionManager {
     if (floorBudget.exhausted) return closeShellAnalysis();
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
-      isDestructiveShellText(ruleSubject.command) ||
+      (floorInput?.destructive ?? isDestructiveShellText(ruleSubject.command)) ||
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
