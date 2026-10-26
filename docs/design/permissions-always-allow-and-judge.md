@@ -127,6 +127,25 @@ a separate complete grammar review. The separate literal-evaluator exception
 below still applies to a known outer evaluator's opaque literal payload; the
 pass does not inspect that payload for nested commands.
 
+Configuration-dependent programs require an argv proof that implicit user and
+system settings cannot add execution, arguments, uploads or output writes.
+Native `wget` has no positive grammar. Native `curl` is provable only when its
+first argument is exactly `-q` or `--disable`, including after a wrapper;
+later or grouped suppression and explicit `-K`/`--config` inputs remain
+unproven. Existing upload, destructive and sensitive-path floors keep precedence.
+An exact or broad allow cannot repair a missing configuration proof, and no
+exact rule is offered. A case-insensitive alias that also names a known native
+program must satisfy both grammars across supported editions; a missing native
+grammar refuses. Direct `curl` and `wget` aliases therefore remain unproven.
+Full cmdlet names retain their own grammar, and native delegation never uses an
+alias grammar. Detection retains the alias union for visible floors.
+
+Host PowerShell launches use `-NoProfile` to suppress profile scripts. This does
+not disable `powershell.config.json` startup settings, including module setup
+and transcription. The cmdlet argv proof does not certify absence of those
+host-startup effects; profile suppression must not be described as disabling
+all configuration.
+
 Runtime-dependent execution, including substitutions, variables, splats,
 loops, callbacks, generated strings and runtime argv, produces no persistent
 suggestion. A registered evaluator grammar may recognize a fully literal,
@@ -559,7 +578,7 @@ proven stage does not retain an independently reusable allow result.
 `changesState` is conservative at the registered command-family level, not a
 claim that this invocation was observed writing. Families that can write through
 implicit or alternate modes mark all admitted forms possible-write. This covers
-every positively parsed native `curl`, `wget`, `sort` and `uniq` form, plus
+every positively parsed native `curl`, `sort` and `uniq` form, plus
 package-task and script/module interpreter forms,
 including read-looking forms.
 Their presence in a multi-command input refuses the whole input. The single source is

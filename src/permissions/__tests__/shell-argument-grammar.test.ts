@@ -4,8 +4,45 @@ import { _argumentGrammarsForTest, _matchArgumentGrammarForTest, _proveStaticArg
 const argumentGrammars = _argumentGrammarsForTest();
 const optionalArgumentCases = argumentGrammars.flatMap(({ command, grammar }) =>
   (grammar.optionalValues ?? []).map((option) => ({ name: [...command, option].join(" "), option, grammar })));
+const configurationCases = argumentGrammars.filter(({ grammar }) => grammar.configuration !== undefined);
 
 describe("positive shell argument grammars", () => {
+  it("requires every declared configuration suppressor at the first argument", () => {
+    expect(configurationCases.length).toBeGreaterThan(0);
+    for (const { grammar } of configurationCases) {
+      expect(_matchArgumentGrammarForTest(["https://x.invalid"], grammar)).toBe(false);
+      for (const option of grammar.configuration!.disabledByFirstArgument) {
+        expect(grammar.flags).toContain(option);
+        expect(_matchArgumentGrammarForTest([option, "https://x.invalid"], grammar)).toBe(true);
+        expect(_matchArgumentGrammarForTest(["https://x.invalid", option], grammar)).toBe(false);
+      }
+    }
+  });
+  it.each(["bash", "powershell"] as const)("requires disabled implicit configuration at the delegated argv boundary in %s", (dialect) => {
+    const prefixes = dialect === "bash" ? [[], ["env"], ["command"], ["exec"], ["npx", "--"]] : [["env"], ["npx", "--"]];
+    for (const prefix of prefixes) {
+      for (const args of [[], ["-q"], ["--no-config"], ["--no-rc"]]) {
+        expect(proveStaticArgv([...prefix, "wget", ...args, "https://x.invalid"], dialect).kind).toBe("unproven");
+      }
+      for (const args of [[], ["-s"], ["-s", "-q"], ["-sq"], ["--", "-q"], ["--disable="], ["--no-disable"]]) {
+        expect(proveStaticArgv([...prefix, "curl", ...args, "https://x.invalid"], dialect).kind).toBe("unproven");
+      }
+      for (const first of ["-q", "--disable"]) {
+        expect(proveStaticArgv([...prefix, "curl", first, "-s", "https://x.invalid"], dialect).kind).toBe("static-complete");
+        for (const option of ["-K", "--config"]) {
+          expect(proveStaticArgv([...prefix, "curl", first, option, "settings", "https://x.invalid"], dialect).kind).toBe("unproven");
+        }
+      }
+    }
+  });
+  it("requires both grammars when an alias can be a native program in another edition", () => {
+    for (const argv of [["wget", "https://x.invalid"], ["curl", "https://x.invalid"], ["CURL", "https://x.invalid"], ["WGET", "https://x.invalid"], ["curl", "-q", "https://x.invalid"], ["cat", "-Raw", "notes.txt"]]) {
+      expect(proveStaticArgv(argv, "powershell").kind).toBe("unproven");
+    }
+    expect(proveStaticArgv(["cat", "notes.txt"], "powershell").kind).toBe("static-complete");
+    expect(proveStaticArgv(["iwr", "https://x.invalid"], "powershell").kind).toBe("static-complete");
+    expect(proveStaticArgv(["env", "curl", "-q", "https://x.invalid"], "powershell").kind).toBe("static-complete");
+  });
   it("gives each registered option exactly one arity", () => {
     expect(optionalArgumentCases.length).toBeGreaterThan(0);
     for (const { grammar } of argumentGrammars) {

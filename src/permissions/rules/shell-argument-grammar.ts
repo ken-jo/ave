@@ -12,6 +12,7 @@ interface ArgumentGrammar {
   flags?: readonly string[];
   values?: readonly string[];
   optionalValues?: readonly string[];
+  configuration?: { disabledByFirstArgument: readonly string[] };
   minimum?: number;
   maximum?: number;
   changesState?: boolean;
@@ -43,8 +44,7 @@ const NATIVE_GRAMMARS: Readonly<Record<string, ArgumentGrammar>> = Object.freeze
   touch: { flags: ["-a", "-m", "-c", "-h"], values: ["-r", "-t", "-d"], minimum: 1, changesState: true },
   tee: { flags: ["-a", "-i", "--append"], changesState: true },
   rm: { flags: ["-r", "-R", "-f", "-i", "-v", "-d", "--recursive", "--force"], minimum: 1, changesState: true },
-  curl: { flags: ["-s", "-S", "-f", "-L", "-k", "-v", "-i", "-I", "-N", "-q", "-g", "--silent", "--show-error", "--fail", "--location", "--insecure", "--head"], values: ["-X", "-H", "-d", "-F", "-T", "-K", "-o", "-u", "-w", "--request", "--header", "--proxy-header", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form", "--upload-file", "--config", "--output", "--user", "--write-out", "--url", "--proxy", "--connect-timeout", "--max-time"], minimum: 1 },
-  wget: { flags: ["-q", "-c", "--quiet", "--continue"], values: ["-O", "-o", "--output-document", "--output-file", "--post-file", "--body-file", "--post-data", "--body-data", "--header"], minimum: 1, changesState: true },
+  curl: { configuration: { disabledByFirstArgument: ["-q", "--disable"] }, flags: ["-s", "-S", "-f", "-L", "-k", "-v", "-i", "-I", "-N", "-q", "-g", "--disable", "--silent", "--show-error", "--fail", "--location", "--insecure", "--head"], values: ["-X", "-H", "-d", "-F", "-T", "-o", "-u", "-w", "--request", "--header", "--proxy-header", "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form", "--upload-file", "--output", "--user", "--write-out", "--url", "--proxy", "--connect-timeout", "--max-time"], minimum: 1, changesState: true },
 });
 interface CmdletGrammar extends ArgumentGrammar { numeric?: readonly string[] }
 const POWERSHELL_GRAMMARS: Readonly<Record<string, CmdletGrammar>> = Object.freeze({
@@ -79,6 +79,9 @@ function matchArgumentGrammar(argv: readonly (string | undefined)[], from: numbe
     if (work !== undefined) { work.staticTokens += 1; work.staticChars += value?.length ?? 0; }
     return value;
   };
+  // Configuration-dependent grammars require an argv proof at the child boundary.
+  if (grammar.configuration !== undefined
+    && !grammar.configuration.disabledByFirstArgument.includes(read(from) ?? "")) return false;
   const isQuoted = (index: number): boolean => /^["']/.test(raw?.[index] ?? "");
   const isParameter = (index: number, value: string): boolean => !isQuoted(index) && /^\p{Pd}/u.test(value);
   let positions = 0, data = false;
@@ -163,10 +166,20 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
         }
         const grammar = Object.hasOwn(POWERSHELL_GRAMMARS, psName) ? POWERSHELL_GRAMMARS[psName] : undefined;
         if (grammar !== undefined) {
+          // Across editions an alias may instead resolve to a known native program.
+          // Both grammars must prove the same argv; detection keeps the alias union.
+          let nativeChangesState = false;
+          const aliasName = name?.toLowerCase();
+          if (aliasName !== undefined && psName !== aliasName
+            && (Object.hasOwn(NATIVE_GRAMMARS, aliasName) || POWERSHELL_COMMAND_POLICIES[`${aliasName}.exe`]?.native !== undefined)) {
+            const nativeGrammar = NATIVE_GRAMMARS[aliasName];
+            if (nativeGrammar === undefined || !matchesOptions(at + 1, nativeGrammar)) return UNPROVEN;
+            nativeChangesState = nativeGrammar.changesState === true;
+          }
           if (!matchesOptions(at + 1, grammar, true)) return UNPROVEN;
           const output = psName === "invoke-webrequest" || psName === "invoke-restmethod";
           const writes = output && argv.some((value) => /^-outfile(?::|$)/i.test(value ?? ""));
-          return complete(grammar.changesState === true || writes);
+          return complete(grammar.changesState === true || nativeChangesState || writes);
         }
       }
       if (psName !== name && POWERSHELL_COMMAND_POLICIES[psName]?.native === undefined) return UNPROVEN;
@@ -277,9 +290,7 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
     }
     const grammar = Object.hasOwn(NATIVE_GRAMMARS, name) ? NATIVE_GRAMMARS[name] : undefined;
     if (grammar === undefined || !matchesOptions(at + 1, grammar)) return UNPROVEN;
-    const download = name === "curl"
-      || (name === "wget" && argv.some((value) => value === "-O" || value === "-o" || value?.startsWith("--output")));
-    return complete(grammar.changesState === true || download);
+    return complete(grammar.changesState === true);
   }
   return UNPROVEN;
 }

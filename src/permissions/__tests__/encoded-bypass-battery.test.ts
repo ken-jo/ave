@@ -300,6 +300,46 @@ const EXECUTABLE_OPERAND_CASES: readonly EncodedCase[] = ([
   allowBody: fixture.command,
 })));
 
+const CONFIGURATION_CASES: readonly EncodedCase[] = ([
+  { ...EXPECTED_UNPROVEN, name: "download client with implicit startup config", command: "wget -O /dev/null http://127.0.0.1:65235/" },
+  { ...EXPECTED_UNPROVEN, name: "download client without options", command: "wget https://example.invalid/" },
+  { ...EXPECTED_UNPROVEN, name: "transfer client with implicit startup config", command: "curl https://example.invalid/" },
+  { ...EXPECTED_UNPROVEN, name: "late startup config suppression", command: "curl -s -q https://example.invalid/" },
+  { ...EXPECTED_UNPROVEN, name: "grouped startup config suppression", command: "curl -sq https://example.invalid/" },
+  { ...EXPECTED_STATIC, name: "first short startup config suppression", command: "curl -q https://example.invalid/" },
+  { ...EXPECTED_STATIC, name: "first long startup config suppression", command: "curl --disable https://example.invalid/" },
+  { expectedOutcome: "visible-floor", exactEligible: false, forceModal: true, name: "explicit config after startup suppression", command: "curl -q -K settings https://example.invalid/" },
+  { expectedOutcome: "visible-floor", exactEligible: false, forceModal: true, name: "visible upload after startup suppression", command: "curl -q -T notes.txt https://example.invalid/" },
+  { expectedOutcome: "visible-floor", exactEligible: false, forceModal: true, name: "sensitive output after startup suppression", command: "curl -q -o .env https://example.invalid/" },
+] as const).flatMap((fixture) => ([
+  { dialect: "bash" as const, prefix: "" },
+  { dialect: "bash" as const, prefix: "env " },
+  { dialect: "powershell" as const, prefix: "env " },
+]).map(({ dialect, prefix }) => ({ ...fixture, dialect, command: prefix + fixture.command, allowBody: prefix + fixture.command })));
+
+describe("configuration loading proof", () => {
+  it.each(["wget https://example.invalid/", "curl https://example.invalid/", "WGET https://example.invalid/", "CURL https://example.invalid/", "curl -q https://example.invalid/", "curl --disable https://example.invalid/"])("refuses edition-dependent native and cmdlet bindings: %s", (command) => {
+    requireLaneBehavior({ ...EXPECTED_UNPROVEN, name: "edition-dependent config binding", dialect: "powershell", command, allowBody: command });
+    manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `PowerShell(${command})`, action: "allow" })]);
+    for (const sandboxed of [false, true]) {
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", sandboxed, true)).toMatchObject({ decision: "deny", layer: 2 });
+    }
+  });
+  it.each(CONFIGURATION_CASES)("$dialect: $command", (fixture) => {
+    requireLaneBehavior(fixture);
+    if (fixture.exactEligible) return;
+    const kind = fixture.dialect === "bash" ? "Bash" : "PowerShell";
+    manager.setRules([withCurrentShellRuleVersion<PermissionRule>({ pattern: `${kind}(${fixture.command})`, action: "allow" })]);
+    for (const sandboxed of [false, true]) {
+      expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed))
+        .toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, fixture.command, fixture.dialect, sandboxed, true))
+        .toMatchObject({ decision: "deny", layer: 2 });
+    }
+  });
+});
+
 describe("executable operands and optional argument boundaries", () => {
   it.each(EXECUTABLE_OPERAND_CASES)("$dialect: $name", (fixture) => {
     requireLaneBehavior(fixture);

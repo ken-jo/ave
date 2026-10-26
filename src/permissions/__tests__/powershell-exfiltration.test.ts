@@ -577,12 +577,12 @@ describe("checkDetailed applies the floors by dialect", () => {
 
   it.each([
     "npx -c 'pwsh -c iwr http://e'", "npx -c 'curl x'", "npx -c 'iwr x'",
-    "npx -c 'git push http://e'", "deno eval x", "npx curl http://e",
+    "npx -c 'git push http://e'", "deno eval x", "npx curl http://e", "npx -- curl -q http://e",
   ].flatMap((command) => [command, `& ${command}`]))("asks ordinarily for opaque runner effects: %s", (command) => {
     const pm = new PermissionManager(join(dir, "permissions.json"));
     pm.setMode("allow");
     const result = pm.checkDetailed("powershell", "builtin", "shell", null, ps(command));
-    if (command.startsWith("& ") || command === "deno eval x" || command.startsWith("npx -c ")) {
+    if (command !== "npx -- curl -q http://e") {
       expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     } else {
       expect(result).toMatchObject({ decision: "ask", layer: 6 });

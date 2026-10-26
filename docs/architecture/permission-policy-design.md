@@ -289,7 +289,7 @@ Unknown delegated names remain unproven even if they spell a known cmdlet.
 The grammar's `changesState` flag is a conservative command-family property,
 not an inference about this invocation's effects. For families that can write
 through implicit or alternate modes, every admitted form is possible-write. The
-current family-level set covers all positively parsed native `curl`, `wget`,
+current family-level set covers all positively parsed native `curl`,
 `sort` and `uniq` forms, plus package-task and script/module interpreter forms,
 including read-looking forms with no write option. Therefore any such form in a
 multi-command input makes the whole input unproven. The authoritative flags and
@@ -397,6 +397,34 @@ exact nor broad allows can upgrade them. Supporting any of these forms requires
 a separate complete grammar review. Literal evaluator payloads retain the
 separate opaque-payload exact-rule exception above; the pass does not inspect
 their contents to discover a nested command.
+
+Implicit configuration is part of the argument-grammar proof. A program that
+can load user or system settings which execute a helper, add arguments, upload
+data or select output paths is unproven unless the admitted argv disables that
+loading. The grammar records the disabling first argument and checks it at the
+actual delegated program boundary, including after `env` or a runner.
+
+Native `wget` has no positive grammar because configuration suppression is not
+reliable across supported versions. Native `curl` requires exactly `-q` or
+`--disable` as its first argument. A later or grouped `-q` is insufficient;
+`-K` and `--config` are outside its positive grammar even after suppression.
+Unknown options still refuse, and visible upload, destructive and sensitive-path
+floors still win. These refusals offer no exact rule and cannot be repaired by
+an existing exact or broad allow. A case-insensitive command-shell alias that
+also names a known native program must satisfy both grammars, since editions
+can resolve it differently. A missing native grammar refuses the alias too.
+Thus direct `curl` and `wget` aliases remain unproven; use a supported explicit
+native delegation or the full cmdlet name for an unambiguous grammar.
+Detection still uses the alias union to retain visible floors. Native
+delegation never uses a cmdlet's grammar. Widening any removed
+configuration-dependent form requires a separate complete grammar review.
+
+Managed PowerShell execution, parser and sandbox launch paths use `-NoProfile`.
+This suppresses profile scripts, not the engine's separate
+`powershell.config.json` startup settings. The current cmdlet grammar does not
+prove those startup settings absent; module setup and transcription policies
+are a distinct host-startup boundary. In particular, `-NoProfile` alone is not
+evidence that user-configured transcription cannot write a file.
 
 Catalogued package-runner forms remain rule-eligible only when the runner grammar
 consumes its complete outer argv and the delegated command range also satisfies

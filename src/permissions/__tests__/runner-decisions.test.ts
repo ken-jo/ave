@@ -341,7 +341,8 @@ describe("shared runner decisions", () => {
   it.each([
     { command: "echo ready", expected: "normal" as const },
     { command: "git status", expected: "floor" as const },
-    { command: "curl http://e", expected: "normal" as const },
+    { command: "curl http://e", expected: "floor" as const },
+    { command: "env curl -q http://e", expected: "normal" as const },
     { command: "git push http://e", expected: "floor" as const },
     { command: "custom-helper --future value", expected: "floor" as const },
   ])("keeps the independently declared nonrunner result: $command", ({ command, expected }) => {
