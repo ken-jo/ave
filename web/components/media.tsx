@@ -1,22 +1,19 @@
 import { mediaSize, type MediaKey, type Picture } from "@/lib/content";
 
 /**
- * Every capture exists in a light and a dark version, each as AVIF, WebP and
- * a half-width PNG fallback (web/DESIGN.md, "Media"). The browser picks the
- * theme with the colour-scheme media query and the first format it supports.
- * Width and height are always set so the page does not shift while loading.
+ * Every capture exists as AVIF, WebP and a half-width PNG fallback, in the
+ * app's light theme and its dark (Tokyo Night) theme (web/DESIGN.md, "Media").
+ * The site is light only, so pages show the light captures; the browser picks
+ * the first format it supports. Width and height are always set so the page
+ * does not shift while loading.
  */
 
-const DARK = "(prefers-color-scheme: dark)";
-const src = (k: MediaKey, theme: "light" | "dark", ext: string) => `/media/${k}-${theme}.${ext}`;
+const src = (k: MediaKey, theme: "light", ext: string) => `/media/${k}-${theme}.${ext}`;
 
 export function Shot({ pic, priority = false, className }: { pic: Picture; priority?: boolean; className?: string }) {
   const { w, h, x } = mediaSize(pic.k);
   return (
     <picture className={className}>
-      <source media={DARK} type="image/avif" srcSet={src(pic.k, "dark", "avif")} />
-      <source media={DARK} type="image/webp" srcSet={src(pic.k, "dark", "webp")} />
-      <source media={DARK} srcSet={src(pic.k, "dark", "png")} />
       <source type="image/avif" srcSet={src(pic.k, "light", "avif")} />
       <source type="image/webp" srcSet={src(pic.k, "light", "webp")} />
       <img
@@ -44,34 +41,35 @@ export function Frame({ pic, priority = false }: { pic: Picture; priority?: bool
 }
 
 /**
- * Preload hints for a page's first picture, one per theme. React hoists
- * these `<link>` elements into the document head.
+ * A capture cropped inside a fixed window (the home tiles): `crop` is the
+ * picture's width, left and top as percentages of the window. Lazy, with its
+ * width and height set like every other picture.
  */
-export function PreloadShot({ k }: { k: MediaKey }) {
+export function Crop({ pic, crop }: { pic: Picture; crop: [w: number, x: number, y: number] }) {
+  const { w, h } = mediaSize(pic.k);
+  const [cw, cx, cy] = crop;
   return (
-    <>
-      <link rel="preload" as="image" type="image/avif" href={src(k, "light", "avif")} media="(prefers-color-scheme: light)" fetchPriority="high" />
-      <link rel="preload" as="image" type="image/avif" href={src(k, "dark", "avif")} media={DARK} fetchPriority="high" />
-    </>
+    <picture>
+      <source type="image/avif" srcSet={src(pic.k, "light", "avif")} />
+      <source type="image/webp" srcSet={src(pic.k, "light", "webp")} />
+      <img
+        src={src(pic.k, "light", "png")}
+        alt={pic.alt}
+        width={w}
+        height={h}
+        loading="lazy"
+        decoding="async"
+        className="crop-img"
+        style={{ width: `${cw}%`, left: `${cx}%`, top: `${cy}%` }}
+      />
+    </picture>
   );
 }
 
 /**
- * The home hero: the conversation still as the poster, with a short silent
- * loop of the same screen playing over it. With reduced motion the loop is
- * hidden and only the still shows.
+ * The preload hint for a page's first picture. React hoists the `<link>`
+ * into the document head.
  */
-export function HeroLoop({ pic, label }: { pic: Picture; label: string }) {
-  const { w, h } = mediaSize("hero-loop");
-  return (
-    <figure className="shot hero-shot" aria-label={label}>
-      <Shot pic={pic} priority />
-      <video className="loop" width={w} height={h} autoPlay muted loop playsInline preload="metadata" aria-hidden="true" tabIndex={-1}>
-        <source media={DARK} type="video/webm" src="/media/hero-dark.webm" />
-        <source media={DARK} type="video/mp4" src="/media/hero-dark.mp4" />
-        <source type="video/webm" src="/media/hero-light.webm" />
-        <source type="video/mp4" src="/media/hero-light.mp4" />
-      </video>
-    </figure>
-  );
+export function PreloadShot({ k }: { k: MediaKey }) {
+  return <link rel="preload" as="image" type="image/avif" href={src(k, "light", "avif")} fetchPriority="high" />;
 }

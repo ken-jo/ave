@@ -1,193 +1,160 @@
-import { featurePage } from "@/lib/features";
-import { CATALOG, KIND_SAMPLES, pkg, pkgLabels } from "@/lib/marketplace";
-import { homeCopy } from "@/lib/home";
-import { href, type Locale } from "@/lib/i18n";
-import { FEATURES, more, page } from "@/lib/nav";
-import { pagesCopy } from "@/lib/pages";
-import { Bento, Facts, Points, SecHead } from "./blocks";
-import { ChangelogTeaser } from "./changelog";
+import { homeCopy, type Tile } from "@/lib/home";
+import type { Locale } from "@/lib/i18n";
+import { doc, more, page } from "@/lib/nav";
 import { Footer, Header } from "./chrome";
-import { Frame, HeroLoop, PreloadShot } from "./media";
-import { MotionRoot, Reveal, RevealItem } from "./motion";
-import { PackageStack, type StackItem, type StackKind } from "./pkg-stack";
-import { Tour, type TourStep } from "./tour";
+import { HelloStage, Statement } from "./hello";
+import { DownloadGlyph } from "./icons";
+import { Crop, Frame } from "./media";
 
 /**
- * The home page: hero with the product loop, the feature tour (one step per
- * feature page, from that page's hero), the workbench beside its list of
- * facts, what agents work with, the three ways to connect a model, safety,
- * the extension kinds with one real catalog package each, the newest release,
- * then download. Each section ends
- * with a link to the page that covers it in full.
+ * The home page, "Greeting": a dawn-lit inset card with the brand line (Ave
+ * means hello) above a built Ave workspace that performs the trail-notes
+ * session; the AWE statement, sharpened word by word; the workbench capture;
+ * six tiles for what the agent works with and the settings around it, each
+ * leading to the page that covers it; and a dark closing card. Details live on
+ * the feature pages and the guide; the home page only points at them.
  */
 export function Home({ locale }: { locale: Locale }) {
   const c = homeCopy(locale);
-  const reqs = pagesCopy(locale).download.requirements;
   const download = page(locale, "download");
+  const docs = page(locale, "docs");
+  const workbench = doc(locale, "workbench");
   const path = "/";
-  const tour: TourStep[] = FEATURES.map((f) => {
-    const fp = featurePage(locale, f);
-    const { eyebrow, title, lead, pic } = fp.hero;
-    const link = more(locale, f);
-    return { id: f, eyebrow, title, lead, pic, points: fp.first.points.slice(0, 3), detail: fp.first.pic, more: { href: link.href, label: link.label } };
-  });
-  const L = pkgLabels(locale);
-  const items: StackItem[] = [];
-  const kinds: StackKind[] = c.plugins.kinds.map((k, i) => {
-    const name = KIND_SAMPLES[i];
-    if (name === undefined) throw new Error(`KIND_SAMPLES has no entry for kind ${i} (${k.name})`);
-    if (name === null) return { name: k.name, body: k.body, item: null };
-    const p = pkg(name);
-    const rows: StackItem["rows"] = [
-      { label: L.source, value: `${CATALOG.displayName} · ${p.path}` },
-      { label: L.commit, value: p.commit.slice(0, 12), code: true },
-    ];
-    if (p.artifact) rows.push({ label: L.contents, value: `sha256 ${p.artifact.sha256.slice(0, 16)}…`, code: true });
-    rows.push({ label: L.compat, value: p.hostProtocol ? `${L.needs(p.minAppVersion)} · ${L.protocol(p.hostProtocol)}` : L.needs(p.minAppVersion) });
-    rows.push({ label: L.version, value: `${p.version} · ${L.published(p.publishedAt.slice(0, 10))}` });
-    if (p.allowedDomains) rows.push({ label: L.network, value: L.hosts(p.allowedDomains.length) });
-    items.push({
-      id: p.name,
-      kind: k.name,
-      title: p.displayName,
-      description: p.description,
-      descLang: locale === "en" && /[\u3131-\uD79D]/u.test(p.description) ? "ko" : undefined,
-      rows,
-    });
-    return { name: k.name, body: k.body, item: items.length - 1 };
-  });
   return (
     <>
-      <PreloadShot k={c.hero.pic.k} />
       <Header locale={locale} path={path} />
       <main id="main">
-        <MotionRoot>
-        <section className="hero" aria-labelledby="hero-title">
-          <div className="wrap">
-            <div className="hero-copy">
-              <p className="eyebrow">{c.hero.eyebrow}</p>
-              <h1 id="hero-title" className="h1">{c.hero.title}</h1>
-              <p className="lead">{c.hero.sub}</p>
-              <div className="hero-ctas">
-                <a className="btn btn-primary btn-lg" href={download.href}>{c.hero.download}</a>
-                <a className="btn btn-ghost btn-lg" href={page(locale, "docs").href}>{c.hero.docs}</a>
-              </div>
-              <p className="hero-note">{c.hero.note}</p>
+        <section className="hello" aria-labelledby="hero-title">
+          <div className="hello-card">
+            <div className="hello-copy">
+              <h1 id="hero-title" className="hello-title">
+                {c.hero.title}
+                <span className="dim">{c.hero.dim}</span>
+              </h1>
+              <p className="hello-sub">{c.hero.sub}</p>
+              <p className="hello-ctas">
+                <a className="btn btn-primary btn-lg" href={download.href}>
+                  <DownloadGlyph />
+                  {c.hero.download}
+                </a>
+                <a className="btn btn-ghost btn-lg" href={docs.href}>
+                  {c.hero.docs}
+                </a>
+              </p>
+              <p className="hello-note">{c.hero.note}</p>
             </div>
-            <div className="hero-media">
-              <HeroLoop pic={c.hero.pic} label={c.hero.pic.alt} />
-            </div>
+            <HelloStage demo={c.hero.demo} />
           </div>
         </section>
 
-        <section className="sec band" aria-labelledby="tour">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="tour" eyebrow={c.tour.eyebrow} title={c.tour.title} body={c.tour.body} />
-          </Reveal>
+        <section className="statement-sec" aria-label="AWE">
           <div className="wrap">
-            <Tour steps={tour} label={c.tour.label} />
+            <Statement text={c.statement} />
           </div>
         </section>
 
-        <section className="sec" aria-labelledby="work">
-          <Reveal className="wrap">
-            <div className="split">
-              <RevealItem>
-                <Frame pic={c.work.pic} />
-              </RevealItem>
-              <RevealItem className="split-text">
-                <p className="eyebrow">{c.work.eyebrow}</p>
-                <h2 id="work" className="h2">{c.work.title}</h2>
-                <p className="lead">{c.work.body}</p>
-                <Points points={c.work.points} />
-              </RevealItem>
+        <section className="sec work-sec" aria-labelledby="work">
+          <div className="wrap">
+            <div className="center-head">
+              <p className="eyebrow">{c.work.eyebrow}</p>
+              <h2 id="work" className="h2">
+                {c.work.title}
+              </h2>
+              <p className="lead">{c.work.body}</p>
             </div>
-          </Reveal>
-        </section>
-
-        <section className="sec band" aria-labelledby="surfaces">
-          <Reveal className="wrap">
-            <Bento
-              Item={RevealItem}
-              id="surfaces"
-              block={c.surfaces}
-              foot={
-                <p className="hero-ctas">
-                  <a className="more" href={more(locale, "browser").href}>{more(locale, "browser").label}</a>
-                  <a className="more" href={more(locale, "terminal").href}>{more(locale, "terminal").label}</a>
-                </p>
-              }
-            />
-          </Reveal>
-        </section>
-
-        <section className="sec" aria-labelledby="models">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="models" eyebrow={c.models.eyebrow} title={c.models.title} body={c.models.body} />
-            <div className="split flip">
-              <RevealItem>
-                <Frame pic={c.models.pic} />
-              </RevealItem>
-              <div className="choices choices-stack">
-                {c.models.ways.map((w) => (
-                  <RevealItem key={w.tag} className="choice">
-                    <p className="tag">{w.tag}</p>
-                    <h3 className="h3">{w.title}</h3>
-                    <p>{w.body}</p>
-                  </RevealItem>
-                ))}
-              </div>
+            <div className="work-stage">
+              <Frame pic={c.work.pic} />
             </div>
-            <p className="sec-foot">
-              <a className="more" href={more(locale, "models").href}>{more(locale, "models").label}</a>
+            <p className="center-foot">
+              <a className="more" href={workbench.href}>
+                {workbench.label}
+              </a>
             </p>
-          </Reveal>
+          </div>
         </section>
 
-        <section className="sec band" aria-labelledby="safety">
-          <Reveal className="wrap">
-            <Bento Item={RevealItem} id="safety" block={c.safety} />
-            <div className="sec-gap">
-              <Facts Item={RevealItem} items={c.safetyFacts} />
+        <section className="sec hands" aria-labelledby="hands">
+          <div className="wrap">
+            <div className="center-head">
+              <h2 id="hands" className="h2">
+                {c.hands.title}
+              </h2>
+              <p className="lead">{c.hands.body}</p>
             </div>
-            <p className="sec-foot">
-              <a className="more" href={more(locale, "security").href}>{more(locale, "security").label}</a>
-            </p>
-          </Reveal>
+            <ul className="tiles">
+              {c.hands.tiles.map((t) => (
+                <TileCard key={t.title} tile={t} locale={locale} />
+              ))}
+            </ul>
+          </div>
         </section>
 
-        <section className="sec" aria-labelledby="plugins">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="plugins" eyebrow={c.plugins.eyebrow} title={c.plugins.title} body={c.plugins.body} />
-            <RevealItem>
-              <PackageStack kinds={kinds} items={items} caption={c.plugins.cap} />
-            </RevealItem>
-            <p className="sec-foot">
-              <a className="more" href={more(locale, "plugins").href}>{more(locale, "plugins").label}</a>
-            </p>
-          </Reveal>
+        {/* id="download": the app's unsigned-build update guide opens the site root, and this is where its download is. */}
+        <section className="closing" id="download" aria-labelledby="say-hello">
+          <div className="closing-card">
+            <h2 id="say-hello">
+              {c.close.before}
+              <span>{c.close.hello}</span>
+              {c.close.after}
+            </h2>
+            <p>{c.close.body}</p>
+            <a className="btn btn-lg btn-light" href={download.href}>
+              <DownloadGlyph />
+              {c.close.cta}
+            </a>
+          </div>
         </section>
-
-        <section className="sec band" aria-labelledby="changes">
-          <Reveal className="wrap">
-            <RevealItem>
-              <ChangelogTeaser locale={locale} eyebrow={c.changes.eyebrow} title={c.changes.title} body={c.changes.body} />
-            </RevealItem>
-          </Reveal>
-        </section>
-
-        <section className="sec" id="download" aria-labelledby="get">
-          <Reveal className="wrap">
-            <SecHead Item={RevealItem} id="get" eyebrow={c.get.eyebrow} title={c.get.title} body={c.get.body} />
-            <Facts Item={RevealItem} items={reqs} />
-            <p className="sec-foot">
-              <a className="btn btn-primary btn-lg" href={href(locale, "/download/")}>{c.get.cta}</a>
-            </p>
-          </Reveal>
-        </section>
-        </MotionRoot>
       </main>
       <Footer locale={locale} path={path} />
     </>
+  );
+}
+
+function TileCard({ tile, locale }: { tile: Tile; locale: Locale }) {
+  const link = tile.feature ? more(locale, tile.feature) : doc(locale, "workbench");
+  return (
+    <li className="tile">
+      <div className="tile-text">
+        <h3 className="h3">{tile.title}</h3>
+        <p>{tile.body}</p>
+        <a className="more" href={link.href}>
+          {link.label}
+        </a>
+      </div>
+      {tile.pic === "files" ? (
+        <FilesFragment locale={locale} />
+      ) : (
+        <div className="tile-window">
+          <Crop pic={tile.pic} crop={tile.crop ?? [100, 0, 0]} />
+        </div>
+      )}
+    </li>
+  );
+}
+
+/**
+ * The work panel's Files tab, built at fidelity because no capture of it
+ * exists yet (web/DESIGN.md, "Built fragments"). It shows the same change as
+ * the captures: the json case added to src/export.js.
+ */
+function FilesFragment({ locale }: { locale: Locale }) {
+  const label = locale === "ko" ? "파일 탭: src/export.js에 추가된 json 분기 줄이 강조된 모습" : "The Files tab: src/export.js with the added json case highlighted";
+  return (
+    <div className="tile-window files-frag" role="img" aria-label={label}>
+      <ul aria-hidden="true">
+        <li>src/</li>
+        <li data-sel="">export.js</li>
+        <li>parse.js</li>
+        <li>test/</li>
+        <li>package.json</li>
+      </ul>
+      <pre aria-hidden="true">
+        {'switch (format) {\n  case "csv": return toCsv(trails);\n  case "md": return toTable(trails);\n'}
+        <span className="hw-add" data-on="">
+          {'  case "json": return JSON.stringify(trails);'}
+        </span>
+        {"}"}
+      </pre>
+    </div>
   );
 }

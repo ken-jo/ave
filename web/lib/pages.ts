@@ -24,8 +24,6 @@ export interface PagesCopy {
     next: string;
     faq: string;
     nextSteps: string;
-    latest: string;
-    readRelease: (name: string) => string;
   };
 }
 
@@ -78,8 +76,6 @@ const ko: PagesCopy = {
     next: "다음",
     faq: "자주 묻는 질문",
     nextSteps: "다음으로",
-    latest: "최신 릴리스",
-    readRelease: (name) => `${name} 전체 내용`,
   },
 };
 
@@ -132,8 +128,6 @@ const en: PagesCopy = {
     next: "Next",
     faq: "Questions",
     nextSteps: "Next",
-    latest: "Latest release",
-    readRelease: (name) => `All of ${name}`,
   },
 };
 
