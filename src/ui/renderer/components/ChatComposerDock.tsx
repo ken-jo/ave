@@ -6,6 +6,7 @@ import { imageInputRecoveryMessage } from "../../../shared/model-capability-sett
 import { Popover, PopoverContent, PopoverTrigger } from "../../../components/ui/popover.js";
 import { useCallback, type RefObject } from "react";
 import { SessionTasksPanel } from "./SessionTasksPanel.js";
+import { ShellTasksPanel } from "./ShellTasksPanel.js";
 import { SessionGoalPanel } from "./SessionGoalPanel.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
 import { StatusBar, type StatusBarProps } from "./StatusBar.js";
@@ -524,7 +525,7 @@ export function ChatComposerDock({
             // ring: it describes the work this conversation is doing, which
             // is what the row is for. Up in the queue dock it floated over an
             // empty toast reserve whenever there was nothing to notify.
-            tasksSlot={<SessionTasksPanel api={workflowApi} sessionId={currentSessionId} />}
+            tasksSlot={<><SessionTasksPanel api={workflowApi} sessionId={currentSessionId} /><ShellTasksPanel api={api} sessionId={currentSessionId} composerRef={composerRef} /></>}
             /** The goal sits next to the plan for the same reason the plan sits here: it describes what this conversation is doing. */
             goalSlot={<SessionGoalPanel api={workflowApi} sessionId={currentSessionId} />}
             onOpenModelSettings={onOpenModelSettings}

@@ -3,7 +3,7 @@ import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import type { GenericMessage } from "./llm/types.js";
 import { userContentText } from "./llm/types.js";
-import { estimateMessageTokensForWire, estimateMessagesTokens } from "./auto-compact.js";
+import { estimateMessageTokensForWire, estimateMessagesTokens, estimateTokens } from "./auto-compact.js";
 import { aveHome } from "../shared/ave-home.js";
 import { createLogger } from "../lib/logger.js";
 import {
@@ -239,6 +239,8 @@ export interface CompactWithBoundaryArgs {
   sessionId: string;
 
   preflightTokens: number;
+  /** The summarizer's input ceiling may be smaller than the chat model's trigger threshold. */
+  summaryInputTokens?: number;
   abortSignal?: AbortSignal;
   // Fence compact focus as data; it cannot change which messages are selected.
   focus?: string;
@@ -348,15 +350,16 @@ async function dropOldestUntilUnderBudget(
   budget: number,
   sessionId: string,
   compactNum: number,
-): Promise<{ messages: GenericMessage[]; droppedCount: number; truncatedDir: string }> {
+  clipSingleton = false,
+): Promise<{ messages: GenericMessage[]; droppedCount: number; clippedCount: number; truncatedDir: string }> {
   if (budget <= 0 || toCompact.length === 0) {
-    return { messages: toCompact, droppedCount: 0, truncatedDir: "" };
+    return { messages: toCompact, droppedCount: 0, clippedCount: 0, truncatedDir: "" };
   }
   // Maintain a running token total to avoid quadratic serialization while compaction holds its lock.
   const perMessageTokens = toCompact.map((message) => estimateMessageTokensForWire(message));
   let currentTotal = perMessageTokens.reduce((a, b) => a + b, 0);
   if (currentTotal <= budget) {
-    return { messages: toCompact, droppedCount: 0, truncatedDir: "" };
+    return { messages: toCompact, droppedCount: 0, clippedCount: 0, truncatedDir: "" };
   }
   const dropped: GenericMessage[] = [];
   const surviving = [...toCompact];
@@ -370,8 +373,19 @@ async function dropOldestUntilUnderBudget(
     currentTotal -= perMessageTokens[cursor];
     cursor += 1;
   }
+  const droppedCount = dropped.length;
+  let clippedCount = 0;
+  if (clipSingleton && currentTotal > budget && surviving[0]) {
+    const last = surviving[0];
+    dropped.push(last);
+    // Three UTF-16 units per estimated token is conservative for both supported estimator weights; reserve the archive marker.
+    const maxChars = Math.max(0, Math.floor((budget - 64) * 3));
+    const tail = maxChars > 0 ? extractMessageText(last).slice(-maxChars) : "";
+    surviving[0] = rebuildMessageWithText(last, `[earlier content archived]\n${tail}`);
+    clippedCount = 1;
+  }
   const truncatedDir = await archiveDroppedMessages(dropped, sessionId, compactNum, "precompact-drop");
-  return { messages: surviving, droppedCount: dropped.length, truncatedDir };
+  return { messages: surviving, droppedCount, clippedCount, truncatedDir };
 }
 
 /** Preserve safe recent boundaries, summarize through the reviewer, and freeze the resulting checkpoint.
@@ -390,6 +404,7 @@ export async function compactWithBoundary(
     preflightTokens,
     abortSignal,
     focus,
+    summaryInputTokens,
   } = args;
 
   const { messages: workingMessages, truncatedCount, truncatedDir: perMessageTruncDir } =
@@ -429,16 +444,20 @@ export async function compactWithBoundary(
   }
 
   // Archive excess combined input before summary generation, even when each message fits individually.
-  const llmInputBudget = preflightTokens > 0 ? Math.floor(preflightTokens * 0.9) : Infinity;
+  const summaryBudget = summaryInputTokens !== undefined && summaryInputTokens > 0
+    ? Math.floor(summaryInputTokens * 0.9) - estimateTokens(SUMMARY_TEMPLATE_PROMPT_V1) - estimateTokens(focus ?? "")
+    : Infinity;
+  const llmInputBudget = Math.max(1, Math.min(preflightTokens > 0 ? Math.floor(preflightTokens * 0.9) : Infinity, summaryBudget));
   const reverseBudgetResult = await dropOldestUntilUnderBudget(
     toCompact,
     llmInputBudget,
     sessionId,
     compactNum,
+    summaryInputTokens !== undefined,
   );
   const finalToCompact = reverseBudgetResult.messages;
   const reverseBudgetDir = reverseBudgetResult.truncatedDir;
-  const totalTruncatedCount = truncatedCount + reverseBudgetResult.droppedCount;
+  const totalTruncatedCount = truncatedCount + reverseBudgetResult.droppedCount + reverseBudgetResult.clippedCount;
 
   const conversationText = renderConversation(finalToCompact);
   let summary: ParsedCompactSummary | null = null;
@@ -450,6 +469,7 @@ export async function compactWithBoundary(
       compactNum,
       abortSignal,
       ...(focus !== undefined ? { focus } : {}),
+      ...(summaryInputTokens !== undefined ? { summaryInputTokens } : {}),
     });
     lastRawText = text;
     const parsed = parseSummary(text);
@@ -758,6 +778,7 @@ async function callSummaryLLM(args: {
   compactNum: number;
   abortSignal?: AbortSignal;
   focus?: string;
+  summaryInputTokens?: number;
 }): Promise<string> {
   const isoTime = new Date().toISOString();
   const templateValues: Record<string, string> = {
@@ -781,6 +802,9 @@ async function callSummaryLLM(args: {
       ].join("\n")
     : templatePrompt;
 
+  if (args.summaryInputTokens !== undefined && estimateTokens(filledPrompt) > args.summaryInputTokens * 0.9) {
+    throw new Error("Compaction model input exceeds its context budget");
+  }
   return (await args.memoryReviewer.review("recap", filledPrompt, {
     systemPrompt: t("be_structuredCompact.callSummarySystemPrompt"),
     ...(args.abortSignal !== undefined && { signal: args.abortSignal }),

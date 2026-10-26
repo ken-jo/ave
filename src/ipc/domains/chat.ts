@@ -1,4 +1,5 @@
 import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
 import { ipcMain, type WebContents } from "electron";
 import { t } from "../../i18n/index.js";
@@ -1034,6 +1035,25 @@ export function registerChatHandlers(deps: IpcDeps): void {
     }
     await interruptActiveTurn(group);
     return { ok: true };
+  });
+
+  ipcMain.handle(CHANNELS.chat.listShellTasks, (e, chatGroupId: unknown, expectedSessionId: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.listShellTasks, e); return []; }
+    const sessionId = groupOf(e, chatGroupId).loop.getSessionId();
+    return sessionId === expectedSessionId ? listShellTasks(sessionId) : [];
+  });
+
+  ipcMain.handle(CHANNELS.chat.controlShellTask, (e, chatGroupId: unknown, expectedSessionId: unknown, action: unknown, shellId?: unknown) => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.controlShellTask, e); return UNAUTHORIZED_FRAME; }
+    if ((action !== "background" && action !== "stop") ||
+        (shellId !== undefined && (typeof shellId !== "string" || shellId.length === 0 || shellId.length > 128))) {
+      return { ok: false, error: "invalid-shell-action" };
+    }
+    const sessionId = groupOf(e, chatGroupId).loop.getSessionId();
+    if (sessionId !== expectedSessionId) return { ok: false, error: "session-changed" };
+    const result = controlShellTask(sessionId, action, shellId as string | undefined);
+    auditLogger.log({ timestamp: new Date().toISOString(), sessionId, type: "info", input: JSON.stringify({ event: "shell_task_control", action, ok: result.ok }) });
+    return result;
   });
 
   ipcMain.handle(CHANNELS.chat.new, async (e, rawProject?: unknown, chatGroupId?: unknown) => {

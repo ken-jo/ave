@@ -134,7 +134,7 @@ import { isRecord } from "../shared/is-record.js";
 const log = createLogger("settings");
 
 
-function normalizeSubscriptionChatRuntimeModel(value: unknown): string | undefined {
+function normalizeModelId(value: unknown): string | undefined {
   if (typeof value !== "string") return undefined;
   const model = value.trim();
   if (
@@ -145,6 +145,16 @@ function normalizeSubscriptionChatRuntimeModel(value: unknown): string | undefin
     return undefined;
   }
   return model;
+}
+
+function normalizeCompactionModelRoute(value: unknown): string {
+  if (typeof value !== "string" || value.length > 8_192) return "";
+  try {
+    const parts: unknown = JSON.parse(value);
+    return Array.isArray(parts) && parts.every((part) => typeof part === "string")
+      && ((parts[0] === "api" && parts.length === 4) || (parts[0] === "subscription" && parts.length === 2))
+      ? JSON.stringify(parts) : "";
+  } catch { return ""; }
 }
 
 /** Invalid subscription runtimes fall back to the API boundary without changing vendor secrets. */
@@ -187,7 +197,7 @@ export function normalizeActiveChatRuntime(input: unknown): ActiveChatRuntime {
     return { kind: "api" };
   }
   const model = subscriptionRuntimeDescriptor(raw.provider).supportsModelSelection
-    ? normalizeSubscriptionChatRuntimeModel(raw.model)
+    ? normalizeModelId(raw.model)
     : undefined;
   return {
     kind: "subscription",
@@ -636,6 +646,8 @@ export function mergeLlmPatch(
     ...(marketplaceProviderPresetId ? { marketplaceProviderPresetId } : {}),
     vendors,
     streamSmoothing: partial.streamSmoothing ?? base.streamSmoothing,
+    compactionModel: normalizeModelId("compactionModel" in partial ? partial.compactionModel : base.compactionModel) ?? "",
+    compactionModelRoute: normalizeCompactionModelRoute("compactionModelRoute" in partial ? partial.compactionModelRoute : base.compactionModelRoute),
     fallbackChain,
     modelListCache: normalizeLlmModelListCache(
       "modelListCache" in partial ? partial.modelListCache : base.modelListCache,
@@ -779,6 +791,8 @@ export function pruneLazyLlmVendorBlocks(
     ),
     pricingOverrides: normalizePricingOverrides(llm.pricingOverrides),
     pinnedModels: normalizePinnedModels(llm.pinnedModels),
+    compactionModel: normalizeModelId(llm.compactionModel) ?? "",
+    compactionModelRoute: normalizeCompactionModelRoute(llm.compactionModelRoute),
     modelCatalogRefresh: normalizeModelCatalogRefresh(llm.modelCatalogRefresh),
     subscriptionReasoningSpeed: normalizeSubscriptionReasoningSpeed(llm.subscriptionReasoningSpeed),
   };

@@ -1,5 +1,6 @@
 // Public chat actions share gesture tokens; mutating permission and policy operations remain internal.
 import type { RewindMode, RewindResult } from "../shared/code-rewind.js";
+import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
 import { ipcRenderer } from "electron";
 import { CHANNELS, MAIN_CHAT_GROUP_ID } from "../contract/app-contract.js";
 import {
@@ -164,6 +165,9 @@ function buildSurfaceForChatGroup(chatGroupId: string) {
       } | { error: string }
     >,
   chatAbort: async () => ipcRenderer.invoke(CHANNELS.chat.abort, chatGroupId) as Promise<{ ok: boolean }>,
+  chatListShellTasks: async (expectedSessionId: string) => ipcRenderer.invoke(CHANNELS.chat.listShellTasks, chatGroupId, expectedSessionId) as Promise<ShellTask[]>,
+  chatControlShellTask: async (expectedSessionId: string, action: ShellTaskAction, shellId?: string) =>
+    ipcRenderer.invoke(CHANNELS.chat.controlShellTask, chatGroupId, expectedSessionId, action, shellId) as Promise<ShellTaskActionResult>,
   chatGetVerbatimToolResult: async (sessionId: string, toolUseId: string) =>
     ipcRenderer.invoke(CHANNELS.chat.getVerbatimToolResult, { sessionId, toolUseId }, chatGroupId) as Promise<
       { content: string; lineCount: number } | null

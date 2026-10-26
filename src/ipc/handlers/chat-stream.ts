@@ -183,8 +183,8 @@ export async function runStreamedTurn(
             ...(uiPayload === undefined ? {} : { uiPayload }),
           },
         }),
-      onError: (error, systemNotice, classifierCategory) =>
-        send({
+      onError: (error, systemNotice, classifierCategory, operation) =>
+        send(operation === "compaction" ? { kind: "compaction.failed" } : {
           kind: "turn.error",
           // Derive share-safe failures from a closed table, never raw errors.
           failure: deriveTurnFailureSummary({
