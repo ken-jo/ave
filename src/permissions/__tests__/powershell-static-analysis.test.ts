@@ -170,6 +170,26 @@ describe("PowerShell static floor analysis", () => {
     }
   });
 
+  it("refuses callback-capable command families through shared wrapper boundaries", () => {
+    for (const command of [
+      "git rebase main",
+      "env git grep pattern",
+      "npx git submodule status",
+    ]) {
+      expect(inspectPowerShellCommand(command, CWD)).toEqual(expect.objectContaining({
+        outcome: "unproven",
+        sensitive: null,
+        exfiltration: null,
+      }));
+      expect(proveLiteralPowerShell(command)).toEqual(expect.objectContaining({ proven: false }));
+    }
+
+    expect(inspectPowerShellCommand("git status", CWD)).toEqual({
+      outcome: "static-complete", sensitive: null, exfiltration: null,
+    });
+    expect(proveLiteralPowerShell("git status")).toEqual(expect.objectContaining({ proven: true }));
+  });
+
   it("charges flat argv work once", () => {
     const counts = [128, 256, 398].map((count) => {
       const result = _inspectPowerShellForTest(`${"npx ".repeat(count)}Write-Output ready`, CWD);
