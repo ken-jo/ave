@@ -221,9 +221,10 @@ lifecycle coverage are described in the architecture contract.
 
 Host-shell credential/sink classification is separate from exact raw-word
 identity. Unsandboxed input over 2,000 characters asks, or denies headless,
-before command-dependent work. Floor inspection has an independent
-8,000-character pre-inspection input limit; that limit or actual floor-analysis
-budget exhaustion forces per-call modal approval and cannot auto-allow. An
+before command-dependent work. Normal floor input is bounded at 8,000 characters, with a separate verified
+quoted-heredoc data allowance described below. One shared work budget stops all
+analysis immediately when spent: Lane B asks/L6 or denies headless; Lane A
+requires modal approval/L2. No reusable authority can auto-allow that result. An
 identified floor takes precedence over an ordinary reason in the same input.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
@@ -231,7 +232,7 @@ requirements keep their own authority.
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
 | Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Work limit | Floor input over 8,000 characters or actual floor-analysis budget exhaustion | Per-call forced modal at layer 2; no exact rule, remembered grant, reviewer or mode auto-allow |
+| Work limit | Lane A envelope/body bounds or shared analysis budget exhaustion | Immediate closed result: Lane B ask/L6 or headless deny; Lane A forced modal/L2; no later analysis or reusable allow |
 | Ordinary | Parser refusal, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No credential/sink floor from this signal alone; sandboxed execution follows its route only after floor inspection completes, while unsandboxed automatic allowance requires proven exact coverage or asks/denies |
 | Normal | Neither a floor nor an ordinary reason | Sandboxed execution follows its route; unsandboxed automatic allowance still requires proven exact coverage |
 
@@ -284,8 +285,9 @@ Parser or lexer/analysis-budget failure and nonliteral or ambiguous argv remain
 unproven. Literal visible code can remain eligible despite an ordinary runner
 or file-provenance classification. Legacy shell tool grants stay inert. For
 inputs within the length limit, identified credential and upload evidence
-retains its floor. Actual floor-analysis exhaustion also forces per-call modal
-approval rather than becoming an ordinary reason. Over-limit unsandboxed input
+retains its floor while analysis completes. Shared budget exhaustion instead
+terminates all analysis immediately with the lane-specific closed result,
+without fallback continuation. Over-limit unsandboxed input
 instead short-circuits to ask/deny.
 
 Visible literal interpreter code, script-file invocation and delegation do not by themselves prohibit an exact rule. Host-shell syntax, raw-word identity, budgets and the PowerShell encoded-execution exception determine proof. A known carrier role alone does not make an unrelated deny/ask rule uncertain; actual visible matches and syntactic inspection failures retain their precedence. An allow rule never proves future script contents or effects.
@@ -329,25 +331,28 @@ PowerShell script blocks and `pwsh`/`powershell` inline command text use the Pow
 
 Shell rules are dialect-scoped: `Bash(...)` rules match bash and
 `PowerShell(...)` rules match PowerShell (owner decision 2026-10-25), each at
-user, project or session scope. Exact command rules preserve each literal raw
-word, including its quote style and contents; only whitespace between words
-is normalized, apart from the existing permitted command-head normalization.
-Arguments are never unquoted, requoted, case-folded or converted to values for
-exact identity. Thus `Write-Output '0x10'` and `Write-Output 0x10` are different
-rules, as are differently quoted spellings and parameter-word casing. A
-quoted command head retains its raw spelling. Effect and
-deny/ask normalization remain separate and may conservatively recognize more
-spellings without changing exact allow identity.
+user, project or session scope. Exact command rules preserve every literal raw
+word, including the complete program token, module qualifier, case, quote style
+and contents. Only whitespace between words is normalized. No command head or
+argument is unquoted, requoted, case-folded, basename-collapsed or value-converted
+for exact identity. Thus `Alpha\Invoke-Probe` and `Beta\Invoke-Probe`, case
+variants, `Write-Output '0x10'` and `Write-Output 0x10` are distinct keys.
+Module/basename/case normalization belongs only to detection, effect analysis
+and conservative deny/ask matching, never exact allow keys.
 
-Bash command heads remain raw. For an unquoted PowerShell head, a valid single
-`Module\Command` qualifier is removed without stripping executable paths.
-Known bare cmdlet heads retain their existing case folding on every host;
-Windows also folds unquoted command-head case. Aliases never merge identities,
-and quoted command heads stay raw. No parameter word is case-folded.
+### Shell rule format
 
-Existing stored rules retain the literal meaning of their stored pattern text.
-Quote provenance discarded by an earlier writer cannot be recovered from that
-text; this change does not automatically invalidate or rewrite those rules.
+Freshly authored shell allows, including session rules, carry per-rule
+`shellRuleVersion: 1`, owned by `SHELL_RULE_CANONICAL_VERSION` in
+`src/shared/shell-rule-version.ts`. Only the current format's `Bash(...)` and
+`PowerShell(...)` allow rules participate in evaluation. Unversioned or
+wrong-version allows remain silently inert in every scope. Deny and ask rules
+keep narrowing regardless of this field's version.
+
+Reads and unrelated writes preserve stored rows without stamping a current
+version onto legacy data. There is no migration, new error, invalid-rule marker
+or UI flow for these rows. Lost old quote provenance is not reconstructed;
+a fresh user-authored rule is required to grant current-format authority.
 
 ### Literal-command proof
 
@@ -376,24 +381,31 @@ The proof checks these conditions in order:
    analysis is unproven.
 3. Require literal host-shell words and an unambiguous raw-word rule key.
    Preserve quote delimiters and contents exactly; normalize only interword
-   whitespace and the permitted command head. Active variables, command
+   whitespace; do not normalize the program head. Active variables, command
    substitutions, globs and escape expansion remain unproven. No argument
    binder emulation, numeric conversion or parameter-word lowercasing is used.
-4. For a recognized PowerShell launcher, inspect every following parsed argv
-   token's literal value: trim it, remove all leading `-`, `/`, U+2013,
-   U+2014 and U+2015 characters, lowercase it, and refuse the command if the
-   result starts with `e`. This intentionally includes `ExecutionPolicy`,
-   other e-leading arguments and missing operands. Never stop at `-File` or
-   `--`. The check applies to an existing transparent wrapper target too,
-   but does not recurse into shell code strings, `env -S`, `find` or `xargs`
-   to discover another launcher. It never inspects encoded contents. The
+4. Check every literal semantic word across the whole command for a
+   recognized PowerShell launcher, wherever it appears. Lexically inspect word
+   interiors of literal quoted command strings too, in bounded linear scans
+   of semantic values and raw words; no wrapper list or recursive dialect parser is used. Once a launcher
+   word is seen, inspect every later word in the command: trim its literal
+   value, remove all leading `-`, `/`, U+2013, U+2014 and U+2015 characters,
+   lowercase it, and refuse the command if the result starts with `e`.
+   This deliberately includes `ExecutionPolicy`, arbitrary e-leading data and
+   missing operands. Never stop at `-File`, `--`, a pipeline/sequence boundary
+   or a separator inside a quoted value. Detection may normalize a launcher's
+   module/basename, executable extension and case without changing the raw exact key. The
    [encoded-execution predicate](../../src/permissions/rules/powershell-encoded-command.ts)
-   owns this conservative exclusion; the display decoder's narrower flag
-   recognition does not decide permissions.
+   owns this exclusion; the narrower display decoder never decides permissions.
+   Lexical word boundaries are whitespace, either quote, backtick, semicolon,
+   pipe, ampersand, parentheses, angle/curly brackets, comma and equals sign. These boundaries
+   split words but never reset the already-seen launcher state.
 
 The sole proof launcher list is `pwsh`, `pwsh-preview`, `powershell` and
 `powershell_ise`, plus their `.exe` forms, matched case-insensitively by exact
-basename. Name prefixes and version-suffix guesses do not extend this list.
+basename. Thus `/usr/bin/pwsh` and `Module\pwsh` both arm detection while
+remaining distinct raw keys. Name prefixes and version-suffix guesses do not
+extend this list.
 Other shell/interpreter name tables remain only for existing visible-floor or
 classification consumers; they do not prohibit exact rules.
 
@@ -401,6 +413,8 @@ Visible literal code is eligible for an exact rule: `python -c`, `sh -c`,
 `Invoke-Expression`, literal delegated commands and similar forms are not
 rejected merely for carrying code. The outer host-shell words must be literal;
 the proof does not recursively parse a quoted code argument as another dialect.
+The bounded lexical PowerShell-launcher check still sees words inside literal
+quoted strings.
 Existing visible-text floors still apply to inputs within the length limit.
 
 An exact rule authorizes the saved invocation, not the future behavior of its
@@ -422,20 +436,45 @@ separate conservative normalization and precedence.
 
 ### Visible-floor work limits
 
-Visible-floor inspection has an independent 8,000-character input limit,
-checked before parsing or text/regex inspection. In the sandboxed lane, input
-over that limit forces per-call modal approval at layer 2 rather than reaching
-the automatic sandbox allow. Actual internal floor-analysis budget exhaustion
-has the same forced-modal outcome, even for shorter inputs. Exact rules,
-remembered approvals, reviewer decisions and allow mode cannot satisfy it;
-a stronger existing deny may still reject the call. These limits bound visible
-floor work and do not classify input as hidden code.
+The normal analysis input limit is 8,000 characters. Before general parsing or
+text/regex inspection, an over-limit sandboxed request requires per-call modal
+approval at layer 2, subject to the quoted-heredoc data allowance below.
 
-The unsandboxed lane's earlier 2,000-character cap still asks at layer 6, or
-denies headless, before any command-dependent work. Within that cap, actual
-floor-analysis exhaustion also retains its per-call gate; an unsandboxed
-headless ask becomes deny. The two lane limits have independent purposes and
-must not be substituted for one another.
+One shared work budget meters the full analysis, including every word,
+working-directory and path candidate, matcher loop and cross-dialect delegate.
+When it is spent, all analysis unwinds immediately to a cached closed result:
+no fallback scan, remaining candidates, later floor, rule, proof or reviewer
+work continues. Lane B asks at layer 6, or denies headless; Lane A requires
+per-call modal approval at layer 2. Exact rules, remembered approvals, reviewers
+and modes never satisfy this refusal. Stronger non-command denies may still
+refuse the call. Budget exhaustion is incomplete analysis, not hidden-content
+classification.
+
+Lane B retains its earlier 2,000-character limit on the complete original
+command; no heredoc exemption changes it. Lane A permits a separate data
+allowance only for semantically verified quoted literal Bash heredocs:
+
+- the aggregate body data across all such heredocs is at most 65,536 bytes
+  (64 KiB), independently of the executable envelope's 8,000-character limit;
+- quoted-delimiter semantics and projected AST grammar must be verified under
+  the shared prepaid work budget; unsafe or ambiguous syntax fails closed;
+- existing floor classification (`hiddenCodeReason`) must not identify a known
+  code-consuming recipient, including through its retained wrapper, subshell or pipeline
+  views. Such recipients receive no data exemption: normal-size inputs retain
+  full-body floor inspection, and larger inputs keep the normal 8,000-character
+  limit rather than dropping visible code from analysis;
+- body data receives only a linear metered pass and never enters general
+  analyzers, visible-code/floor projections or general content inspection;
+- unquoted heredocs keep the normal input limit, with no data exemption;
+- exceeding either bound or the shared work budget requires per-call modal
+  approval rather than automatic sandbox allowance.
+
+Quoted delimiters prevent shell expansion; they do not make stdin data when a
+known interpreter will execute it. Literal data writes through `cat` or
+`tee -a` remain eligible subject to the same bounds and ordinary gates. Unknown
+program stdin remains an accepted indirection limit; this does not add a new
+name/wrapper list or a Lane B carrier-proof gate. The executable envelope
+retains its visible floors and permission gates.
 
 For sandboxed execution, the sandbox's filesystem and egress controls remain
 the boundary. Visible-text destructive, credential-exfiltration and

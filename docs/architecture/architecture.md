@@ -1563,20 +1563,19 @@ routine turn) the same exact rule still runs the command — sandbox-off bash,
 the Plan B and an explicit host request alike — and without one the call is
 denied and audited (I5). Every remaining unsandboxed headless ask, including a
 visible floor or unreadable restriction, becomes deny with its reason and layer
-preserved. Exact command-rule identity keeps literal raw words, including
-original quote style and contents. Only interword whitespace and the documented
-PowerShell unquoted-head normalization change; Bash heads stay raw. Argument
-words are never unquoted,
-requoted, value-converted or lowercased. `Write-Output '0x10'` and
-`Write-Output 0x10` remain distinct. Effect and deny/ask normalization stay
-separate from exact identity.
+preserved. Exact command-rule identity keeps every literal raw word, including
+program case, module qualifier, quote style and contents. Only interword
+whitespace changes. No head or argument normalization contributes to the exact
+key; effect and detection normalization remain separate. Current-format shell
+allows carry `shellRuleVersion: 1`; unversioned or wrong-version allows remain
+silently inert, while deny and ask rules retain their authority. Reads never
+stamp old rows current and there is no migration or new UI/error flow.
 
 Exact allows additionally require the host's
 [literal-command proof](permission-policy-design.md#literal-command-proof).
 An unsandboxed input over 2,000 characters immediately asks or denies
 headless before project loading, parsing, command-rule or floor inspection.
-Under the
-limit, parse or lexer/analysis-budget failure, nonliteral words and ambiguous
+Under the limit, parse or lexer/analysis-budget failure, nonliteral words and ambiguous
 raw identity remain unproven. Literal quoting is preserved, so
 `git commit -m 'msg'` can be remembered.
 
@@ -1584,25 +1583,32 @@ Visible literal code, including interpreter options and delegated commands, is
 eligible for exact rules. File, stdin and network indirection are accepted
 limits, not separately detected blockers; a saved `make` or `python script.py`
 invocation does not fix the code it will later execute. The one execution-form
-exception is a recognized PowerShell launcher with an e-leading argument.
-After trimming each argument and removing leading hyphen, slash and supported
-Unicode dash characters, any lowercase value starting with `e` is unproven,
-including `ExecutionPolicy`. All arguments are checked past `-File` and `--`,
-without requiring an operand. The sole launcher list is `pwsh`, `pwsh-preview`,
-`powershell`, `powershell_ise` and their `.exe` forms, compared as exact
-basenames case-insensitively. Other launcher tables serve only visible-floor
-and classification analysis.
+exception is a recognized PowerShell launcher word anywhere in the whole command, including lexical words inside literal
+quoted command strings. After a launcher is seen, all later words in the command receive the conservative
+trim/dash/slash/e-prefix check, including across pipelines/sequences and past `-File` and `--`, without an
+operand requirement or wrapper enumeration. The sole launcher list is `pwsh`,
+`pwsh-preview`, `powershell`, `powershell_ise` and their `.exe` forms;
+module/basename/case handling belongs only to this detection.
 
-For sandboxed commands the sandbox is the boundary. Visible-floor work has an
-independent 8,000-character pre-inspection input limit. Exceeding it or an
-internal floor-analysis budget forces modal approval at layer 2; exact rules,
-reviewers and modes cannot auto-allow that request. Only visible-text floors
-and their work limits remain above the sandbox; encoded-looking data does not
-add a permission floor.
-The card decodes only a literal `-enc`-family operand for display. That decoded
-text neither authorizes execution nor feeds permission decisions. The host
-builds the card's exact rule from proven literal raw words and matches it against
-the live command again before saving.
+For sandboxed commands the sandbox is the boundary. Normal analysis input is
+bounded at 8,000 characters. Verified quoted literal Bash heredoc bodies instead
+have a separate aggregate 64 KiB data allowance only when retained floor
+classification finds no known code-consuming receiver. Known interpreters,
+including through retained wrapper/subshell/pipeline views, keep normal
+full-body inspection and the 8,000-character cap. The executable envelope also
+stays within 8,000 characters, with grammar/quote verification using the shared
+prepaid work budget. Those bodies receive only a linear metered
+data pass, not general code/floor inspection; unquoted or ambiguous forms do
+not gain the exemption. Literal `cat`/`tee -a` data writes remain eligible;
+unknown-program stdin remains an accepted limit. No new name list or Lane B
+carrier gate is introduced. Complete Lane B input remains capped at 2,000.
+
+One shared work budget covers all analysis and delegation. Exhaustion stops all
+remaining analysis immediately: Lane B asks/L6 or denies headless; Lane A
+requires per-call modal approval/L2. Input or heredoc bounds in Lane A likewise
+require modal approval. Exact rules, reviewers, grants and modes cannot
+turn these refusals into an automatic allow. Visible floors run only within
+these budgets. Literal encoded display decoding remains presentation-only.
 
 Remembered approvals saved for unsandboxed shells before this decision stay
 silently inert: they are not migrated, the card does not mark them, and they
