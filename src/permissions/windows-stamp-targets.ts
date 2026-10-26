@@ -1,5 +1,5 @@
 import type { FilesystemConfig, FilesystemPathEntry } from "@anthropic-ai/sandbox-runtime";
-import { isUncPath, normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
+import { normalizePathForSandbox } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-utils.js";
 import { expandWindowsFsPaths } from "@anthropic-ai/sandbox-runtime/dist/sandbox/windows-sandbox-utils.js";
 import { lstatSync, readlinkSync, realpathSync, type BigIntStats } from "node:fs";
 import { dirname, join, parse, resolve, sep } from "node:path";
@@ -34,7 +34,7 @@ function stampPathChain(path: string): string[] {
 }
 
 function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
-  if (!AVE_HOME_ISOLATION_GUARD_ACTIVE || paths.some(isUncPath)) return paths.map(path => ({ path, literal: true }));
+  if (!AVE_HOME_ISOLATION_GUARD_ACTIVE) return paths.map(path => ({ path, literal: true }));
   const identities = new Map<string, { identity: FileIdentity; linkTarget: string | undefined } | undefined>();
   const verify = (): void => {
     const checked = new Set<string>();
@@ -66,11 +66,27 @@ function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
   return paths.map(path => ({ get path() { verify(); return path; }, literal: true }));
 }
 
-// The runtime normalizes a marked literal again (environment references, tilde, prefix, realpath) before any existence check; hand one off only if that string is a spelling checked here.
+const RESERVED_DEVICE_NAME = /^(con|prn|aux|nul|conin\$|conout\$|clock\$|com[0-9¹²³]|lpt[0-9¹²³])$/i;
+
+// Positive grammar: only a plain drive-absolute path whose every component Win32 opens as spelled, so no later layer can reinterpret it.
+export function isPlainWindowsStampPath(path: string): boolean {
+  const match = /^[A-Z]:\\(.*)$/s.exec(path);
+  if (match === null) return false;
+  const body = match[1]!.endsWith("\\") ? match[1]!.slice(0, -1) : match[1]!;
+  if (body === "") return true;
+  return body.split("\\").every(component =>
+    component !== "" && component !== "." && component !== ".." &&
+    !/[\x00-\x1f\x7f<>:"/|?*%~]/.test(component) &&
+    !/[. ]$/.test(component) &&
+    !RESERVED_DEVICE_NAME.test(component.split(".")[0]!.trimEnd()));
+}
+
+// The runtime normalizes a marked literal again (environment references, tilde, prefix, realpath) before any existence check; hand one off only if that string is exactly a spelling checked here.
 function assertRuntimeReadsAs(path: string, target: string): void {
-  const fold = (spelling: string) => spelling.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
-  const reread = normalizePathForSandbox(path, { literal: true });
-  if (![path, target].some(checked => fold(checked) === fold(reread))) {
+  if (!isPlainWindowsStampPath(path)) throw new Error(`Sandbox stamp target is not a plain drive path: ${JSON.stringify(path)}`);
+  const exact = (spelling: string) => spelling.replace(/\\$/, "");
+  const reread = exact(normalizePathForSandbox(path, { literal: true }));
+  if (![path, target].some(checked => exact(checked) === reread)) {
     throw new Error(`Sandbox stamp target is reinterpreted by the runtime: ${path}`);
   }
 }
@@ -78,12 +94,13 @@ function assertRuntimeReadsAs(path: string, target: string): void {
 export function pinWindowsFilesystemConfig<T extends Partial<FilesystemConfig> | undefined>(filesystem: T): T {
   if (process.platform !== "win32" || filesystem === undefined) return filesystem;
   const pin = (entries: readonly FilesystemPathEntry[], mode: "grant" | "deny"): FilesystemPathEntry[] =>
-    expandWindowsFsPaths(entries, { mode }).flatMap(path => {
-      const canonical = isUncPath(path) ? path : canonicalStampPath(path);
+    expandWindowsFsPaths(entries, { mode }).map(path => path.replace(/\//g, "\\")).flatMap(path => {
+      if (!isPlainWindowsStampPath(path)) throw new Error(`Sandbox stamp target is not a plain drive path: ${JSON.stringify(path)}`);
+      const canonical = canonicalStampPath(path);
       const literals = mode === "deny" && path !== canonical ? [path, canonical] : [canonical];
       for (const literal of literals) assertRuntimeReadsAs(literal, canonical);
       // The runtime drops a grant whose target is missing; drop it here too rather than hand off a string nothing checked.
-      if (mode === "grant" && !isUncPath(canonical) && lstatSync(canonical, { throwIfNoEntry: false }) === undefined) return [];
+      if (mode === "grant" && lstatSync(canonical, { throwIfNoEntry: false }) === undefined) return [];
       return guardedStampLiterals(literals);
     });
   return {

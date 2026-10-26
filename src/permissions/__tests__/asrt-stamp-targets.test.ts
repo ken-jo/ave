@@ -144,7 +144,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(initialize).not.toHaveBeenCalled();
   });
 
-  it("expands home and environment literals and checks each glob match while skipping UNC targets", async () => {
+  it("expands home and environment literals and checks each glob match", async () => {
     vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
     const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
     const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Fixture initialization reached"));
@@ -153,11 +153,10 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     const match = join(process.env.USERPROFILE!, "match.stamp-fixture");
     writeFileSync(match, "");
     const glob = join(process.env.USERPROFILE!, "*.stamp-fixture");
-    const unc = "\\\\server\\share\\stamp-fixture";
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
-      allowWrite: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture"],
-      denyRead: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture", glob, unc],
+      allowWrite: [join(process.env.HOME!, ".stamp-fixture")],
+      denyRead: ["~/.stamp-fixture", "%USERPROFILE%/.stamp-env-fixture", glob],
     })).rejects.toThrow("Fixture initialization reached");
     expect(initialize).toHaveBeenCalledOnce();
     const paths = guard.mock.calls[0]![0].map((path) => resolve(path));
@@ -165,7 +164,48 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     expect(paths).toContain(join(process.env.USERPROFILE!, ".stamp-env-fixture"));
     expect(paths).toContain(match);
     expect(paths).not.toContain(glob);
-    expect(paths).not.toContain(unc);
+  });
+
+  it("refuses a home-spelled write grant whose control-file denies would not be plain drive paths", async () => {
+    vi.spyOn(policyHome, "policyHomeAnchors").mockReturnValue([scratch()]);
+    const { SandboxManager } = await import("@anthropic-ai/sandbox-runtime");
+    const initialize = vi.spyOn(SandboxManager, "initialize").mockRejectedValue(new Error("Native initialization must not run"));
+    const { initializeAsrtSandbox } = await import("../asrt-sandbox.js");
+    await expect(initializeAsrtSandbox({
+      windows: { externalConfinement: true },
+      allowWrite: ["~/.stamp-fixture"],
+    })).rejects.toThrow(/not a plain drive path/);
+    expect(initialize).not.toHaveBeenCalled();
+  });
+
+  it("accepts only plain drive paths as stamp literals", async () => {
+    const { isPlainWindowsStampPath } = await import("../windows-stamp-targets.js");
+    const accepted = ["C:\\", "C:\\fixture\\leaf", "C:\\fixture\\dir\\", "D:\\a b\\c.d", "C:\\fixture\\.git", "C:\\fixture\\CONSOLE"];
+    const refused = [
+      "C:\\fixture\\*.secret", "C:\\fixture\\leaf?", // r1: glob re-expansion
+      "C:\\fixture\\%HOMEPATH%\\leaf", "C:\\%homepath%", // r7/r8: environment references
+      "~\\leaf", "C:\\fixture\\~\\leaf", "C:\\PROGRA~1", // tilde and 8.3 spellings
+      "\\\\?\\C:\\fixture\\leaf", "\\\\.\\C:\\fixture", "\\\\?\\UNC\\server\\share", // prefix and device forms
+      "\\\\server\\share\\leaf", "\\\\localhost\\C$\\ProgramData\0\\fixture", // UNC, UNC with NUL
+      "C:\\fixture\\document.", "C:\\fixture\\document ", // r9: Win32 trims trailing dots and spaces
+      "C:\\fixture\\a\0b", "C:\\fixture\\a\tb", // control characters
+      "C:\\fixture\\file::$DATA", "C:\\fixture\\a<b", "C:\\fixture\\a|b", "C:\\fixture\\a\"b",
+      "C:\\fixture\\CON", "C:\\fixture\\nul.txt", "C:\\fixture\\COM1", "C:\\fixture\\lpt¹", // reserved devices
+      "C:\\fixture\\..\\leaf", "C:\\fixture\\.\\leaf", "C:\\fixture\\\\leaf", // dot and empty components
+      "fixture\\leaf", "C:fixture", "C:/fixture/leaf", "c:\\fixture", // relative, drive-relative, slash, lowercase drive
+    ];
+    expect(accepted.filter(path => !isPlainWindowsStampPath(path))).toEqual([]);
+    expect(refused.filter(path => isPlainWindowsStampPath(path))).toEqual([]);
+  });
+
+  it("refuses a junction whose canonical target ends in a dot Win32 would trim", async () => {
+    const { pinWindowsFilesystemConfig } = await import("../windows-stamp-targets.js");
+    const parent = scratch();
+    mkdirSync(join(parent, "document"));
+    const dotted = "\\\\?\\" + join(parent, "document.");
+    mkdirSync(dotted);
+    const alias = link(dotted, join(scratch(), "alias"));
+    expect(() => pinWindowsFilesystemConfig({ allowWrite: [alias] })).toThrow(/not a plain drive path/);
   });
 
   it("refuses a glob whose matches are under the real account home", async () => {
@@ -189,7 +229,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     await expect(initializeAsrtSandbox({
       windows: { externalConfinement: true },
       denyWrite: [join(alias, "*")],
-    })).rejects.toThrow(refusal);
+    })).rejects.toThrow(new RegExp(`${refusal.source}|not a plain drive path`));
     expect(initialize).not.toHaveBeenCalled();
   });
 
@@ -399,7 +439,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     mkdirSync(join(template, "leaf"), { recursive: true });
     const alias = link(template, join(scratch(), "alias"));
     expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] }))
-      .toThrow(/reinterpreted by the runtime/);
+      .toThrow(/not a plain drive path/);
   });
 
   it.each(["allowWrite", "allowRead"] as const)("refuses a %s target removed after expansion that the runtime would reread through an environment reference", async (list) => {
@@ -411,7 +451,7 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     // The leaf vanishes between expansion and canonicalization, so no existence check sees it.
     expansion.after = () => { expansion.after = undefined; rmdirSync(leaf); };
     expect(() => pinWindowsFilesystemConfig({ [list]: [join(alias, "leaf")] }))
-      .toThrow(/reinterpreted by the runtime/);
+      .toThrow(/not a plain drive path/);
   });
 
   it("accepts a missing tail created as a plain directory before consumption", async () => {
