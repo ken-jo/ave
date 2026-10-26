@@ -139,7 +139,6 @@ export interface ChatGroupEnvironment {
   // window chrome the tile hands work back to
   plugins: React.ComponentProps<typeof ChatView>["plugins"];
   onSelectPlugin: (key: string) => void;
-  appMode: "chat" | "work";
   onOpenApprovalQueue: () => void;
   commandActions: React.ComponentProps<typeof ChatView>["commandActions"];
   slashPickerOpen: boolean;
@@ -954,7 +953,6 @@ export function ChatGroupSession({
         sideChatPendingAnswer={sideChatPendingAnswer}
         plugins={env.plugins}
         onSelectPlugin={env.onSelectPlugin}
-        appMode={env.appMode}
         onOpenApprovalQueue={env.onOpenApprovalQueue}
         currentSessionKind={currentSessionKind}
         currentSessionTitle={currentSessionTitle}
@@ -972,7 +970,6 @@ export function ChatGroupSession({
           ? env.sideChatOpenRequest
           : undefined}
         onSessionsChanged={env.refreshSessions}
-        blogLayout={env.appMode === "work"}
         activeProject={env.activeProject}
         workspaceProjects={env.workspaceProjects}
         onNewChatForProject={env.onNewChatForProject}

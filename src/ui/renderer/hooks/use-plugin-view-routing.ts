@@ -164,7 +164,7 @@ export function usePluginViewRouting({
         const loginTool = card?.auth?.loginTool;
         const authState = pluginAuthStatuses.get(pluginId)?.kind;
         const openPluginView = () => {
-          // Into the focused pane, regardless of appMode. `setPaneContent`
+          // Into the focused pane. `setPaneContent`
           // behind this refuses a second copy: a view already open in another
           // pane focuses THAT pane, because two guests in one plugin partition
           // would be two surfaces disagreeing about one plugin's state.

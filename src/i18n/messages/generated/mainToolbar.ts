@@ -27,11 +27,6 @@ export const en = {
   "mainToolbar.applyUpdate": "v{version} Apply",
   "mainToolbar.skipUpdateTitle": "Skip v{version} until the next version",
   "mainToolbar.skipUpdateAriaLabel": "Skip update v{version} until the next version",
-  "appMode.groupAriaLabel": "Workspace mode",
-  "appMode.chat": "Chat",
-  "appMode.work": "Work",
-  "appMode.chatAriaLabel": "Chat mode — focused layout with the sidebar collapsed",
-  "appMode.workAriaLabel": "Work mode — views render inline with the sidebar expanded",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "mainToolbar.devToolsTitle": "Dev Tools (Cmd/Ctrl+Shift+D)",
@@ -61,9 +56,4 @@ export const ko: Record<keyof typeof en, string> = {
   "mainToolbar.applyUpdate": "v{version} 적용",
   "mainToolbar.skipUpdateTitle": "v{version}은 다음 버전까지 건너뛰기",
   "mainToolbar.skipUpdateAriaLabel": "업데이트 v{version} 다음 버전까지 건너뛰기",
-  "appMode.groupAriaLabel": "워크스페이스 모드",
-  "appMode.chat": "채팅",
-  "appMode.work": "업무",
-  "appMode.chatAriaLabel": "채팅 모드 — 사이드바가 접힌 집중형 레이아웃",
-  "appMode.workAriaLabel": "업무 모드 — 뷰가 인라인으로 표시되고 사이드바가 펼쳐집니다",
 };

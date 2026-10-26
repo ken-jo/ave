@@ -1,33 +1,13 @@
 import { useEffect, useState, type RefObject } from "react";
 import { SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
+import { DOCK_ENTER_WIDTH, DOCK_EXIT_WIDTH, MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../shared/shell-geometry.js";
 
 export interface UseContainerNarrowResult {
-  /** True when the observed container is too narrow to dock the side panel. */
+  /** True below the enter threshold, until the width reaches the exit threshold. */
   isNarrow: boolean;
   /** Latest observed content-box inline size (px); Infinity until first measure. */
   width: number;
 }
-
-/**
- * Minimum transcript column width that must survive beside the docked side
- * panel (card plus its insets) for docking to be usable. Below this the panel would crush the chat
- * transcript, so the panel floats over it instead; at or above it both panes
- * stay interactive side by side.
- */
-export const MIN_DOCKED_TRANSCRIPT_WIDTH = 320;
-
-/** Derive docking from panel reserve plus transcript floor so chat-mode reserved window space can dock without a spurious
- * overlay. */
-export const DOCK_ENTER_WIDTH = SIDE_PANEL_MIN_RESERVE + MIN_DOCKED_TRANSCRIPT_WIDTH;
-/** Every narrow threshold exits this much above where it enters, so a drag that hovers on the boundary cannot flip-flop the
- * layout. */
-const NARROW_DEAD_BAND_PX = 60;
-export const DOCK_EXIT_WIDTH = DOCK_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
-
-/** Settings panel width below which its sidebar + content master-detail is too cramped and collapses to a two-depth stack
- * (≈ Tailwind `sm`). Panel width, not viewport: the inline Settings panel can be narrow on a wide display. */
-export const SETTINGS_NARROW_ENTER_WIDTH = 640;
-export const SETTINGS_NARROW_EXIT_WIDTH = SETTINGS_NARROW_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
 
 type SidePanelLayoutMode = "docked" | "overlay";
 

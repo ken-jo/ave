@@ -47,7 +47,7 @@ import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroup
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
 import { isInstanceViewKey, parseInlineViewKey, type InlineViewKey, type InstanceViewKey, type PluginViewKey } from "../../shared/view-key.js";
-import { CONTENT_TITLE_INSET, SHELL_GUTTER, collapsedBandLeadClearance } from "../../shared/shell-geometry.js";
+import { CONTENT_TITLE_INSET, NARROW_DEAD_BAND_PX, SHELL_GUTTER, collapsedBandLeadClearance, sidebarPushThreshold } from "../../shared/shell-geometry.js";
 import { DeferredQueueDialog } from "./dialogs/DeferredQueueDialog.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
 import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
@@ -67,7 +67,7 @@ import {
 } from "./utils/plugin-doctor-view.js";
 import { buildQuickActions } from "./components/command-actions.js";
 import { useAppUpdate } from "./hooks/use-app-update.js";
-import { useAppMode } from "./hooks/use-app-mode.js";
+import { useContainerNarrow } from "./hooks/use-container-narrow.js";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { useSidebarTab } from "./hooks/use-sidebar-tab.js";
 import { useActiveView } from "./hooks/use-active-view.js";
@@ -186,23 +186,24 @@ export function App() {
   // Persist the current settings tab and return view so restart resumes the same page.
   const { settingsTab, setSettingsTab, restoresApplied: settingsTabRestoresApplied } =
     useSettingsTab(api);
-  const {
-    appMode, setAppMode,
-    sidebarCollapsed, setSidebarCollapsed,
-    setSidePanelOpen,
-  } = useAppMode(api);
-  // Chat mode overlays the expanded sidebar without reflowing the tile; work mode reserves its width.
-  const sidebarOverlay = appMode === "chat" && !sidebarCollapsed;
+  const shellRef = useRef<HTMLDivElement>(null);
+  const chatGroupCanvasRef = useRef<HTMLDivElement>(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Persisted sidebar width drives both the card and the canvas reserve.
   const {
     width: sidebarWidth,
     setWidth: setSidebarWidth,
     commitWidth: commitSidebarWidth,
   } = usePanelWidth(api, SIDEBAR_WIDTH_PREF);
+  const pushThreshold = sidebarPushThreshold(sidebarWidth);
+  const { isNarrow: sidebarNarrow } = useContainerNarrow(shellRef, {
+    enter: pushThreshold, exit: pushThreshold + NARROW_DEAD_BAND_PX,
+  });
+  const sidebarOverlay = sidebarNarrow && !sidebarCollapsed;
   const { activeTab: sidebarActiveTab, setActiveTab: setSidebarActiveTab } = useSidebarTab(api);
 
   // Tile geometry follows docs/design/tiled-chat-groups.md.
-  const chatGroups = useChatGroups(appMode);
+  const chatGroups = useChatGroups(chatGroupCanvasRef);
   const mainSurfaces = useMainSurfaces();
   // Pane layout, terminal directories and page addresses persist across launches.
   useMainLayout(api, chatGroups, mainSurfaces);
@@ -212,7 +213,6 @@ export function App() {
 
   /** Window controls address the focused tile, including search, streaming status and tour prefills. */
   // Split along the longer pixel dimension; tree fractions alone cannot identify it.
-  const chatGroupCanvasRef = useRef<HTMLDivElement>(null);
   const focusedSession = useChatGroupSession(chatGroupSessions, chatGroups.focusedId);
   const tileSessions = useTileSessions(chatGroupSessions);
   const { entries, streaming, currentSessionId, currentSessionProject } = focusedSession;
@@ -1310,13 +1310,6 @@ export function App() {
     onTurnsEnded: refreshSessions,
   });
 
-  // Resize the window when any group needs side-panel space, but only while that group surface is shown.
-  const anyGroupPanelOpen =
-    activeView === "home" && chatGroups.groups.some((group) => group.panelOpen);
-  useEffect(() => {
-    setSidePanelOpen(anyGroupPanelOpen);
-  }, [anyGroupPanelOpen, setSidePanelOpen]);
-
   const projectActions = useMemo<ProjectRowActions>(() => ({
     isArchived: isProjectArchived,
     onSetArchived: toggleProjectArchived,
@@ -1419,7 +1412,6 @@ export function App() {
     onExport: handleExport, onImport: handleImport,
     plugins: pluginEntries,
     onSelectPlugin: handleViewSelectWithDoctor,
-    appMode,
     onOpenApprovalQueue: () => setDeferredQueueOpen(true),
     commandActions, slashPickerOpen, onSlashPickerOpenChange: setSlashPickerOpen,
     approvalSentenceInterceptSubmit: interceptApprovalSentence,
@@ -1443,7 +1435,7 @@ export function App() {
     searchOpen, searchQuery, searchCase, searchMatches, searchMatchSet, searchIdx,
     searchHighlight, searchChangeQuery, searchToggleCase, searchNext, searchPrev,
     searchCloseOverlay, searchToggleOverlay,
-    handleExport, handleImport, pluginEntries, handleViewSelectWithDoctor, appMode,
+    handleExport, handleImport, pluginEntries, handleViewSelectWithDoctor,
     commandActions, slashPickerOpen,
     interceptApprovalSentence,
     activeProject, defaultWorkspaceProject, freshProjectByGroup, workspaceProjects,
@@ -1739,7 +1731,7 @@ export function App() {
                 context for the floating-card Sidebar, so the card's `top-0` reaches
                 the window top — extending UP into the traffic-light band and
                 reclaiming that vertical space on the left. */}
-            <div className="relative flex h-screen flex-col overflow-hidden">
+            <div ref={shellRef} data-testid="app-shell" className="relative flex h-screen min-w-0 flex-col overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
@@ -1750,7 +1742,7 @@ export function App() {
                   content, plus the content surface's own leading padding.
                   Collapsed, the card retracts but its cluster strip stays bare
                   on this band, so the path clears THAT strip instead.
-                  Overlaying (chat mode, expanded), the band is not pushed
+                  Overlaying on a narrow window, the band is not pushed
                   either: it keeps the collapsed lead and the card floats
                   over the path the way it floats over the tile. */}
               <CustomTitleBar
@@ -1760,8 +1752,6 @@ export function App() {
                   viewNav={viewNav}
                   streaming={streaming}
                   hasApiKey={effectiveLlmReady}
-                  appMode={appMode}
-                  onToggleAppMode={setAppMode}
                   onOpenDevTools={() => setDevToolsOpen((v) => !v)}
                   appUpdateState={appUpdate.state}
                   appUpdateInFlight={appUpdate.inFlight}
@@ -1787,8 +1777,7 @@ export function App() {
               <Sidebar
                 activeView={activeView}
                 onSelect={handleViewSelectWithDoctor}
-                /** Chat mode offers no new-pane gesture because it draws only one pane. */
-                onSelectInNewPane={appMode === "chat" ? undefined : openViewInNewPane}
+                onSelectInNewPane={chatGroups.isSingleTile ? undefined : openViewInNewPane}
                 pluginViews={pluginViews}
                 failedPluginCards={failedPluginCards}
                 inactivePluginCards={inactivePluginCards}
@@ -1840,8 +1829,7 @@ export function App() {
                   className={`relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-200 ease-out motion-reduce:transition-none ${
                     sidebarCollapsed || sidebarOverlay ? "pl-(--shell-collapsed-rail-reserve)" : ""
                   }`}
-                  // Reserve the live sidebar width plus SHELL_GUTTER in work mode; chat overlays retain the collapsed reserve to avoid
-                  // reflow.
+                  // Overlay navigation retains the collapsed reserve without shrinking the canvas.
                   style={sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${sidebarWidth + SHELL_GUTTER}px` }}
                 >
                   {/* The window's notice strip — the announcement banner, the

@@ -22,7 +22,8 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "../../lib/utils.js";
-import { useContainerNarrow, SETTINGS_NARROW_ENTER_WIDTH, SETTINGS_NARROW_EXIT_WIDTH } from "./hooks/use-container-narrow.js";
+import { useContainerNarrow } from "./hooks/use-container-narrow.js";
+import { SETTINGS_NARROW_ENTER_WIDTH, SETTINGS_NARROW_EXIT_WIDTH } from "../../shared/shell-geometry.js";
 import { SavedToastFloating, SavedToastProvider } from "./context/SavedToastContext.js";
 import type { AveApi } from "./types.js";
 import { RolesTab } from "./tabs/RolesTab.js";

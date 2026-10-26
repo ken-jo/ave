@@ -24,6 +24,16 @@
 
 @plugin "@tailwindcss/typography";
 
+/* Container widths mirror shell-geometry.ts and are checked before a build. */
+.chat-reading-column {
+  padding-inline: 1rem;
+}
+
+@container chat-transcript (min-width: 640px) {
+  .chat-reading-column { padding-inline: 1.5rem; }
+}
+
+
 @source "./**/*.{ts,tsx,html}";
 
 @theme inline {

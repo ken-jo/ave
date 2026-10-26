@@ -1,7 +1,7 @@
 /** Renderer resize limits and main window reservation share the same minimum panel width. */
-import { SHELL_GUTTER } from "./shell-geometry.js";
+import { PANE_MIN_WIDTH, SHELL_GUTTER } from "./shell-geometry.js";
 
-export const SIDE_PANEL_MIN_WIDTH = 448;
+export const SIDE_PANEL_MIN_WIDTH = PANE_MIN_WIDTH;
 /** Persist the card plus two gutters; reserve its minimum width when space permits, otherwise give it the available tile width minus gutters. */
 const SIDE_PANEL_CARD_INSET = SHELL_GUTTER * 2;
 export const SIDE_PANEL_MIN_RESERVE = SIDE_PANEL_MIN_WIDTH + SIDE_PANEL_CARD_INSET;

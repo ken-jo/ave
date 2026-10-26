@@ -7,7 +7,7 @@ export type { SidebarTab };
 export interface UseSidebarTabResult {
   /** Active sidebar tab ("chats" = ungrouped conversation list, "projects" = named-project groups). */
   activeTab: SidebarTab;
-  /** Switch tabs — persists immediately (same durable-preference family as sidebarWidth/appMode). */
+  /** Switch tabs — persists immediately (the same durable-preference family as sidebar width). */
   setActiveTab: (tab: SidebarTab) => void;
 }
 
