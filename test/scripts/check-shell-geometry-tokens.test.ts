@@ -16,11 +16,11 @@ function ts(gutter: string, gapTight: string): string {
   return `export const CHROME_GAP_TIGHT = ${gapTight};\nexport const SHELL_GUTTER = ${gutter};\nexport const COLLAPSED_RAIL_RESERVE = 64;\nexport const CHROME_ICON_BUTTON = 24;\nexport const CHROME_GAP_HAIR = 2;\n`;
 }
 
-function createRoot(cssSource: string, tsSource: string): string {
+function createRoot(cssSource: string, tsSource: string, containerWidth = 640): string {
   const root = mkdtempSync(join(tmpdir(), "ave-shell-geometry-"));
   roots.push(root);
-  write(root, "src/styles.css", cssSource);
-  write(root, "src/shared/shell-geometry.ts", tsSource);
+  write(root, "src/styles.css", `${cssSource}\n@container chat-transcript (min-width: ${containerWidth}px) {}\n`);
+  write(root, "src/shared/shell-geometry.ts", `${tsSource}\nexport const SETTINGS_NARROW_ENTER_WIDTH = 640;\n`);
   return root;
 }
 
@@ -29,6 +29,20 @@ afterEach(() => {
 });
 
 describe("check-shell-geometry-tokens", () => {
+  it("rejects a container query quoted as data instead of declared as a rule", () => {
+    const root = createRoot(css("8px", "4px"), ts("8", "4"));
+    write(root, "src/styles.css", `${css("8px", "4px")}\n:root { --decoy: "@container chat-transcript (min-width: 640px) { }"; }\n`);
+    const result = runGateScript(SCRIPT, root);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("must appear once and match SETTINGS_NARROW_ENTER_WIDTH");
+  });
+
+  it("rejects a container width that diverges from its shared constant", () => {
+    const result = runGateScript(SCRIPT, createRoot(css("8px", "4px"), ts("8", "4"), 700));
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("must appear once and match SETTINGS_NARROW_ENTER_WIDTH");
+  });
+
   it("accepts a stylesheet and a module that agree", () => {
     const result = runGateScript(SCRIPT, createRoot(css("8px", "4px"), ts("8", "4")));
 

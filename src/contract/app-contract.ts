@@ -104,6 +104,7 @@ export const CHANNELS = {
     // from that message onward in the SAME session so the user can retype the
     // input. INTERNAL (mutating; destructive by intent).
     rewindTo: "ave:chat:rewind-to",
+    getTurnReview: "ave:chat:get-turn-review",
     fork: "ave:chat:fork",
     continueLastUser: "ave:chat:continue-last-user",
     retryEffort: "ave:chat:retry-effort",
@@ -707,8 +708,6 @@ export const CHANNELS = {
     syncTitleBarTheme: "window:syncTitleBarTheme",
     maximizedChanged: "window:maximizedChanged",
     fullscreenChanged: "window:fullscreenChanged",
-    resizeForMode: "ave:window:resize-for-mode",
-    resizeForSidePanel: "ave:window:resize-for-side-panel",
     openHtmlPreview: "ave:window:open-html-preview",
   },
   dev: {

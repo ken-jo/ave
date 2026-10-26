@@ -1,4 +1,5 @@
 import type { RewindMode, RewindResult } from "../../shared/code-rewind.js";
+import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../../shared/shell-tasks.js";
 import type { AdminPolicyDiagnostic } from "../../shared/policy-editability.js";
 // Types extracted from src/renderer.tsx.
@@ -815,6 +816,7 @@ export type AveApi = {
    * restore keeps the conversation intact.
    */
   chatRewindTo: (messageId: string, mode?: RewindMode) => Promise<RewindResult>;
+  chatGetTurnReview: (expectedSessionId: string) => Promise<TurnReviewResult>;
   /** Branch into a new session up to and including `messageId`; omit it to branch the whole conversation. */
   chatFork: (messageId?: string) => Promise<{ ok: boolean; sessionId: string | null; error?: string }>;
   chatContinueLastUser: (sessionId: string) => Promise<{ ok: boolean; error?: string }>;
@@ -1341,9 +1343,6 @@ export type AveApi = {
 
   // ─── Main-window management ─────────────────────────────────────────────
   window?: {
-    resizeForMode: (mode: "chat" | "work") => Promise<{ ok: true } | { ok: false; error: string }>;
-    /** Resize the chat-mode main window when the right-side work panel opens/closes. */
-    resizeForSidePanel: (open: boolean) => Promise<{ ok: true } | { ok: false; error: string }>;
     openHtmlPreview: (payload: OpenHtmlPreviewWindowPayload) => Promise<OpenHtmlPreviewWindowResult>;
   };
   /**
@@ -2011,7 +2010,7 @@ interface WorkspaceFileMatch {
 }
 
 /**
- * Preview file-read surface (§6.10). Reads a text file for in-panel preview,
+ * Preview file-read surface (§6.10). Reads text or passive image data for in-panel preview,
  * gated by the SAME traversal guard as the builtin `read_file` tool — never a
  * broader read authority. `error` is a kebab-case code the renderer maps to a
  * Korean message; `message` is English dev detail.
@@ -2019,12 +2018,14 @@ interface WorkspaceFileMatch {
 export interface AvePreviewApi {
   onDocumentOpen: (handler: (request: import("../../shared/document-open.js").DocumentOpenRequest) => void) => () => void;
   acknowledgeDocumentOpen: (ack: import("../../shared/document-open.js").DocumentOpenAck) => Promise<{ ok: true } | { ok: false; error: string }>;
-  readFile: (path: string) => Promise<{
+  readFile: (path: string, window?: { offset?: number; limit?: number; workspaceRoot?: string }) => Promise<{
     ok: boolean;
     content?: string;
     path?: string;
     bytes?: number;
     truncated?: boolean;
+    lineCount?: number;
+    image?: { dataUrl: string; mimeType: string };
     error?:
       | "unauthorized"
       | "path-not-allowed"

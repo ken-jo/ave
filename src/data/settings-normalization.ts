@@ -9,6 +9,8 @@ import {
   normalizeSidePanelSplitPercent,
   normalizeSidePanelWidth,
   normalizeSidebarWidth,
+  normalizeFileTreeWidth,
+  fileTreeWidthFromLegacySplit,
 } from "../shared/side-panel.js";
 import {
   sanitizePluginConfig,
@@ -54,9 +56,9 @@ import {
   normalizeLocaleSetting,
 } from "../i18n/index.js";
 import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
-import { normalizeAppMode } from "../shared/initial-app-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
+import { isSidebarState } from "../shared/sidebar-state.js";
 import { isInlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import {
@@ -1135,7 +1137,6 @@ export function normalizeProjectLabels(raw: unknown): Record<string, string> {
 }
 
 export const SIDE_PANEL_SPLIT_KEYS = [
-  "sidePanelSplitFilePercent",
   "sidePanelSplitPreviewPercent",
   "sidePanelSplitSubagentPercent",
 ] as const satisfies readonly (keyof SystemSettings)[];
@@ -1148,16 +1149,6 @@ export function normalizeSystem(input: unknown): SystemSettings {
   const result: SystemSettings = { ...DEFAULT_SETTINGS.system };
   acceptField(result, "turnCompletionSoundEnabled", obj.turnCompletionSoundEnabled, isBooleanValue, "system", STORED_FIELD);
   acceptField(result, "closeBehavior", obj.closeBehavior, isCloseBehavior, "system", STORED_FIELD);
-  const rawAppMode = obj.appMode;
-  const normalizedAppMode = normalizeAppMode(rawAppMode);
-  if (normalizedAppMode !== null) {
-    result.appMode = normalizedAppMode;
-  } else if (rawAppMode !== undefined) {
-    log.warn(
-      `system.appMode invalid (received ${JSON.stringify(rawAppMode)}), using default %s`,
-      DEFAULT_SETTINGS.system.appMode,
-    );
-  }
   const rawLocalApi = obj.localApiServer;
   acceptField(result, "localApiServer", rawLocalApi, isBooleanValue, "system", STORED_FIELD);
   const rawHardwareAcceleration = obj.hardwareAcceleration;
@@ -1196,6 +1187,8 @@ export function normalizeSystem(input: unknown): SystemSettings {
     result, "sidebarWidth", obj.sidebarWidth,
     normalizeSidebarWidth, "system", STORED_FIELD,
   );
+  result.sidePanelFileTreeWidth = normalizeFileTreeWidth(obj.sidePanelFileTreeWidth)
+    ?? fileTreeWidthFromLegacySplit(obj.sidePanelSplitFilePercent);
   for (const key of SIDE_PANEL_SPLIT_KEYS) {
     acceptNormalizedField(
       result, key, obj[key],
@@ -1203,6 +1196,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
     );
   }
   acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
+  acceptField(result, "sidebarState", obj.sidebarState, isSidebarState, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
   // Avoid acceptNormalizedField here: its rejected-value warning could expose page tokens.
   const storedLayout = normalizeMainLayout(obj.mainLayout);

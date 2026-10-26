@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { AppSettings, DeepPartial, AveApi } from "../types.js";
+import { isIpcErrorResult } from "../types.js";
 import {
   SIDEBAR_DEFAULT_WIDTH,
   SIDE_PANEL_DEFAULT_WIDTH,
   clampSidebarWidth,
+  FILE_TREE_DEFAULT_WIDTH,
+  clampFileTreeWidth,
 } from "../../../shared/side-panel.js";
 
 /** The `SystemSettings` numeric keys that hold a durable panel width (px). */
-type PanelWidthSettingsKey = "sidebarWidth" | "sidePanelWidth";
+type PanelWidthSettingsKey = "sidebarWidth" | "sidePanelWidth" | "sidePanelFileTreeWidth";
 
 type SystemPatch = NonNullable<DeepPartial<AppSettings>["system"]>;
 
-/** Per-panel configuration for {@link usePanelWidth}. One value per axis on which the two edge-resizable shell panels (left
- * navigation Sidebar, right docked ChatSidePanel) actually differ; everything else is one code path. */
+/** Per-panel configuration for {@link usePanelWidth}; shell panels and workspace columns share the persistence lifecycle. */
 export interface PanelWidthPref {
   /** `SystemSettings` key this width is seeded from and persisted to. */
   readonly settingsKey: PanelWidthSettingsKey;
@@ -57,6 +59,13 @@ export const SIDE_PANEL_WIDTH_PREF: PanelWidthPref = {
   commitUpdatesState: false,
 };
 
+export const FILE_TREE_WIDTH_PREF: PanelWidthPref = {
+  settingsKey: "sidePanelFileTreeWidth",
+  defaultWidth: FILE_TREE_DEFAULT_WIDTH,
+  clamp: clampFileTreeWidth,
+  commitUpdatesState: true,
+};
+
 export interface UsePanelWidthResult {
   /** Current panel width in px (drag-live). */
   width: number;
@@ -70,9 +79,11 @@ export interface UsePanelWidthResult {
 /** Persist width only on release, keyboard change or reset with no-op guards; per-move updates remain local. */
 export function usePanelWidth(api: AveApi, pref: PanelWidthPref): UsePanelWidthResult {
   const [width, setWidthState] = useState<number>(pref.defaultWidth);
-  const persistedRef = useRef<number>(pref.defaultWidth);
+  const persistedRef = useRef<number | undefined>(pref.defaultWidth);
+  const requestRef = useRef(0);
 
   useEffect(() => {
+    requestRef.current++;
     let cancelled = false;
     void api
       .getSettings()
@@ -90,6 +101,7 @@ export function usePanelWidth(api: AveApi, pref: PanelWidthPref): UsePanelWidthR
       });
     return () => {
       cancelled = true;
+      requestRef.current++;
     };
   }, [api, pref]);
 
@@ -106,9 +118,16 @@ export function usePanelWidth(api: AveApi, pref: PanelWidthPref): UsePanelWidthR
       if (pref.commitUpdatesState) setWidthState(clamped);
       if (clamped === persistedRef.current) return;
       persistedRef.current = clamped;
+      const request = ++requestRef.current;
       const patch: SystemPatch = {};
       patch[pref.settingsKey] = clamped;
-      void api.updateSettings({ system: patch });
+      const releaseFailedSave = () => {
+        // Keep the local column position, but allow a retry after a refused or failed save.
+        if (requestRef.current === request) persistedRef.current = undefined;
+      };
+      void api.updateSettings({ system: patch }).then((result) => {
+        if (isIpcErrorResult(result)) releaseFailedSave();
+      }, releaseFailedSave);
     },
     [api, pref],
   );

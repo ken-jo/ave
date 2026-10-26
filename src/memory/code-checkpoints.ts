@@ -2,15 +2,21 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash, randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath, unlink } from "node:fs/promises";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { z } from "zod";
 import { openFeatureNamespace } from "../main/storage/feature-namespace.js";
 import { sameFileIdentity } from "../lib/file-identity.js";
 import { renameFile, retryOnFileLock } from "../lib/transient-fs-lock-retry.js";
 import { CODE_CHECKPOINT_POLICY } from "../shared/code-rewind.js";
+import { FILE_MENTION_REFERENCE_POLICY } from "../shared/file-mention-reference.js";
+import { countFileChangeLines } from "../shared/file-change-counts.js";
+import type { TurnChangeReview, TurnReviewError, TurnReviewResult } from "../shared/turn-change-review.js";
+import { buildRuntimeAllowedDirectories } from "../permissions/allowed-directories.js";
+import { assertReadableFilePath } from "../tools/file-read-core.js";
 import { ensureFileAccess } from "../tools/file-access-policy.js";
 import type { ToolExecutionContext } from "../tools/types.js";
 import { createLogger } from "../lib/logger.js";
+import { countTurnReviewLines, createTurnReviewHunks } from "./turn-review-diff.js";
 
 const log = createLogger("code-checkpoints");
 const namespace = openFeatureNamespace("code-checkpoints");
@@ -38,6 +44,8 @@ const StoredChangeSchema = ChangeSchema.omit({ before: true }).extend({
   before: z.string().regex(IMAGE_NAME_PATTERN).nullable(),
   beforeHash: HashSchema,
   storageBytes: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxStorageBytes),
+  addedLines: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxFileBytes).optional(),
+  removedLines: z.number().int().min(0).max(CODE_CHECKPOINT_POLICY.maxFileBytes).optional(),
 });
 const StoredTurnSchema = TurnSchema.extend({ changes: z.array(StoredChangeSchema) });
 const IndexSchema = z.object({ version: z.literal(2), turns: z.array(StoredTurnSchema) });
@@ -170,18 +178,20 @@ async function hydrate(change: StoredChange): Promise<Change> {
   return { ...change, before };
 }
 
-async function loadLedger(): Promise<Turn[]> {
+async function loadLedger(readOnly = false): Promise<Turn[]> {
   let parsed: unknown;
   try { parsed = await retryOnFileLock(() => readStorage(FILE_NAME)); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     if (!(error instanceof SyntaxError || error instanceof InvalidCheckpointStorageError)) throw error;
+    if (readOnly) throw error;
     // Preserve damaged evidence; never trust its restore ranges.
     await quarantineLedger();
     return [];
   }
   const index = Array.isArray(parsed) ? LedgerSchema.safeParse(parsed) : IndexSchema.safeParse(parsed);
   if (!index.success) {
+    if (readOnly) throw new InvalidCheckpointStorageError("Code checkpoint ledger is invalid");
     await quarantineLedger();
     return [];
   }
@@ -268,14 +278,18 @@ async function sweepImages(turns: Turn[]): Promise<void> {
   }
 }
 
+function ledgerStorageBytes(turns: Turn[]): number {
+  return Buffer.byteLength(JSON.stringify({ version: 2, turns }, null, 2) + "\n")
+    + turns.reduce((total, turn) => total + turn.changes.reduce((sum, change) => sum + change.storageBytes, 0), 0);
+}
+
 async function save(turns: Turn[], retained?: Turn): Promise<void> {
   // Prune only the target session for session limits; shared quotas prune globally without breaking surviving ranges.
   for (;;) {
     const overfull = turns.find((turn) =>
       turns.filter((other) => other.sessionId === turn.sessionId).length > CODE_CHECKPOINT_POLICY.maxSessionTurns,
     );
-    const bytes = Buffer.byteLength(JSON.stringify({ version: 2, turns }, null, 2) + "\n")
-      + turns.reduce((total, turn) => total + turn.changes.reduce((sum, change) => sum + change.storageBytes, 0), 0);
+    const bytes = ledgerStorageBytes(turns);
     if (!overfull && turns.length <= CODE_CHECKPOINT_POLICY.maxTurns && bytes <= CODE_CHECKPOINT_POLICY.maxStorageBytes) break;
     const oldest = turns.findIndex((turn, index) => (!overfull || turn.sessionId === overfull.sessionId)
       && turns.findIndex((other) => other.sessionId === turn.sessionId) === index
@@ -488,6 +502,37 @@ export async function checkpointFileMutation<T>(
       }
       await save(turns, turn);
     };
+    const recordVerifiedCounts = async () => {
+      let recorded = false;
+      for (const change of changes) {
+        if (!turn.changes.includes(change)) continue;
+        const captures = turn.changes.filter((entry) => entry.path === change.path);
+        if (captures.at(-1) !== change
+          || captures.some((entry, index) => index > 0 && captures[index - 1].afterHash !== entry.beforeHash)) continue;
+        const current = await snapshot(change.path).catch(() => undefined);
+        if (!current || hash(current.bytes) !== change.afterHash) continue;
+        const first = captures[0];
+        const before = (await hydrate(first)).before;
+        const original = turnReviewText(before === null ? null : Buffer.from(before, "base64"));
+        const after = turnReviewText(current.bytes);
+        const counts = countFileChangeLines(original, after);
+        if (!counts.exact) continue;
+        const previousAdded = change.addedLines;
+        const previousRemoved = change.removedLines;
+        change.addedLines = counts.added;
+        change.removedLines = counts.removed;
+        // Optional display metadata cannot evict a fitting restore image.
+        if (ledgerStorageBytes(turns) > CODE_CHECKPOINT_POLICY.maxStorageBytes) {
+          if (previousAdded === undefined) delete change.addedLines;
+          else change.addedLines = previousAdded;
+          if (previousRemoved === undefined) delete change.removedLines;
+          else change.removedLines = previousRemoved;
+          continue;
+        }
+        recorded = true;
+      }
+      if (recorded) await save(turns, turn);
+    };
     try {
       const result = await run();
       if (result && typeof result === "object" && "isError" in result && result.isError === true) {
@@ -497,12 +542,118 @@ export async function checkpointFileMutation<T>(
     } catch (error) {
       await removeUnchanged();
       throw error;
+    } finally {
+      // Informational totals never replace the effect outcome or weaken restore hashes.
+      await recordVerifiedCounts().catch((error: unknown) => log.warn("checkpoint line counts unavailable: %s", (error as Error).message));
     }
   });
 }
 
 export type CodeRestoreResult = { ok: true } | { ok: false; error: string; conflictingFiles?: string[] };
 type RestoreContext = Pick<ToolExecutionContext, "cwd" | "extraAllowedDirectories">;
+
+class TurnReviewReadError extends Error {
+  constructor(readonly code: TurnReviewError) { super(code); }
+}
+
+function turnReviewText(bytes: Buffer | null): string {
+  if (bytes === null) return "";
+  const text = bytes.toString("utf8");
+  if (text.includes("\0") || !Buffer.from(text).equals(bytes)) throw new TurnReviewReadError("turn-review-unavailable");
+  return text;
+}
+
+function turnReviewPath(path: string, context: () => RestoreContext): string {
+  const { cwd, extraAllowedDirectories } = context();
+  const verdict = assertReadableFilePath(path, cwd, buildRuntimeAllowedDirectories(extraAllowedDirectories, cwd));
+  const local = relative(cwd, path).split(sep).join("/");
+  if (!verdict.ok || verdict.resolved !== path || !local || isAbsolute(local)
+    || local.split("/").some((part) => part === ".." || part === ".")
+    || /[\u0000-\u001f\u007f\\]/.test(local) || local.length > FILE_MENTION_REFERENCE_POLICY.maxPathChars) {
+    throw new TurnReviewReadError("turn-review-unavailable");
+  }
+  return local;
+}
+
+/** Build the latest settled turn's review from existing captures without storing review state. */
+export async function getTurnChangeReview(
+  sessionId: string,
+  turnId: string,
+  context: () => RestoreContext,
+  options?: { currentDetails?: true; selectedPaths?: readonly string[] },
+): Promise<TurnReviewResult> {
+  return exclusive(async () => {
+    try {
+      const unavailable = () => liveChildren.has(childKey(sessionId)) || pendingUnavailable.has(childKey(sessionId))
+        || [...inFlight].some((active) => active.dir === namespace.dir && active.sessionId === sessionId);
+      if (unavailable()) throw new TurnReviewReadError("turn-review-unavailable");
+      const turns = await loadLedger(true);
+      const turn = turns.filter((item) => item.sessionId === sessionId).at(-1);
+      if (!turn || turn.messageId !== turnId || turn.unavailable || turn.consumed) {
+        throw new TurnReviewReadError("turn-review-unavailable");
+      }
+      const workspaceRoot = resolve(context().cwd);
+      // Reference sends validate only their selected files; the ordinary review still checks the complete turn.
+      const selectedPaths = options?.selectedPaths === undefined ? undefined
+        : new Set(options.selectedPaths.map((path) => resolve(workspaceRoot, path)));
+      const plan = new Map<string, { first: StoredChange; last: StoredChange; local: string }>();
+      for (const change of turn.changes) {
+        if (selectedPaths && !selectedPaths.has(change.path)) continue;
+        const local = turnReviewPath(change.path, context);
+        const previous = plan.get(change.path);
+        if (previous && previous.last.afterHash !== change.beforeHash) throw new TurnReviewReadError("turn-review-stale");
+        plan.set(change.path, { first: previous?.first ?? change, last: change, local });
+      }
+      if (selectedPaths && (selectedPaths.size === 0 || [...selectedPaths].some((path) => !plan.has(path)))) {
+        throw new TurnReviewReadError("turn-review-unavailable");
+      }
+      const currentFile = async (path: string, expectedHash: string | null, requireMatch = true) => {
+        turnReviewPath(path, context);
+        const current = await snapshot(path).catch(() => { throw new TurnReviewReadError("turn-review-stale"); });
+        turnReviewPath(path, context);
+        if (requireMatch && hash(current.bytes) !== expectedHash) throw new TurnReviewReadError("turn-review-stale");
+        return current;
+      };
+      const files: TurnChangeReview["files"] = [];
+      const disclosedHashes = new Map<string, string | null>();
+      for (const [path, { first, last, local }] of plan) {
+        const current = await currentFile(path, last.afterHash, !options?.currentDetails);
+        const currentMatches = hash(current.bytes) === last.afterHash;
+        disclosedHashes.set(path, hash(current.bytes));
+        const before = (await hydrate(first)).before;
+        const original = turnReviewText(before === null ? null : Buffer.from(before, "base64"));
+        let text: string | undefined;
+        try { text = turnReviewText(current.bytes); }
+        catch (error) { if (!options?.currentDetails) throw error; }
+        if (first.beforeHash === last.afterHash) continue;
+        const lineCount = text === undefined ? 0 : countTurnReviewLines(text);
+        const hunks = text === undefined ? [] : createTurnReviewHunks(original, text, first.beforeHash === null || current.bytes === null,
+          JSON.stringify([sessionId, turnId, local]));
+        const currentCounts = currentMatches && text !== undefined ? countFileChangeLines(original, text) : undefined;
+        const countsKnown = currentCounts?.exact === true || (last.addedLines !== undefined && last.removedLines !== undefined);
+        files.push({
+          path: local, bytes: current.bytes?.length ?? 0, lineCount,
+          added: currentCounts?.exact ? currentCounts.added : last.addedLines ?? 0,
+          removed: currentCounts?.exact ? currentCounts.removed : last.removedLines ?? 0,
+          operation: first.beforeHash === null ? "create" : last.afterHash === null ? "delete" : "modify",
+          countsKnown,
+          referenceable: currentMatches && current.bytes !== null && lineCount > 0,
+          hunks,
+        });
+      }
+      // Originals and other files may take asynchronous reads; recheck every final capture before disclosure.
+      for (const [path, { last, local }] of plan) {
+        if (turnReviewPath(path, context) !== local) throw new TurnReviewReadError("turn-review-stale");
+        await currentFile(path, options?.currentDetails ? disclosedHashes.get(path)! : last.afterHash);
+      }
+      if (unavailable()) throw new TurnReviewReadError("turn-review-unavailable");
+      if (resolve(context().cwd) !== workspaceRoot) throw new TurnReviewReadError("turn-review-stale");
+      return { ok: true, review: { sessionId, turnId, workspaceRoot, files } };
+    } catch (error) {
+      return { ok: false, error: error instanceof TurnReviewReadError ? error.code : "turn-review-failed" };
+    }
+  });
+}
 
 export async function restoreCodeCheckpoint(
   sessionId: string,

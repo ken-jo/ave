@@ -516,11 +516,11 @@ export function McpTab() {
         {loading ? (
           <p className="text-xs text-muted-foreground">{t("mcpTab.loading")}</p>
         ) : allIds.size === 0 ? (
-          <div className="rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
+          <div className="min-w-0 rounded-md border border-dashed p-4 text-center text-xs text-muted-foreground">
             {t("mcpTab.emptyState")}
             <br />
             <span className="text-xs">
-              {t("mcpTab.configFileLabel")} <code>{configPath}</code>
+              {t("mcpTab.configFileLabel")} <code className="[overflow-wrap:anywhere]">{configPath}</code>
             </span>
           </div>
         ) : (

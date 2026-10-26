@@ -47,7 +47,7 @@ import { PaneGutter, PANE_HOME, PaneFrame, areaStyle, chatGroupApi, useChatGroup
 import type { DropTarget } from "./components/pane-drop.js";
 import { useSessionList, useTurnAttention, type SessionSummary } from "./hooks/use-sessions.js";
 import { isInstanceViewKey, parseInlineViewKey, type InlineViewKey, type InstanceViewKey, type PluginViewKey } from "../../shared/view-key.js";
-import { CONTENT_TITLE_INSET, SHELL_GUTTER, collapsedBandLeadClearance } from "../../shared/shell-geometry.js";
+import { CONTENT_TITLE_INSET, NARROW_DEAD_BAND_PX, SHELL_GUTTER, collapsedBandLeadClearance, sidebarPushThreshold } from "../../shared/shell-geometry.js";
 import { DeferredQueueDialog } from "./dialogs/DeferredQueueDialog.js";
 import { SpotlightTour } from "./components/SpotlightTour.js";
 import { DevConsoleToggle } from "./components/DevConsoleToggle.js";
@@ -67,7 +67,10 @@ import {
 } from "./utils/plugin-doctor-view.js";
 import { buildQuickActions } from "./components/command-actions.js";
 import { useAppUpdate } from "./hooks/use-app-update.js";
-import { useAppMode } from "./hooks/use-app-mode.js";
+import { useContainerNarrow } from "./hooks/use-container-narrow.js";
+import { useSidebarState } from "./hooks/use-sidebar-state.js";
+import { Button } from "../../components/ui/button.js";
+import { PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
@@ -185,22 +188,46 @@ export function App() {
   // Persist the current settings tab and return view so restart resumes the same page.
   const { settingsTab, setSettingsTab, restoresApplied: settingsTabRestoresApplied } =
     useSettingsTab(api);
-  const {
-    appMode, setAppMode,
-    sidebarCollapsed, setSidebarCollapsed,
-    setSidePanelOpen,
-  } = useAppMode(api);
-  // Chat mode overlays the expanded sidebar without reflowing the tile; work mode reserves its width.
-  const sidebarOverlay = appMode === "chat" && !sidebarCollapsed;
+  const [shellElement, setShellElement] = useState<HTMLDivElement | null>(null);
+  const chatGroupCanvasRef = useRef<HTMLDivElement>(null);
+  const [canvasElement, setCanvasElement] = useState<HTMLDivElement | null>(null);
+  const handleCanvasRef = useCallback((element: HTMLDivElement | null) => {
+    chatGroupCanvasRef.current = element;
+    setCanvasElement(element);
+  }, []);
   // Persisted sidebar width drives both the card and the canvas reserve.
   const {
     width: sidebarWidth,
     setWidth: setSidebarWidth,
     commitWidth: commitSidebarWidth,
   } = usePanelWidth(api, SIDEBAR_WIDTH_PREF);
+  const pushThreshold = sidebarPushThreshold(sidebarWidth);
+  const { isNarrow: sidebarNarrow, width: shellWidth } = useContainerNarrow(shellElement, {
+    enter: pushThreshold, exit: pushThreshold + NARROW_DEAD_BAND_PX,
+  });
+  const { sidebarState, setSidebarState } = useSidebarState(api, shellWidth);
+  const sidebarCollapsed = sidebarState === "rail";
+  const sidebarHidden = sidebarState === "hidden";
+  const sidebarOverlay = sidebarNarrow && sidebarState === "expanded";
+  const sidebarFocusPending = useRef(false);
+  useEffect(() => {
+    if (!sidebarFocusPending.current) return;
+    sidebarFocusPending.current = false;
+    shellElement?.querySelector<HTMLButtonElement>(sidebarHidden
+      ? '[data-testid="sidebar-show"]'
+      : '[data-testid="sidebar-collapse-toggle"]')?.focus({ preventScroll: true });
+  }, [sidebarHidden, shellElement]);
+  const hideSidebar = useCallback(() => {
+    sidebarFocusPending.current = true;
+    setSidebarState("hidden");
+  }, [setSidebarState]);
+  const showSidebar = useCallback(() => {
+    sidebarFocusPending.current = true;
+    setSidebarState("expanded");
+  }, [setSidebarState]);
 
   // Tile geometry follows docs/design/tiled-chat-groups.md.
-  const chatGroups = useChatGroups(appMode);
+  const chatGroups = useChatGroups(canvasElement);
   const mainSurfaces = useMainSurfaces();
   // Pane layout, terminal directories and page addresses persist across launches.
   useMainLayout(api, chatGroups, mainSurfaces);
@@ -210,7 +237,6 @@ export function App() {
 
   /** Window controls address the focused tile, including search, streaming status and tour prefills. */
   // Split along the longer pixel dimension; tree fractions alone cannot identify it.
-  const chatGroupCanvasRef = useRef<HTMLDivElement>(null);
   const focusedSession = useChatGroupSession(chatGroupSessions, chatGroups.focusedId);
   const tileSessions = useTileSessions(chatGroupSessions);
   const { entries, streaming, currentSessionId, currentSessionProject } = focusedSession;
@@ -268,7 +294,7 @@ export function App() {
     });
   }, [api]);
 
-  // Release conversations on tile close or idle-group adoption, never on chat-mode unmount.
+  // Release conversations on tile close or idle-group adoption, never when the canvas folds.
   const closeChatGroup = useCallback((chatGroupId: string) => {
     chatGroups.close(chatGroupId);
     releaseChatGroupLoop(chatGroupId);
@@ -1000,7 +1026,7 @@ export function App() {
       // Default-workspace sessions are plain chats; only named projects label the root crumb.
       sessionProject: activeProject && !activeProject.isDefault ? activeProject : undefined,
     };
-    // Chat mode hides the path, so history buttons must name their destinations.
+    // History buttons name their destinations even when the path cannot fit.
     const destinationLabel = (target: ViewLocation | null) =>
       target ? viewLocationBreadcrumb(target, deps).at(-1)?.label : undefined;
     return {
@@ -1115,7 +1141,7 @@ export function App() {
     });
   }, [api, approvalQueue.length, handleLoadSessionAndRefresh, handleViewSelect]);
 
-  // Settings remains inline in every app mode; reselecting it changes the tab without remounting.
+  // Settings remains inline at every width; reselecting it changes the tab without remounting.
   const onOpenSettings = useCallback((tab = "llm") => {
     setSettingsTab(normalizeSettingsTab(tab));
     setActiveView("settings");
@@ -1311,13 +1337,6 @@ export function App() {
     onTurnsEnded: refreshSessions,
   });
 
-  // Resize the window when any group needs side-panel space, but only while that group surface is shown.
-  const anyGroupPanelOpen =
-    activeView === "home" && chatGroups.groups.some((group) => group.panelOpen);
-  useEffect(() => {
-    setSidePanelOpen(anyGroupPanelOpen);
-  }, [anyGroupPanelOpen, setSidePanelOpen]);
-
   const projectActions = useMemo<ProjectRowActions>(() => ({
     isArchived: isProjectArchived,
     onSetArchived: toggleProjectArchived,
@@ -1420,7 +1439,6 @@ export function App() {
     onExport: handleExport, onImport: handleImport,
     plugins: pluginEntries,
     onSelectPlugin: handleViewSelectWithDoctor,
-    appMode,
     onOpenApprovalQueue: () => setDeferredQueueOpen(true),
     commandActions, slashPickerOpen, onSlashPickerOpenChange: setSlashPickerOpen,
     approvalSentenceInterceptSubmit: interceptApprovalSentence,
@@ -1444,7 +1462,7 @@ export function App() {
     searchOpen, searchQuery, searchCase, searchMatches, searchMatchSet, searchIdx,
     searchHighlight, searchChangeQuery, searchToggleCase, searchNext, searchPrev,
     searchCloseOverlay, searchToggleOverlay,
-    handleExport, handleImport, pluginEntries, handleViewSelectWithDoctor, appMode,
+    handleExport, handleImport, pluginEntries, handleViewSelectWithDoctor,
     commandActions, slashPickerOpen,
     interceptApprovalSentence,
     activeProject, defaultWorkspaceProject, freshProjectByGroup, workspaceProjects,
@@ -1742,7 +1760,7 @@ export function App() {
                 context for the floating-card Sidebar, so the card's `top-0` reaches
                 the window top — extending UP into the traffic-light band and
                 reclaiming that vertical space on the left. */}
-            <div className="relative flex h-screen flex-col overflow-hidden">
+            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative flex h-screen min-w-0 flex-col overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
@@ -1753,18 +1771,31 @@ export function App() {
                   content, plus the content surface's own leading padding.
                   Collapsed, the card retracts but its cluster strip stays bare
                   on this band, so the path clears THAT strip instead.
-                  Overlaying (chat mode, expanded), the band is not pushed
+                  Overlaying on a narrow window, the band is not pushed
                   either: it keeps the collapsed lead and the card floats
                   over the path the way it floats over the tile. */}
               <CustomTitleBar
-                leadClearance={sidebarCollapsed || sidebarOverlay ? collapsedBandLeadClearance(isDarwinPlatform()) : sidebarWidth + SHELL_GUTTER + CONTENT_TITLE_INSET}
+                keepVisibleInFullscreen={sidebarHidden}
+                leadClearance={sidebarHidden ? 0 : sidebarCollapsed || sidebarOverlay ? collapsedBandLeadClearance(isDarwinPlatform()) : sidebarWidth + SHELL_GUTTER + CONTENT_TITLE_INSET}
               >
+                {sidebarHidden && (
+                  <Button
+                    data-testid="sidebar-show"
+                    variant="ghost"
+                    size="icon"
+                    className="h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
+                    title={t("mainToolbar.showSidebar")}
+                    aria-label={t("mainToolbar.showSidebar")}
+                    onClick={showSidebar}
+                    style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                  >
+                    <PanelLeftOpen className="h-4 w-4" />
+                  </Button>
+                )}
                 <MainToolbar
                   viewNav={viewNav}
                   streaming={streaming}
                   hasApiKey={effectiveLlmReady}
-                  appMode={appMode}
-                  onToggleAppMode={setAppMode}
                   onOpenDevTools={() => setDevToolsOpen((v) => !v)}
                   appUpdateState={appUpdate.state}
                   appUpdateInFlight={appUpdate.inFlight}
@@ -1787,11 +1818,10 @@ export function App() {
                   column above (NOT this content row) so its `top-0` spans up into the
                   band. The content `<main>` carries left padding equal to the card
                   width + insets so the rail never occludes the canvas. */}
-              <Sidebar
+              {!sidebarHidden && <Sidebar
                 activeView={activeView}
                 onSelect={handleViewSelectWithDoctor}
-                /** Chat mode offers no new-pane gesture because it draws only one pane. */
-                onSelectInNewPane={appMode === "chat" ? undefined : openViewInNewPane}
+                onSelectInNewPane={chatGroups.isSingleTile ? undefined : openViewInNewPane}
                 pluginViews={pluginViews}
                 failedPluginCards={failedPluginCards}
                 inactivePluginCards={inactivePluginCards}
@@ -1822,8 +1852,10 @@ export function App() {
                 projects={workspaceProjects}
                 collapsed={sidebarCollapsed}
                 overlay={sidebarOverlay}
-                onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+                onToggleCollapse={() => setSidebarState(sidebarCollapsed ? "expanded" : "rail")}
+                onHide={hideSidebar}
                 width={sidebarWidth}
+                maxWidth={sidebarOverlay ? Math.max(0, shellWidth - SHELL_GUTTER * 2) : undefined}
                 onWidthChange={setSidebarWidth}
                 onWidthCommit={commitSidebarWidth}
                 onOpenUnifiedSearch={() => { searchOpenOverlay(); }}
@@ -1841,16 +1873,15 @@ export function App() {
                 onToggleSessionStar={handleToggleSessionStar}
                 isProjectPinned={isProjectPinned}
                 onToggleProjectPin={toggleProjectPin}
-              />
+              />}
               <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
                   className={`relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-200 ease-out motion-reduce:transition-none ${
-                    sidebarCollapsed || sidebarOverlay ? "pl-(--shell-collapsed-rail-reserve)" : ""
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-reserve)" : ""
                   }`}
-                  // Reserve the live sidebar width plus SHELL_GUTTER in work mode; chat overlays retain the collapsed reserve to avoid
-                  // reflow.
-                  style={sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${sidebarWidth + SHELL_GUTTER}px` }}
+                  // Overlay navigation retains the collapsed reserve without shrinking the canvas.
+                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${sidebarWidth + SHELL_GUTTER}px` }}
                 >
                   {/* The window's notice strip — the announcement banner, the
                       permission-memory toast and the window status toasts
@@ -2048,7 +2079,7 @@ export function App() {
                                     box, so anchoring the tiles to the row itself would eat
                                     the air that lines the chat group's bottom edge up with
                                     the sidebar's. */}
-                                <div ref={chatGroupCanvasRef} className="relative h-full w-full" data-testid="pane-canvas">
+                                <div ref={handleCanvasRef} className="relative h-full w-full" data-testid="pane-canvas">
                                 {chatGroups.groups.map((group) => {
                                 const paneView = (chatGroups.contentById[group.id]?.view ?? "home") as InlineViewKey;
                                 return (

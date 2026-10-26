@@ -60,10 +60,10 @@ const ko: Record<DocSlug, DocPage> = {
         ],
       },
       {
-        id: "modes",
-        h: "채팅 모드와 작업 모드",
+        id: "layout",
+        h: "창 크기에 맞는 작업 화면",
         blocks: [
-          { p: "채팅 모드는 칸 하나로 대화합니다. 작업 모드는 창을 최대 네 칸으로 나누고, 칸마다 다른 대화를 동시에 진행합니다. 오른쪽의 작업 패널에는 파일, 미리보기, 브라우저, 터미널, 서브에이전트, 사이드 채팅이 모입니다." },
+          { p: "창은 화면 중앙에 1243×768 크기로 열리고, 너비를 360px까지 줄일 수 있습니다. 공간이 충분하면 대화를 최대 네 칸으로 나누고, 좁아지면 초점이 있는 칸 하나를 보여 줍니다. 숨겨진 대화는 계속 실행되고, 다시 넓히면 기존 배치와 최대화 선택이 돌아옵니다." },
         ],
       },
       {
@@ -127,8 +127,8 @@ const ko: Record<DocSlug, DocPage> = {
         id: "tiles",
         h: "칸",
         blocks: [
-          { p: "작업 모드는 최대 네 칸, 채팅 모드는 한 칸입니다. 칸마다 자기 대화 루프를 갖고, 여러 칸이 동시에 답을 받습니다. 한 대화는 한 칸에만 열립니다. 사이드바에서 이미 열린 대화를 누르면 그 칸으로 초점이 옮겨 갑니다." },
-          { p: "나누기는 ‘좌우로 분할’과 ‘위아래로 분할’ 중에서 고릅니다. 나눈 칸이 최소 크기보다 작아지는 방향은 고를 수 없게 표시되고, 둘 다 안 되면 이유를 보여 줍니다." },
+          { p: "공간이 충분하면 최대 네 칸을 보여 주고, 캔버스가 좁아지면 초점이 있는 칸 하나를 보여 줍니다. 칸마다 자기 대화 루프를 갖고, 숨겨진 대화도 계속 답을 받습니다. 한 대화는 한 칸에만 열립니다. 사이드바에서 이미 열린 대화를 누르면 그 칸으로 초점이 옮겨 갑니다." },
+          { p: "넓은 캔버스에서는 ‘좌우로 분할’과 ‘위아래로 분할’ 중에서 고릅니다. 나눈 칸이 최소 크기보다 작아지는 방향은 고를 수 없게 표시되고, 둘 다 안 되면 이유를 보여 줍니다. 좁은 캔버스에서는 분할, 닫기, 최대화, 새 칸 열기를 제공하지 않습니다." },
           { p: "칸 머리에는 대화 제목과 고정, 내보내기(Markdown 또는 JSON), 가져오기, 그리고 패널 분할, 이 패널만 보기, 패널 닫기가 있습니다." },
         ],
       },
@@ -156,7 +156,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "panel",
         h: "작업 패널",
         blocks: [
-          { p: "파일, 미리보기, 브라우저, 터미널, 서브에이전트, 사이드 채팅이 칸 높이만큼의 카드 하나에 모입니다. 칸이 넓으면 대화 옆에 붙고, 좁으면 대화 위에 뜹니다." },
+          { p: "파일, 미리보기, 브라우저, 터미널, 서브에이전트, 사이드 채팅이 칸 높이만큼의 카드 하나에 모입니다. 칸이 넓으면 대화 옆에 붙고, 좁으면 칸 안에서 대화 위에 뜹니다. 패널을 열어도 운영체제 창 크기는 바뀌지 않습니다." },
           { ul: [
             "브라우저 탭은 세션에서 다룬 웹 출처를 모으고, 요청한 것인지 결과로 받은 것인지 표시합니다.",
             "파일 탭은 세션의 파일과 그 파일에 한 일(읽음, 씀, 첨부, 도구)을 보여 줍니다.",
@@ -168,6 +168,7 @@ const ko: Record<DocSlug, DocPage> = {
         id: "sidebar",
         h: "사이드바",
         blocks: [
+          { p: "접으면 아이콘 레일이 남습니다. 펼쳤을 때 공간이 충분하면 대화 영역을 밀고, 부족하면 그 위에 겹쳐집니다. 겹쳐진 사이드바는 Escape를 누르거나 바깥을 클릭해 접습니다." },
           { p: "채팅 목록에는 일반 대화, 루틴 실행, 작업 보드 실행, 그리고 시작한 대화 아래에 붙은 사이드 채팅이 함께 있습니다. 일반 대화 줄에서는 이름 바꾸기, 읽지 않음 표시, 읽음 표시, 보관, 공유, 복사, 삭제를 할 수 있습니다." },
           { p: "답하는 중인 대화에는 표시가 붙고, 내가 보지 않는 곳에서 끝난 턴은 확인할 때까지 읽지 않음으로 남습니다. 프로젝트 탭에서는 프로젝트를 고정, 편집, 보관, 제거합니다." },
         ],
@@ -515,10 +516,10 @@ const en: Record<DocSlug, DocPage> = {
         ],
       },
       {
-        id: "modes",
-        h: "Chat mode and work mode",
+        id: "layout",
+        h: "A workspace that fits the window",
         blocks: [
-          { p: "Chat mode is a single tile. Work mode splits the window into up to four tiles, each running a different conversation at the same time. The work panel beside a tile holds Files, Preview, Browser, Terminal, Sub-agents and Side chat." },
+          { p: "The window opens centered at 1243×768 and can shrink to 360px wide. When there is room, the canvas holds up to four conversation tiles; when narrow, it shows the focused tile. Hidden conversations keep running, and widening restores the layout and your maximized choice." },
         ],
       },
       {
@@ -582,8 +583,8 @@ const en: Record<DocSlug, DocPage> = {
         id: "tiles",
         h: "Tiles",
         blocks: [
-          { p: "Work mode holds up to four tiles; chat mode holds one. Each tile runs its own conversation loop, and several can stream at once. A conversation is open in one tile at most; choosing it in the sidebar focuses the tile that already holds it." },
-          { p: "Splitting offers Side by side or Top and bottom. A direction that would make a tile too small is shown as unavailable, and if neither fits, Ave says why." },
+          { p: "The canvas shows up to four tiles when there is room and the focused tile when narrow. Each tile runs its own conversation loop, including while hidden. A conversation is open in one tile at most; choosing it in the sidebar focuses the tile that already holds it." },
+          { p: "On a wide canvas, splitting offers Side by side or Top and bottom. A direction that would make a tile too small is shown as unavailable, and if neither fits, Ave says why. A narrow canvas disables split, close, maximize and new-pane controls." },
           { p: "A tile’s header carries the conversation title, then pin, export (Markdown or JSON) and import, then Split pane, Show only this pane and Close pane." },
         ],
       },
@@ -611,7 +612,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "panel",
         h: "The work panel",
         blocks: [
-          { p: "Files, Preview, Browser, Terminal, Sub-agents and Side chat share one card that stands the full height of its tile, docked beside the transcript when there’s room and floating over it when there isn’t." },
+          { p: "Files, Preview, Browser, Terminal, Sub-agents and Side chat share one card that stands the full height of its tile, docked beside the transcript when there’s room and floating over it inside the tile when there isn’t. Opening a panel never changes the OS window size." },
           { ul: [
             "The Browser tab lists the session’s web sources and marks each as requested or returned in a result.",
             "The Files tab lists the session’s files with what was done to each: read, written, attached or tool.",
@@ -623,6 +624,7 @@ const en: Record<DocSlug, DocPage> = {
         id: "sidebar",
         h: "The sidebar",
         blocks: [
+          { p: "Collapsing leaves an icon rail. An expanded sidebar pushes the canvas when there is room and overlays it when there is not. Press Escape or click outside to collapse the overlay." },
           { p: "The Chats list holds main conversations, routine runs, work-board runs, and side chats nested under the conversation they came from. Main conversation rows offer rename, mark unread, mark read, archive, share, copy and delete." },
           { p: "A conversation that is responding shows it, and a turn that finishes where you aren’t looking stays unread until you look. The Projects tab pins, edits, archives and removes projects." },
         ],

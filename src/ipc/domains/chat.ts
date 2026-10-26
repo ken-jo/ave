@@ -1,4 +1,5 @@
-import { restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import { getTurnChangeReview, restoreCodeCheckpoint } from "../../memory/code-checkpoints.js";
+import type { TurnReviewResult } from "../../shared/turn-change-review.js";
 import { controlShellTask, listShellTasks } from "../../tools/shell-tools.js";
 import { isRewindMode } from "../../shared/code-rewind.js";
 import { ipcMain, type WebContents } from "electron";
@@ -85,6 +86,8 @@ import { activeModelCatalog } from "../../shared/model-catalog/active.js";
 import type { ModelCatalogIpcResult } from "../../shared/model-catalog/types.js";
 import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
 import { getAdminPolicyPath } from "../../permissions/policy-store.js";
+import { parseFileMentionReferences } from "../../shared/file-mention-reference.js";
+import { expandFileMentionContext } from "../handlers/file-mention-context.js";
 
 const SESSION_OPEN_IN_OTHER_GROUP = "session-open-in-other-group";
 const log = createLogger("chat");
@@ -440,6 +443,14 @@ function historyIndexOfMessageId(history: GenericMessage[], messageId: string): 
   return history.findIndex((m) => m.meta?.messageId === messageId);
 }
 
+function latestReviewTurnId(loop: ConversationLoop): string | undefined {
+  const latest = loop.getHistory().getMessages().findLast((message) =>
+    message.role === "user" && message.meta?.compactBoundary !== true && message.meta?.hostInjectionId === undefined);
+  return typeof latest?.meta?.messageId === "string" ? latest.meta.messageId : undefined;
+}
+
+
+
 // Rewind returns the complete original input or refuses without truncating history.
 function restorableRewindInput(
   message: Extract<GenericMessage, { role: "user" }>,
@@ -479,6 +490,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   const STREAMING_ACTIVE = "streaming-active" as const;
   type StreamTurnTransport = {
     readonly sink: ConversationStreamEventSink;
+    readonly abortSignal?: AbortSignal;
   };
   // Each tiled group owns its loop, leases, streams, and replay paths.
   const createGroupTurns = (
@@ -487,9 +499,9 @@ export function registerChatHandlers(deps: IpcDeps): void {
     buildSink: (streamId?: number) => ConversationStreamEventSink,
     groupDeps: IpcDeps,
   ) => {
-    const trackStreamTurn = <T>(factory: () => Promise<T>): Promise<T> =>
+    const trackStreamTurn = <T>(factory: (signal: AbortSignal) => Promise<T>): Promise<T> =>
       surfaceRuntime.activity.trackTurn(factory);
-    const tryTrackStreamTurn = <T>(factory: () => Promise<T>): Promise<T> | null =>
+    const tryTrackStreamTurn = <T>(factory: (signal: AbortSignal) => Promise<T>): Promise<T> | null =>
       surfaceRuntime.activity.tryTrackTurn(factory);
     const trackSessionMutation = <T>(factory: () => Promise<T>): Promise<T> | null =>
       surfaceRuntime.activity.trackMutation(factory);
@@ -499,7 +511,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       return { sink: buildSink(streamId) };
     };
     const runStreamTurn = async (
-      { sink }: StreamTurnTransport,
+      { sink, abortSignal }: StreamTurnTransport,
       input: string,
       attachments?: import("../../engine/llm/types.js").UserContentPart[],
       rolePrompt?: ActiveRolePrompt,
@@ -509,18 +521,21 @@ export function registerChatHandlers(deps: IpcDeps): void {
       // Replay and edit/resend need the same input DLP boundary as ordinary sends.
       const replayStagedInputOrigin = parseStagedEnvelope(input)?.kind.inputOrigin;
       const sanitized = sanitizeOutgoingTurnContent(settingsService, sink, input, attachments);
+      const safeDisplayText = displayText === undefined ? undefined
+        : sanitizeOutgoingInput(settingsService, sink, displayText);
       const result = await runStreamedTurn(
         loop,
         sanitized.input,
         sink,
         {
           ...STREAM_TURN_OPTIONS,
+          ...(abortSignal ? { abortSignal } : {}),
           ...(replayStagedInputOrigin ? { inputOrigin: replayStagedInputOrigin } : {}),
           ...(sanitized.attachments && sanitized.attachments.length > 0
             ? { attachments: sanitized.attachments }
             : {}),
           ...(rolePrompt ? { rolePrompt } : {}),
-          ...(displayText !== undefined ? { displayText } : {}),
+          ...(safeDisplayText !== undefined ? { displayText: safeDisplayText } : {}),
           ...(resumesInterruptedTurn ? { resumesInterruptedTurn } : {}),
         },
       );
@@ -531,7 +546,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
       factory: (transport: StreamTurnTransport) => Promise<T>,
     ): Promise<T> | null => {
       const transport = createStreamTurnTransport();
-      return tryTrackStreamTurn(() => factory(transport));
+      return tryTrackStreamTurn((abortSignal) => factory({ ...transport, abortSignal }));
     };
 
     const continueFromLastUserTurnWithinLease = async (
@@ -774,6 +789,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
     reason: string,
     capturedOwner?: Promise<unknown> | null,
   ): Promise<void> => {
+    context.surfaceRuntime.activity.abortActiveTurn(new Error(reason));
     context.loop.abortCurrentTurn(new Error(reason));
     const active = capturedOwner === undefined
       ? context.surfaceRuntime.activity.activeTurn() ?? context.surfaceRuntime.activity.activeMutation()
@@ -917,7 +933,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
 
       const streamId = mainTurns.allocateStreamId();
       const sink = buildSink(streamId);
-      await mainTurns.trackStreamTurn(async () => {
+      await mainTurns.trackStreamTurn(async (abortSignal) => {
         // Publish the turn lease before mailbox snapshot so concurrent sends or mutations cannot switch the loop.
         const mailboxTurn = await prepareParentMailboxTurn(deps);
         if (
@@ -935,6 +951,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
           {
             ...STREAM_TURN_OPTIONS,
             inputOrigin: "agent-message",
+            abortSignal,
             approvalReasonPrefix: mailboxTurn.approvalReasonPrefix,
             // Preserve report input as the user-row display text for reload.
             subAgentReport: mailboxTurn.childTitle === undefined
@@ -951,6 +968,7 @@ export function registerChatHandlers(deps: IpcDeps): void {
   }
   // The semantic timeline owns chat frames; renderer delivery uses its compatibility projection.
   const interruptActiveTurn = async (group: ChatGroupContext): Promise<void> => {
+    group.surfaceRuntime.activity.abortActiveTurn();
     group.loop.abortCurrentTurn();
     const activeStreamTurn = group.surfaceRuntime.activity.activeTurn();
     if (activeStreamTurn) {
@@ -1008,6 +1026,11 @@ export function registerChatHandlers(deps: IpcDeps): void {
     if (typeof input !== "string" || input.trim().length === 0) {
       return { ok: false, error: "empty-text" };
     }
+    try {
+      if (parseFileMentionReferences(input).length > 0) return { ok: false, error: "file-reference-while-running" };
+    } catch {
+      return { ok: false, error: "file-reference-invalid" };
+    }
     // Guide text needs the same PII redaction as keyboard sends.
     const effective = sanitizeOutgoingInput(settingsService, group.buildSink(), input);
     const queueResult = group.loop.queueGuidance(effective);
@@ -1030,11 +1053,15 @@ export function registerChatHandlers(deps: IpcDeps): void {
     const group = groupOf(e, chatGroupId);
     // Pause the goal on Stop so it cannot immediately revive; retain the goal for explicit resume.
     const goalSessionId = group.loop.getSessionId();
-    if (deps.sessionGoalStore?.get(goalSessionId)?.status === "running") {
-      await deps.sessionGoalStore.pause(goalSessionId);
-    }
-    await interruptActiveTurn(group);
-    return { ok: true };
+    const pausingGoal = deps.sessionGoalStore?.get(goalSessionId)?.status === "running";
+    const admission = pausingGoal ? group.surfaceRuntime.activity.beginSessionTransitionAdmission() : null;
+    // Latch Stop before asynchronous goal persistence; hold admission so goal revival cannot race the pause.
+    group.surfaceRuntime.activity.abortActiveTurn();
+    try {
+      if (pausingGoal) await deps.sessionGoalStore!.pause(goalSessionId);
+      await interruptActiveTurn(group);
+      return { ok: true };
+    } finally { admission?.release(); }
   });
 
   ipcMain.handle(CHANNELS.chat.listShellTasks, (e, chatGroupId: unknown, expectedSessionId: unknown) => {
@@ -1188,14 +1215,24 @@ export function registerChatHandlers(deps: IpcDeps): void {
       if (historyIndex < 0) return { ok: false, error: "message-not-found" };
       const personaPromptId = personaPromptIdFromUserMessage(history[historyIndex]);
       if (!personaPromptId.ok) return { ok: false, error: personaPromptId.error };
-      const personaPrompt = await resolvePersonaRolePrompt(personaPromptStore, personaPromptId.personaPromptId);
-      if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
       const messages = [...history];
-      conversationLoop.getHistory().truncate(historyIndex);
+      let replayEntered = false;
       try {
-        const result = await group.turns.runStreamTurn(transport, newText, undefined, personaPrompt.rolePrompt);
+        transport.abortSignal?.throwIfAborted();
+        const personaPrompt = await resolvePersonaRolePrompt(personaPromptStore, personaPromptId.personaPromptId);
+        if (!personaPrompt.ok) return { ok: false, error: personaPrompt.error };
+        // Resolve fresh selectors before history mutation under the same cancellable turn admission.
+        const expanded = await expandFileMentionContext(conversationLoop, newText, "user-keyboard", [], transport.abortSignal);
+        transport.abortSignal?.throwIfAborted();
+        conversationLoop.getHistory().truncate(historyIndex);
+        replayEntered = true;
+        const result = await group.turns.runStreamTurn(transport, expanded.input, undefined, personaPrompt.rolePrompt, expanded.displayText);
         return { ok: true, result };
       } catch (err) {
+        if (!replayEntered && transport.abortSignal?.aborted) {
+          transport.sink({ kind: "turn.completed" });
+          return { ok: true, result: { text: "", toolCalls: [], route: "default", stopReason: "interrupted" } };
+        }
         // Restore history if provider-bound replay is refused before runTurn.
         if (isMissingStagedEnvelopeError(err)) {
           conversationLoop.getHistory().restore(messages);
@@ -1204,6 +1241,22 @@ export function registerChatHandlers(deps: IpcDeps): void {
       }
     });
     return turn ?? { ok: false, error: STREAMING_ACTIVE };
+  });
+
+  ipcMain.handle(CHANNELS.chat.getTurnReview, async (e, expectedSessionId: unknown, chatGroupId?: unknown): Promise<TurnReviewResult> => {
+    if (!validateHostRendererSender(e)) { auditUnauthorized(auditLogger, CHANNELS.chat.getTurnReview, e); return { ok: false, error: "unauthorized-frame" }; }
+    if (typeof expectedSessionId !== "string" || !isValidSessionId(expectedSessionId)) return { ok: false, error: "invalid-input" };
+    const group = groupOf(e, chatGroupId);
+    const mutation = group.turns.trackSessionMutation(async (): Promise<TurnReviewResult> => {
+      const loop = group.loop;
+      if (expectedSessionId !== loop.getSessionId()) return { ok: false, error: "turn-review-stale" };
+      const turnId = latestReviewTurnId(loop);
+      if (!turnId) return { ok: false, error: "turn-review-unavailable" };
+      return getTurnChangeReview(expectedSessionId, turnId, () => ({
+        cwd: loop.getSessionExecutionCwd(), extraAllowedDirectories: loop.getTurnAdditionalDirectories(),
+      }), { currentDetails: true });
+    });
+    return mutation ?? { ok: false, error: STREAMING_ACTIVE };
   });
 
   // Restore code before history mutation; code-only restore leaves history intact and rewind persists its own truncation.

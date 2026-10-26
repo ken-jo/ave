@@ -17,6 +17,16 @@
 
 ---
 
+## 현재 반응형 창 계약 안내
+
+현재 앱은 창 폭에 맞춰 배치합니다. 창은 중앙에 1243×768로
+열리고 최소 너비는 360px입니다. 캔버스가 좁아지면 포커스된 타일 하나를 보여 주되
+숨겨진 대화와 배치·최대화 선택은 유지합니다. 작업 패널은 타일 안에 붙거나 겹쳐지고,
+패널을 열어도 운영체제 창 크기는 바뀌지 않습니다. 사이드바는 접힌 레일을 유지하며,
+펼친 상태에서 공간이 부족하면 캔버스 위에 겹쳐집니다. 기하 값과 판정 기준은
+[현재 설계](../../design/tiled-chat-groups.md#responsive-shell-and-canvas)를 따릅니다.
+아래 역사 스냅샷은 현재 계약이 아닙니다.
+
 ## 현재 브라우저·터미널 계약 안내
 
 이 안내는 아래 역사 스냅샷을 현행 사양으로 바꾸지 않습니다. 현재 기준은
@@ -1299,7 +1309,7 @@ ave/src/
 │   ├── context/                 # ChatContext (state provider for ChatView subtree)
 │   ├── state/                   # chat-scroll-store (module scroll singletons)
 │   ├── hooks/                   # domain hooks — 14 original + extracted App/ChatView hooks
-│   │                            #  (use-app-mode, use-routine-overlay, use-send-message,
+│   │                            #  (use-routine-overlay, use-send-message,
 │   │                            #   use-plugin-view-routing, use-onboarding-tour-controller,
 │   │                            #   use-chat-scroll, use-message-queue, use-attachment-picker,
 │   │                            #   use-permission-toasts, use-checkpoint-view,
@@ -1319,7 +1329,7 @@ ave/src/
 │   │                            #  (RoutinePanel → components/ as built-in view)
 │   ├── utils/                   # cost-format, html-preview, history, compose,
 │   │                            #  tool-activity, plugin-auth-error,
-│   │                            #  read-initial-app-mode, chat-entry-revision,
+│   │                            #  chat-entry-revision,
 │   │                            #  korea-date-key, classify-turn-entries
 │   └── types.ts, constants.ts, api-client.ts
 │
@@ -2904,7 +2914,7 @@ composer/status 영역에 붙여 사용자가 질문과 선택지를 즉시 확�
 워크스페이스 탭 state 는 `ChatSidePanel` 로컬 `useState` 가 아니라 **패널보다 상위에서 사는 스토어**가 소유한다.
 
 - **스토어:** `src/ui/renderer/preview/workspace-tabs.ts` 의 `useWorkspaceTabs()` — `tabs` / `activeTabId` / `browserUrlByTab` 를 소유하고 `addTab` / `closeTab` / `setActiveTabId` / `setBrowserTabUrl` 를 노출한다. `WorkspaceTabKind` / `WorkspaceTab` 타입도 이 모듈에 둔다(런처 SOT 인 `command-actions.ts` 와의 수렴은 PR-3).
-- **마운트 위치:** `ChatView` 레벨. `ChatSidePanel` 은 레일 닫힘 / home 이탈 / 세션 전환 시 **조건부 언마운트**(`{previewRailVisible ? <ChatSidePanel/> : null}`)되지만 `ChatView` 는 그 전이 동안 마운트를 유지하므로, 스토어를 여기 두면 **탭 state 가 세션 전환/패널 토글을 넘어 유지**된다. 이는 `sidePanelOpen` 이 `use-app-mode.ts` 에서 상위 소유되어 threaded-down 되는 패턴과 동일하다. 이 위치는 도구 활동의 open action(§6.10.5)이 스토어에 닿는 지점이기도 하다.
+- **마운트 위치:** `ChatView` 레벨. `ChatSidePanel` 은 레일 닫힘 / home 이탈 / 세션 전환 시 **조건부 언마운트**(`{previewRailVisible ? <ChatSidePanel/> : null}`)되지만 `ChatView` 는 그 전이 동안 마운트를 유지하므로, 스토어를 여기 두면 **탭 state 가 세션 전환/패널 토글을 넘어 유지**된다. 작업 패널 열림 상태도 상위에서 소유해 내려보낸다. 이 위치는 도구 활동의 open action(§6.10.5)이 스토어에 닿는 지점이기도 하다.
 - **PR-1 불변식(pure refactor):** 이 lift 는 **행동을 바꾸지 않는다**. 기본 4탭 · 카운트 · never-empty 가드 · 닫기 규칙이 전부 동일하며, state 가 사는 *위치*만 바뀐다. 후속 PR 이 모델(§6.10.2~6.10.6)을 실제로 변경한다.
 
 ### 6.10.8 반응형 / 인덱서 통합 (부가)

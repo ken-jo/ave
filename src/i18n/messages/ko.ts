@@ -9,6 +9,8 @@ export const ko: Record<SeedMessageKey, string> = {
   "homePrivacy.configurationUntrusted": "설정 경계의 보호 상태를 확인할 수 없어 Ave를 중지했습니다.\n\n경로: {path}\n원인: {reason}\n\nhome 및 config 디렉터리의 소유권을 이 계정으로 복원하세요. home에서 다른 계정의 쓰기 및 삭제 권한을 제거하고 config에서는 다른 계정의 모든 접근 권한을 제거하세요. 이전 완료 마커가 없거나 손상되었다면 신뢰할 수 있는 백업에서 복원한 뒤 Ave를 다시 시작하세요.",
   "homePrivacy.boundaryRepairedTitle": "비공개 저장소 복구 완료",
   "homePrivacy.boundaryRepaired": "인증 정보를 다른 계정이 읽을 수 있었으므로 로그아웃한 뒤 다시 로그인하세요.",
+  "mainToolbar.hideSidebar": "사이드바 숨기기",
+  "mainToolbar.showSidebar": "사이드바 표시",
   "sidebar.generalLabel": "일반",
   "shellTasks.title": "실행 명령",
   "shellTasks.shortcut": "Ctrl+B를 누르면 현재 실행 중인 명령을 백그라운드로 보냅니다.",

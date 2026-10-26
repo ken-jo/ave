@@ -45,6 +45,28 @@ const paste3: PasteAttachment = {
 };
 
 describe("AttachmentChip (single)", () => {
+  it("renders removable path references as inline chips without exposing an absolute workspace path", () => {
+    const onRemove = vi.fn();
+    render(<AttachmentChip attachment={{ ...file2, reference: true }} total={1} onRemove={onRemove} />);
+    expect(screen.getByTestId("chip-count-badge").textContent).toBe("@budget-2026.pdf");
+    expect(screen.getByTestId("attachment-chip").textContent).not.toContain("/Users/");
+    fireEvent.click(screen.getByRole("button", { name: /Remove reference budget-2026.pdf|참조 제거 budget-2026.pdf/ }));
+    expect(onRemove).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId("attachment-overlay")).toBeNull();
+  });
+  it("shows the relative location and source turn without enabling external open", () => {
+    const reference: FileAttachment = { ...file2, path: "src/app.ts", name: "app.ts", reference: true,
+      location: { startLine: 3, endLine: 5, turnId: "turn-1" } };
+    const onOpenExternal = vi.fn();
+    render(<AttachmentChip attachment={reference} total={1} onOpenExternal={onOpenExternal} />);
+    const chip = screen.getByTestId("attachment-chip");
+    expect(screen.getByTestId("chip-count-badge").textContent).toContain("src/app.ts:3-5");
+    expect(chip.title).toContain("turn-1");
+    fireEvent.click(chip);
+    expect(screen.getByTestId("attachment-overlay").textContent).toContain("src/app.ts:3-5");
+    expect(screen.queryByRole("button", { name: /↗/ })).toBeNull();
+    expect(onOpenExternal).not.toHaveBeenCalled();
+  });
   it("renders a single image chip with N/MAX badge", () => {
     render(<AttachmentChip attachment={img1} total={1} />);
     expect(screen.getByTestId("attachment-chip")).toBeTruthy();

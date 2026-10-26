@@ -11,6 +11,24 @@ import { getWebSurfaceOccluders } from "../../preview/web-surfaces.js";
 
 const t = ((key: string) => key) as never;
 
+function renderCanvasGroups(initialWidth = 1200) {
+  let callback: ResizeObserverCallback;
+  const canvas = document.createElement("div");
+  vi.stubGlobal("ResizeObserver", class {
+    constructor(onResize: ResizeObserverCallback) { callback = onResize; }
+    observe() {}
+    disconnect() {}
+  });
+  const hook = renderHook(() => useChatGroups(canvas));
+  const resizeCanvas = (width: number) => act(() => callback([
+    { target: canvas, contentBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry,
+  ], {} as ResizeObserver));
+  resizeCanvas(initialWidth);
+  return { ...hook, resizeCanvas };
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
 function pane(props: Partial<React.ComponentProps<typeof PaneFrame>> = {}) {
   return (
     <TooltipProvider>
@@ -432,13 +450,13 @@ describe("useChatGroups", () => {
   afterEach(cleanup);
 
   it("starts with the one group whose conversation loop actually exists", () => {
-    const { result } = renderHook(() => useChatGroups());
+    const { result } = renderCanvasGroups();
     expect(result.current.groups.map((group) => group.id)).toEqual(["main"]);
     expect(result.current.focusedId).toBe("main");
   });
 
   it("halves a tile on the axis the user chose, the new tile trailing", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "column"));
     expect(result.current.tree).toMatchObject({ kind: "split", axis: "column" });
     expect(result.current.groups.map((group) => group.id)).toEqual(["main", "group-2"]);
@@ -448,7 +466,7 @@ describe("useChatGroups", () => {
   });
 
   it("says which split directions the floors still afford", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     // Roomy on both axes.
     expect(result.current.splitFits("main", "row", { width: 1000, height: 1000 })).toBe(true);
     expect(result.current.splitFits("main", "column", { width: 1000, height: 1000 })).toBe(true);
@@ -471,7 +489,7 @@ describe("useChatGroups", () => {
   });
 
   it("sets aside an idle group at the ceiling — never the primary, the focused, or the target", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.split("group-2", "row"));
     act(() => result.current.split("group-3", "row"));
@@ -493,7 +511,7 @@ describe("useChatGroups", () => {
   });
 
   it("refuses rather than take a busy group, and leaves the tree untouched", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.split("group-2", "row"));
     act(() => result.current.split("group-3", "row"));
@@ -509,26 +527,29 @@ describe("useChatGroups", () => {
     expect(result.current.groups.map((group) => group.id)).toEqual(before);
   });
 
-  it("adopts without maximizing in chat mode, where the canvas is never split", () => {
-    // A canvas far under the split floors. Work mode has nowhere to draw both,
-    // so it shows the newcomer alone; chat mode draws one tile whatever the
-    // tree holds, and a maximize set here would only surface — wrongly — the
-    // moment the user toggled to work mode.
-    const tooSmall = { width: 400, height: 300 };
+  it("maximizes an adopted tile when the available size cannot carry a split", () => {
+    const { result } = renderCanvasGroups();
+    act(() => result.current.split("main", "row"));
+    act(() => { result.current.adopt("main", () => true, { width: 400, height: 300 }); });
+    expect(result.current.maximizedId).toBe("group-3");
+    expect(drawn(result.current.groups)).toEqual(["group-3"]);
+  });
 
-    const work = renderHook(() => useChatGroups("work"));
-    act(() => work.result.current.split("main", "row"));
-    act(() => { work.result.current.adopt("main", () => true, tooSmall); });
-    expect(work.result.current.maximizedId).toBe("group-3");
-
-    const chat = renderHook(() => useChatGroups("chat"));
-    act(() => chat.result.current.split("main", "row"));
-    act(() => { chat.result.current.adopt("main", () => true, tooSmall); });
-    expect(chat.result.current.maximizedId).toBeNull();
+  it("adopts on a narrow canvas without replacing the saved maximize choice", () => {
+    const view = renderCanvasGroups();
+    act(() => view.result.current.split("main", "row"));
+    act(() => view.result.current.toggleMaximize("main"));
+    view.resizeCanvas(600);
+    act(() => { view.result.current.adopt("main", () => true, { width: 400, height: 300 }); });
+    expect(view.result.current.focusedId).toBe("group-3");
+    expect(view.result.current.maximizedId).toBe("main");
+    expect(drawn(view.result.current.groups)).toEqual(["group-3"]);
+    view.resizeCanvas(964);
+    expect(drawn(view.result.current.groups)).toEqual(["main"]);
   });
 
   it("reveals the tile it focuses, so a maximize follows rather than hides it", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.toggleMaximize("main"));
     expect(result.current.maximizedId).toBe("main");
@@ -548,7 +569,7 @@ describe("useChatGroups", () => {
   });
 
   it("tracks session thumbnails independently of work panels and clears closed panes", () => {
-    const { result } = renderHook(() => useChatGroups());
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     expect(result.current.groups.map((group) => group.thumbnailOpen)).toEqual([false, false]);
 
@@ -570,7 +591,7 @@ describe("useChatGroups", () => {
   });
 
   it("restores independent thumbnail and work panel choices", () => {
-    const { result } = renderHook(() => useChatGroups());
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     const tree = result.current.tree;
     act(() => result.current.restore({
@@ -588,7 +609,7 @@ describe("useChatGroups", () => {
   });
 
   it("tracks the work panel per group rather than per window", () => {
-    const { result } = renderHook(() => useChatGroups());
+    const { result } = renderCanvasGroups();
     expect(result.current.groups[0]!.panelOpen).toBe(false);
     act(() => result.current.setPanelOpen("main", true));
     expect(result.current.groups[0]!.panelOpen).toBe(true);
@@ -601,7 +622,7 @@ describe("useChatGroups pane content", () => {
   afterEach(cleanup);
 
   it("opens every pane on its own conversation", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     expect(result.current.contentById).toEqual({ main: { view: "home" } });
     expect([...result.current.conversationIds]).toEqual(["main"]);
 
@@ -616,7 +637,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("moves ONE pane's content, leaving its neighbour where it was", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
 
     act(() => result.current.setPaneContent("main", { view: "routines" }));
@@ -632,7 +653,7 @@ describe("useChatGroups pane content", () => {
   it("reads the window's location off whichever pane has focus", () => {
     // This IS the `activeView` derivation: the window is where the FOCUSED pane is, so focusing the other pane moves the
     // window's location without either pane's content changing.
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.setPaneContent("main", { view: "work-board" }));
     const activeView = () => result.current.contentById[result.current.focusedId]?.view;
@@ -644,7 +665,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("focuses the pane a non-home view is already open in rather than opening a second", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.setPaneContent("main", { view: "insights" }));
     act(() => result.current.focus("group-2"));
@@ -661,7 +682,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("holds each terminal or web surface in one pane, while two panes may each show one", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.setPaneContent("main", { view: "terminal", surface: "terminal:1" }));
     act(() => result.current.focus("group-2"));
@@ -676,7 +697,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("moves a surface between panes as a swap, opens one on an edge, and finds a pane's neighbours", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.setPaneContent("main", { view: "terminal", surface: "terminal:1" }));
     act(() => result.current.setPaneContent("group-2", { view: "web", surface: "browser:2" }));
@@ -706,7 +727,7 @@ describe("useChatGroups pane content", () => {
     // one `plugin:<id>:<viewId>` are two <webview> guests in the SAME session
     // partition, so they share cookies, storage and the host's per-webContents
     // plugin registration while disagreeing about the plugin's state.
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.setPaneContent("main", { view: "plugin:meeting:control" }));
     act(() => result.current.focus("group-2"));
@@ -723,7 +744,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("counts conversations and panes as two ceilings, and gives both back on close", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.split("group-2", "row"));
     act(() => result.current.split("group-3", "row"));
@@ -746,7 +767,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("releases the spare's conversation along with its pane", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.split("group-2", "row"));
     act(() => result.current.split("group-3", "row"));
@@ -763,7 +784,7 @@ describe("useChatGroups pane content", () => {
   it("opens a pane beside the focused one and gives back its id", () => {
     // The sidebar's "open in a new pane" makes the SAME pane the header's split makes — a conversation pane, focused — and
     // hands the id back so the caller can put a view in it.
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     let opened: string | null = "not-called";
     act(() => { opened = result.current.openPane("main", undefined); });
 
@@ -775,7 +796,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("refuses a new pane once the canvas is full, without opening one", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.split("main", "row"));
     act(() => result.current.split("group-2", "row"));
     act(() => result.current.split("group-3", "row"));
@@ -791,7 +812,7 @@ describe("useChatGroups pane content", () => {
   it("refuses a new pane the width cannot carry — the split's own floor", () => {
     // No second rule for this gesture: `splitFits` is asked exactly as the header's split control asks it, so a canvas too
     // narrow to halve refuses both the same way.
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     const tooNarrow = { width: (PANE_MIN_WIDTH + PANE_CELL_INSET) * 2 - 1, height: 900 };
 
     expect(result.current.splitFits("main", "row", tooNarrow)).toBe(false);
@@ -806,8 +827,8 @@ describe("useChatGroups pane content", () => {
     expect(opened).toBe("group-2");
   });
 
-  it("refuses a new pane in chat mode, which draws one and hides the rest", () => {
-    const { result } = renderHook(() => useChatGroups("chat"));
+  it("refuses a new pane on a narrow canvas, which draws one and hides the rest", () => {
+    const { result } = renderCanvasGroups(600);
     let opened: string | null = "not-called";
     act(() => { opened = result.current.openPane("main", undefined); });
     expect(opened).toBeNull();
@@ -815,7 +836,7 @@ describe("useChatGroups pane content", () => {
   });
 
   it("names the conversation pane focus is on, and never one that is gone", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     expect(result.current.focusedConversationId).toBe("main");
 
     act(() => result.current.split("main", "row"));
@@ -874,7 +895,7 @@ describe("chatGroupApi", () => {
 
 describe("useChatGroups placement", () => {
   it("starts as a single tile filling the area", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
 
     expect(result.current.groups.map((g) => g.id)).toEqual(["main"]);
     expect(result.current.groups[0]!.box).toMatchObject({
@@ -883,7 +904,7 @@ describe("useChatGroups placement", () => {
   });
 
   it("splits the dropped-on tile and focuses what was added", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
 
     let added: string | null = null;
     act(() => { added = result.current.dropOnEdge("main", "right"); });
@@ -897,7 +918,7 @@ describe("useChatGroups placement", () => {
   it("refuses a drop past the ceiling instead of silently ignoring it", () => {
     // The caller shows no edge affordance when this returns null, so the limit is visible in the gesture rather than as a
     // rejection after the fact.
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
 
     act(() => { result.current.dropOnEdge("main", "right"); });
     act(() => { result.current.dropOnEdge("group-2", "bottom"); });
@@ -912,7 +933,7 @@ describe("useChatGroups placement", () => {
 
   it("never reuses a closed tile's id", () => {
     // Main-process loops are keyed by this id: reusing one would hand a new tile the previous tile's live history.
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
 
     act(() => { result.current.dropOnEdge("main", "right"); });
     act(() => { result.current.close("group-2"); });
@@ -923,7 +944,7 @@ describe("useChatGroups placement", () => {
   });
 
   it("gives a closed tile's space back and keeps focus on a tile that exists", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
 
     act(() => { result.current.dropOnEdge("main", "right"); });
     act(() => { result.current.close("group-2"); });
@@ -940,15 +961,15 @@ function drawn(groups: readonly { id: string; hidden: boolean }[]): string[] {
 }
 
 describe("useChatGroups ceilings", () => {
-  it("collapses to the focused tile in chat mode and offers no split there", () => {
-    const { result } = renderHook(() => useChatGroups("chat"));
+  it("collapses to the focused tile on a narrow canvas and offers no split there", () => {
+    const { result } = renderCanvasGroups(600);
 
     expect(result.current.groups).toHaveLength(1);
     expect(result.current.canSplit).toBe(false);
   });
 
   it("never closes the last group, but once split the primary closes like any other", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     expect(result.current.closable).toBe(false);
     act(() => result.current.close("main"));
     expect(result.current.groups.map((group) => group.id)).toEqual(["main"]);
@@ -961,25 +982,46 @@ describe("useChatGroups ceilings", () => {
     expect(result.current.closable).toBe(false);
   });
 
-  it("offers neither close nor show-alone in chat mode, which already shows one tile and hides the rest", () => {
-    const { result, rerender } = renderHook(({ mode }: { mode: "chat" | "work" }) => useChatGroups(mode), {
-      initialProps: { mode: "work" as "chat" | "work" },
-    });
+  it("folds at 903px and restores controls at 964px without losing hidden groups", () => {
+    const view = renderCanvasGroups();
+    const { result } = view;
     act(() => result.current.dropOnEdge("main", "right"));
     expect(result.current.closable).toBe(true);
-    rerender({ mode: "chat" });
-    // One tile DRAWN, both groups still mounted: the other conversation may be
-    // mid-turn, and a turn's stream subscription lives in its tile. Chat mode
-    // hides it rather than taking it away.
-    // The split focused the new group, and chat mode draws the focused one.
+    // Two 448px pane floors plus an 8px gutter need 904px; the restore boundary adds a 60px dead band.
+    view.resizeCanvas(904);
+    expect(drawn(result.current.groups)).toEqual(["main", "group-2"]);
+    view.resizeCanvas(903);
     expect(drawn(result.current.groups)).toEqual(["group-2"]);
     expect(result.current.groups.map((group) => group.id)).toEqual(["main", "group-2"]);
     expect(result.current.closable).toBe(false);
     expect(result.current.canMaximize).toBe(false);
+    expect(result.current.canSplit).toBe(false);
+    view.resizeCanvas(963);
+    expect(drawn(result.current.groups)).toEqual(["group-2"]);
+    view.resizeCanvas(964);
+    expect(drawn(result.current.groups)).toEqual(["main", "group-2"]);
+    expect(result.current.closable).toBe(true);
+    expect(result.current.canMaximize).toBe(true);
+    expect(result.current.canSplit).toBe(true);
+  });
+
+  it("focuses a hidden narrow-canvas tile while retaining the wide-canvas maximize choice", () => {
+    const view = renderCanvasGroups();
+    const { result } = view;
+    act(() => result.current.split("main", "row"));
+    act(() => result.current.toggleMaximize("main"));
+    view.resizeCanvas(600);
+    act(() => result.current.focus("group-2"));
+    expect(result.current.focusedId).toBe("group-2");
+    expect(result.current.maximizedId).toBe("main");
+    expect(drawn(result.current.groups)).toEqual(["group-2"]);
+    view.resizeCanvas(964);
+    expect(result.current.maximizedId).toBe("main");
+    expect(drawn(result.current.groups)).toEqual(["main"]);
   });
 
   it("shows one tile alone on maximize and gives the others back on restore, closing nothing", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     expect(result.current.canMaximize).toBe(false);
     act(() => result.current.dropOnEdge("main", "right"));
     expect(result.current.canMaximize).toBe(true);
@@ -998,7 +1040,7 @@ describe("useChatGroups ceilings", () => {
   });
 
   it("drops a maximize when its tile closes or another tile is added", () => {
-    const { result } = renderHook(() => useChatGroups("work"));
+    const { result } = renderCanvasGroups();
     act(() => result.current.dropOnEdge("main", "right"));
     act(() => result.current.toggleMaximize("group-2"));
     act(() => result.current.close("group-2"));
