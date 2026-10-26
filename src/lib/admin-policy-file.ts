@@ -1,6 +1,7 @@
 import { lstat, readFile, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 import { readWindowsAdminPolicy } from "../shared/windows-admin-policy.js";
+import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
 import type { AuditLogger } from "../audit/audit-logger.js";
 
 let policyAuditLogger: Pick<AuditLogger, "log"> | undefined;
@@ -14,6 +15,7 @@ export function auditAdminPolicyFailure(reason: string): void {
 }
 
 export async function readAdminPolicyFile(filePath: string): Promise<Buffer> {
+  checkAdminPolicyPath(filePath);
   try {
     return await (process.platform === "win32" ? readWindowsAdminPolicy(filePath) : readFile(filePath));
   } catch (error) {

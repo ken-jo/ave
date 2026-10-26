@@ -28,10 +28,13 @@ export function decideModelCatalogRefresh(args: {
 const POLICY_LIMITS = { maxBytes: 1024 * 1024, maxDepth: 64, maxNodes: 200_000, maxObjectMembers: 10_000, maxArrayItems: 50_000 };
 
 /** Absent managed policy permits user choice; unreadable or malformed policy disables refresh. */
-export async function readModelCatalogRefreshPolicy(policyPath: string): Promise<"off" | null> {
+export async function readModelCatalogRefreshPolicy(
+  policyPath: string,
+  readPolicyFile: (path: string) => Promise<Buffer> = readAdminPolicyFile,
+): Promise<"off" | null> {
   let bytes: Buffer;
   try {
-    bytes = await readAdminPolicyFile(policyPath);
+    bytes = await readPolicyFile(policyPath);
   } catch (error) {
     return (await isAdminPolicyFileAbsent(policyPath, error)) ? null : "off";
   }

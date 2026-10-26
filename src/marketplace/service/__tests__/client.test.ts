@@ -1,5 +1,5 @@
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -101,22 +101,22 @@ describe("readPolicyServiceBase", () => {
   };
 
   it("reads service.baseUrl, and null without the file or the section", async () => {
-    await expect(readPolicyServiceBase(join(dir, "none.json"))).resolves.toBeNull();
-    await expect(readPolicyServiceBase(policy({ managed: true }))).resolves.toBeNull();
-    await expect(readPolicyServiceBase(policy({ service: { baseUrl: "https://ave.corp.example/" } }))).resolves.toBe("https://ave.corp.example");
+    await expect(readPolicyServiceBase(join(dir, "none.json"), readFile)).resolves.toBeNull();
+    await expect(readPolicyServiceBase(policy({ managed: true }), readFile)).resolves.toBeNull();
+    await expect(readPolicyServiceBase(policy({ service: { baseUrl: "https://ave.corp.example/" } }), readFile)).resolves.toBe("https://ave.corp.example");
   });
 
   it("throws on an ENOTDIR policy path instead of falling back to the public base", async () => {
     const parent = join(dir, "admin");
     writeFileSync(parent, "not a directory");
-    await expect(readPolicyServiceBase(join(parent, "policy.json"))).rejects.toMatchObject({ code: process.platform === "win32" ? "ENOENT" : "ENOTDIR" });
+    await expect(readPolicyServiceBase(join(parent, "policy.json"), readFile)).rejects.toMatchObject({ code: process.platform === "win32" ? "ENOENT" : "ENOTDIR" });
   });
 
   it("throws on a dangling policy symlink instead of falling back to the public base", async ({ skip }) => {
     requireSymlinkCapability(dir, "file", skip);
     const path = join(dir, "policy.json");
     symlinkSync(join(dir, "missing-target.json"), path, "file");
-    await expect(readPolicyServiceBase(path)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(readPolicyServiceBase(path, readFile)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
   it.each([
@@ -126,7 +126,7 @@ describe("readPolicyServiceBase", () => {
     ["invalid JSON", "{"],
     ["a duplicated baseUrl", '{"service":{"baseUrl":"https://ave.corp.example","baseUrl":"https://ave.agent-connector.ai"}}'],
   ])("throws on %s, so a typo does not fall back to the public base", async (_label, value) => {
-    await expect(readPolicyServiceBase(policy(value))).rejects.toThrow();
+    await expect(readPolicyServiceBase(policy(value), readFile)).rejects.toThrow();
   });
 });
 

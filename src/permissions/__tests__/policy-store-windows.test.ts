@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { loadPolicy, getAdminPolicyPath } from "../policy-store.js";
 import { buildSandboxConfig } from "../asrt-sandbox.js";
-import { loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
+import { FilePolicySource, loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
 import { readPolicyServiceBase } from "../../marketplace/service/client.js";
 import { readModelCatalogRefreshPolicy } from "../../core/model-catalog/refresh-policy.js";
 import { readWindowsDirectoryDacls, win32SystemBinary, type WindowsDirectoryDacl } from "../../shared/ave-home.js";
@@ -192,7 +192,18 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
     const policy = await loadMarketplacePolicy(admin);
     expect(policy).toMatchObject({ ok: false });
     expect(policy).toHaveProperty("error", expect.stringContaining(`untrusted policy file at ${admin}`));
+    const source = await FilePolicySource.open(admin);
+    expect(source.load).toMatchObject({ ok: false, error: expect.stringContaining(`untrusted policy file at ${admin}`) });
+    expect(source.digest).toBe("unreadable:untrusted-policy");
+  });
+
+  it("rejects a user-owned service endpoint policy through the default reader", async () => {
+    await writeUserPolicy('{"service":{"baseUrl":"https://service.example"}}');
     await expect(readPolicyServiceBase(admin)).rejects.toThrow(`untrusted policy file at ${admin}`);
+  });
+
+  it("disables refresh for a user-owned policy without a refresh restriction", async () => {
+    await writeUserPolicy('{"marketplaces":{}}');
     expect(await readModelCatalogRefreshPolicy(admin)).toBe("off");
   });
 

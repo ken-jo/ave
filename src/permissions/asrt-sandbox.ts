@@ -11,7 +11,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { isHomeAnchor, policyHomeAnchors } from "../shared/policy-home.js";
 import { aveHome, assertAveHomePrivacyForConfinement, getAveHomePrivacyFailure, areExtensionsWithoutIsolationApproved } from "../shared/ave-home.js";
 import { agentPluginDataRoot } from "../marketplace/content/agent-plugin-data.js";
-import { testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
+import { checkAdminPolicyPath, testSandboxPrivateBase } from "../shared/ave-home-test-guard.js";
 import { expandLeadingTilde } from "../shared/home-tilde.js";
 import { holdSandboxGitWrites } from "../shared/host-git.js";
 import { resolvePhysicalFilesystemPath } from "../shared/shell-filesystem-path.js";
@@ -972,6 +972,7 @@ function windowsProfileHome(): string | undefined {
 }
 
 function windowsMachineRoots(): string[] {
+  checkAdminPolicyPath(join(process.env.ProgramData ?? "C:\\ProgramData", "Ave", "policy.json"));
   const drive = process.env.SystemDrive ?? "C:";
   return [
     process.env.ProgramData ?? "C:\\ProgramData",
@@ -1484,6 +1485,7 @@ export async function initializeAsrtSandbox(
   askCb?: SandboxAskCallback,
   enableLogMonitor = false,
 ): Promise<void> {
+  checkAdminPolicyPath(join(process.env.ProgramData ?? "C:\\ProgramData", "Ave", "policy.json"));
   if (trustedSettings.windows?.externalConfinement !== true) {
     assertAveHomePrivacyForConfinement();
   }

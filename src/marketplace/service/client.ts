@@ -97,10 +97,13 @@ export function parseServiceDocument(value: unknown, base: string, options: Orig
 }
 
 /** Absent policy uses defaults; malformed service sections throw rather than fail open. */
-export async function readPolicyServiceBase(policyPath: string): Promise<string | null> {
+export async function readPolicyServiceBase(
+  policyPath: string,
+  readPolicyFile: (path: string) => Promise<Buffer> = readAdminPolicyFile,
+): Promise<string | null> {
   let bytes: Buffer;
   try {
-    bytes = await readAdminPolicyFile(policyPath);
+    bytes = await readPolicyFile(policyPath);
   } catch (error) {
     if (await isAdminPolicyFileAbsent(policyPath, error)) return null;
     throw error;

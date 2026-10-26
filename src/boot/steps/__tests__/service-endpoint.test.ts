@@ -1,11 +1,11 @@
 /** Staging may allow loopback moves and must keep its accepted-move record separate from production. */
-import { existsSync, mkdtempSync } from "node:fs";
-import { rm } from "node:fs/promises";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
+import { readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { TelemetrySettings } from "../../../data/settings-store.js";
-import { AVE_SERVICE_BASE_URL } from "../../../marketplace/service/client.js";
+import { AVE_SERVICE_BASE_URL, readPolicyServiceBase } from "../../../marketplace/service/client.js";
 import { consentedTelemetryEndpoint, createServiceClient } from "../service-endpoint.js";
 
 const STAGING = "http://127.0.0.1:8791";
@@ -23,8 +23,10 @@ function fetchOver(routes: Record<string, unknown>) {
 describe("createServiceClient", () => {
   let home: string;
   let previousHome: string | undefined;
+  const policyBase = () => readPolicyServiceBase(join(home, "policy.json"), readFile);
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), "ave-service-home-"));
+    writeFileSync(join(home, "policy.json"), "{}");
     previousHome = process.env.AVE_HOME;
     process.env.AVE_HOME = home;
   });
@@ -41,6 +43,7 @@ describe("createServiceClient", () => {
         [`${MOVED}/.well-known/ave-service.json`]: doc({ movedFrom: STAGING }),
       }),
       STAGING,
+      policyBase,
     );
     await expect(service.refresh()).resolves.toMatchObject({ base: MOVED, source: "moved" });
     expect(existsSync(join(home, "marketplaces", "service.staging.json"))).toBe(true);
@@ -48,7 +51,7 @@ describe("createServiceClient", () => {
   });
 
   it("uses the build constant without an override, where loopback http is not a base", async () => {
-    const service = createServiceClient(fetchOver({ [`${AVE_SERVICE_BASE_URL}/.well-known/ave-service.json`]: doc({ movedTo: STAGING }) }), undefined);
+    const service = createServiceClient(fetchOver({ [`${AVE_SERVICE_BASE_URL}/.well-known/ave-service.json`]: doc({ movedTo: STAGING }) }), undefined, policyBase);
     await expect(service.refresh()).rejects.toThrow(/https/u);
   });
 });

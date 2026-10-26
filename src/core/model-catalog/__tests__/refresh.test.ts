@@ -2,6 +2,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { requireSymlinkCapability } from "../../../__tests__/support/symlink-capability.js";
@@ -574,12 +575,12 @@ describe("readModelCatalogRefreshPolicy", () => {
   };
 
   it("leaves the decision to the user when the file or the section is absent", async () => {
-    expect(await readModelCatalogRefreshPolicy(join(dir, "absent.json"))).toBeNull();
-    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ marketplaces: {} })))).toBeNull();
+    expect(await readModelCatalogRefreshPolicy(join(dir, "absent.json"), readFile)).toBeNull();
+    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ marketplaces: {} })), readFile)).toBeNull();
   });
 
   it("reads { refresh: off } as off", async () => {
-    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ modelCatalog: { refresh: "off" } })))).toBe("off");
+    expect(await readModelCatalogRefreshPolicy(policy(JSON.stringify({ modelCatalog: { refresh: "off" } })), readFile)).toBe("off");
   });
 
   it.each([
@@ -588,6 +589,6 @@ describe("readModelCatalogRefreshPolicy", () => {
     ["an unknown value", JSON.stringify({ modelCatalog: { refresh: "sometimes" } })],
     ["an unknown key", JSON.stringify({ modelCatalog: { refresh: "off", extra: 1 } })],
   ])("fails closed on %s", async (_label, text) => {
-    expect(await readModelCatalogRefreshPolicy(policy(text))).toBe("off");
+    expect(await readModelCatalogRefreshPolicy(policy(text), readFile)).toBe("off");
   });
 });

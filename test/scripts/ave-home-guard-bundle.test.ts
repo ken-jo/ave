@@ -19,7 +19,7 @@ async function bundle(): Promise<string> {
     stdin: {
       contents: [
         'export { aveHome } from "./src/shared/ave-home.ts";',
-        'export { AVE_HOME_ISOLATION_GUARD_ACTIVE } from "./src/shared/ave-home-test-guard.ts";',
+        'export { AVE_HOME_ISOLATION_GUARD_ACTIVE, checkAdminPolicyPath } from "./src/shared/ave-home-test-guard.ts";',
       ].join("\n"),
       resolveDir: repo,
       loader: "ts",
@@ -41,6 +41,7 @@ describe("the Ave home guard in a production bundle", () => {
     expect(text).not.toContain("refusing to");
     expect(text).not.toContain("ave-home-isolation-guard");
     expect(text).not.toContain("userInfo");
+    expect(text).not.toContain("realProgramData");
   });
 
   it("resolves the home as usual in a process that inherited VITEST and test variables", async () => {
@@ -49,7 +50,7 @@ describe("the Ave home guard in a production bundle", () => {
     const home = join(scratch, "home");
     const run = (extra: Record<string, string>) => spawnSync(
       node,
-      ["--input-type=module", "-e", `const m = await import(${JSON.stringify(pathToFileURL(file).href)}); console.log(JSON.stringify([m.aveHome(), m.AVE_HOME_ISOLATION_GUARD_ACTIVE]));`],
+      ["--input-type=module", "-e", `const m = await import(${JSON.stringify(pathToFileURL(file).href)}); m.checkAdminPolicyPath("C:/ProgramData/Ave/policy.json"); console.log(JSON.stringify([m.aveHome(), m.AVE_HOME_ISOLATION_GUARD_ACTIVE]));`],
       {
         encoding: "utf8",
         timeout: 15_000,

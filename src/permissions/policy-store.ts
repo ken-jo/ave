@@ -5,6 +5,7 @@ import { dirname, join, resolve } from "node:path";
 import { t } from "../i18n/index.js";
 import { createLogger } from "../lib/logger.js";
 import { aveHome } from "../shared/ave-home.js";
+import { checkAdminPolicyPath } from "../shared/ave-home-test-guard.js";
 import type { AdminPolicyDiagnostic, PolicySource } from "../shared/policy-editability.js";
 import { auditAdminPolicyFailure, isAdminPolicyFileAbsent, readAdminPolicyFile } from "../lib/admin-policy-file.js";
 import { WindowsPolicyReadError } from "../shared/windows-admin-policy.js";
@@ -16,8 +17,11 @@ export function getAdminPolicyPath(): string {
   switch (process.platform) {
     case "darwin":
       return "/Library/Application Support/Ave/policy.json";
-    case "win32":
-      return join(process.env.ProgramData ?? "C:\\ProgramData", "Ave", "policy.json");
+    case "win32": {
+      const path = join(process.env.ProgramData ?? "C:\\ProgramData", "Ave", "policy.json");
+      checkAdminPolicyPath(path);
+      return path;
+    }
     case "linux":
       return "/etc/ave/policy.json";
     default:

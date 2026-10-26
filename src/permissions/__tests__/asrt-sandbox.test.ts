@@ -17,6 +17,7 @@ import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -879,6 +880,16 @@ describe("asrt-sandbox — normalizeUnionForAsrt (domain-matching alignment, PR 
 });
 
 describe("asrt-sandbox — proxyPortRange single SOT (install↔config consistency)", () => {
+  const programData = process.env.ProgramData;
+  beforeEach(() => {
+    // Keep the machine fixture disjoint from grants covering the helper's temp parent.
+    process.env.ProgramData = join(process.env.AVE_TEST_RUN_HOME!, "program-data");
+  });
+  afterEach(() => {
+    if (programData === undefined) delete process.env.ProgramData;
+    else process.env.ProgramData = programData;
+  });
+
   // The WFP rule stamped at install time MUST cover exactly the port range the srt-win egress proxy binds at runtime. Both the install handler (ipc/domains/permissions.ts sandboxWindowsInstall) and buildSandboxConfig (asrt-sandbox.ts) source their range from the SAME local DEFAULT_WINDOWS_PROXY_PORT_RANGE constant — the local mirror of ASRT's value. This test pins the invariant: the local constant is identical to ASRT's real export, so the WFP-permitted range (stamped at install) equals the proxy bind range (at runtime) by construction, and any upstream drift in ASRT fails this test rather than silently desyncing the two paths.
   it("local DEFAULT_WINDOWS_PROXY_PORT_RANGE matches ASRT's real export", async () => {
     const asrt = await import("@anthropic-ai/sandbox-runtime");
@@ -1138,9 +1149,9 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
     const profile = join(tmpdir(), "ave-subscription-custom-profile");
     process.env.AVE_HOME = profile;
-    const runtime = join(profile, "subscription-runtimes") + (process.platform === "win32" ? sep : "");
-    expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
-    expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
+    const runtime = join(profile, "subscription-runtimes");
+    expect(bare(getDefaultSensitiveReadDenyPaths())).toContain(runtime);
+    expect(bare(getDefaultSensitiveWriteDenyPaths())).toContain(runtime);
     const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
     expect(bare(config.filesystem.denyRead)).toContain(runtime);
     expect(bare(config.filesystem.denyWrite)).toContain(runtime);
@@ -1344,8 +1355,17 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     // A `C:\` grant now contains machine roots, so the drive-root row uses a synthetic, uninstalled drive.
     const realpath = vi.spyOn(realpathSync, "native").mockImplementation(((path) => {
       const candidate = resolve(String(path));
-      return /^Z:\\/i.test(candidate) ? candidate : nativeRealpath(path);
+      return /^Z:\\|^\\\\server\\profiles\\/i.test(candidate) ? candidate : nativeRealpath(path);
     }) as typeof realpathSync.native);
+    const nodeFs = createRequire(import.meta.url)("node:fs") as typeof import("node:fs");
+    const nativeLstat = nodeFs.lstatSync;
+    const lstat = vi.spyOn(nodeFs, "lstatSync").mockImplementation(((...args: Parameters<typeof nodeFs.lstatSync>) => {
+      if (/^\\\\server\\profiles\\/i.test(resolve(String(args[0])))) {
+        throw Object.assign(new Error("Synthetic network fixture is absent"), { code: "ENOENT" });
+      }
+      return nativeLstat(...args);
+    }) as typeof nodeFs.lstatSync);
+    syncBuiltinESMExports();
     try {
       const config = buildSandboxConfig({
         allowedDomains: [],
@@ -1356,6 +1376,8 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
       expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
     } finally {
+      lstat.mockRestore();
+      syncBuiltinESMExports();
       realpath.mockRestore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;

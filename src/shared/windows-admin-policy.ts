@@ -3,6 +3,7 @@ import { promisify } from "node:util";
 import { win32SystemBinary } from "./ave-home.js";
 import { windowsPowerShellEnv } from "./windows-powershell-env.js";
 import { WINDOWS_OWNER_CLAIM_SOURCE } from "./windows-owner-claim.js";
+import { checkAdminPolicyPath } from "./ave-home-test-guard.js";
 
 interface PolicyAccessRule {
   sid: string;
@@ -140,6 +141,7 @@ export class WindowsPolicyReadError extends Error {
 }
 
 export async function readWindowsAdminPolicy(path: string): Promise<Buffer> {
+  checkAdminPolicyPath(path);
   // Promisified per call: an import-time promisify reads child_process before any caller needs it.
   const output = await promisify(execFile)(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
     ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", POLICY_READ_COMMAND], {

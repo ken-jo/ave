@@ -41,6 +41,7 @@ import { marketplaceEvents, startMarketplaceBackground, type BackgroundService }
 import { emptyUpdateHistory, type UpdateHistory } from "../../updates/history.js";
 import type { SyncProgressView } from "../../../shared/git-marketplace.js";
 import { cleanupTmpDir } from "../../../__tests__/support/tmp-dir-teardown.js";
+import { plainPolicyFileAccess } from "../../../__tests__/support/policy-file-access.js";
 import { nodeFolders } from "../../__tests__/fixtures/folder-fs.js";
 import { UNREACHABLE_OFFICIAL } from "../../__tests__/fixtures/official.js";
 import { setProcessPlatform } from "../../../__tests__/support/process-platform.js";
@@ -1824,7 +1825,7 @@ describe("MarketplaceService", () => {
     const path = join(root, "ave-policy.json");
     const write = (marketplaces: unknown) => writeFileSync(path, JSON.stringify({ version: 1, managed: true, marketplaces }));
     write({});
-    await build(await FilePolicySource.open(path));
+    await build(await FilePolicySource.open(path, plainPolicyFileAccess));
     const { url } = market();
     const added = await addMarket(url);
     const plan = await service.planInstall({ sourceId: added.id, kind: "skill", name: "review" });
@@ -1847,7 +1848,7 @@ describe("MarketplaceService", () => {
       requiredInstalls: [{ kind: "skill", name: "review", source: "ave" }, { kind: "skill", name: "review", source: "corp" }],
     } }));
     service.close();
-    await build(await FilePolicySource.open(path));
+    await build(await FilePolicySource.open(path, plainPolicyFileAccess));
     const { url } = market();
     const refused = service.previewSource({ input: url, auth: "none" });
     await expect(refused).rejects.toMatchObject({ code: "SOURCE_POLICY_BLOCKED", detail: { reason: "policy-invalid" } });
@@ -1869,7 +1870,7 @@ describe("MarketplaceService", () => {
 
     it("starts the work a catalog change asks for outside the operation, so it reads a policy changed meanwhile", async () => {
       write({});
-      await build(await FilePolicySource.open(policyPath()));
+      await build(await FilePolicySource.open(policyPath(), plainPolicyFileAccess));
       const { url } = market();
       const later = gate();
       let recheck: Promise<unknown> | null = null;
@@ -1886,7 +1887,7 @@ describe("MarketplaceService", () => {
 
     it("starts that work outside the operation even while the operation still runs", async () => {
       write({});
-      await build(await FilePolicySource.open(policyPath()));
+      await build(await FilePolicySource.open(policyPath(), plainPolicyFileAccess));
       const { url } = market();
       let recheck: Promise<unknown> | null = null;
       afterCatalogChanged = () => {
@@ -1991,7 +1992,7 @@ describe("MarketplaceService", () => {
 
     it("lets work started inside an operation, still running after it, enter an operation of its own", async () => {
       write({});
-      await build(await FilePolicySource.open(policyPath()));
+      await build(await FilePolicySource.open(policyPath(), plainPolicyFileAccess));
       const { url } = market();
       const later = gate();
       let leftBehind: Promise<unknown> | null = null;
@@ -2057,7 +2058,7 @@ describe("MarketplaceService", () => {
 
     async function start(marketplaces: unknown) {
       write(marketplaces);
-      const file = await FilePolicySource.open(policyPath());
+      const file = await FilePolicySource.open(policyPath(), plainPolicyFileAccess);
       const held = heldPolicy(file);
       await build(held.source);
       const preflight = vi.spyOn(git.runner, "preflight").mockRejectedValue(new Error("reached git"));

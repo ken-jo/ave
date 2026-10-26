@@ -6,6 +6,7 @@ import { NetworkGate } from "../../../marketplace/net/network-gate.js";
 import { normalizeSourceUrl } from "../../../marketplace/net/source-url.js";
 import { createPinnedFetch } from "../../../marketplace/net/pinned-fetch.js";
 import { FilePolicySource } from "../../../marketplace/sources/policy.js";
+import { plainPolicyFileAccess } from "../../../__tests__/support/policy-file-access.js";
 import { parseGitMarketplaceResult, type EnteredTargetWarningView } from "../../../shared/git-marketplace.js";
 import { scrubDiagnosticSecrets } from "../../../shared/dlp.js";
 import { breakDiagnosticScrubberOn, DIAGNOSTIC_KEPT, DIAGNOSTIC_SECRET_PROBES } from "../../../shared/__tests__/fixtures/diagnostic-secret-probes.js";
@@ -1198,7 +1199,7 @@ describe("git marketplace IPC boundary", () => {
     try {
       const key = "https://alice:detail-canary@example.com/x";
       writeFileSync(join(dir, "policy.json"), `{"${key}": 1, "${key}": 2}`);
-      const policy = await FilePolicySource.open(join(dir, "policy.json"));
+      const policy = await FilePolicySource.open(join(dir, "policy.json"), plainPolicyFileAccess);
       const gate = new NetworkGate({ policy, allowLoopback: false, transport: createPinnedFetch() });
       await setup({ refresh: vi.fn(async () => gate.checkRemote(normalizeSourceUrl("https://1.1.1.1/acme/market"), { official: false, acknowledged: new Set() })) });
       const answer = await invokeFileIpcHandler(handlers, channels.sourcesRefresh);
