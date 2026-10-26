@@ -1,0 +1,351 @@
+import { execFileSync } from "node:child_process";
+import { lstatSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
+import { join, relative, sep } from "node:path";
+import * as runtime from "@anthropic-ai/sandbox-runtime";
+import type { SandboxRuntimeConfig } from "@anthropic-ai/sandbox-runtime";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
+import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
+import * as evidence from "../../shared/windows-read-deny-evidence.js";
+import {
+  buildPerCommandSandboxCustomConfig, buildSandboxConfig, grantWindowsWorkerFilesystemAccess,
+  initializeAsrtSandbox, isAsrtSandboxActive, registerWorkerUnixSocketDir,
+  resetAsrtSandbox, unregisterWorkerUnixSocketDir, wrapTerminalCommand, wrapToolCommand, wrapWorkerCommand,
+} from "../asrt-sandbox.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+});
+
+useVerifiedAveHomePrivacy();
+
+describe.runIf(process.platform === "win32")("Windows deny target handoff", () => {
+  let root: string;
+  let profile: string;
+  let config: SandboxRuntimeConfig | undefined;
+  const manager = runtime.SandboxManager;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(os.tmpdir(), "deny-absent-"));
+    profile = join(root, "profile");
+    mkdirSync(profile);
+    vi.stubEnv("HOME", profile);
+    vi.stubEnv("USERPROFILE", profile);
+    vi.spyOn(evidence, "readWindowsReadDenyEvidence").mockImplementation(async paths =>
+      new Map(paths.map(path => [evidence.windowsReadDenyKey(path), { status: "error" as const, reason: "probe failed" }])));
+    config = undefined;
+  });
+
+  afterEach(async () => {
+    if (isAsrtSandboxActive()) await resetAsrtSandbox();
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  function captureRuntime() {
+    vi.spyOn(manager, "initialize").mockImplementation(async next => { config = next; });
+    vi.spyOn(manager, "getConfig").mockImplementation(() => config);
+    vi.spyOn(manager, "updateConfig").mockImplementation(next => { config = next; });
+    vi.spyOn(manager, "reset").mockImplementation(async () => { config = undefined; });
+    return vi.spyOn(manager, "wrapWithSandboxArgv").mockResolvedValue({ argv: ["echo"], env: {} });
+  }
+
+  function paths(entries: readonly runtime.FilesystemPathEntry[] | undefined): string[] {
+    return (entries ?? []).map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
+  }
+
+  it("drops absent read and write rows despite failed evidence and keeps existing rows at initialization", async () => {
+    captureRuntime();
+    const present = join(profile, "nested", "present");
+    const absent = join(profile, "nested", "absent");
+    mkdirSync(join(profile, "nested"));
+    writeFileSync(present, "secret");
+    await initializeAsrtSandbox({ denyRead: [present, absent], denyWrite: [present, absent], allowRead: [profile] });
+    expect(paths(config?.filesystem.denyRead)).toContain(present);
+    expect(paths(config?.filesystem.denyWrite)).toContain(present);
+    expect(paths(config?.filesystem.denyRead)).not.toContain(absent);
+    expect(paths(config?.filesystem.denyWrite)).not.toContain(absent);
+  });
+
+  it("drops a row deleted after the snapshot at a tool wrap with no filesystem override", async () => {
+    const wrap = captureRuntime();
+    vi.mocked(evidence.readWindowsReadDenyEvidence).mockRestore();
+    const target = join(profile, "nested", "secret");
+    mkdirSync(join(profile, "nested"));
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target], allowRead: [profile] });
+    rmSync(target);
+    await wrapToolCommand("echo absent", { commandId: TEST_COMMAND_ID });
+    const filesystem = wrap.mock.calls.at(-1)?.[2]?.filesystem;
+    expect(filesystem?.denyRead).toBeDefined();
+    expect(filesystem?.denyWrite).toBeDefined();
+    expect(paths(filesystem?.denyRead)).not.toContain(target);
+    expect(paths(filesystem?.denyWrite)).not.toContain(target);
+    writeFileSync(target, "recreated");
+    await wrapToolCommand("echo present", { commandId: TEST_COMMAND_ID });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).toContain(target);
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).toContain(target);
+  });
+
+  it("reports absent at stamp time only once per path in a session", async () => {
+    captureRuntime();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const target = join(root, "absent");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    await wrapToolCommand("echo first", { commandId: TEST_COMMAND_ID });
+    await wrapToolCommand("echo second", { commandId: TEST_COMMAND_ID });
+    const rows = () => warning.mock.calls.filter(call => call.some(value =>
+      typeof value === "string" && value.includes(target) && value.includes("absent at stamp time")));
+    expect(rows()).toHaveLength(1);
+    await resetAsrtSandbox();
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    expect(rows()).toHaveLength(2);
+  });
+
+  it("drops absent rows at worker and terminal restatements", async () => {
+    const wrap = captureRuntime();
+    const target = join(root, "absent");
+    await initializeAsrtSandbox({});
+    const filesystem = { denyRead: [target], denyWrite: [target] };
+    await wrapWorkerCommand("echo absent", { commandId: TEST_COMMAND_ID, filesystem });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(target);
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(target);
+    await wrapTerminalCommand("echo absent", { commandId: TEST_COMMAND_ID, ownTty: "fixture-tty", filesystem });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(target);
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(target);
+  });
+
+  it("rechecks session updates when worker socket holders change", async () => {
+    captureRuntime();
+    const target = join(root, "secret");
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    rmSync(target);
+    const holder = {};
+    const socket = join(root, "socket");
+    await registerWorkerUnixSocketDir(socket, holder);
+    expect(paths(config?.filesystem.denyRead)).not.toContain(target);
+    expect(paths(config?.filesystem.denyWrite)).not.toContain(target);
+    writeFileSync(target, "recreated");
+    await unregisterWorkerUnixSocketDir(socket, holder);
+    expect(paths(config?.filesystem.denyRead)).toContain(target);
+    expect(paths(config?.filesystem.denyWrite)).toContain(target);
+  });
+
+  it("filters an alternate home anchor without dropping existing targets", () => {
+    const home = join(root, "alternate");
+    mkdirSync(join(home, ".config"), { recursive: true });
+    vi.stubEnv("HOME", home);
+    const present = join(home, ".config", "curlrc");
+    const absent = join(home, ".curlrc");
+    writeFileSync(present, "secret");
+    const next = buildSandboxConfig({});
+    expect(paths(next.filesystem.denyRead)).toContain(present);
+    expect(paths(next.filesystem.denyWrite)).toContain(present);
+    expect(paths(next.filesystem.denyRead)).not.toContain(absent);
+    expect(paths(next.filesystem.denyWrite)).not.toContain(absent);
+  });
+
+  it("keeps writable literal targets and dangling directory links without following them", () => {
+    const workspace = join(root, "workspace[1]");
+    mkdirSync(join(workspace, ".git"), { recursive: true });
+    const present = join(workspace, ".bashrc");
+    writeFileSync(present, "secret");
+    const link = join(root, "dangling");
+    symlinkSync(join(root, "missing-directory"), link, "junction");
+    const absent = join(workspace, ".git", "modules");
+    const next = buildSandboxConfig({ allowWrite: [workspace], denyRead: [link + sep], denyWrite: [link + sep] });
+    expect(paths(next.filesystem.denyRead)).toContain(link);
+    expect(next.filesystem.denyWrite).toContainEqual({ path: present, literal: true });
+    expect(paths(next.filesystem.denyWrite)).toContain(link);
+    expect(next.filesystem.denyWrite).toContainEqual({ path: absent, literal: true });
+    expect(lstatSync(link).isSymbolicLink()).toBe(true);
+  });
+
+  it("keeps glob and UNC expansion at the runtime boundary", () => {
+    const glob = join(root, "missing-*");
+    const unc = "\\\\fixture-server\\fixture-share\\missing";
+    const next = buildSandboxConfig({ denyRead: [glob, unc], denyWrite: [glob, unc] });
+    expect(next.filesystem.denyRead).toContain(glob);
+    expect(next.filesystem.denyRead).toContain(unc);
+    expect(next.filesystem.denyWrite).toContain(glob);
+    expect(next.filesystem.denyWrite).toContain(unc);
+  });
+
+  it("does not let a concurrent bracket grant retain unrelated rows while protecting its reachable rows", async () => {
+    const wrap = captureRuntime();
+    const unrelated = join(profile, ".curlrc");
+    const grant = join(profile, "work[1]");
+    const shared = join(profile, "shared");
+    const protectedTarget = join(shared, "secret");
+    const absent = join(shared, "absent");
+    mkdirSync(grant);
+    mkdirSync(shared);
+    writeFileSync(unrelated, "private");
+    writeFileSync(protectedTarget, "secret");
+    await initializeAsrtSandbox({});
+    const filesystem = { denyRead: [unrelated, protectedTarget, absent], denyWrite: [unrelated, protectedTarget, absent] };
+    await wrapToolCommand("echo before", { commandId: TEST_COMMAND_ID, filesystem });
+    const before = wrap.mock.calls.at(-1)?.[2]?.filesystem;
+    expect(paths(before?.denyWrite)).not.toContain(protectedTarget);
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid, allowRead: [grant], allowWrite: [shared] });
+    try {
+      await Promise.all([
+        wrapToolCommand("echo one", { commandId: TEST_COMMAND_ID, filesystem }),
+        wrapWorkerCommand("echo two", { commandId: TEST_COMMAND_ID, filesystem }),
+      ]);
+      const concurrent = wrap.mock.calls.slice(-2).map(call => call[2]?.filesystem);
+      for (const next of concurrent) {
+        expect(paths(next?.denyRead)).not.toContain(unrelated);
+        expect(paths(next?.denyWrite)).not.toContain(unrelated);
+        expect(paths(next?.denyRead)).toContain(protectedTarget);
+        expect(paths(next?.denyWrite)).toContain(protectedTarget);
+        expect(paths(next?.denyRead)).toContain(absent);
+        expect(paths(next?.denyWrite)).toContain(absent);
+      }
+      expect(paths(before?.denyRead)).not.toContain(unrelated);
+    } finally {
+      held.release();
+    }
+    await wrapToolCommand("echo released", { commandId: TEST_COMMAND_ID, filesystem });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(absent);
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(absent);
+  });
+
+  it("keeps absent read and write denies reached by session and caller write grants", async () => {
+    const wrap = captureRuntime();
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, "credential");
+    await initializeAsrtSandbox({ allowWrite: [workspace], denyRead: [target], denyWrite: [target] });
+    expect(paths(config?.filesystem.denyRead)).toContain(target);
+    expect(paths(config?.filesystem.denyWrite)).toContain(target);
+    await wrapToolCommand("echo protected", { commandId: TEST_COMMAND_ID });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).toContain(target);
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).toContain(target);
+    const caller = join(root, "caller");
+    mkdirSync(caller);
+    const absent = join(caller, "credential");
+    const custom = buildPerCommandSandboxCustomConfig({ allowWrite: [caller], denyRead: [target, absent], denyWrite: [target, absent] });
+    expect(paths(custom?.filesystem?.denyRead)).toEqual(expect.arrayContaining([target, absent]));
+    expect(paths(custom?.filesystem?.denyWrite)).toEqual(expect.arrayContaining([target, absent]));
+    expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+    expect(lstatSync(absent, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  it("drops absent denies reached only by a read grant", async () => {
+    const wrap = captureRuntime();
+    const target = join(profile, "credential");
+    await initializeAsrtSandbox({ allowRead: [profile], denyRead: [target], denyWrite: [target] });
+    expect(paths(config?.filesystem.denyRead)).not.toContain(target);
+    expect(paths(config?.filesystem.denyWrite)).not.toContain(target);
+    await wrapToolCommand("echo readonly", { commandId: TEST_COMMAND_ID });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).not.toContain(target);
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).not.toContain(target);
+  });
+
+  it("keeps absent denies reached by uncertain write grant spellings within their static directory", () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, "credential");
+    const unrelated = join(root, "unrelated");
+    for (const grant of [join(workspace, "part*"), join(workspace, "PART~1")]) {
+      const next = buildSandboxConfig({ allowWrite: [grant], denyRead: [target, unrelated], denyWrite: [target, unrelated] });
+      expect(paths(next.filesystem.denyRead)).toContain(target);
+      expect(paths(next.filesystem.denyWrite)).toContain(target);
+      expect(paths(next.filesystem.denyRead)).not.toContain(unrelated);
+      expect(paths(next.filesystem.denyWrite)).not.toContain(unrelated);
+    }
+  });
+
+  it("keeps absent denies reached by home and environment write grant spellings", () => {
+    const workspace = join(profile, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, "credential");
+    for (const grant of ["~/workspace", "%USERPROFILE%/workspace"]) {
+      const next = buildSandboxConfig({ allowWrite: [grant], denyRead: [target], denyWrite: [target] });
+      expect(paths(next.filesystem.denyRead)).toContain(target);
+      expect(paths(next.filesystem.denyWrite)).toContain(target);
+    }
+  });
+
+  it("keeps denies and wraps successfully when target stat fails with EACCES or EPERM", async () => {
+    const wrap = captureRuntime();
+    const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const denied = join(root, "access-denied");
+    const forbidden = join(root, "operation-forbidden");
+    const actual = await vi.importActual<typeof import("node:fs")>("node:fs");
+    vi.mocked(lstatSync).mockImplementation(((path, options) => {
+      if (String(path) === denied) throw Object.assign(new Error("Fixture stat failure"), { code: "EACCES" });
+      if (String(path) === forbidden) throw Object.assign(new Error("Fixture stat failure"), { code: "EPERM" });
+      return actual.lstatSync(path, options);
+    }) as typeof lstatSync);
+    await initializeAsrtSandbox({ denyRead: [denied, forbidden], denyWrite: [denied, forbidden] });
+    expect(paths(config?.filesystem.denyRead)).toEqual(expect.arrayContaining([denied, forbidden]));
+    expect(paths(config?.filesystem.denyWrite)).toEqual(expect.arrayContaining([denied, forbidden]));
+    await wrapToolCommand("echo first", { commandId: TEST_COMMAND_ID });
+    await wrapToolCommand("echo second", { commandId: TEST_COMMAND_ID });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyRead)).toEqual(expect.arrayContaining([denied, forbidden]));
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).toEqual(expect.arrayContaining([denied, forbidden]));
+    expect(warning.mock.calls.filter(call => call.some(value => typeof value === "string" && value.includes(denied) && value.includes("EACCES")))).toHaveLength(1);
+    expect(warning.mock.calls.filter(call => call.some(value => typeof value === "string" && value.includes(forbidden) && value.includes("EPERM")))).toHaveLength(1);
+  });
+
+  function constrainNativeInitialization() {
+    const initialize = manager.initialize.bind(manager);
+    const wrap = manager.wrapWithSandboxArgv.bind(manager);
+    const inside = (entry: runtime.FilesystemPathEntry) => {
+      const path = typeof entry === "string" ? entry : entry.path;
+      const rel = relative(root, path);
+      return rel === "" || (!rel.startsWith("..") && !rel.includes(":"));
+    };
+    vi.spyOn(manager, "wrapWithSandboxArgv").mockImplementation((command, shell, custom, ...rest) =>
+      wrap(command, shell, custom?.filesystem ? { ...custom, filesystem: { ...custom.filesystem,
+        denyRead: custom.filesystem.denyRead?.filter(inside), denyWrite: custom.filesystem.denyWrite?.filter(inside),
+      } } : custom, ...rest));
+    return vi.spyOn(manager, "initialize").mockImplementation(async (next, ask, monitor) => {
+      await initialize({ ...next, filesystem: { ...next.filesystem,
+        denyRead: next.filesystem.denyRead.filter(inside), denyWrite: next.filesystem.denyWrite.filter(inside),
+      } }, ask, monitor);
+    });
+  }
+
+  it("does not materialize a missing git leaf outside write grants during native initialization and reset", async () => {
+    constrainNativeInitialization();
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    await initializeAsrtSandbox({ denyWrite: [join(workspace, ".git")] });
+    await resetAsrtSandbox();
+    expect(lstatSync(join(workspace, ".git"), { throwIfNoEntry: false })).toBeUndefined();
+    expect(lstatSync(join(workspace, ".git", "modules"), { throwIfNoEntry: false })).toBeUndefined();
+    expect(lstatSync(join(workspace, ".git", "worktrees"), { throwIfNoEntry: false })).toBeUndefined();
+  }, 60_000);
+
+  it("hands off the absent protective git leaf beneath a writable workspace", async () => {
+    const wrap = captureRuntime();
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, ".git");
+    await initializeAsrtSandbox({ allowWrite: [workspace] });
+    expect(paths(config?.filesystem.denyWrite)).toContain(target);
+    await wrapToolCommand("echo protected", { commandId: TEST_COMMAND_ID });
+    expect(paths(wrap.mock.calls.at(-1)?.[2]?.filesystem?.denyWrite)).toContain(target);
+    expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  it("does not create an absent deny target during native initialization or execution", async () => {
+    constrainNativeInitialization();
+    const absent = join(root, "absent", "secret");
+    await initializeAsrtSandbox({ denyRead: [absent], denyWrite: [absent] });
+    expect(lstatSync(absent, { throwIfNoEntry: false })).toBeUndefined();
+    const wrapped = await wrapToolCommand("echo fixture-ok", { commandId: TEST_COMMAND_ID,
+      filesystem: { denyRead: [absent], denyWrite: [absent] } });
+    execFileSync(wrapped.argv[0]!, wrapped.argv.slice(1), { env: { ...process.env, ...wrapped.env }, cwd: root, windowsHide: true });
+    await resetAsrtSandbox();
+    expect(lstatSync(absent, { throwIfNoEntry: false })).toBeUndefined();
+    expect(lstatSync(join(root, "absent"), { throwIfNoEntry: false })).toBeUndefined();
+  }, 60_000);
+});
