@@ -18,13 +18,11 @@ import { ProjectRuleScopes, evaluatePowerShellSubject, evaluateShellSubject } fr
 import { isRuleSpecifier, matchesWebFetchHost, parseRuleSpecifier } from "./rules/rule-specifier.js";
 import { evaluateScopedRules, type ScopedRuleSubject, type ScopedRuleEvaluation } from "./rules/scoped-rule-matcher.js";
 import { inspectShellCommand, parseShellFloorCommand } from "./rules/shell-exfiltration.js";
-import { SHELL_FLOOR_BUDGET_REASON, shellFloorInputExceeded } from "./rules/shell-floor-policy.js";
-import { ShellFloorWorkBudget, ShellFloorWorkBudgetError } from "./rules/shell-floor-work-budget.js";
+import { SHELL_FLOOR_BUDGET_REASON, shellFloorInputExceeded, shellFloorParserBudgetExceeded } from "./rules/shell-floor-policy.js";
 import { prepareShellFloorInput, type ShellFloorInput } from "./rules/shell-literal-data.js";
-import { inspectPowerShellCommand } from "./rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, parsePowerShellCommand } from "./rules/powershell-exfiltration.js";
 import { analyzeShellForRules } from "./rules/shell-rule-matcher.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./rules/shell-prefix-values.js";
-import type { ParsedShellCommand } from "./rules/shell-prefix-policy.js";
 import type { ReviewerInteractiveAutoApprove } from "./permission-settings-store.js";
 import { isStagedTurnSource } from "../shared/staged-origins.js";
 import { PERMISSION_REVIEWER_FRAMEWORK_VERSION } from "../shared/permission-reviewer-framework.js";
@@ -1234,17 +1232,19 @@ export class PermissionManager {
         : { decision: "ask", reason: t("be_permissionManager.shellUnsandboxedReason"), layer: 6 };
     };
     if (shellInput !== undefined && unsandboxedShell && shellInput.length > MAX_LITERAL_COMMAND_LENGTH) return closeShellAnalysis();
-    const floorBudget = new ShellFloorWorkBudget();
     let floorInput: ShellFloorInput | null | undefined;
     if (shellInput !== undefined && !unsandboxedShell) {
-      try {
-        floorInput = prepareShellFloorInput(shellInput, context.ruleSubject!.kind === "shell" ? context.ruleSubject!.dialect : "", floorBudget);
-      } catch (error) {
-        if (!(error instanceof ShellFloorWorkBudgetError)) throw error;
-        return closeShellAnalysis();
-      }
+      floorInput = prepareShellFloorInput(shellInput, context.ruleSubject!.kind === "shell" ? context.ruleSubject!.dialect : "");
       if (floorInput === null || shellFloorInputExceeded(floorInput.parsed ?? floorInput.command)) return closeShellAnalysis();
     }
+    // The request owns one lexical representation; token refusal precedes project I/O.
+    const shellDialect = context.ruleSubject?.kind === "shell" ? context.ruleSubject.dialect : undefined;
+    const parsedSubject = shellInput !== undefined && shellDialect === "bash"
+      ? parseShellFloorCommand(floorInput?.parsed ?? shellInput) : undefined;
+    if (parsedSubject !== undefined && !parsedSubject.analysis.ok && shellFloorParserBudgetExceeded(parsedSubject.analysis.reason)) return closeShellAnalysis();
+    const parsedPowerShellSubject = shellInput !== undefined && shellDialect === "powershell"
+      ? parsePowerShellCommand(shellInput) : undefined;
+    if (parsedPowerShellSubject?.analysisLimited) return closeShellAnalysis();
     const trust = this.resolveTrust(toolName, source);
     // Strict patterns, owned by `shared/staged-origins.ts` — the same table the send gate, the stream derivation, and the model-facing guidance read. Loose `startsWith` would accept malformed values like "overlay:Bad/Path" or "app:" that no upstream gate emits but a future hand-injected codepath might; fail-closed on malformed input. THIS is the one enforcement site — grep `isStagedTurnSource` to find it.
     const isOverlayTrigger = isStagedTurnSource(overlayTriggerOrigin ?? null);
@@ -1296,21 +1296,12 @@ export class PermissionManager {
       throw new Error(`shell rule subject has no known dialect: ${String((ruleSubject as { dialect?: unknown }).dialect)}`);
     }
     const shellExecution = context.shellExecution ?? { runsSandboxed: false };
-    let parsedSubject: ParsedShellCommand | undefined;
-    if (ruleSubject?.dialect === "bash") {
-      try {
-        parsedSubject = parseShellFloorCommand(floorInput?.parsed ?? ruleSubject.command, floorBudget);
-      } catch (error) {
-        if (!(error instanceof ShellFloorWorkBudgetError)) throw error;
-        return closeShellAnalysis();
-      }
-    }
     const powerShellSignals = ruleSubject?.dialect === "powershell"
-      ? inspectPowerShellCommand(ruleSubject.command, ruleSubject.cwd, floorBudget)
+      ? inspectPowerShellCommand(parsedPowerShellSubject!, ruleSubject.cwd)
       : undefined;
     const shellFloorSignals = parsedSubject !== undefined
-      ? inspectShellCommand(parsedSubject, ruleSubject?.cwd, floorBudget) : powerShellSignals;
-    if (shellFloorSignals?.analysisLimited || floorBudget.exhausted) return closeShellAnalysis();
+      ? inspectShellCommand(parsedSubject, ruleSubject?.cwd) : powerShellSignals;
+    if (shellFloorSignals?.analysisLimited) return closeShellAnalysis();
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
       ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed }
@@ -1322,15 +1313,13 @@ export class PermissionManager {
       ? evaluateShellSubject(shellSubject, this.rules, projectRules, sessionRules)
       : ruleSubject?.dialect === "powershell"
         ? evaluatePowerShellSubject({
-          command: ruleSubject.command,
+          command: parsedPowerShellSubject!,
           exactAllowOnly: !shellExecution.runsSandboxed,
           floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive
             ?? (powerShellSignals!.analysisLimited ? "PowerShell analysis budget exceeded" : null),
         }, this.rules, projectRules, sessionRules)
         : undefined;
-    if (floorBudget.exhausted) return closeShellAnalysis();
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
-    if (floorBudget.exhausted) return closeShellAnalysis();
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
       (floorInput?.destructive ?? isDestructiveShellText(ruleSubject.command)) ||

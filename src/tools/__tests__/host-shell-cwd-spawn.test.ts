@@ -1,3 +1,4 @@
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -47,7 +48,7 @@ function authorizedContext(cwd: string, command = "touch marker", rulePatterns: 
   const plan = getHostShellExecutionPlan("host");
   const input = { command, cwd, executionMode: "host" as const, justification: "Run in the approved directory", timeoutSeconds: 10 };
   const manager = new PermissionManager(join(directory, "permissions.json"));
-  manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const })));
+  manager.setRules(rulePatterns.map((pattern) => ({ pattern, action: "allow" as const, shellRuleVersion: SHELL_RULE_CANONICAL_VERSION })));
   const decision = manager.checkDetailed("bash", "builtin", "shell", null, {
     hostShellExecutionPlan: plan, ruleSubject: { kind: "shell", dialect: "bash", command: input.command, cwd: join(directory, cwd) },
     // An explicit host retry runs without a sandbox, so only an exact Bash(<command>) allow issues the rule proof (owner 2026-10-25, unsandboxed shell exact-rule requirement).
@@ -77,7 +78,8 @@ describe("host cwd races after permit consumption", () => {
 
   it("closes the guard channel before the command can write to it", async () => {
     mkdirSync(join(directory, "current"));
-    const { input, context } = authorizedContext("current", "printf command-ran; if { printf C >&3; } 2>/dev/null; then exit 0; else exit 197; fi", COMPOUND_RULES);
+    const command = "bash -c 'printf command-ran; if { printf C >&3; } 2>/dev/null; then exit 0; else exit 197; fi'";
+    const { input, context } = authorizedContext("current", command, [`Bash(${command})`]);
     const result = await new BashTool().execute(input, context);
     expect(result.output).toContain("command-ran");
     expect(result.metadata?.returncode).toBe(197);

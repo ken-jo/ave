@@ -285,7 +285,7 @@ const OPAQUE_CARRIER_CASES: readonly EncodedCase[] = [
   { name: "caret escape inside a command string", dialect: "powershell", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
   { name: "caret escape inside a command string from bash", dialect: "bash", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
   { name: "nine padding chunks before a stdin carrier", exactAllowed: true, offerAllowed: false, allowCommands: [`printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}`, "pwsh -Command -"], dialect: "bash", command: `printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD} | pwsh -Command -`, allowBody: "pwsh *" },
-  { name: "two hundred fifty-six padding chunks in an encoded operand", floorLimited: true, dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
+  { name: "two hundred fifty-six padding chunks in an encoded operand", dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
   { name: "one hundred kilobyte input", dialect: "bash", command: `echo ${"a".repeat(100_000)}`, allowBody: "echo *" },
   { name: "stdin to a script-file interpreter", exactAllowed: true, offerAllowed: false, allowCommands: ["printf input", "python3 scripts/consume.py"], dialect: "bash", command: "printf input | python3 scripts/consume.py", allowBody: "python3 *" },
   ...(["bash", "powershell"] as const).flatMap((dialect) => [

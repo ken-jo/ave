@@ -1,6 +1,7 @@
 // Broad shell prefixes may receive exact one-call consent but never persistent prefix allows; deny/ask rules remain unrestricted.
 
 import { analyzeShell, staticShellWord, type ShellAnalysis, type ShellCommand, type ShellWord } from "../../shared/shell-analysis.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 
 import { SHELLS, INTERPRETERS, WRAPPERS, STRING_JOINING_WRAPPERS, RUNNER_COMMAND_PREFIXES, PACKAGE_RUNNERS, runnerHasPrefix, BANNED_PREFIX_SUGGESTIONS, isDestructiveShellArgv, noReusableRuleReason, SHELL_SET, INTERPRETER_SET, WRAPPER_SET, RUNNER_SET, programName, runnerName, literalCommandAfterPrefix, refusedShellPrefix, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 export { refusedShellPrefix } from "./shell-prefix-values.js";
@@ -192,20 +193,35 @@ const GLOBAL_VALUE_OPTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
   kubectl: new Set(["-n", "--namespace", "--context", "--cluster", "--user", "-s", "--server", "--kubeconfig", "--token"]),
 };
 
+// Optional suffix results belong to one argv and let restriction views share the existing option grammar.
+export function globalOptionsEnd(argv: readonly (string | undefined)[], start = 0, suffixes?: Map<string, Map<number, number>>): number {
+  const head = argv[start];
+  if (head === undefined) return start + 1;
+  const program = programName(head);
+  const valueOptions = GLOBAL_VALUE_OPTIONS[program];
+  if (!valueOptions) return start + 1;
+  let ends = suffixes?.get(program);
+  if (suffixes !== undefined && ends === undefined) { ends = new Map(); suffixes.set(program, ends); }
+  const visited: number[] = [];
+  let index = start + 1;
+  while (index < argv.length) {
+    const cached = ends?.get(index);
+    if (cached !== undefined) { index = cached; break; }
+    const token = argv[index];
+    if (token === undefined || !token.startsWith("-")) break;
+    visited.push(index);
+    if (token === "--") { index += 1; break; }
+    index += valueOptions.has(token) ? 2 : 1;
+  }
+  for (const at of visited) ends?.set(at, index);
+  return index;
+}
+
 // argv with a multi-verb tool's global options removed (`git -C. push` → `git push`). Deny/ask matching tries this form as well as the original, so a global option can never step a command around a restriction.
 export function stripGlobalOptions(argv: readonly (string | undefined)[]): readonly (string | undefined)[] {
   const head = argv[0];
   if (head === undefined) return argv;
-  const program = programName(head);
-  const valueOptions = GLOBAL_VALUE_OPTIONS[program];
-  if (!valueOptions) return argv;
-  let index = 1;
-  while (index < argv.length) {
-    const token = argv[index];
-    if (token === undefined || !token.startsWith("-")) break;
-    if (token === "--") { index += 1; break; }
-    index += valueOptions.has(token) ? 2 : 1;
-  }
+  const index = globalOptionsEnd(argv);
   return index === 1 ? argv : [head, ...argv.slice(index)];
 }
 
@@ -550,7 +566,7 @@ export type ShellCommandInput = string | ParsedShellCommand;
 export function parseShellCommand(command: string): ParsedShellCommand {
   if (command.length > MAX_LITERAL_COMMAND_LENGTH) return { command, analysis: { ok: false, reason: "literal command length limit exceeded" }, facts: new Map() };
   try {
-    return { command, analysis: analyzeShell(command, "bash"), facts: new Map() };
+    return { command, analysis: analyzeShell(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS }), facts: new Map() };
   } catch (error) {
     return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError: error, facts: new Map() };
   }

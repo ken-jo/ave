@@ -224,18 +224,20 @@ identity. Unsandboxed input over 2,000 characters asks, or denies headless,
 before command-dependent work. Lane A retains an 8,000-character executable
 envelope limit. Bash heredoc bodies receive a separate aggregate 65,536-byte
 data allowance only when every heredoc operator in the original command has a
-quoted delimiter and no known code-consuming receiver is present. Shared
-work-budget exhaustion immediately stops all analysis: Lane B asks/L6 or denies headless; Lane A requires modal
-approval/L2. No fallback, later candidate, floor, rule, proof or reviewer work
-continues. Exceeding Lane A input/data bounds likewise requires modal approval. An
-identified floor takes precedence over an ordinary reason in the same input.
+quoted delimiter and no known code-consuming receiver is present. A total
+executable-token limit applies across the whole command, including nested
+commands and assignment values. It never resets at simple-command boundaries;
+operators and separators remain bounded by source length. Exceeding a character,
+data or token limit stops analysis and returns Lane B ask/L6 or headless deny,
+or Lane A modal/L2. No rule, saved grant, mode or reviewer satisfies this
+refusal. Identified floors retain their precedence over ordinary reasons.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
 
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
 | Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |
-| Work limit | Lane A envelope/data bounds or shared analysis-budget exhaustion | Immediate Lane B ask/L6 or headless deny, or Lane A modal/L2; no subsequent analysis or reusable allow |
+| Input limit | Character/data bounds or the total executable-token cap | Immediate Lane B ask/L6 or headless deny, or Lane A modal/L2; no subsequent analysis or reusable allow |
 | Ordinary | Parser refusal, opaque bindings, retained file-execution provenance, or an opaque package/code-runner prefix | No credential/sink floor by this label alone; unsandboxed execution still requires proven exact raw-word coverage; legacy shell grants remain inert |
 | Normal | Neither a floor nor an ordinary reason | Sandboxed execution follows its route after floor work completes; unsandboxed automatic allowance still requires proven exact raw-word coverage |
 
@@ -284,12 +286,11 @@ later relative recursive search is a floor in every lane, because its root
 cannot be ruled out.
 
 An ordinary classifier reason does not establish reusable shell authority. A
-parser or lexer/analysis-budget failure cannot match an exact command rule;
-tool-wide allows and saved shell grants do not repair it. Identified credential
-and upload evidence retains its floor while analysis completes. Shared budget
-exhaustion instead stops all analysis immediately with the lane-specific closed
-result. No rule, reviewer or mode bypasses that
-work-limit gate.
+parser or lexer refusal, exceeded input limit, or incomplete required analysis
+cannot match an exact command rule; tool-wide allows and saved shell grants do
+not repair it. Identified credential and upload evidence retains its floor
+while analysis completes. Character, data and total-token limits close the
+appropriate lane immediately. No rule, reviewer or mode bypasses those limits.
 
 Visible literal interpreter code and file/stdin/network indirection remain eligible for exact rules; the host does not certify referenced code or future effects. A carrier classification alone does not make an unrelated restriction uncertain. Actual visible deny/ask matches and syntax uncertainty keep their precedence. Exact identity preserves raw argument text and quote style, normalizing only interword whitespace. Program case, module qualifiers, paths and quotes stay raw, as do all arguments; detection and restriction normalization never changes the exact key.
 
@@ -374,20 +375,34 @@ keep normal full-body floor analysis and the 8,000-character cap;
 unknown-program stdin remains an accepted indirection limit. Literal
 `cat`/`tee -a` data writes remain eligible. Aggregate data body bytes stay
 within 64 KiB and the executable envelope within 8,000 characters. Eligible
-bodies receive only a linear metered data pass, never general code/floor
-inspection. Lane B always caps the complete original command at 2,000 characters.
+bodies are retained as original source slices and scanned only to locate
+terminator lines, never for general code/floor inspection. Lane B always caps
+the complete original command at 2,000 characters.
 
-The shared analysis budget charges lexer steps actually taken and subsequent
-analysis work. Its ceiling is linear in the bounded input length; whitespace
-spans do not reserve speculative work. The original grammar enforces an optional permission-only bound of 64 actual
-argument-word records per command. Nested commands keep separate records without
-resetting their containing command. The same lexer counts its actual rune and
-token advances against the linear ceiling and reports completed work to the
-shared budget. No host-side shadow lexer predicts grammar work or heredoc
-extents. General structural parsing retains its existing default limits. Filesystem ancestry
-walks and pattern comparisons charge each attempted operation instead of their
-maximum possible work. Exhaustion is sticky and terminates all
-remaining analysis with the lane-specific closed result described above.
+Each permission request obtains one lexical representation from the original
+grammar and performs literal proof once. Structural views, command facts and
+stored-rule parses are reused within that request. Successful analysis is not
+cached across requests. The grammar counts executable word/value records across
+the entire input, including nested commands and assignment values, against the
+400-record `MAX_SHELL_ANALYSIS_TOKENS` limit in
+`src/shared/shell-analysis-limits.ts`. Empty assignments and declaration heads
+also contribute records; literal quoted body data does not. It refuses
+over-limit input before expensive result serialization. The cap is global;
+there is no separate per-command word allowance. Separators and operators are
+bounded by the character cap. General structural parsing retains its existing
+safety limits.
+
+Quoted literal data is retained as an original source slice. The lexer scans
+it only to locate its terminator lines; it does not turn body contents into
+ordinary words, run launcher detection over them, or include them in the
+executable-token count. Unquoted or mixed heredocs keep the normal analysis
+path. No host-side shadow lexer predicts grammar work or body extents.
+
+Floor inspection reuses request-local canonical-path results, ancestry and
+catalogue matches across path and working-directory candidates. The decision
+has no shared work counter, elapsed-time cutoff or worker timeout. Admission
+is bounded by the character, data and total-token limits; timing checks are
+regression tests and have no production decision authority.
 
 The sink catalogue remains a host policy floor, including for unsandboxed
 commands. The [shell sandbox policy](#os-shell-sandbox-policy) owns the OS

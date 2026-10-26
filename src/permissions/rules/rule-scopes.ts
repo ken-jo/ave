@@ -8,7 +8,7 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
-import { powerShellRuleShape } from "./powershell-exfiltration.js";
+import { powerShellRuleShape, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
@@ -124,20 +124,31 @@ export class ProjectRuleScopes {
   }
 }
 
+// Repeated patterns across scopes share one parse within this evaluation.
+function forEachCommandRule(scopes: ReadonlyArray<readonly PermissionRule[]>, visit: (rule: PermissionRule, spec: RuleSpecifier) => void): void {
+  const specifiers = new Map<string, RuleSpecifier>();
+  for (const rules of scopes) {
+    for (const rule of rules) {
+      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule)) continue;
+      let spec = specifiers.get(rule.pattern);
+      if (spec === undefined) {
+        spec = parseRuleSpecifier(rule.pattern);
+        specifiers.set(rule.pattern, spec);
+      }
+      visit(rule, spec);
+    }
+  }
+}
+
 // Bash specifier rules from any number of scopes, grouped by class.
 function collectShellRuleSet(...scopes: ReadonlyArray<readonly PermissionRule[]>): ShellRuleSet {
   const deny: ShellRuleInput[] = [];
   const ask: ShellRuleInput[] = [];
   const allow: ShellRuleInput[] = [];
-  for (const rules of scopes) {
-    for (const rule of rules) {
-      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule)) continue;
-      const spec = parseRuleSpecifier(rule.pattern);
-      if (spec.kind !== "bash") continue;
-      if (storedRuleInvalidReason(rule) !== null) continue;
-      (rule.action === "deny" ? deny : rule.action === "ask" ? ask : allow).push({ pattern: rule.pattern, spec });
-    }
-  }
+  forEachCommandRule(scopes, (rule, spec) => {
+    if (spec.kind !== "bash" || storedRuleInvalidReason(rule, spec) !== null) return;
+    (rule.action === "deny" ? deny : rule.action === "ask" ? ask : allow).push({ pattern: rule.pattern, spec });
+  });
   return { deny, ask, allow };
 }
 
@@ -151,20 +162,17 @@ export function evaluateShellSubject(
 }
 
 type PowerShellRuleSpecifier = Extract<RuleSpecifier, { kind: "powershell" }>;
-interface PowerShellRuleInput { pattern: string; spec: PowerShellRuleSpecifier }
+interface PowerShellRuleInput { pattern: string; spec: PowerShellRuleSpecifier; restriction: PowerShellRuleSpecifier }
 
 function collectPowerShellRules(...scopes: ReadonlyArray<readonly PermissionRule[]>): { deny: PowerShellRuleInput[]; ask: PowerShellRuleInput[]; allow: PowerShellRuleInput[] } {
   const deny: PowerShellRuleInput[] = [];
   const ask: PowerShellRuleInput[] = [];
   const allow: PowerShellRuleInput[] = [];
-  for (const rules of scopes) {
-    for (const rule of rules) {
-      if (rule.source || !isRuleSpecifier(rule.pattern) || !isCurrentShellRule(rule)) continue;
-      const spec = parseRuleSpecifier(rule.pattern);
-      if (spec.kind !== "powershell") continue;
-      (rule.action === "deny" ? deny : rule.action === "ask" ? ask : allow).push({ pattern: rule.pattern, spec });
-    }
-  }
+  forEachCommandRule(scopes, (rule, spec) => {
+    if (spec.kind !== "powershell") return;
+    const restriction = rule.action === "allow" ? spec : { ...spec, tokens: restrictionTokens(spec.tokens) };
+    (rule.action === "deny" ? deny : rule.action === "ask" ? ask : allow).push({ pattern: rule.pattern, spec, restriction });
+  });
   return { deny, ask, allow };
 }
 
@@ -194,14 +202,9 @@ function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
   })];
 }
 
-function matchesPowerShellRestriction(spec: PowerShellRuleSpecifier, argv: readonly (string | null)[]): boolean {
-  return matchesPowerShellRule(spec, argv) ||
-    matchesPowerShellRule({ ...spec, tokens: restrictionTokens(spec.tokens) }, restrictionTokens(argv));
-}
-
 // `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no floor signal is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
 export function evaluatePowerShellSubject(
-  subject: { command: ShellCommandInput; exactAllowOnly: boolean; floorSignal: string | null },
+  subject: { command: PowerShellCommandInput; exactAllowOnly: boolean; floorSignal: string | null },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ShellRuleEvaluation {
   const rules = collectPowerShellRules(...scopes);
@@ -213,7 +216,9 @@ export function evaluatePowerShellSubject(
     // A restriction also meets the command under every spelling of its name (`restrictionTokens`): over-matching a deny or ask only narrows, so the
     // normalization that rule identity refuses (an allow compares the literal name) is safe here.
     const visible = shape.ok ? shape.commands : shape.visible;
-    const matching = (list: readonly PowerShellRuleInput[]) => list.find((rule) => visible.some((argv) => matchesPowerShellRestriction(rule.spec, argv)));
+    const restricted = visible.map((argv) => ({ argv, normalized: restrictionTokens(argv) }));
+    const matching = (list: readonly PowerShellRuleInput[]) => list.find((rule) => restricted.some(({ argv, normalized }) =>
+      matchesPowerShellRule(rule.spec, argv) || matchesPowerShellRule(rule.restriction, normalized)));
     const deny = matching(rules.deny);
     if (deny) return { decision: "deny", pattern: deny.pattern, reason: `deny rule ${deny.pattern}` };
     if (!shape.ok || shape.opaque !== null) {

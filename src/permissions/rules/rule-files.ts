@@ -16,9 +16,9 @@ import type { StoredRuleInvalidReason } from "../../shared/permissions-events.js
 class BroadShellWildcardError extends RuleSpecifierError {}
 
 // The reason a stored rule is inert, or null for a rule in force. Decisions skip such a rule and Settings lists it with this reason.
-export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }): StoredRuleInvalidReason | null {
+export function storedRuleInvalidReason(rule: { pattern: string; action: string; source?: string | undefined }, parsed?: RuleSpecifier): StoredRuleInvalidReason | null {
   if (rule.action !== "allow" || rule.source !== undefined || !isRuleSpecifier(rule.pattern)) return null;
-  const spec = parseRuleSpecifier(rule.pattern);
+  const spec = parsed ?? parseRuleSpecifier(rule.pattern);
   return spec.kind === "bash" && refusedShellPrefix(spec.tokens.map((token) => literalRuleWord(token, "bash")!), spec.wildcard) === "broad-prefix"
     ? "wildcard-not-allowlisted"
     : null;

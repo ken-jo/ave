@@ -128,12 +128,17 @@ describe("launcher payload and outbound-output floors", () => {
     expect(result.exfiltration).toMatch(/upload of a file/);
   });
 
-  it("bounds repeated command-looking arguments with the shared counter", () => {
+  it("keeps repeated literal command-looking arguments eligible below the caps", () => {
     const result = _inspectPowerShellForTest(`Unknown-Runner ${"'Unknown-Runner plain' ".repeat(300)}`, CWD);
-    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(result.exhausted).toBe(true);
-    expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
-    expect(result.chars).toBeLessThanOrEqual(result.limits.chars);
+    expect(result).toMatchObject({ sensitive: null, exfiltration: null, limited: false });
+    expect(result.ordinaryAsk).toBeUndefined();
+  });
+
+  it("refuses repeated arguments above the whole-command token cap", () => {
+    const command = `Unknown-Runner ${"'plain' ".repeat(400)}`;
+    const result = _inspectPowerShellForTest(command, CWD);
+    expect(command.length).toBeLessThan(result.limits.inputChars);
+    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String), limited: true });
   });
 
   it("limits nested command payloads under the input-size ceiling", () => {
@@ -141,9 +146,7 @@ describe("launcher payload and outbound-output floors", () => {
     const result = _inspectPowerShellForTest(command, CWD);
     expect(command.length).toBeLessThan(result.limits.inputChars);
     expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(result.exhausted).toBe(true);
-    expect(result.chars).toBeGreaterThan(command.length);
-    expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
+    expect(result.limited).toBe(true);
   });
 
   it.each(["literal", "interpolation", "group", "concatenation"] as const)("keeps command arguments closed when %s support is unavailable", (kind) => {

@@ -1,3 +1,4 @@
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const childProcessMock = vi.hoisted(() => ({ execFileSync: vi.fn() }));
@@ -284,7 +285,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b.json");
     pm.setMode(mode);
     pm.setInteractiveAutoApprove("medium");
-    pm.setRules([{ pattern: "Bash(echo *)", action: "allow" }, { pattern: "bash", action: "allow" }]);
+    pm.setRules([{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }, { pattern: "bash", action: "allow" }]);
     pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn(async (request: { id: string }) => ({
@@ -360,7 +361,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     registry.register(shellProbe(execute));
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-rule.json");
     pm.setMode(mode);
-    pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow" }]);
+    pm.setRules([{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn();
@@ -385,7 +386,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
     registry.register(shellProbe(execute));
     const pm = new PermissionManager("/tmp/nonexistent-windows-partial-plan-b-headless.json");
     pm.setMode("allow");
-    pm.setRules(withRule ? [{ pattern: "Bash(echo no-run)", action: "allow" }] : [{ pattern: "Bash(echo *)", action: "allow" }]);
+    pm.setRules(withRule ? [{ pattern: "Bash(echo no-run)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }] : [{ pattern: "Bash(echo *)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
     pm.setReviewer({ classifier: {} as never, cache: {} as never, deferredQueue: {} as never });
     pm.dispatchReviewer = vi.fn() as never;
     const requestAndWait = vi.fn();
@@ -742,7 +743,7 @@ describe("ToolExecutor — Windows partial shell Plan B", () => {
       expect(execute).not.toHaveBeenCalled();
       expect(asked[0]?.is_error).toBe(true);
 
-      pm.setRules([{ pattern: "Bash(echo reviewed)", action: "allow" }]);
+      pm.setRules([{ pattern: "Bash(echo reviewed)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION }]);
       const result = await run(`requested-unavailable-${platform}-rule`);
       expect(pm.dispatchReviewer).not.toHaveBeenCalled();
       expect(requestAndWait).toHaveBeenCalledTimes(1);
