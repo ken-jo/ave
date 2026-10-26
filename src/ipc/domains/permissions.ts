@@ -255,7 +255,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   const deferredResolveInFlight = new Set<string>();
   const reviewSuggestionTracker = createPermissionReviewSuggestionTracker();
   const isNativeApprovalFrame = (event: IpcMainInvokeEvent): boolean => {
-    if (!validateHostRendererSender(event) || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
+    if (!event.sender || event.sender.isDestroyed() || event.senderFrame !== event.sender.mainFrame) return false;
     const windows = deps.getAppWindows?.() ?? [deps.getMainWindow()];
     return windows.some((window) => window && !window.isDestroyed() && window.webContents === event.sender);
   };
@@ -701,7 +701,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   // ave:approval:request direction is main→renderer (webContents.send); no ipcMain.handle needed
   ipcMain.handle(PERMISSIONS.approvalRespond, (e, decision: ApprovalDecision) => {
-    if (!isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalRespond, e); return UNAUTHORIZED_FRAME; }
     const snapshot = approvalGate?.getRequestSnapshot?.(decision.requestId);
     const honoredDecision = approvalGate?.resolveFromDesktopRenderer(decision.requestId, decision, e.sender);
     if (honoredDecision) reviewSuggestionTracker.record(deps, honoredDecision, snapshot);
@@ -710,14 +710,14 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
 
   // Reloads and conversation moves recover only the live owner's signed cards.
   ipcMain.handle(PERMISSIONS.approvalPending, (e) => {
-    if (!isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalPending, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.approvalPending, e); return UNAUTHORIZED_FRAME; }
     return approvalGate ? approvalGate.listPendingRendererRequests(e.sender) : [];
   });
 
   /** Approval-sentence results are proposals only; require the user to confirm an existing pending choice and never resolve the gate here.
    * Read identity and paths from the host pending entry, not renderer claims. */
   ipcMain.handle(PERMISSIONS.approvalSentenceSelect, async (e, payload: unknown) => {
-    if (!isNativeApprovalFrame(e)) {
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) {
       auditUnauthorized(auditLogger, PERMISSIONS.approvalSentenceSelect, e);
       return UNAUTHORIZED_FRAME;
     }
@@ -1200,7 +1200,7 @@ export function registerPermissionsHandlers(deps: IpcDeps): void {
   // ── User-Approval Store handlers ──────────────────────────
 
   ipcMain.handle(PERMISSIONS.userApprovalRecord, async (e, payload: unknown) => {
-    if (!isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRecord, e); return UNAUTHORIZED_FRAME; }
+    if (!validateHostRendererSender(e) || !isNativeApprovalFrame(e)) { auditUnauthorized(auditLogger, PERMISSIONS.userApprovalRecord, e); return UNAUTHORIZED_FRAME; }
     const body = payloadRecord(payload);
     // parity with peer mutating handlers (addRule, removeRule, setMode, dirDispatch, reviewerDispatch, deferredResolve, policySet).
     // Gates on user-keyboard freshness so a synthetic record submission from a compromised renderer cannot record without an active gesture.
