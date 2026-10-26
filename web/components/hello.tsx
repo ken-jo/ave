@@ -4,13 +4,12 @@ import { useEffect, useRef } from "react";
 import type { HelloDemo, Said } from "@/lib/home";
 
 /**
- * The home hero's built workspace and the AWE statement.
+ * The home hero's built workspace.
  *
- * Both are rendered finished on the server: without script, and with reduced
- * motion, the reader gets the whole conversation and the whole sentence. With
- * motion allowed, script rewinds them and plays them: the workspace performs
- * the trail-notes session (hello, the task, the work panel, the tests) while
- * it is on screen, and the statement's words sharpen as it scrolls into view.
+ * It is rendered finished on the server: without script, and with reduced
+ * motion, the reader gets the whole conversation. With motion allowed, script
+ * rewinds it and plays it: the workspace performs the trail-notes session
+ * (hello, the task, the work panel, the tests) while it is on screen.
  * Script touches the DOM only through refs and never re-renders, so React and
  * the timeline never fight over the same nodes.
  *
@@ -291,49 +290,5 @@ export function HelloStage({ demo }: { demo: HelloDemo }) {
         </div>
       </div>
     </div>
-  );
-}
-
-/**
- * The AWE statement. Each word is its own span; with motion allowed, the words
- * the scroll has not reached yet are dimmed and blurred, and sharpen in order
- * as the sentence rises through the viewport (scrolling back reverses it).
- */
-export function Statement({ text }: { text: string }) {
-  const ref = useRef<HTMLParagraphElement>(null);
-  useEffect(() => {
-    const p = ref.current;
-    if (!p || matchMedia(STILL).matches) return;
-    const words = Array.from(p.querySelectorAll<HTMLElement>(".w"));
-    p.setAttribute("data-live", "");
-    let raf = 0;
-    const tick = () => {
-      raf = 0;
-      const r = p.getBoundingClientRect();
-      const k = Math.min(1, Math.max(0, (innerHeight * 0.85 - r.top) / (innerHeight * 0.5)));
-      const n = Math.round(k * words.length);
-      words.forEach((w, i) => w.toggleAttribute("data-on", i < n));
-    };
-    const onScroll = () => {
-      if (!raf) raf = requestAnimationFrame(tick);
-    };
-    addEventListener("scroll", onScroll, { passive: true });
-    tick();
-    return () => {
-      removeEventListener("scroll", onScroll);
-      cancelAnimationFrame(raf);
-      p.removeAttribute("data-live");
-    };
-  }, []);
-  const words = text.split(/\s+/u);
-  return (
-    <p ref={ref} className="statement">
-      {words.map((w, i) => (
-        <span key={i}>
-          <span className="w">{w}</span>
-          {i < words.length - 1 ? " " : null}
-        </span>
-      ))}
-    </p>
   );
 }

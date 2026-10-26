@@ -30,12 +30,13 @@ const DOC_SLUGS = JSON.parse(
 ) as string[];
 
 describe("responsive app copy", () => {
-  it("describes the same width-driven window in both homepage locales and feature captions", () => {
+  it("describes the same width-driven window in both guide locales, and no retired mode names on the home and feature pages", () => {
+    // The home page no longer describes the tiles; the workbench guide does, in both languages.
     const home = read(resolve(web, "lib/home.ts"));
-    const descriptions = [...home.matchAll(/^  work: \{\n[\s\S]*?body:\s*"([^"]+)"/gmu)].map((match) => match[1]);
-    expect(descriptions).toHaveLength(2);
-    expect(descriptions[0]).toMatch(/폭/u);
-    expect(descriptions[1]).toMatch(/width/u);
+    const workbench = [...docsSource.matchAll(/^  workbench: \{[\s\S]*?^  \},?$/gmu)].map((match) => match[0]);
+    expect(workbench).toHaveLength(2);
+    expect(workbench[0]).toMatch(/넓은 캔버스/u);
+    expect(workbench[1]).toMatch(/wide canvas/u);
     for (const source of [home, read(resolve(web, "lib/features.ts"))]) {
       expect(source).not.toMatch(/\b(?:work|chat)[ -]mode\b|(?:업무|채팅|작업)\s*모드/iu);
     }

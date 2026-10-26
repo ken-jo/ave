@@ -11,19 +11,29 @@ sites. No text, picture, typeface or composition was taken from them.
 
 ## Argument
 
-Ave means hello: *avē* is Latin for hello. Ave is an AWE, an agentic work
-environment, which is the agents' counterpart of an IDE. It is a desktop app
-where agents read and edit your files, run a terminal and drive a browser,
-with the model you choose. Anything that changes something asks first.
+**Ave — browse everything with your agent.** In Korean: "Ave — 당신의
+에이전트와 모든 것을 탐색하세요." Ave is Latin for hello (*avē*), so the
+invitation is to start naturally: say hello, and begin with Ave.
 
-The home page says this once and then shows it. A built Ave workspace performs
-the same trail-notes session the captures show, from "hello" to the tests
+Ave is a desktop app where your agent researches the web, works in a terminal,
+reads and writes your files, uses the model you already have, and connects to
+your mail, calendars, documents and meetings. Anything that changes something
+asks first.
+
+The home page speaks to people who are not developers too: research, notes
+and drafts, mail, calendars, documents, meetings and to-dos come first, and
+development appears only as an example. AWE (agentic work environment, the
+agents' counterpart of an IDE) appears as one idea in the files section.
+
+The words come from the product copy deck v2 (2026-10-27, owner-approved).
+The page says this once and then shows it. A built Ave workspace performs the
+same trail-notes session the captures show, from "hello" to the tests
 passing. Details live on the feature pages and in the guide. The home page
 only points at them.
 
 | Page | What it covers |
 | --- | --- |
-| `/` | The hello card (brand line, AWE, CTAs, the built workspace), the AWE statement, the workbench capture, six tiles (web, terminal, files, models, approvals, plugins) each leading to its page, a dark closing card. |
+| `/` | The hello card (main line, the Latin-hello line, CTAs, the built workspace). Then five sections, each one headline, one or two sentences, one visual and its link: the web, the terminal, files (with the AWE idea), models, and connectors and plugins (names from the catalog through `pkg()`). Then the closing card: "Start with hello. Start with Ave." |
 | `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each, with its content unchanged: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. Models adds every provider the app knows (read from `src/shared/llm-vendor-defaults.ts` at build time). Plugins adds the official catalog by kind (`lib/marketplace.json`). |
 | `/download/` | A dawn card holding one card per system: what it needs, the installer, the first-launch steps. Then connecting a model, leading on to the start guide. |
 | `/docs/**` | The guide (`lib/docs.ts`), one template. |
@@ -52,8 +62,8 @@ only points at them.
    - The guide's previous/next runs from Download before the first page to the
      changelog after the last.
    - `/download/` leads to the start guide.
-   - Every home tile leads to its feature page; the Files tile leads to the
-     workbench guide.
+   - Every home section leads to its feature page; the files section leads
+     to the workbench guide.
 7. **Language switch keeps the place.** It links the same path in the other
    language and carries the current `#hash` with it.
 8. **Release switch.** `RELEASE_PUBLISHED` in `lib/downloads.ts` is the one
@@ -76,7 +86,7 @@ All colours are tokens on `:root` in `app/globals.css`.
 | `--line` | Hairlines |
 | `--line-strong` | Hairlines |
 | `--dawn-1/2/3` | Only the hello and download cards' gradient (an ember glow in dark) |
-| `--tile-a/b/c 1/2` | The tile and stage backs |
+| `--tile-a/b/c 1/2` | The section stage backs |
 | `--title-dim` | The dimmed second line of the hero title (gradient-clipped text) |
 | `--accent` | Bullets and selection |
 | `--accent-ink` `oklch(45% .11 50)` | "More" links and eyebrows, readable on every ground |
@@ -88,7 +98,6 @@ All colours are tokens on `:root` in `app/globals.css`.
 Radii:
 - `--r-lg` 32 px: the inset hero, download and closing cards, 24 px on a phone.
 - `--r` 18 px: cards.
-- 22 px: tiles.
 - 14 px: framed captures.
 - 999 px: pills.
 
@@ -105,7 +114,7 @@ rather than an inversion:
 - the ground is warm near-black (`oklch(15.5% .008 60)`);
 - the ink is warm off-white;
 - the dawn gradient becomes an ember glow at the top of the cards;
-- tiles keep their hue at low lightness;
+- stage backs keep their hue at low lightness;
 - the closing card is a lifted warm night with the same glow.
 
 Captures switch to their dark (Tokyo Night) versions. The built workspace's
@@ -118,7 +127,7 @@ Pastel gradients appear only behind captures and fragments.
 **Contrast.** Every text pair meets WCAG AA (4.5:1) in both themes. Pairs
 checked:
 - ink, ink-2, muted and accent-ink on the ground, band, cards, dawn and the
-  six tile backs;
+  the stage backs;
 - night text on the closing card;
 - the workspace's text, muted, blue and status pairs.
 
@@ -136,14 +145,14 @@ applies.
    - Every multi-column row is one column on a phone.
    - Centred heads switch to left-aligned at 640 px and narrower.
 10. **Pacing.** Sections are separated by air, not rules: `--sec` is
-    72–140 px, and the statement section is 110–200 px.
+    72–140 px. Consecutive home sections share the space between them.
 11. **Patterns.**
     - *Hello card*: a centred head over the product, which rises from the
       card's bottom edge and is cropped by it.
-    - *Statement*: one sentence.
-    - *Stage*: a capture on a soft gradient field.
-    - *Tiles*: a gradient back, a title, two sentences, a "more" link, and a
-      cropped capture or fragment.
+    - *Section row*: a headline (no eyebrow), one or two sentences and a
+      "more" link, beside a stage. Rows alternate sides on wide screens and
+      stack on narrow ones.
+    - *Stage*: a capture or fragment on a soft gradient field.
     - *Closing card*.
     - The interior pages keep their patterns: split, bento, choices, facts,
       questions, next steps.
@@ -236,7 +245,7 @@ soon as one exists.
 | Fragment | Where | Replaced by |
 | --- | --- | --- |
 | The hello workspace (sidebar, conversation, the Files, Preview and Terminal tabs of the work panel) | Home hero, `components/hello.tsx` | Not replaced: it is the performed demo. A Korean-UI capture set would let the Korean page show Korean labels. |
-| The Files tab with `src/export.js` | Home "It edits your files" tile, `components/home.tsx` | A capture of the work panel's Files tab |
+| The Files tab with `src/export.js` | Home files section ("See every file it touched"), `components/home.tsx` | A capture of the work panel's Files tab |
 
 ## Motion
 
@@ -259,14 +268,10 @@ soon as one exists.
 
       Entrances use 460 ms `cubic-bezier(.32,.72,0,1)` and the panel uses
       expo-out 0.9 s.
-    - **The statement** (`Statement`): its words sharpen in order as the
-      sentence rises through the viewport, from opacity 0.16, 6 px blur and a
-      0.12em offset. Opacity eases over 0.55 s, blur over 0.7 s, and the
-      offset over 0.95 s expo-out. Scrolling back reverses it.
-    - Beyond that: a 6 px tile lift on hover, hover colour, and a 0.98 press.
+    - Beyond that: hover colour and a 0.98 press.
 
     Without script, and with reduced motion, the workspace shows the finished
-    session and the statement is plain text. On narrow screens the finished
+    session. On narrow screens the finished
     workspace shows the conversation; while it plays, the work panel takes
     the column.
 
@@ -283,8 +288,11 @@ soon as one exists.
       without a source in the app.
     - No placeholder text.
     - No company hosts, addresses or paths.
-    - The brand line "Ave means hello" (ko "Ave는 라틴어로 hello.") and AWE
-      are positioning, not product claims.
+    - The main line, the hello line ("Ave is Latin for hello") and AWE are
+      positioning, not product claims.
+    - Connector and plugin names on the home page are catalog packages, named
+      through `pkg()`. Connector copy claims reading only, because most
+      connectors are read-only by default.
 21. Names match the app's labels (Settings → Model, Allow once, Split pane,
     Work complete, Confirm writes).
 

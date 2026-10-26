@@ -1,14 +1,14 @@
 {
  "source": {
   "repo": "ken-jo/agent-marketplace",
-  "commit": "1f21a1839dcbbc7b28a1d1178c0f7a6a5abe951a",
+  "commit": "933f7fde908cca1e9937ceacf1a25b2043640158",
   "name": "ave",
   "displayName": "Ave Official"
  },
  "counts": {
   "plugin": 3,
   "agent-plugin": 1,
-  "mcp": 23,
+  "mcp": 35,
   "skill": 153,
   "agent": 169,
   "theme": 14,
@@ -2070,6 +2070,18 @@
   },
   {
    "kind": "mcp",
+   "name": "airtable-mcp",
+   "displayName": "Airtable MCP",
+   "description": "Reads Airtable bases, tables, records and comments with a default tool allowlist. Service writes require an explicit opt-in. Supply a PAT through Ave's secret prompt with only the needed read scopes and base access by default. Requires Node.js 24+ and npm; runtime artifacts and dependencies are integrity-locked.",
+   "path": "mcp/airtable-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
+  },
+  {
+   "kind": "mcp",
    "name": "aws-kb-retrieval-mcp",
    "displayName": "AWS KB Retrieval MCP",
    "description": "Adds the AWS Knowledge Base Retrieval MCP server for Bedrock knowledge base search.",
@@ -2103,6 +2115,18 @@
    "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
    "minAppVersion": "0.14.0",
    "publishedAt": "2026-10-15T09:49:59Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "confluence-mcp",
+   "displayName": "Confluence MCP",
+   "description": "Reads Confluence Cloud pages through mcp-atlassian in read-only mode. Set the wiki URL and account email in Ave and supply the API token through its secret prompt. Attachment downloads may write local files. Requires Node.js 24+ and uv (or an explicit AVE_CONNECTOR_UV path); installs only hash-locked Python packages.",
+   "path": "mcp/confluence-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
   },
   {
    "kind": "mcp",
@@ -2142,6 +2166,18 @@
   },
   {
    "kind": "mcp",
+   "name": "figma-context-mcp",
+   "displayName": "Figma Context MCP",
+   "description": "Reads Figma layout and styles through Framelink. Image downloads and the local-write download tool are disabled by default and require an explicit local-write opt-in. Supply a Figma personal token through Ave's secret prompt. Telemetry is off. Requires Node.js 24+ and npm; runtime artifacts and dependencies are integrity-locked.",
+   "path": "mcp/figma-context-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
+  },
+  {
+   "kind": "mcp",
    "name": "filesystem-mcp",
    "displayName": "Filesystem MCP",
    "description": "Adds the official filesystem MCP server for controlled file and directory access.",
@@ -2170,23 +2206,35 @@
    "displayName": "GitHub Official MCP",
    "description": "Adds GitHub's official MCP server for repository, issue, pull request, Actions, and security workflows.",
    "path": "mcp/github-official-mcp",
-   "version": "1.0.5",
-   "versions": 1,
-   "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
+   "version": "2.0.3",
+   "versions": 2,
+   "commit": "beeafa9c1b3e57456ad2dd50bf59dabb16e5e9ca",
    "minAppVersion": "0.14.0",
-   "publishedAt": "2026-10-15T09:49:59Z"
+   "publishedAt": "2026-10-25T14:28:16Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "gitlab-hosted-mcp",
+   "displayName": "GitLab.com (hosted)",
+   "description": "Connects to GitLab's official MCP server on GitLab.com. You sign in with GitLab in the browser and grant the mcp scope. The server can read and change issues, merge requests, pipelines and repositories, as far as your GitLab access allows. Your top-level group must allow MCP server access. GitLab allows 10 client registrations per hour per IP, and Ave registers again at each sign-in, so sign-ins behind a shared NAT or VPN can hit that limit. For a self-managed instance, use GitLab MCP.",
+   "path": "mcp/gitlab-hosted-mcp",
+   "version": "1.0.0",
+   "versions": 1,
+   "commit": "a42a883095de773cca95b11c858fd92ac89ee01f",
+   "minAppVersion": "0.14.1",
+   "publishedAt": "2026-10-25T16:12:19Z"
   },
   {
    "kind": "mcp",
    "name": "gitlab-mcp",
    "displayName": "GitLab MCP",
-   "description": "Adds the GitLab MCP server for project, repository, issue, and merge request workflows.",
+   "description": "Adds zereight/gitlab-mcp for GitLab projects, repositories, issues, merge requests, and pipelines on gitlab.com or a self-managed instance, in read-only permission mode. Needs a GitLab personal access token. From 2026.10.25 it replaces the archived reference GitLab server, which could also create issues, merge requests and commits; Ave asks for the token again and passes it as GITLAB_PERSONAL_ACCESS_TOKEN.",
    "path": "mcp/gitlab-mcp",
-   "version": "2025.4.26",
-   "versions": 1,
-   "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
+   "version": "2026.10.25",
+   "versions": 2,
+   "commit": "e358f0c24926d1a43d23f2f797d573b13bf77045",
    "minAppVersion": "0.14.0",
-   "publishedAt": "2026-10-15T09:49:59Z"
+   "publishedAt": "2026-10-25T14:20:33Z"
   },
   {
    "kind": "mcp",
@@ -2199,6 +2247,30 @@
    "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
    "minAppVersion": "0.14.0",
    "publishedAt": "2026-10-15T09:49:59Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "google-workspace-mcp",
+   "displayName": "Google Workspace MCP",
+   "description": "Reads Gmail, Calendar, Drive, Docs and Sheets with memory-only OAuth credentials. Enter JSON with email, client_id, client_secret and refresh_token through Ave's secret prompt. Interactive login is disabled. Local download and full-message export tools require an explicit local-write opt-in. Requires Node.js 24+ and uv (or AVE_CONNECTOR_UV); the source wheel and dependencies are hash-locked.",
+   "path": "mcp/google-workspace-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "jira-mcp",
+   "displayName": "Jira MCP",
+   "description": "Reads Jira Cloud issues through mcp-atlassian in read-only mode. Set the site URL and account email in Ave and supply the API token through its secret prompt. Attachment downloads may write local files. Requires Node.js 24+ and uv (or an explicit AVE_CONNECTOR_UV path); installs only hash-locked Python packages.",
+   "path": "mcp/jira-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
   },
   {
    "kind": "mcp",
@@ -2226,15 +2298,51 @@
   },
   {
    "kind": "mcp",
+   "name": "ms-365-mcp",
+   "displayName": "Microsoft 365 MCP",
+   "description": "Reads Microsoft 365 data through Microsoft Graph with an existing delegated access token supplied through Ave's secret prompt. Interactive login and account mutation tools are absent; replace expired tokens in Ave. Token-cache files are disabled. Local file downloads require an explicit local-write opt-in. Requires Node.js 24+ and npm; runtime artifacts and dependencies are integrity-locked.",
+   "path": "mcp/ms-365-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "notion-hosted-mcp",
+   "displayName": "Notion (hosted)",
+   "description": "Connects to Notion's hosted MCP server at mcp.notion.com. You sign in with Notion in the browser, so there is no token to paste. It can search, read, create and update pages, as far as your Notion access allows. The server is in beta.",
+   "path": "mcp/notion-hosted-mcp",
+   "version": "1.0.0",
+   "versions": 1,
+   "commit": "1719e6252ec32dc4038ea1a54b263b240ff812f5",
+   "minAppVersion": "0.14.1",
+   "publishedAt": "2026-10-25T14:32:37Z"
+  },
+  {
+   "kind": "mcp",
    "name": "notion-mcp",
    "displayName": "Notion MCP",
-   "description": "Adds Notion's MCP server for searching, reading, and updating Notion workspace content.",
+   "description": "Adds Notion's self-hosted MCP server for searching, reading, and updating Notion workspace content with an integration token. Notion no longer actively maintains this server and recommends its hosted, OAuth-based Notion MCP.",
    "path": "mcp/notion-mcp",
-   "version": "2.2.2",
-   "versions": 1,
-   "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
+   "version": "2.5.2",
+   "versions": 2,
+   "commit": "d5c7a872535a872a3483b2c132521b61ec835ea5",
    "minAppVersion": "0.14.0",
-   "publishedAt": "2026-10-15T09:49:59Z"
+   "publishedAt": "2026-10-25T13:29:59Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "obsidian-mcp",
+   "displayName": "Obsidian MCP",
+   "description": "Reads and searches Obsidian vault notes through the Local REST API plugin on this computer, with a default tool allowlist. Creating, editing or deleting notes requires an explicit write opt-in. Supply the plugin API key through Ave's secret prompt. Requires Node.js 24+ and uv (or AVE_CONNECTOR_UV); the reviewed source wheel and Python dependencies are hash-locked.",
+   "path": "mcp/obsidian-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
   },
   {
    "kind": "mcp",
@@ -2242,23 +2350,23 @@
    "displayName": "Playwright MCP",
    "description": "Adds Microsoft Playwright MCP for local browser automation through a stdio subprocess. No LLM API key is required.",
    "path": "mcp/playwright-mcp",
-   "version": "0.0.76",
-   "versions": 1,
-   "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
+   "version": "0.0.83",
+   "versions": 2,
+   "commit": "d5c7a872535a872a3483b2c132521b61ec835ea5",
    "minAppVersion": "0.14.0",
-   "publishedAt": "2026-10-15T09:49:59Z"
+   "publishedAt": "2026-10-25T13:29:59Z"
   },
   {
    "kind": "mcp",
    "name": "postgres-mcp",
    "displayName": "PostgreSQL MCP",
-   "description": "Adds the official PostgreSQL MCP server for read-only schema inspection and SQL queries.",
+   "description": "Adds Google's MCP Toolbox for Databases with its prebuilt PostgreSQL tools for schema inspection, SQL queries, and health and performance views. Sessions start with default_transaction_read_only on, so writes fail by default; this is a session default that SQL can turn off, not a permission boundary, so connect with a read-only database role. Ave asks for the database password as a secret: passwordless trust or peer logins are not supported, and a password with YAML-special characters ({, *, a colon followed by a space, or a space followed by #) can break or truncate Toolbox's config. From 1.15.0 it replaces the archived reference server: set POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DATABASE and POSTGRES_USER instead of a connection URL. Toolbox ships no Linux arm64 build.",
    "path": "mcp/postgres-mcp",
-   "version": "0.6.3",
-   "versions": 1,
-   "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
+   "version": "1.15.0",
+   "versions": 2,
+   "commit": "e358f0c24926d1a43d23f2f797d573b13bf77045",
    "minAppVersion": "0.14.0",
-   "publishedAt": "2026-10-15T09:49:59Z"
+   "publishedAt": "2026-10-25T14:20:33Z"
   },
   {
    "kind": "mcp",
@@ -2300,25 +2408,25 @@
    "kind": "mcp",
    "name": "slack-mcp",
    "displayName": "Slack MCP",
-   "description": "Adds the Slack MCP server for channel discovery, messages, threads, reactions, and user profiles.",
+   "description": "Adds korotovsky/slack-mcp-server for reading channels, message history, threads, and the user-group list with a Slack bot token. A bot sees only the channels it was invited to. Only read tools are enabled, so posting, reactions, and joining, leaving or changing user groups stay off. From 2026.10.25 it replaces the archived reference Slack server: Ave asks for the xoxb- bot token again and passes it as SLACK_MCP_XOXB_TOKEN; SLACK_BOT_TOKEN, SLACK_TEAM_ID and SLACK_CHANNEL_IDS are no longer read.",
    "path": "mcp/slack-mcp",
-   "version": "2025.4.26",
-   "versions": 1,
-   "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
+   "version": "2026.10.25",
+   "versions": 2,
+   "commit": "e358f0c24926d1a43d23f2f797d573b13bf77045",
    "minAppVersion": "0.14.0",
-   "publishedAt": "2026-10-15T09:49:59Z"
+   "publishedAt": "2026-10-25T14:20:33Z"
   },
   {
    "kind": "mcp",
    "name": "sqlite-mcp",
    "displayName": "SQLite MCP",
-   "description": "Adds the official SQLite MCP server for local database querying and analysis. From 2025.4.27 the database is ave.sqlite in the package's data folder. Earlier versions used a differently named .sqlite file there; it is not migrated, so copy it to ave.sqlite to keep its data.",
+   "description": "Adds Google's MCP Toolbox for Databases with its prebuilt SQLite tools (execute_sql, list_tables) for local database querying and analysis. The database is ave.sqlite in the package's data folder. From 2026.10.25 it replaces the archived reference SQLite server and keeps the same file, so existing data stays. Toolbox ships no Linux arm64 build.",
    "path": "mcp/sqlite-mcp",
-   "version": "2025.4.27",
-   "versions": 1,
-   "commit": "25f3bb5e2d4c8ab5617a2994fac29cc2376cf474",
+   "version": "2026.10.25",
+   "versions": 2,
+   "commit": "d5c7a872535a872a3483b2c132521b61ec835ea5",
    "minAppVersion": "0.14.0",
-   "publishedAt": "2026-10-16T17:00:17Z"
+   "publishedAt": "2026-10-25T13:29:59Z"
   },
   {
    "kind": "mcp",
@@ -2343,6 +2451,42 @@
    "commit": "5071dd04c2c46e6e7c10dc4ef9bb811a7126faac",
    "minAppVersion": "0.14.0",
    "publishedAt": "2026-10-15T09:49:59Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "todoist-mcp",
+   "displayName": "Todoist MCP",
+   "description": "Reads Todoist tasks, projects, labels, filters and comments with a default tool allowlist. Creating, editing, completing and deleting objects requires an explicit write opt-in. Supply the Todoist API token through Ave's secret prompt. Requires Node.js 24+ and npm; runtime artifacts and dependencies are integrity-locked.",
+   "path": "mcp/todoist-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "trello-mcp",
+   "displayName": "Trello MCP",
+   "description": "Reads Trello boards, lists, cards and checklists with a default tool allowlist. Service writes and local downloads/configuration changes require separate explicit opt-ins. Enter JSON with apiKey and token through Ave's secret prompt; use a read-scoped token by default. Requires Node.js 24+ and npm; runtime artifacts and dependencies are integrity-locked.",
+   "path": "mcp/trello-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
+  },
+  {
+   "kind": "mcp",
+   "name": "youtube-mcp",
+   "displayName": "YouTube MCP",
+   "description": "Reads YouTube video, channel, playlist and transcript data through the community server. Supply a YouTube Data API v3 key through Ave's secret prompt. Transcript availability depends on the video and service. Requires Node.js 24+ and npm; runtime artifacts and dependencies are integrity-locked.",
+   "path": "mcp/youtube-mcp",
+   "version": "2026.10.27",
+   "versions": 1,
+   "commit": "0851366cd98660d1245fbd610638f3a1454a2bc3",
+   "minAppVersion": "0.14.0",
+   "publishedAt": "2026-10-26T14:18:47Z"
   },
   {
    "kind": "plugin",

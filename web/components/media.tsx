@@ -54,33 +54,6 @@ export function Frame({ pic, priority = false }: { pic: Picture; priority?: bool
 }
 
 /**
- * A capture cropped inside a fixed window (the home tiles): `crop` is the
- * picture's width, left and top as percentages of the window. Lazy, with its
- * width and height set like every other picture.
- */
-export function Crop({ pic, crop }: { pic: Picture; crop: [w: number, x: number, y: number] }) {
-  const { w, h } = mediaSize(pic.k);
-  const [cw, cx, cy] = crop;
-  return (
-    <picture>
-      <DarkSources k={pic.k} />
-      <source type="image/avif" srcSet={src(pic.k, "light", "avif")} />
-      <source type="image/webp" srcSet={src(pic.k, "light", "webp")} />
-      <img
-        src={src(pic.k, "light", "png")}
-        alt={pic.alt}
-        width={w}
-        height={h}
-        loading="lazy"
-        decoding="async"
-        className="crop-img"
-        style={{ width: `${cw}%`, left: `${cx}%`, top: `${cy}%` }}
-      />
-    </picture>
-  );
-}
-
-/**
  * Preload hints for a page's first picture, one per colour scheme. React
  * hoists these `<link>` elements into the document head.
  */

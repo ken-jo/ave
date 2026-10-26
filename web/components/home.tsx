@@ -1,25 +1,32 @@
-import { homeCopy, type Tile } from "@/lib/home";
+import { homeCopy, type Section } from "@/lib/home";
 import type { Locale } from "@/lib/i18n";
-import { doc, more, page } from "@/lib/nav";
+import { pkg } from "@/lib/marketplace";
+import { doc, more, page, type NavLink } from "@/lib/nav";
 import { Footer, Header } from "./chrome";
-import { HelloStage, Statement } from "./hello";
+import { HelloStage } from "./hello";
 import { DownloadGlyph } from "./icons";
-import { Crop, Frame } from "./media";
+import { Frame } from "./media";
 
 /**
- * The home page, "Greeting": a dawn-lit inset card with the brand line (Ave
- * means hello) above a built Ave workspace that performs the trail-notes
- * session; the AWE statement, sharpened word by word; the workbench capture;
- * six tiles for what the agent works with and the settings around it, each
- * leading to the page that covers it; and a dark closing card. Details live on
- * the feature pages and the guide; the home page only points at them.
+ * The home page, "Greeting", paced like a product page: the hello card (main
+ * line, the Latin-hello line, a built Ave workspace that performs the
+ * trail-notes session), five sections for what "everything" means (the web,
+ * the terminal, files, models, connectors and plugins), each one headline,
+ * one or two sentences, one visual and the link to the page that covers it,
+ * then a dark closing card. Details live on the feature pages and the guide.
  */
 export function Home({ locale }: { locale: Locale }) {
   const c = homeCopy(locale);
   const download = page(locale, "download");
   const docs = page(locale, "docs");
-  const workbench = doc(locale, "workbench");
   const path = "/";
+  const links: Record<Section["id"], NavLink> = {
+    web: more(locale, "browser"),
+    terminal: more(locale, "terminal"),
+    files: doc(locale, "workbench"),
+    models: more(locale, "models"),
+    connect: more(locale, "plugins"),
+  };
   return (
     <>
       <Header locale={locale} path={path} />
@@ -29,7 +36,6 @@ export function Home({ locale }: { locale: Locale }) {
             <div className="hello-copy">
               <h1 id="hero-title" className="hello-title">
                 {c.hero.title}
-                <span className="dim">{c.hero.dim}</span>
               </h1>
               <p className="hello-sub">{c.hero.sub}</p>
               <p className="hello-ctas">
@@ -47,94 +53,25 @@ export function Home({ locale }: { locale: Locale }) {
           </div>
         </section>
 
-        {/* 1. The Latin-hello story. */}
-        <section className="statement-sec" aria-label="Ave">
-          <div className="wrap">
-            <Statement text={c.statement} />
-            <p className="statement-body lead">{c.story}</p>
-          </div>
-        </section>
-
-        {/* 2. Every browser with your agent. */}
-        <section className="sec" aria-labelledby="browse">
-          <div className="wrap">
-            <div className="center-head">
-              <p className="eyebrow">{c.browse.eyebrow}</p>
-              <h2 id="browse" className="h2">
-                {c.browse.title}
-              </h2>
-              <p className="lead">{c.browse.body}</p>
+        {c.sections.map((s, i) => (
+          <section key={s.id} className={`sec home-sec home-sec-${s.id}`} aria-labelledby={`sec-${s.id}`}>
+            <div className={`wrap home-row${i % 2 ? " flip" : ""}`}>
+              <div className="home-text">
+                <h2 id={`sec-${s.id}`} className="h2">
+                  {s.title}
+                </h2>
+                <p className="lead">{s.body}</p>
+                {s.id === "connect" ? <Connectors locale={locale} /> : null}
+                <p>
+                  <a className="more" href={links[s.id].href}>
+                    {links[s.id].label}
+                  </a>
+                </p>
+              </div>
+              <div className={`home-stage stage-${s.id}`}>{s.pic === "files" ? <FilesFragment locale={locale} /> : <Frame pic={s.pic} />}</div>
             </div>
-            <div className="work-stage stage-warm">
-              <Frame pic={c.browse.pic} />
-            </div>
-            <p className="center-foot">
-              <a className="more" href={more(locale, "browser").href}>
-                {more(locale, "browser").label}
-              </a>
-            </p>
-          </div>
-        </section>
-
-        {/* 3. The workbench. */}
-
-        <section className="sec work-sec" aria-labelledby="work">
-          <div className="wrap">
-            <div className="center-head">
-              <p className="eyebrow">{c.work.eyebrow}</p>
-              <h2 id="work" className="h2">
-                {c.work.title}
-              </h2>
-              <p className="lead">{c.work.body}</p>
-            </div>
-            <div className="work-stage">
-              <Frame pic={c.work.pic} />
-            </div>
-            <p className="center-foot">
-              <a className="more" href={workbench.href}>
-                {workbench.label}
-              </a>
-            </p>
-          </div>
-        </section>
-
-        {/* 4. Six hands. */}
-        <section className="sec hands" aria-labelledby="hands">
-          <div className="wrap">
-            <div className="center-head">
-              <h2 id="hands" className="h2">
-                {c.hands.title}
-              </h2>
-              <p className="lead">{c.hands.body}</p>
-            </div>
-            <ul className="tiles">
-              {c.hands.tiles.map((t) => (
-                <TileCard key={t.title} tile={t} locale={locale} />
-              ))}
-            </ul>
-          </div>
-        </section>
-
-        {/* 5. Words beside one capture. */}
-        <section className="sec" aria-labelledby="pair">
-          <div className="wrap pair">
-            <div className="pair-text">
-              <p className="eyebrow">{c.pair.eyebrow}</p>
-              <h2 id="pair" className="h2">
-                {c.pair.title}
-              </h2>
-              <p className="lead">{c.pair.body}</p>
-              <p>
-                <a className="more" href={more(locale, "security").href}>
-                  {more(locale, "security").label}
-                </a>
-              </p>
-            </div>
-            <div className="work-stage stage-green">
-              <Frame pic={c.pair.pic} />
-            </div>
-          </div>
-        </section>
+          </section>
+        ))}
 
         {/* id="download": the app's unsigned-build update guide opens the site root, and this is where its download is. */}
         <section className="closing" id="download" aria-labelledby="say-hello">
@@ -149,6 +86,7 @@ export function Home({ locale }: { locale: Locale }) {
               <DownloadGlyph />
               {c.close.cta}
             </a>
+            <p className="closing-note">{c.close.note}</p>
           </div>
         </section>
       </main>
@@ -157,51 +95,54 @@ export function Home({ locale }: { locale: Locale }) {
   );
 }
 
-function TileCard({ tile, locale }: { tile: Tile; locale: Locale }) {
-  const link = tile.feature ? more(locale, tile.feature) : doc(locale, "workbench");
+/** Section 5's names, each one a package in the catalog snapshot (pkg() fails the build otherwise). */
+function Connectors({ locale }: { locale: Locale }) {
+  const c = homeCopy(locale).connectors;
   return (
-    <li className="tile">
-      <div className="tile-text">
-        <h3 className="h3">{tile.title}</h3>
-        <p>{tile.body}</p>
-        <a className="more" href={link.href}>
-          {link.label}
-        </a>
-      </div>
-      {tile.pic === "files" ? (
-        <FilesFragment locale={locale} />
-      ) : (
-        <div className="tile-window">
-          <Crop pic={tile.pic} crop={tile.crop ?? [100, 0, 0]} />
-        </div>
-      )}
-    </li>
+    <ul className="chips" aria-label={c.label}>
+      {[...c.mcp, ...c.plugins].map((name) => (
+        <li key={name} data-kind={pkg(name).kind}>
+          {pkg(name).displayName}
+        </li>
+      ))}
+    </ul>
   );
 }
 
 /**
  * The work panel's Files tab, built at fidelity because no capture of it
- * exists yet (web/DESIGN.md, "Built fragments"). It shows the same change as
- * the captures: the json case added to src/export.js.
+ * exists yet (web/DESIGN.md, "Built fragments"). It shows the captures'
+ * change: the json case added to src/export.js.
  */
 function FilesFragment({ locale }: { locale: Locale }) {
-  const label = locale === "ko" ? "파일 탭: src/export.js에 추가된 json 분기 줄이 강조된 모습" : "The Files tab: src/export.js with the added json case highlighted";
+  const label =
+    locale === "ko"
+      ? "작업 패널의 파일 탭: src/export.js가 선택돼 있고 추가된 json 분기 줄이 강조된 모습"
+      : "The work panel's Files tab: src/export.js selected, the added json case highlighted";
   return (
-    <div className="tile-window files-frag" role="img" aria-label={label}>
-      <ul aria-hidden="true">
-        <li>src/</li>
-        <li data-sel="">export.js</li>
-        <li>parse.js</li>
-        <li>test/</li>
-        <li>package.json</li>
-      </ul>
-      <pre aria-hidden="true">
-        {'switch (format) {\n  case "csv": return toCsv(trails);\n  case "md": return toTable(trails);\n'}
-        <span className="hw-add" data-on="">
-          {'  case "json": return JSON.stringify(trails);'}
-        </span>
-        {"}"}
-      </pre>
+    <div className="files-window" role="img" aria-label={label}>
+      <div className="hw-tabs" aria-hidden="true">
+        <span data-on="">Files</span>
+        <span>Preview</span>
+        <span>Browser</span>
+        <span>Terminal</span>
+      </div>
+      <div className="files-frag" aria-hidden="true">
+        <ul>
+          <li>src/</li>
+          <li data-sel="">export.js</li>
+          <li>parse.js</li>
+          <li>test/</li>
+          <li>package.json</li>
+        </ul>
+        <pre>
+          {'switch (format) {\n  case "csv": return toCsv(trails);\n  case "md": return toTable(trails);\n'}
+          <span className="hw-add" data-on="">
+            {'  case "json": return JSON.stringify(trails);'}
+          </span>
+          {"}"}
+        </pre>
+      </div>
     </div>
   );
 }
