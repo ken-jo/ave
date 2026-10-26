@@ -4,162 +4,268 @@ The product site at the canonical host. These are the rules a change must keep.
 Each one can be checked on the built pages; the build checks the navigation
 rules itself (`scripts/lib/web-export.mjs`, run by `bun run build`).
 
-The site was rewritten from scratch on 2026-10-15. Its density and its section
-patterns follow a study of reference product sites; no text, picture or
-typeface was taken from them.
+The system is called **Greeting**. It replaced the 2026-10-15 design on
+2026-10-27. Its craft (inset cards, light display type, the product performing
+in place of page animation) follows a measured study of reference product
+sites. No text, picture, typeface or composition was taken from them.
 
 ## Argument
 
-Ave is a desktop workbench where agents work on your computer with the model
-you choose, and anything that changes something asks first. Every page proves
-that with the real app: each claim sits next to a capture of the screen that
-shows it.
+Ave means hello: *avē* is Latin for hello. Ave is an AWE, an agentic work
+environment, which is the agents' counterpart of an IDE. It is a desktop app
+where agents read and edit your files, run a terminal and drive a browser,
+with the model you choose. Anything that changes something asks first.
+
+The home page says this once and then shows it. A built Ave workspace performs
+the same trail-notes session the captures show, from "hello" to the tests
+passing. Details live on the feature pages and in the guide. The home page
+only points at them.
 
 | Page | What it covers |
 | --- | --- |
-| `/` | Hero loop, the feature tour (one step per feature page), the workbench, what agents work with, three ways to connect a model, safety, extension kinds, the latest release, download. |
-| `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. Models adds every provider the app knows (read from `src/shared/llm-vendor-defaults.ts` at build time); Plugins adds the official catalog by kind (`lib/marketplace.json`). |
-| `/download/` | One card per system with the first-launch steps, then connecting a model, leading on to the start guide. |
+| `/` | The hello card (brand line, AWE, CTAs, the built workspace), the AWE statement, the workbench capture, six tiles (web, terminal, files, models, approvals, plugins) each leading to its page, a dark closing card. |
+| `/browser/`, `/terminal/`, `/models/`, `/plugins/`, `/security/` | One feature each, with its content unchanged: hero shot, a split, a bento of crops, facts or a second split, 5–8 questions, next steps. Models adds every provider the app knows (read from `src/shared/llm-vendor-defaults.ts` at build time). Plugins adds the official catalog by kind (`lib/marketplace.json`). |
+| `/download/` | A dawn card holding one card per system: what it needs, the installer, the first-launch steps. Then connecting a model, leading on to the start guide. |
 | `/docs/**` | The guide (`lib/docs.ts`), one template. |
-| `/changelog/` | `CHANGELOG.md` at build time, Ave's releases (v0.14.0 and later) each with an anchor; the `## Unreleased` section at the top is checked but not shown. The English page shows each release as a headline and bullet points from `lib/changelog-en.ts`, which the build holds to the same releases and item counts. |
+| `/changelog/` | `CHANGELOG.md` at build time: Ave's releases (v0.14.0 and later), each with an anchor. The `## Unreleased` section at the top is checked but not shown. The English page shows each release as a headline and bullet points from `lib/changelog-en.ts`, which the build holds to the same releases and item counts. |
 | `404.html`, `en/404.html` | Not-found page with links out. |
 
 ## Navigation
 
-1. **Flat.** The header links the five feature pages, Docs and Changelog, plus
-   the Download button and the language switch. The footer is the full index:
-   features; download, the three systems and the changelog; the guide.
+1. **Flat.** The header links the five feature pages, Docs and Changelog,
+   plus the Download pill and the language switch. The footer is the full
+   index:
+   - the features;
+   - download, the three systems and the changelog;
+   - the guide.
 2. **One label, one destination.** On a page, the same link text always leads
    to the same place. Labels come from `lib/nav.ts` only.
 3. **No self-links and no in-page jumps.** A link to the page being shown is
-   rendered as text with `aria-current="page"`; the logo on a home page and
-   the skip link are the exceptions.
+   rendered as text with `aria-current="page"`. The exceptions are the logo on
+   a home page and the skip link.
 4. **No dead links.** Every internal link, anchor and media source resolves in
    the export.
 5. **Download is close.** Every page reaches `/download/` in at most two
-   clicks; in practice the header button makes it one.
-6. **Chains.** Feature pages hand on to the guide, the next feature and
-   Download. The guide's previous/next runs from Download before the first
-   page to the changelog after the last. `/download/` leads to the start guide.
+   clicks. In practice the header pill makes it one.
+6. **Chains.**
+   - Feature pages hand on to the guide, the next feature and Download.
+   - The guide's previous/next runs from Download before the first page to the
+     changelog after the last.
+   - `/download/` leads to the start guide.
+   - Every home tile leads to its feature page; the Files tile leads to the
+     workbench guide.
 7. **Language switch keeps the place.** It links the same path in the other
-   language, and carries the current `#hash` with it.
-8. **Pre-release.** `RELEASE_PUBLISHED` in `lib/downloads.ts` is the one
-   switch. While it is false the system cards show "release in preparation"
-   with the changelog link instead of installer links, which would answer 404.
+   language and carries the current `#hash` with it.
+8. **Release switch.** `RELEASE_PUBLISHED` in `lib/downloads.ts` is the one
+   switch. While it is true, each system card links its installer's stable
+   `latest/` alias on the release channel. While it is false, the cards show
+   "release in preparation" and the changelog link instead.
+
+## Tokens
+
+All colours are tokens on `:root` in `app/globals.css`.
+
+| Token | Use |
+| --- | --- |
+| `--bg` `oklch(97.6% .004 85)` | Page ground (warm paper) |
+| `--band` | The second ground |
+| `--raised` | Cards |
+| `--ink` | Text |
+| `--ink-2` | Secondary text |
+| `--muted` | Captions, footer |
+| `--line` | Hairlines |
+| `--line-strong` | Hairlines |
+| `--dawn-1/2/3` | Only the hello and download cards' gradient |
+| `--title-dim` | The dimmed second line of the hero title (gradient-clipped text) |
+| `--accent` | Bullets and selection |
+| `--accent-ink` `oklch(45% .11 50)` | "More" links and eyebrows, readable on every ground |
+| `--glow` | The closing card's warm glow |
+| `--night` | The closing card |
+| `--night-ink` | The closing card |
+| `--focus` | The focus ring |
+
+Radii:
+- `--r-lg` 32 px: the inset hero, download and closing cards, 24 px on a phone.
+- `--r` 18 px: cards.
+- 22 px: tiles.
+- 14 px: framed captures.
+- 999 px: pills.
+
+The built workspace has its own `--a-*` tokens, copied from the app's light
+theme as the captures show it.
+
+**Colour scheme.** The site is light only (`color-scheme: light`, one
+`theme-color`). Pages show the light captures. The dark captures stay in
+`public/media` for a later dark theme. Pastel gradients appear only behind
+captures and fragments.
 
 ## Layout
 
-9. **One frame.** Content sits in `.wrap`: at most 1200 px with a gutter of
-   `max(16px, 4vw)`. No horizontal page scroll at 360 px; every multi-column
-   row is one column on a phone.
-10. **Bands.** Sections alternate between the page ground and `--band`, and
-    have the same vertical padding (`--sec`).
-11. **Patterns.** A section is one of: a *split* (a full-app shot beside a
-    dense list of 3–5 points, each a bold lead and the rest of the sentence); a
-    *bento* (2–5 cards on a six-column grid, each a real crop with a title and
-    a caption of about twenty words); *choices* (three equal cards); *facts*
-    (three short ruled columns); *kinds* (an icon grid); *questions* (native
-    `<details>`); *next steps* (three linked cards).
-12. **Density.** Home about 1,700 English words and 17 media (the tour adds
-    each feature page's hero lead, first three points and two shots, and the
-    package stack adds seven catalog packages); feature pages 600–900
-    English words and 6–7 media. Korean pages carry the same content.
+9. **Frame.** Content sits in `.wrap`: at most 1200 px wide, with a gutter of
+   `max(16px, 4vw)`.
+   - The hello, download and closing cards are inset 16 px from the viewport
+     (8 px on a phone).
+   - There is no horizontal page scroll at 375 px.
+   - Every multi-column row is one column on a phone.
+   - Centred heads switch to left-aligned at 640 px and narrower.
+10. **Pacing.** Sections are separated by air, not rules: `--sec` is
+    72–140 px, and the statement section is 110–200 px.
+11. **Patterns.**
+    - *Hello card*: a centred head over the product, which rises from the
+      card's bottom edge and is cropped by it.
+    - *Statement*: one sentence.
+    - *Stage*: a capture on a soft gradient field.
+    - *Tiles*: a gradient back, a title, two sentences, a "more" link, and a
+      cropped capture or fragment.
+    - *Closing card*.
+    - The interior pages keep their patterns: split, bento, choices, facts,
+      questions, next steps.
 
-## Type and colour
+## Type
 
-13. Geist for Latin, Noto Sans KR for Hangul through the stack, Geist Mono for
-    code and eyebrows, all self-hosted by `next/font`.
-14. Colours are tokens on `:root`, redefined under
-    `prefers-color-scheme: dark`. The accent (`--accent`, lime) marks list
-    bullets and selection; `--accent-ink` carries "more" links and eyebrows.
+12. **Fonts.** Pretendard Variable (dynamic subset) covers Latin and Hangul;
+    JetBrains Mono is for code. Both are vendored in `public/fonts` with their
+    OFL licences and linked from `components/shell.tsx`. No font CDN.
+13. **Display type** is light and tight:
+    - Hero: weight 430, -0.058em, line-height 1.0, and a gradient-dimmed
+      second line.
+    - `.h1`: weight 430, -0.05em.
+    - `.h2`: weight 450, -0.04em.
+14. **Korean and body text.** Korean sets the display type looser (-0.04 to
+    -0.045em, line-height 1.12–1.24) and breaks with `word-break: keep-all`.
+    Body text is 16/1.6 and leads are 17–19 px, at most 40em wide.
 
 ## Media
 
-15. **Only real captures.** Every picture is Ave itself, captured for this
-    site: no illustrations, stock images, third-party logos or mock-ups. The
-    key of each picture is in `lib/media.json`; copy can only name a key that
-    exists (`lib/content.ts`).
-16. **How they were made.** The real app runs with an isolated neutral
-    temporary `HOME`, `AVE_HOME` and browser profile, production mode,
-    English locale and a mock keychain. A local scripted model with a fake
-    key answers a fixed scenario over `trail-notes`, a sample Node CLI
-    and local preview site. This demonstrates real tool execution and UI
-    with a scripted conversation. Each scene is captured through the
-    DevTools Protocol in the light theme and the Tokyo Night theme package.
-    `browser-live`, `browser-live-nav` and `terminal-live` were captured
-    from app main 135a26642 on 2026-10-21 at 2880×1800 (2×).
-    `browser-side`, `browser-done`, `terminal-side`, `terminal-main`,
-    `terminal-ask` and `web-main` use the same build and retain their existing
-    1440×900 (1×) dimensions by reducing the 2× source before encoding.
-    The app uses `--force-device-scale-factor=2`, no emulated scale,
-    and a 1440×900 content area so embedded pages size correctly.
-    The main browser and terminal panes each have their own docked chat.
-    Browser chat uses real `browser_snapshot` and `browser_navigate`
-    results. Terminal chat reads the failed run with `terminal_read`
-    using `limit` so the result includes output, requests `terminal_run`
-    approval, then runs that command in the same visible shell. The rerun
-    still shows five passing tests and one failure; a real source-file read
-    grounds the diagnosis. The approval picture precedes execution, and
-    the final picture follows the command block and source result.
-    The scripted model checks each outcome against the preceding real tool
-    results and aborts on a failed tool or unsupported statement. The
-    screenshot driver refuses captures after an abort. No personal
-    profiles or names appear, and visible paths use the neutral capture home.
-17. **Formats.** Each capture ships as AVIF (quality 62) and WebP (quality 80)
-    at full size, plus a half-width 256-colour PNG fallback, for light and
-    dark: `public/media/<key>-<light|dark>.<avif|webp|png>`. The hero loop is
-    H.264 MP4 and VP9 WebM, each under 2 MB, 1440×900.
-18. **No layout shift.** Every `<img>` and `<video>` has width and height. The
-    first picture of a page is eager with high fetch priority and has preload
-    links per colour scheme. Everything else loads lazily.
-19. **Motion.** Only the home page moves, and it never moves the page: no
-    scroll hijacking, snapping, smooth-scroll takeover or `scrollTo`. The
-    server renders every element visible and final; script only enhances.
-    - The hero loop plays muted over its still; under
-      `prefers-reduced-motion: reduce` it is hidden and the still shows.
-    - **Feature tour** (`components/tour.tsx`). One step per feature page,
-      taken from that page's hero. On screens 1024 px and wider, with script
-      and motion allowed (one media query, `PINNED`, shared by the CSS and the
-      script), each step is a viewport-tall block and a sticky stage beside
-      them holds a framed capture. One scroll progress for the tour drives the
-      frame's position, scale and rotation through a pose per step, the
-      cross-fade between captures, and the current step (`aria-current="step"`
-      on the step, marked by colour, not opacity, and highlighted in the
-      stage's index). A step changes exactly at the middle of its cross-fade.
-      The frame follows the scroll position 1:1 and moves continuously
-      between step centres, so scrolling back retraces every frame; only the
-      inset capture drifts on a stiff spring. Everywhere else (narrow screens, reduced
-      motion, no script) the tour is a plain stack of steps, each with its
-      capture untransformed, and is exactly as long as its content.
-    - **Package stack** (`components/pkg-stack.tsx`). Under the extension
-      kinds, one real package per kind from the official catalog, with the
-      install review's fields. With PINNED it is an overlapping stack: scroll
-      walks through it (and back), a pointed-at or focused kind brings its
-      card forward and is highlighted, and pointing at the stack fans it out.
-      Otherwise a plain grid of cards.
-    - **Entrances.** Home sections that start below the fold enter once, their
-      parts one after the other (`components/motion.tsx`). A section on screen
-      at load, or scrolled past, is never hidden; with reduced motion nothing
-      is.
-    - Beyond that: hover colour and a 0.98 press.
+15. **Only real captures, apart from listed built fragments.**
+    - Every picture is Ave itself, captured for this site: no illustrations,
+      stock images or third-party logos.
+    - The key of each picture is in `lib/media.json`. Copy can only name a
+      key that exists (`lib/content.ts`).
+    - The built fragments under "Built fragments" below are the only
+      exception.
+16. **How they were made.** The real app runs with:
+    - an isolated, neutral temporary `HOME`, `AVE_HOME` and browser profile;
+    - production mode;
+    - the English locale;
+    - a mock keychain.
 
-Print shows every element in its static form.
+    A local scripted model with a fake key answers a fixed scenario over
+    `trail-notes`, a sample Node CLI and local preview site. This demonstrates
+    real tool execution and UI with a scripted conversation. Each scene is
+    captured through the DevTools Protocol in the light theme and the Tokyo
+    Night theme package.
+
+    Capture sizes:
+    - `browser-live`, `browser-live-nav` and `terminal-live` were captured from
+      app main 135a26642 on 2026-10-21 at 2880×1800 (2×).
+    - `browser-side`, `browser-done`, `terminal-side`, `terminal-main`,
+      `terminal-ask` and `web-main` use the same build. They keep their
+      existing 1440×900 (1×) dimensions because the 2× source is reduced
+      before encoding.
+    - The app uses `--force-device-scale-factor=2`, no emulated scale, and a
+      1440×900 content area, so embedded pages size correctly.
+
+    The main browser and terminal panes each have their own docked chat:
+    - Browser chat uses real `browser_snapshot` and `browser_navigate`
+      results.
+    - Terminal chat reads the failed run with `terminal_read`, using `limit`
+      so the result includes output. It requests `terminal_run` approval,
+      then runs that command in the same visible shell.
+    - The rerun still shows five passing tests and one failure, and a real
+      source-file read grounds the diagnosis.
+    - The approval picture precedes execution. The final picture follows the
+      command block and the source result.
+
+    Safeguards:
+    - The scripted model checks each outcome against the preceding real tool
+      results and aborts on a failed tool or an unsupported statement.
+    - The screenshot driver refuses captures after an abort.
+    - No personal profiles or names appear, and visible paths use the neutral
+      capture home.
+17. **Formats.** Each capture ships, for light and dark, as:
+    - AVIF (quality 62) at full size;
+    - WebP (quality 80) at full size;
+    - a half-width 256-colour PNG fallback.
+
+    The path is `public/media/<key>-<light|dark>.<avif|webp|png>`. The site
+    currently shows only the light versions. The earlier hero loop (H.264 MP4
+    and VP9 WebM, 1440×900) stays in `public/media` but is not shown.
+18. **No layout shift.**
+    - Every `<img>` and `<video>` has width and height.
+    - A feature page's first picture is eager, with high fetch priority and a
+      preload link.
+    - Everything else loads lazily.
+    - The home hero has no picture to wait for: its workspace is markup.
+
+### Built fragments
+
+Each fragment uses the app's own English UI strings (`src/i18n/messages`) and
+the captures' trail-notes scenario. Each is one image to assistive technology
+(`role="img"` with a description). An isolated capture replaces a fragment as
+soon as one exists.
+
+| Fragment | Where | Replaced by |
+| --- | --- | --- |
+| The hello workspace (sidebar, conversation, the Files, Preview and Terminal tabs of the work panel) | Home hero, `components/hello.tsx` | Not replaced: it is the performed demo. A Korean-UI capture set would let the Korean page show Korean labels. |
+| The Files tab with `src/export.js` | Home "It edits your files" tile, `components/home.tsx` | A capture of the work panel's Files tab |
+
+## Motion
+
+19. Motion lives in the product, not the page:
+    - no scroll hijacking, snapping, smooth-scroll takeover or `scrollTo`;
+    - no motion library.
+
+    The server renders every element visible and finished. Script only
+    enhances, and only when `prefers-reduced-motion` allows it. When it runs,
+    it marks the element `data-live` and replays it; every hidden or moving
+    state in CSS is scoped to `[data-live]`.
+    - **The hello workspace** (`HelloStage`) plays while at least a quarter of
+      it is on screen, then loops:
+      1. `hello` is typed and Ave answers.
+      2. The task is typed and the Work toggle opens the work panel.
+      3. Each tool call (`browser_snapshot`, Edit file, Terminal command)
+         switches the panel's tab and acts in it. Preview rows are read, the
+         json line is wiped in, and the test lines print.
+      4. The group collapses to "Work complete" and Ave's report.
+
+      Entrances use 460 ms `cubic-bezier(.32,.72,0,1)` and the panel uses
+      expo-out 0.9 s.
+    - **The statement** (`Statement`): its words sharpen in order as the
+      sentence rises through the viewport, from opacity 0.16, 6 px blur and a
+      0.12em offset. Opacity eases over 0.55 s, blur over 0.7 s, and the
+      offset over 0.95 s expo-out. Scrolling back reverses it.
+    - Beyond that: a 6 px tile lift on hover, hover colour, and a 0.98 press.
+
+    Without script, and with reduced motion, the workspace shows the finished
+    session and the statement is plain text. On narrow screens the finished
+    workspace shows the conversation; while it plays, the work panel takes
+    the column.
 
 ## Copy
 
 20. Facts come from the app's guide, its UI strings and code, and what the
-    captures show. Packages come only from the catalog snapshot
-    (`scripts/marketplace-snapshot.mjs` writes `lib/marketplace.json` from a
-    recorded commit of ken-jo/agent-marketplace), and `lib/marketplace.ts`
-    fails the build for a package name the snapshot does not have. No testimonials, customer logos, rankings, or numbers
-    without a source in the app; no placeholder text; no company hosts,
-    addresses or paths.
-21. Names match the app's labels (Settings → Model, Allow once, Split pane).
+    captures show.
+    - Packages come only from the catalog snapshot.
+      `scripts/marketplace-snapshot.mjs` writes `lib/marketplace.json` from a
+      recorded commit of ken-jo/agent-marketplace, and `pkg()` in
+      `lib/marketplace.ts` fails the build for a package name the snapshot
+      does not have.
+    - No invented facts: no testimonials, customer logos, rankings, or numbers
+      without a source in the app.
+    - No placeholder text.
+    - No company hosts, addresses or paths.
+    - The brand line "Ave means hello" (ko "Ave는 라틴어로 hello.") and AWE
+      are positioning, not product claims.
+21. Names match the app's labels (Settings → Model, Allow once, Split pane,
+    Work complete, Confirm writes).
 
 ## Libraries
 
-Next.js (static export), React, Tailwind CSS 4 (for the build; the rules are
-hand-written in `app/globals.css`), `next/font`, and Motion (`motion/react`,
-home page only, through `LazyMotion` with the `domAnimation` features loaded
-after hydration). Nothing else ships; feature pages load no motion code.
-Notices: `THIRD_PARTY_NOTICES.md`.
+- Next.js (static export).
+- React.
+- Tailwind CSS 4, for the build only; the rules are hand-written in
+  `app/globals.css`.
+
+The home page's motion is a small client component with no dependencies.
+Feature pages ship no motion code. Notices are in `THIRD_PARTY_NOTICES.md`.

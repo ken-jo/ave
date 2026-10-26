@@ -15,3 +15,6 @@ preview-*.png
 tsconfig.tsbuildinfo
 *.tsbuildinfo
 .wrangler
+
+# Design-tool scratch (hallmark), never committed
+.hallmark/
