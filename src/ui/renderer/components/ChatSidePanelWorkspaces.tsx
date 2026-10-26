@@ -818,11 +818,13 @@ export function FileBrowserWorkspace({
     if (!selectedPath) return selectedTarget ?? null;
     const root = fsRoot ?? changes.workspaceRoot;
     const normalized = workspaceFilePath(selectedPath, root);
-    if (selectedTarget?.kind === "file"
-      && workspaceFilePath(selectedTarget.path, selectedTarget.workspaceRoot ?? root) === normalized) return selectedTarget;
     const normalizedRoot = root ? normalizeWorkspaceTreePath(root, null) : undefined;
     const previewRoot = normalizedRoot && isPathWithinRoot(normalizedRoot, normalized) ? normalizedRoot
       : /^(?:\/|[A-Za-z]:\/)/.test(normalized) ? normalized.slice(0, normalized.lastIndexOf("/")) || "/" : undefined;
+    if (selectedTarget?.kind === "file"
+      && workspaceFilePath(selectedTarget.path, selectedTarget.workspaceRoot ?? root) === normalized) {
+      return { ...selectedTarget, path: normalized, ...(previewRoot ? { workspaceRoot: previewRoot } : {}) };
+    }
     return { id: `fs:${normalized}`, kind: "file", title: fileBasename(normalized), sourceLabel: "workspace",
       createdOrder: Number.MAX_SAFE_INTEGER, path: normalized, ...(previewRoot ? { workspaceRoot: previewRoot } : {}), canOpenExternal: false };
   }, [selectedPath, selectedTarget, fsRoot, changes.workspaceRoot]);

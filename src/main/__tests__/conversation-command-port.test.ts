@@ -191,9 +191,12 @@ describe("ConversationCommandPort", () => {
   it("cancels only the exact paired actor's host-owned public turn through the shared AbortSignal", async () => {
     let rejectTurn: (reason?: unknown) => void = () => {};
     let observedSignal: AbortSignal | undefined;
+    let signalStarted!: () => void;
+    const turnStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
     const { port, runTurn } = makeFixture((...args) => new Promise<typeof completedTurn>((_resolve, reject) => {
       observedSignal = args[2] as AbortSignal;
       rejectTurn = reject;
+      signalStarted();
     }));
     const pairedShare = pairedShareFixture();
     const pairedShareGuard = Object.freeze({ isCurrent: vi.fn(() => true) });
@@ -205,8 +208,8 @@ describe("ConversationCommandPort", () => {
       payload: { input: "cancellable remote request" },
       publicTurn: { turnId, abortController: new AbortController() },
     });
-    await Promise.resolve();
-    await Promise.resolve();
+    // Admission reserves the public turn synchronously; wait for asynchronous preparation before cancelling an active turn.
+    await turnStarted;
 
     expect(submission?.publicTurnId).toBe(turnId);
     expect(runTurn).toHaveBeenCalledOnce();

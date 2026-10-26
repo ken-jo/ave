@@ -2559,6 +2559,21 @@ describe("ChatSidePanel", () => {
     expect(selected.closest('[role="treeitem"]')).toHaveAttribute("aria-selected", "true");
   });
 
+  it.each([false, true])("resolves a relative session preview against its nondefault conversation root, ranged: %s", async (ranged) => {
+    vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
+    stubRichWorkspace({ listRoots: vi.fn(async () => ({ ok: true, roots: [{ path: "/projects/default", isDefault: true }, { path: "/projects/A", isDefault: false }] })) });
+    const readFile = vi.fn(async () => ({ ok: true as const, path: "/projects/A/src/a.ts", content: "Project A source", truncated: false }));
+    vi.stubGlobal("ave", { ...window.ave, preview: { ...window.ave.preview, readFile } });
+    const target: ChatPreviewTarget = { id: "project-a-source", kind: "file", title: "a.ts", sourceLabel: "read_file", createdOrder: 1,
+      path: "src/a.ts", canOpenExternal: false, ...(ranged ? { startLine: 3, endLine: 5 } : {}) };
+    const files: WorkspaceFileItem[] = [{ id: "project-a-file", path: target.path, label: target.title, detail: target.path,
+      sourceLabel: "read_file", operation: "read", canOpenExternal: false, previewTargetId: target.id }];
+    const changes = deriveWorkspaceChanges({ files, targets: [target], workspaceRoot: "/projects/A", review: null });
+    renderPanel(<FileBrowserWorkspace api={api()} sessionId="project-a" files={files} changes={changes} targetById={new Map([[target.id, target]])} selectedId={target.id} onSelect={vi.fn()} />);
+    await waitFor(() => expect(readFile).toHaveBeenCalledWith("/projects/A/src/a.ts", ranged ? { offset: 2, limit: 3, workspaceRoot: "/projects/A" } : { workspaceRoot: "/projects/A" }));
+    expect(readFile).toHaveBeenCalledTimes(1);
+  });
+
   it("preserves an indexed session file inline preview when its source is unavailable locally", async () => {
     vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockReturnValue(760);
     stubRichWorkspace();
