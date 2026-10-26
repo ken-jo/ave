@@ -1,6 +1,6 @@
 /** Use info foreground tokens; accent is a surface tint and is unreadable as text or a border on light themes. */
 import { useSyncExternalStore, useState, useMemo, useCallback, useEffect, useRef } from "react";
-import { ChevronDown, ChevronRight, MessageSquarePlus, ArrowUp, Check, X, Pencil } from "lucide-react";
+import { ChevronDown, ChevronRight, MessageSquarePlus, ArrowUp, ArrowDown, Check, X, Pencil } from "lucide-react";
 import { Badge } from "../../../components/ui/badge.js";
 import type { MessageQueueStore, MessageQueueItem } from "../state/message-queue-store.js";
 import { useTranslation } from "../../../i18n/react.js";
@@ -24,6 +24,7 @@ export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQ
   );
 
   const [expanded, setExpanded] = useState(true);
+  const [announcement, setAnnouncement] = useState("");
   const rowRefs = useRef<(HTMLLIElement | null)[]>([]);
 
   const selectedCount = useMemo(
@@ -108,10 +109,26 @@ export function MessageQueuePanel({ store, onSendNow, heldByApproval }: MessageQ
               onRemove={() => store.remove(item.id)}
               onEdit={(next) => store.update(item.id, next)}
               onMoveFocus={(delta) => focusRow(index + delta)}
+              position={index + 1}
+              count={items.length}
+              moveUpEnabled={index > 0 && items[index - 1].handedOffAs === undefined}
+              moveDownEnabled={index < items.length - 1 && items[index + 1].handedOffAs === undefined}
+              onMove={(direction) => {
+                const row = rowRefs.current[index];
+                store.move(item.id, direction);
+                const reordered = store.getItems();
+                const position = reordered.findIndex((candidate) => candidate.id === item.id) + 1;
+                if (position === index + 1 || position === 0) return;
+                row?.focus();
+                setAnnouncement(t("messageQueuePanel.movedAnnouncement", {
+                  text: item.text, position, count: reordered.length,
+                }));
+              }}
             />
           ))}
         </ul>
       )}
+      <span role="status" aria-live="polite" aria-atomic="true" className="sr-only">{announcement}</span>
     </div>
   );
 }
@@ -125,6 +142,11 @@ interface MessageQueueRowProps {
 
   onEdit: (newText: string) => void;
   onMoveFocus: (delta: 1 | -1) => void;
+  position: number;
+  count: number;
+  moveUpEnabled: boolean;
+  moveDownEnabled: boolean;
+  onMove: (direction: -1 | 1) => void;
 }
 
 function isTextEditingTarget(target: EventTarget | null): boolean {
@@ -141,6 +163,11 @@ function MessageQueueRow({
   onRemove,
   onEdit,
   onMoveFocus,
+  position,
+  count,
+  moveUpEnabled,
+  moveDownEnabled,
+  onMove,
 }: MessageQueueRowProps) {
   const { t } = useTranslation();
   const [editing, setEditing] = useState(false);
@@ -195,9 +222,20 @@ function MessageQueueRow({
       data-selected={item.selected ? "true" : "false"}
       tabIndex={editing ? -1 : 0}
       aria-selected={item.selected}
+      aria-posinset={position}
+      aria-setsize={count}
+      aria-keyshortcuts={handedOff ? undefined : "Alt+ArrowUp Alt+ArrowDown"}
       onKeyDown={(e) => {
         if (editing) return;
         if (isTextEditingTarget(e.target)) return;
+        if (e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey && e.target === e.currentTarget
+          && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+          e.preventDefault();
+          if (!handedOff && (e.key === "ArrowDown" ? moveDownEnabled : moveUpEnabled)) {
+            onMove(e.key === "ArrowDown" ? 1 : -1);
+          }
+          return;
+        }
         if (e.key === "ArrowDown") {
           e.preventDefault();
           onMoveFocus(1);
@@ -275,10 +313,32 @@ function MessageQueueRow({
       )}
       {!editing && !handedOff && (
         /* One action cluster, uniform 20px hit targets and a single gap so the
-           three verbs read as a row rather than three differently-sized chips.
+           actions read as a row.
            "즉시" keeps its label — it is the only destructive-adjacent action
            whose meaning an icon alone does not carry. */
         <div className="flex shrink-0 items-center gap-0.5">
+          <button
+            type="button"
+            onClick={() => onMove(-1)}
+            disabled={!moveUpEnabled}
+            className="inline-flex h-5 w-5 items-center justify-center rounded border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-muted hover:text-foreground disabled:opacity-40 motion-reduce:transition-none"
+            aria-label={t("messageQueuePanel.moveUp")}
+            title={t("messageQueuePanel.moveUp")}
+            data-testid="message-queue-row-move-up"
+          >
+            <ArrowUp className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            onClick={() => onMove(1)}
+            disabled={!moveDownEnabled}
+            className="inline-flex h-5 w-5 items-center justify-center rounded border border-transparent text-muted-foreground transition-colors hover:border-border hover:bg-muted hover:text-foreground disabled:opacity-40 motion-reduce:transition-none"
+            aria-label={t("messageQueuePanel.moveDown")}
+            title={t("messageQueuePanel.moveDown")}
+            data-testid="message-queue-row-move-down"
+          >
+            <ArrowDown className="h-3 w-3" />
+          </button>
           <button
             type="button"
             onClick={enterEdit}

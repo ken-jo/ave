@@ -80,6 +80,49 @@ describe("MessageQueueStore", () => {
     expect(store.size()).toBe(1);
   });
 
+  it("moves a pending item without changing its identity, selection or expiration", () => {
+    const first = store.add("first");
+    const second = store.add("second");
+    store.toggleSelect(second.id);
+    const selected = store.getItems()[1];
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.move(second.id, -1);
+
+    expect(store.getItems()).toEqual([selected, first]);
+    expect(store.getItems()[0]).toBe(selected);
+    expect(listener).toHaveBeenCalledTimes(1);
+    expect(store.takeSelected()).toEqual([selected]);
+  });
+
+  it("does not move beyond the queue or move handed-off items", () => {
+    const first = store.add("first");
+    const second = store.add("second");
+    store.markHandedOff([first.id], "first");
+    const before = store.getItems();
+    const listener = vi.fn();
+    store.subscribe(listener);
+
+    store.move(first.id, -1);
+    store.move(second.id, 1);
+    store.move(first.id, 1);
+    store.move(second.id, -1);
+    store.move("missing", 1);
+
+    expect(store.getItems()).toBe(before);
+    expect(listener).not.toHaveBeenCalled();
+  });
+
+  it("drains pending messages in the reordered order", () => {
+    store.add("first");
+    const second = store.add("second");
+    store.add("third");
+    store.move(second.id, -1);
+    expect(store.getPending().map((item) => item.text)).toEqual(["second", "first", "third"]);
+    expect(store.takeAll().map((item) => item.text)).toEqual(["second", "first", "third"]);
+  });
+
   it("toggleSelect 는 selection 토글", () => {
     const a = store.add("a");
     expect(store.getItems()[0].selected).toBe(false);

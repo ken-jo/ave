@@ -130,6 +130,24 @@ async function typeAndSubmit(result: { current: Surface }, text: string) {
 }
 
 describe("useMessageQueue end-of-turn drain (side chat)", () => {
+  it("sends queued messages in the order chosen in the queue", async () => {
+    const { api, emit, spies, acceptTurn } = makeApi();
+    const { result } = renderHook(() => useSideSurface(api));
+    await act(async () => { await result.current.side.send("first turn"); });
+    await acceptTurn(1);
+    await typeAndSubmit(result, "first queued");
+    await typeAndSubmit(result, "second queued");
+    act(() => {
+      const store = result.current.queue.messageQueueStore;
+      store.move(store.getItems()[1].id, -1);
+    });
+
+    await emit({ type: "done", streamId: 1 });
+
+    expect(spies.send).toHaveBeenCalledTimes(2);
+    expect(spies.send.mock.calls[1][0]).toContain("- second queued\n- first queued");
+  });
+
   it.each([false, true])("keeps queued drafts when a peer's unseen turn ends, reverse dispatch: %s", async (reverseDispatch) => {
     const { api, emit, spies } = makeApi({ reverseDispatch });
     await emit({ type: "user_message", sessionId: "side-peer", streamId: 1, sendRequestId: "peer-request" });

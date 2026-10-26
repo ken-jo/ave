@@ -94,6 +94,19 @@ export class MessageQueueStore {
     if (this.items.length !== before) this.notify();
   }
 
+  /** Change delivery order only while both adjacent rows still belong to the queue. */
+  move(id: string, direction: -1 | 1): void {
+    this.prune();
+    const index = this.items.findIndex((item) => item.id === id);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= this.items.length
+      || this.items[index].handedOffAs !== undefined || this.items[target].handedOffAs !== undefined) return;
+    const next = [...this.items];
+    [next[index], next[target]] = [next[target], next[index]];
+    this.items = next;
+    this.notify();
+  }
+
   /** Mark rows as accepted by the engine, recording what it was given. */
   markHandedOff(ids: readonly string[], handedOffAs: string): void {
     const target = new Set(ids);

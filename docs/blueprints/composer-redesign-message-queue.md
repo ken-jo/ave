@@ -39,7 +39,8 @@ Store rules:
 - Items expire 30 minutes after creation or last edit, pruned lazily on read.
 - The store is in memory and is cleared when the session changes.
 - Item actions in the panel: toggle selection, edit (double-click; empty text
-  removes the row), send now, remove.
+  removes the row), move up/down, send now, remove. Moves preserve selection,
+  identity and expiration, and cannot cross a handed-off row.
 
 `formatQueueInject` turns items into one user message: a single item is sent as
 is; two or more are wrapped as a header line (`messageQueueStore.queueInjectHeader`)
@@ -123,6 +124,7 @@ composers can be mounted at once.
 | Key | Behavior |
 |---|---|
 | `Shift+Enter` | Newline. |
+| `Alt+Up/Down` on a queue row | Move the pending item one position, retaining focus and announcing its new position. Unmodified arrows move focus. |
 | `Cmd/Ctrl+K` | Main chat only: inject the current text as guidance into the running turn. Errors map to `chatView.guideError*` messages. |
 
 ## Enforcing tests
