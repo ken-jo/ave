@@ -28,7 +28,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
   expect(boxes.chat.width).toBeGreaterThanOrEqual(MIN_DOCKED_TRANSCRIPT_WIDTH);
   expect(boxes.thumbnails.x).toBeGreaterThanOrEqual(boxes.chat.x + boxes.chat.width - 1);
   expect(boxes.panel.x).toBeGreaterThanOrEqual(boxes.thumbnails.x + boxes.thumbnails.width - 1);
-  await testInfo.attach("three-chat-columns.png", { body: await page.screenshot(), contentType: "image/png" });
+  await testInfo.attach("three-chat-columns.png", { body: await page.screenshot({ path: testInfo.outputPath("three-chat-columns.png") }), contentType: "image/png" });
 
   await thumbnailsToggle.click();
   await expect(thumbnails).toHaveCount(0);
@@ -82,7 +82,7 @@ test("session columns push the transcript, restore toggles, and yield at narrow 
       && panelBox.x + panelBox.width <= paneBox.x + paneBox.width + 1
       && panelBox.y + panelBox.height <= paneBox.y + paneBox.height + 1;
   }).toBe(true);
-  await testInfo.attach("narrow-chat-columns.png", { body: await page.screenshot(), contentType: "image/png" });
+  await testInfo.attach("narrow-chat-columns.png", { body: await page.screenshot({ path: testInfo.outputPath("narrow-chat-columns.png") }), contentType: "image/png" });
   await page.setViewportSize({ width: 1920, height: 1080 });
   await expect(thumbnails).toBeVisible();
   await expect(panel).toBeVisible();

@@ -71,7 +71,9 @@ test.describe("workspace rail redesign", () => {
 
   test("a canvas with space for the transcript and side panel docks", async () => {
     await page.setViewportSize({ width: 1243, height: 768 });
+    const originalBounds = await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getBounds());
     await page.getByTestId(TEST_IDS.panePanelToggle).click();
+    expect(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]!.getBounds())).toEqual(originalBounds);
 
     await expect(page.getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
     await expect(page.getByTestId("chat-side-panel-width-splitter")).toBeVisible();
@@ -85,6 +87,9 @@ test.describe("workspace rail redesign", () => {
 
     // Below docking width, float inside the tile without dimming or narrowing the transcript.
     await page.setViewportSize({ width: 360, height: 840 });
+    const sidebarToggle = page.getByTestId("sidebar-collapse-toggle");
+    if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
+    await expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
     // The panel portal belongs beside its pane transcript, not inside it.
     await expect(page.getByTestId("pane").getByTestId(TEST_IDS.chatSidePanel)).toBeVisible();
@@ -102,6 +107,7 @@ test.describe("workspace rail redesign", () => {
     expect(reserve?.width ?? Infinity).toBeLessThanOrEqual((root?.width ?? 0) + 1);
     expect(Math.abs((panel?.width ?? 0) - Math.min(SIDE_PANEL_MIN_WIDTH, (reserve?.width ?? 0) - 2 * inset))).toBeLessThanOrEqual(1);
     expect(composer?.width ?? 0).toBeGreaterThan((root?.width ?? 0) - (panel?.width ?? 0));
+    await test.info().attach("narrow-panel-360.png", { body: await page.screenshot({ path: test.info().outputPath("narrow-panel-360.png") }), contentType: "image/png" });
 
     await page.setViewportSize({ width: 1400, height: 840 });
     await expect(motion).toHaveAttribute("data-panel-mode", "docked");

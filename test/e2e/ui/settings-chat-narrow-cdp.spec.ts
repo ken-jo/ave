@@ -274,6 +274,7 @@ test('A narrow window opens Settings as a two-depth list without a forced resize
     await expect(mainWindow.getByTestId(TEST_IDS.settingsMobileBack)).toBeVisible();
     await expect(mainWindow.getByTestId('settings-mobile-list')).not.toBeVisible();
     await expectNoHorizontalOverflow(mainWindow, 'Narrow settings detail');
+    await test.info().attach("narrow-settings-600.png", { body: await mainWindow.screenshot({ path: test.info().outputPath("narrow-settings-600.png") }), contentType: "image/png" });
 
     await mainWindow.getByTestId(TEST_IDS.settingsMobileBack).click();
     await expect(mainWindow.getByTestId('settings-mobile-list')).toBeVisible();
@@ -295,6 +296,9 @@ test('Settings stay horizontally contained on every narrow tab (CDP)', async ({ 
   test.slow();
 
   await setWindowSize(app, 400, 820);
+  const sidebarToggle = mainWindow.getByTestId("sidebar-collapse-toggle");
+  if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
+  await expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
   await activateSettingsWithoutResize(app, 'llm');
   await expect(mainWindow.getByTestId(TEST_IDS.viewPathBack)).toBeEnabled();
 
@@ -387,7 +391,7 @@ test('Settings stay horizontally contained on every narrow tab (CDP)', async ({ 
         };
       });
       expect(ruleMetrics.scrollWidth, `${label}: rules table should keep readable column widths`).toBeGreaterThan(ruleMetrics.clientWidth);
-      expect(ruleMetrics.cellCount, `${label}: rules table columns`).toBe(4);
+      expect(ruleMetrics.cellCount, `${label}: rules table columns`).toBe(5);
       expect(ruleMetrics.overlap, `${label}: rules table cells overlap`).toBe(false);
     }
 

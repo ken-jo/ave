@@ -14,6 +14,25 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+describe("McpTab empty state", () => {
+  it("allows a long configuration path to wrap without hiding its text", async () => {
+    const configPath = `/tmp/${"isolated-config-directory-".repeat(12)}/mcp/servers.json`;
+    vi.stubGlobal("ave", { mcp: {
+      servers: vi.fn(async () => []),
+      getConfigs: vi.fn(async () => []),
+      getConfigPath: vi.fn(async () => configPath),
+    } });
+    render(<McpTab />);
+
+    const path = await screen.findByText(configPath);
+    expect(path.tagName).toBe("CODE");
+    expect(path).toHaveClass("[overflow-wrap:anywhere]");
+    expect(path).not.toHaveClass("truncate", "line-clamp-1");
+    expect(path.textContent).toBe(configPath);
+    expect(path.closest(".border-dashed")).toHaveClass("min-w-0");
+  });
+});
+
 describe("McpTab remove flow", () => {
   it("offers a write-only key for an installed plugin server without a remove-config action", async () => {
     const id = 'bundled:["agent-plugin","meeting-kit","notes"]';
