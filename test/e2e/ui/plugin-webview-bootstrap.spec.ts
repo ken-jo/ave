@@ -40,7 +40,7 @@ async function readWebviewHostChrome(page: Page): Promise<string[]> {
 // Exercise guest creation through production registration, preload and session policy.
 test('embedded plugin view creates a plugin shell webview guest', async ({ app, mainWindow }) => {
   const pluginViews = await listPluginViews(mainWindow);
-  // App mode decides detachment; plugin views have no per-view embedded flag.
+  // Plugin views open inline; they have no per-view embedded flag.
   const embeddedView = pluginViews.find((view) => view.kind === 'embedded-module');
 
   test.skip(!embeddedView, 'No plugin view available in this build');

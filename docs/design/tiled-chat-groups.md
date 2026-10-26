@@ -3,7 +3,8 @@
 ## What this is
 
 The main area holds up to **four** main-chat conversations side by side, each
-able to stream at the same time. Chat mode holds exactly one.
+able to stream at the same time. A narrow canvas draws the focused tile and
+keeps the other conversations alive.
 
 The ceiling is not decorative. A conversation **is** a `ConversationLoop`: the
 loop owns the live history and runs exactly one turn at a time. Four tiles that
@@ -100,9 +101,9 @@ It makes the same pane the header's split makes, and asks the split's own two
 questions — both ceilings (`MAX_PANES` leaves, `MAX_CHAT_GROUPS` loops) and
 `splitFits`, which refuses a halving that would put either side under the tile
 floor. A refusal is SAID, because nothing in a menu row shows the limit the way
-a missing split control does. In chat mode, which draws one pane and hides the
-rest, the gesture is not offered at all — the same withdrawal `canSplit` makes
-in the pane header.
+a missing split control does. On a narrow canvas, which draws one pane and
+hides the rest, the gesture is not offered — the same withdrawal `canSplit`
+makes in the pane header.
 
 The pane and the view it is opened with land in ONE commit. Two commits would
 put the new pane's blank conversation between them, and visit history — which
@@ -145,6 +146,57 @@ widen the tile transcript channel. See
 [Persisted child transcript ownership](../blueprints/a2a-subagent-messaging.md#persisted-child-transcript-ownership)
 for its active-origin and persisted-metadata checks.
 
+## Responsive shell and canvas
+
+There is one responsive app layout. The OS window opens centered at
+1243×768, with a minimum width of 360px. Opening or closing the sidebar or a
+work panel never changes the OS window bounds.
+
+All numeric layout thresholds live in [shell-geometry.ts](../../src/shared/shell-geometry.ts).
+The generalized [use-container-narrow.ts](../../src/ui/renderer/hooks/use-container-narrow.ts)
+hook observes available width with a 60px hysteresis band: enter the narrow
+layout below its enter threshold, and leave it at or above its exit threshold.
+Between those thresholds, retain the previous verdict. Measure the shell
+and the independent canvas, not a tree box that shrinks when its layout folds.
+CSS container variants mirror the geometry values, and
+`scripts/check-shell-geometry-tokens.mjs` checks that they stay aligned.
+
+| Decision | Width rule |
+| --- | --- |
+| Work panel dock or overlay | `DOCK_ENTER_WIDTH` and its hysteresis exit threshold, measured on the tile frame |
+| Expanded sidebar push or overlay | Sidebar width + `SHELL_GUTTER` + `MIN_DOCKED_TRANSCRIPT_WIDTH`, measured on the shell |
+| Canvas fold | Below `SINGLE_TILE_ENTER_WIDTH` (2 × `PANE_MIN_WIDTH` + `SHELL_GUTTER`, 904px), draw the focused tile; restore the wide layout at or above `SINGLE_TILE_EXIT_WIDTH` (964px) |
+
+A folded canvas preserves the tree, every conversation, and `maximizedId`.
+The focused tile wins over a different saved maximized tile while narrow;
+widening applies the saved maximized choice again. Hidden groups stay mounted
+and can keep streaming. Split, edge-drop, close, maximize, and new-pane controls
+are unavailable while folded. Adopting another conversation can focus its group
+and may release only an idle group when the group ceiling requires it. If no
+eligible group is idle, refuse the adoption and keep the existing conversations.
+
+The sidebar has three states: expanded, an icons-only rail, and fully hidden.
+Explicit choices persist in `system.sidebarState` across resizing and restart.
+Without a saved choice, it is hidden at the minimum window width and expanded
+above it. The existing toggle switches expanded and rail; **Hide sidebar** in
+the footer removes the entire sidebar and its content reserve. **Show sidebar**
+in the title bar reopens it expanded. The project and general sections share
+the same navigation in expanded and rail states.
+
+An expanded sidebar pushes the canvas only when enough width remains;
+otherwise it overlays the canvas, using the shell threshold and hysteresis
+above. Its rendered width fits inside the window gutters while its saved
+width remains available when the window widens. Tab and Shift+Tab cycle within
+the overlay; an open menu or dialog retains its own keyboard scope.
+Escape and an outside click collapse the overlay to the rail. The
+transcript always uses the reading-column layout, with its composer spanning
+the available width below that column. The project selector and suggested
+tasks use their normal container layout wherever they fit.
+
+The one-time settings migration removes the obsolete layout preference
+from disk, records completion, and preserves other settings. The former
+`"action"` value has no replacement.
+
 ## Geometry: a split tree, not a list
 
 Tiles are arranged **freely, tmux style**: any leaf can be split horizontally or
@@ -154,11 +206,11 @@ chat groups, not a flat list.
 
 Two facts settle this.
 
-`DESIGN.md` makes **448px** the narrowest width any surface must work at — the
-side panel's `SIDE_PANEL_MIN_WIDTH`, and the mobile-class baseline — so that is
-the floor a tile inherits. The main area is roughly 1000px wide with the sidebar
-open, so four columns give each tile 250px, under that floor. Four tiles have to
-nest. Once the layout nests at all, a flat list cannot describe it.
+`PANE_MIN_WIDTH` sets **448px** as the minimum width of either half of a
+split. This split floor does not prevent a single tile from fitting a narrower
+window. Four columns in a roughly 1000px canvas would fall below that floor,
+so four tiles have to nest. Once the layout nests, a flat list cannot
+describe it.
 
 The work panel is a raised card with the floating sidebar's insets and
 rounding at every size — one kind of overlay surface in the window — carrying
@@ -173,8 +225,9 @@ reserve plus 320px) docks it as a column that pushes the transcript; a
 narrower tile floats the same card over the transcript's right edge **inside
 the tile**, never a window-level sheet, the transcript keeping its layout
 underneath — and, floating, it covers the header row too, its own strip taking
-over. The mode comes from the container hook's hysteresis verdict so a gutter
-dragged across the threshold does not flip it.
+over. The presentation comes from the container hook's hysteresis verdict so
+a gutter dragged across the threshold does not flip it. Opening a panel never
+changes the OS window bounds.
 
 The conversation's tool activity lives in the card, not in the header. When
 the card has no tab open, its launcher shows the compact report — the six
@@ -210,8 +263,8 @@ own half.
 
 Once split, every tile can be closed — the primary included, whose loop main
 keeps and hands a blank conversation on release — and any tile can be shown
-alone: maximizing hides the others without closing them, the way chat mode
-does, and restoring gives them their places back.
+alone when the canvas is wide enough: maximizing hides the others without
+closing them, and restoring gives them their places back.
 
 The addressability objection that argued for a flat list does not survive
 contact with the actual split: a leaf keeps its stable `chatGroupId` no matter
@@ -310,8 +363,8 @@ Each piece is independently shippable and independently verifiable.
 3. `group-release`: closing a tile sends it, and main stops any running turn,
    detaches the group's frames, and forgets the loop. Ids are never reused, so
    without this a closed tile would count against `MAX_CHAT_GROUPS` for the
-   rest of the session. Release is tied to **close**, not unmount — the
-   chat-mode toggle unmounts tiles too, and must not destroy anything. A
+   rest of the session. Release is tied to **close**, not visibility — folding a
+   narrow canvas hides tiles without destroying their conversations. A
    renderer that navigates (reload) or dies releases every group at once:
    the one that comes back numbers its tiles from the start, and must never
    meet a context the previous renderer left behind. **Done.**
@@ -586,13 +639,12 @@ without the user knowing what it replaced.
 ### The controls: split and drop
 
 `useChatGroups` owns `split()`, `close()`, `dropOnEdge()` and `adopt()`, all
-bounded by `MAX_CHAT_GROUPS` — the ceiling counts LOOPS, so it is the same in
-both modes. What chat mode holds to one is the number of tiles it DRAWS: it
-collapses to the focused group and keeps the others. The split and drop controls
-are gated on `canSplit`, which does carry the mode, because they are gestures on
-the CANVAS; `adopt()` is not, because giving an incoming conversation a group of
-its own is not a canvas gesture. In chat mode the adopted group simply becomes
-the one drawn, and the conversation it displaced keeps streaming behind it.
+bounded by `MAX_CHAT_GROUPS` — the ceiling counts LOOPS at every width. A
+narrow canvas draws the focused group and keeps the others. Split, edge-drop,
+close, maximize, and new-pane controls are unavailable while folded; `adopt()`
+can still give an incoming conversation a group of its own. The adopted group
+becomes the one drawn, and the conversation it displaced keeps streaming
+behind it. Adoption may release only an idle group.
 
 That is what the sidebar takes when the focused group is mid-turn. It has to
 take something: a running turn writes through the loop that owns it, and
@@ -610,7 +662,8 @@ published counts as busy — an unanswerable question is not an idle one.
 
 New Chat — the rail button, a folder row, the folder menu's "new chat" — takes
 the same ladder. An idle focused group starts the conversation in place; a
-mid-turn one gets a fresh group beside it, and the requested project is handed
+mid-turn one gets a fresh group, drawn beside it on a wide canvas or focused
+alone on a narrow canvas, and the requested project is handed
 to that group (in the same commit that mounts its tile), which hydrates its
 empty conversation under it. The window's own project is not set on the way:
 it follows the focused tile's project, and only once that tile holds a
@@ -644,10 +697,11 @@ still bookkept) and DRAWS nothing: it releases its approval claim, draws none of
 its own approval cards, and is filtered out of `overlayCardTile` and
 `tileDrawsSession`. A card handed to a hidden tile is a card nobody can answer,
 and an approval dock inside one steals keyboard focus, which drags the view back
-to the conversation the user just left. Focus reveals for the same reason: in
-work mode `maximizedId`, not focus, decides what is drawn, so focusing a tile a
-maximize is hiding would move every focus-derived surface onto a tile nobody can
-see.
+to the conversation the user just left. On a wide canvas, focus reveals for
+the same reason: `maximizedId`, not
+focus, decides what is drawn, so focusing a tile a maximize is hiding must
+reveal it. On a narrow canvas, the focused tile is drawn even if a different
+`maximizedId` is saved; that saved choice applies again when the canvas widens.
 
 `split()` halves the **largest** tile along its longer side, not
 the focused one — focus moves to whatever was just added, so a focus-based split

@@ -160,7 +160,7 @@ export interface PaneBox {
   height: number;
 }
 
-/** Compute required canvas height from the shortest visible tile share so uneven splits, maximize and chat mode obey the
+/** Compute required canvas height from the shortest visible tile share so uneven splits, maximize and narrow canvases obey the
  * same floor. */
 export function minimumCanvasHeight(
   boxes: readonly PaneBox[],

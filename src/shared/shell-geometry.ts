@@ -1,9 +1,9 @@
 /** Main and renderer share device-pixel geometry; controls aligned to OS window buttons must not scale with user type size. */
 
 /** Opening size and minimum size remain independently settable even when equal; renderer docking and collapse thresholds share these bounds. */
-export const MAIN_WINDOW_WIDTH = 460;
-export const MAIN_WINDOW_HEIGHT = 840;
-export const MAIN_WINDOW_MIN_WIDTH = 460;
+export const MAIN_WINDOW_WIDTH = 1243;
+export const MAIN_WINDOW_HEIGHT = 768;
+export const MAIN_WINDOW_MIN_WIDTH = 360;
 export const MAIN_WINDOW_MIN_HEIGHT = 640;
 
 /** Keep button position aligned with the chrome band and control centers. */
@@ -18,6 +18,22 @@ export const CHROME_GAP_TIGHT = 4;
 
 /** Share the card/content gutter with --chrome-gap and --shell-card-inset in CSS. */
 export const SHELL_GUTTER = 8;
+
+/** Surface floors and responsive thresholds are shared with the CSS container variants. */
+export const PANE_MIN_WIDTH = 448;
+export const MIN_DOCKED_TRANSCRIPT_WIDTH = 320;
+export const NARROW_DEAD_BAND_PX = 60;
+export const DOCK_ENTER_WIDTH = 784;
+export const DOCK_EXIT_WIDTH = DOCK_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
+export const SINGLE_TILE_ENTER_WIDTH = 904;
+export const SINGLE_TILE_EXIT_WIDTH = SINGLE_TILE_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
+export const SETTINGS_NARROW_ENTER_WIDTH = 640;
+export const SETTINGS_NARROW_EXIT_WIDTH = SETTINGS_NARROW_ENTER_WIDTH + NARROW_DEAD_BAND_PX;
+
+/** Expanded navigation overlays when it cannot leave a readable content column. */
+export function sidebarPushThreshold(sidebarWidth: number): number {
+  return sidebarWidth + SHELL_GUTTER + MIN_DOCKED_TRANSCRIPT_WIDTH;
+}
 
 /** Files need readable tree and detail columns; narrower workspaces use tree-to-detail navigation. */
 export const FILE_WORKSPACE_COLUMNS_MIN_WIDTH = 520;

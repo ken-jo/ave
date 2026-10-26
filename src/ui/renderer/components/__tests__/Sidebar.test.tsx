@@ -1599,7 +1599,7 @@ describe("Sidebar view rows", () => {
   });
 
   it("offers only the one destination where there is no second pane to open into", async () => {
-    // Chat mode withholds the callback entirely, and the row has to follow: a menu row that cannot go anywhere is worse than
+    // A narrow canvas withholds the callback entirely, and the row has to follow: a menu row that cannot go anywhere is worse than
     // no menu row.
     const onSelect = vi.fn();
     const { getByTestId, showNativeContextMenu, emitNativeContextCommand, restore } =

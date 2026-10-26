@@ -108,7 +108,7 @@ export interface ChatGroupEnvironment {
   /** A stored side chat a sidebar row asked for, naming the tile that must show it. Every tile is handed the same request and
    * only the one it names acts — the panel that draws a side chat is one conversation's own column. */
   sideChatOpenRequest?: { chatGroupId: string; sessionId: string; nonce: number } | null;
-  /** Bring a chat group forward, including one chat mode has folded away. Returns whether focus moved. */
+  /** Bring a chat group forward, including one a narrow canvas has folded away. Returns whether focus moved. */
   focusChatGroup: (chatGroupId: string) => boolean;
   /** Where the attention dot goes, decided once by the window. A tile reads its own side chat's verdict from here rather than
    * deciding for itself, so the panel toggle, the panel's tab and the sidebar row agree. */
@@ -140,7 +140,6 @@ export interface ChatGroupEnvironment {
   // window chrome the tile hands work back to
   plugins: React.ComponentProps<typeof ChatView>["plugins"];
   onSelectPlugin: (key: string) => void;
-  appMode: "chat" | "work";
   onOpenApprovalQueue: () => void;
   commandActions: React.ComponentProps<typeof ChatView>["commandActions"];
   slashPickerOpen: boolean;
@@ -957,7 +956,6 @@ export function ChatGroupSession({
         sideChatPendingAnswer={sideChatPendingAnswer}
         plugins={env.plugins}
         onSelectPlugin={env.onSelectPlugin}
-        appMode={env.appMode}
         onOpenApprovalQueue={env.onOpenApprovalQueue}
         currentSessionKind={currentSessionKind}
         currentSessionTitle={currentSessionTitle}
@@ -975,7 +973,6 @@ export function ChatGroupSession({
           ? env.sideChatOpenRequest
           : undefined}
         onSessionsChanged={env.refreshSessions}
-        blogLayout={env.appMode === "work"}
         activeProject={env.activeProject}
         workspaceProjects={env.workspaceProjects}
         onNewChatForProject={env.onNewChatForProject}

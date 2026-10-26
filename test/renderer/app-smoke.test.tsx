@@ -47,7 +47,7 @@ describe("App smoke (Phase 1 infra)", () => {
     expect(api.starredList).toHaveBeenCalledTimes(1);
   });
 
-  it("opens settings inline (work mode) from the API key prompt", async () => {
+  it("opens settings inline from the API key prompt", async () => {
     const { container, api } = await renderApp({ hasApiKey: false });
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
     await waitFor(() => expect(container.textContent).toContain("API 키 설정 필요"));
@@ -135,12 +135,9 @@ describe("App smoke (Phase 1 infra)", () => {
     expect(workspace?.querySelectorAll('[data-testid="chat-side-panel-activity-tool-row"]')).toHaveLength(1);
   });
 
-  it("hides tool activity in chat mode and opens the side panel from the title bar", async () => {
-    const { container, api, emitChatStream } = await renderApp();
+  it("opens and closes the side panel inside a narrow canvas", async () => {
+    const { container, api, emitChatStream } = await renderApp({ shellWidth: 600, canvasWidth: 600 });
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
-    const windowApi = api.window as unknown as {
-      resizeForSidePanel: ReturnType<typeof vi.fn>;
-    };
 
     await act(async () => {
       emitChatStream({
@@ -160,10 +157,6 @@ describe("App smoke (Phase 1 infra)", () => {
         result: "ok",
       });
     });
-    await act(async () => {
-      fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
-    });
-    await waitFor(() => expect(windowApi.resizeForSidePanel).toHaveBeenCalledWith(false));
 
     // Toggle direction follows the panel's horizontal axis.
     const panelToggle = () => container.querySelector(testIdSelector(TEST_IDS.panePanelToggle))!;
@@ -173,7 +166,6 @@ describe("App smoke (Phase 1 infra)", () => {
       fireEvent.click(panelToggle());
     });
     expect(panelToggle().querySelector("svg.lucide-panel-right-close")).toBeTruthy();
-    await waitFor(() => expect(windowApi.resizeForSidePanel).toHaveBeenLastCalledWith(true));
     await waitFor(() =>
       expect(
         container.querySelector('[data-testid="chat-side-panel-motion"]')?.getAttribute("aria-hidden"),
@@ -188,7 +180,6 @@ describe("App smoke (Phase 1 infra)", () => {
     expect(closingMotion).toBeTruthy();
     expect(closingMotion?.getAttribute("aria-hidden")).toBe("true");
     expect(container.querySelector(testIdSelector(TEST_IDS.chatSidePanel))).toBeTruthy();
-    await waitFor(() => expect(windowApi.resizeForSidePanel).toHaveBeenLastCalledWith(false));
     await waitFor(
       () => expect(container.querySelector('[data-testid="chat-side-panel-motion"]')).toBeFalsy(),
       { timeout: 1_000 },
@@ -244,7 +235,7 @@ describe("App smoke (Phase 1 infra)", () => {
 
 });
 
-describe("Settings inline (all modes)", () => {
+describe("Settings inline at every width", () => {
   it("renders Settings inline, marks the sidebar item active, and returns home", async () => {
     const { container, api } = await renderApp();
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
@@ -280,13 +271,10 @@ describe("Settings inline (all modes)", () => {
     );
   });
 
-  it("renders Settings inline in chat mode too", async () => {
-    const { container, api } = await renderApp();
+  it("renders Settings inline on a narrow canvas", async () => {
+    const { container, api } = await renderApp({ shellWidth: 600, canvasWidth: 600 });
     await waitFor(() => expect(api.getSettings).toHaveBeenCalled());
 
-    await act(async () => {
-      fireEvent.click(container.querySelector('[data-testid="app-mode-chat"]')!);
-    });
     await act(async () => {
       fireEvent.click(container.querySelector('[data-testid="sidebar-settings"]')!);
     });

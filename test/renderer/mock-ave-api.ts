@@ -769,8 +769,6 @@ export function makeMockAveApi(overrides: ApiOverrides = {}): {
     openExternalUrl: vi.fn(async () => ({ ok: true })),
     window: {
       openHtmlPreview: vi.fn(async () => ({ ok: true, windowId: 2 })),
-      resizeForMode: vi.fn(async () => ({ ok: true })),
-      resizeForSidePanel: vi.fn(async () => ({ ok: true })),
     },
 
     getRecentNotes: vi.fn(async () => []),

@@ -51,7 +51,7 @@ function getWindowBridge(): {
 
 export interface CustomTitleBarProps {
   /**
-   * Band content — the app toolbar cluster (collapse toggle, Chat/Work mode,
+   * Band content — the app toolbar cluster (collapse toggle,
    * Dev badge, search / star / export). Rendered in the band's left + middle,
    * LEFT of the native window controls. Interactive controls inside must wrap
    * themselves `WebkitAppRegion: "no-drag"`; the band itself is a drag region
@@ -60,6 +60,8 @@ export interface CustomTitleBarProps {
   children?: ReactNode;
   /** Use the larger of sidebar and native-control leading reserves, never stack both paddings. */
   leadClearance?: number;
+  /** Keep a plain control band when it holds the only way to reopen navigation. */
+  keepVisibleInFullscreen?: boolean;
 }
 
 // Band leading pad when nothing overlaps it: macOS clears the traffic lights
@@ -68,7 +70,7 @@ export interface CustomTitleBarProps {
 // in `shared/shell-geometry.ts` next to the light position they are derived
 // from, rather than as literals here.
 
-export function CustomTitleBar({ children, leadClearance = 0 }: CustomTitleBarProps = {}) {
+export function CustomTitleBar({ children, leadClearance = 0, keepVisibleInFullscreen = false }: CustomTitleBarProps = {}) {
   // Rules-of-hooks: all hook calls MUST come before any early return so the
   // hook order stays stable across renders. The platformBridge check is moved
   // below all hooks; the bridge-dependent useEffect bodies are gated with an
@@ -123,7 +125,8 @@ export function CustomTitleBar({ children, leadClearance = 0 }: CustomTitleBarPr
   //   integrate with) so the toolbar is never silently dropped. When no
   //   children are passed there is nothing to show, so render nothing.
   // - Fullscreen → OS/Electron draws fullscreen chrome.
-  if (!platformBridge) {
+  if (isFullscreen && !keepVisibleInFullscreen) return null;
+  if (!platformBridge || isFullscreen) {
     if (children === undefined || children === null) return null;
     return (
       <div
@@ -138,7 +141,6 @@ export function CustomTitleBar({ children, leadClearance = 0 }: CustomTitleBarPr
       </div>
     );
   }
-  if (isFullscreen) return null;
 
   if (isDarwin) {
     // Keep chrome dimensions in pixels to align native controls across font scales; move band height and traffic-light

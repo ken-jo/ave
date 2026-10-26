@@ -42,7 +42,7 @@ export interface ChatComposerDockProps {
   dockColumnClass: string;
   /** Next-send notices belong inside the composer's reading column, above its frame. */
   notices?: React.ReactNode;
-  /** Empty work-mode conversation: offer the new-chat project selector. The composer itself stays bottom-docked whether or
+  /** Empty conversation: offer the new-chat project selector. The composer itself stays bottom-docked whether or
    * not the conversation is empty — there is no centered placement and no descent on first send. */
   emptyConversation?: boolean;
   workflowApi: AveApi;

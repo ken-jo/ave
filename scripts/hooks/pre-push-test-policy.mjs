@@ -27,7 +27,6 @@ const targetedVitestSupportConsumers = new Map([
     Object.freeze([
       "src/__tests__/ipc-bridge-permissions.test.ts",
       "src/__tests__/ipc-bridge-runtime-handlers.test.ts",
-      "src/__tests__/window-manager-ipc.test.ts",
       "src/api/__tests__/a2a-subagent-handler.test.ts",
       "src/engine/__tests__/a2a-agent-message-bus.test.ts",
       "src/ipc/__tests__/mcp-app-download.test.ts",

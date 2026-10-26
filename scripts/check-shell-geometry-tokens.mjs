@@ -15,6 +15,10 @@ const MIRRORS = [
   { css: "--chrome-gap-hair", ts: "CHROME_GAP_HAIR" },
 ];
 
+const CONTAINER_MIRRORS = [
+  { container: "chat-transcript", ts: "SETTINGS_NARROW_ENTER_WIDTH" },
+];
+
 const CSS_REL = join("src", "styles.css");
 const TS_REL = join("src", "shared", "shell-geometry.ts");
 
@@ -150,6 +154,21 @@ const declarations = cssDeclarations(stripComments(cssSource, { lineComments: fa
 const constants = tsConstants(stripComments(tsSource, { lineComments: true }));
 const failures = [];
 
+const containerSource = stripComments(cssSource, { lineComments: false }).replace(
+  /"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'/g,
+  (quoted) => quoted.replace(/[^\n]/g, " "),
+);
+const containerQueries = [...containerSource.matchAll(
+  /@container\s+([\w-]+)\s*\(min-width:\s*(\d+)px\)\s*\{/g,
+)];
+for (const { container, ts: tsName } of CONTAINER_MIRRORS) {
+  const defined = constants.get(tsName);
+  const matches = containerQueries.filter((query) => query[1] === container);
+  if (defined?.length !== 1 || matches.length !== 1 || Number(matches[0][2]) !== defined[0]) {
+    failures.push(`@container ${container} must appear once and match ${tsName} in ${TS_REL}`);
+  }
+}
+
 for (const { css: cssName, ts: tsName } of MIRRORS) {
   const token = resolvePx(cssName, declarations);
   if (token.error) {
@@ -178,4 +197,4 @@ if (failures.length > 0) {
   for (const failure of failures) console.error(`  ${failure}`);
   process.exit(1);
 }
-console.log(`[shell-geometry-tokens] OK pairs=${MIRRORS.length}`);
+console.log(`[shell-geometry-tokens] OK pairs=${MIRRORS.length} containers=${CONTAINER_MIRRORS.length}`);
