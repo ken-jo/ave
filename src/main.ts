@@ -18,7 +18,6 @@ import {
   getPackagedWindowsProtocolMarkerState,
 } from "./main/ave-protocol-registration.js";
 import { setIsPackaged } from "./boot/dev-flags.js";
-import { WindowManager } from "./main/window-manager.js";
 import { createLogger } from "./lib/logger.js";
 import {
   isAppUpdateInstallPrepared,
@@ -95,7 +94,6 @@ import {
   setPendingAveUri,
   setRendererReloadReady,
   setServices,
-  setWindowManager,
 } from "./main/app-state.js";
 
 const log = createLogger("ave");
@@ -160,7 +158,6 @@ async function main() {
       throw new Error("workload-broker:cwd-binding-mismatch");
     }
   }
-  let windowManager!: WindowManager;
   const startDesktop = async () => {
     configureNativeWindowCoordinator({
       showOrCreateMainWindow,
@@ -176,10 +173,6 @@ async function main() {
       refreshApplicationMenu();
       refreshTrayMenu();
     });
-    // Initialise WindowManager before createWindow so registerMainWindow()
-    // can be called synchronously inside createWindow().
-    windowManager = new WindowManager();
-    setWindowManager(windowManager);
     createWindow({ headless: bootLaunch === "headless" });
     updateSplashStatus(t("be_main.splashCheckingCerts"));
     return loadMainStartupDependencies(
@@ -257,10 +250,6 @@ async function main() {
     app.quit();
     return;
   }
-
-  // Window IPC handlers registered after bootstrap so auditLogger is available
-  // for the validateSender + viewKey security guards.
-  windowManager.registerIpc(services.auditLogger);
 
   // One host-owned source for every main-conversation surface. It outlives the
   // opt-in Local API transport so Electron remains the canonical producer.

@@ -16,17 +16,8 @@ import {
   INITIAL_THEME_ARG_MAX_BYTES,
   type InitialThemePrime,
 } from "../shared/initial-theme.js";
-import {
-  INITIAL_APP_MODE_ARG_PREFIX,
-  normalizeAppMode,
-  type InitialAppMode,
-} from "../shared/initial-app-mode.js";
 import { resolveAppIconPath } from "./app-icon.js";
-import { readPersistedAppModeSync } from "./persisted-app-mode.js";
-import {
-  computeInitialMainWindowBounds,
-  computeWorkModeBounds,
-} from "./main-window-bounds.js";
+import { computeInitialMainWindowBounds } from "./main-window-bounds.js";
 import { MAIN_WINDOW_MIN_HEIGHT, MAIN_WINDOW_MIN_WIDTH } from "../shared/shell-geometry.js";
 import { isAppUpdateInstallRequested } from "./app-update-install-intent.js";
 import { BOOTSTRAP_SPLASH, markBootstrapSplashShown } from "./bootstrap-splash.js";
@@ -61,21 +52,9 @@ function isRendererIndexUrl(url: string): boolean {
   return url === `${rendererIndexUrl()}?${MAIN_WINDOW_ROLE_QUERY_KEY}=secondary`;
 }
 
-// Read disk before SettingsService exists; prefer its live value on later window creation to preserve in-session mode changes.
-function readPersistedAppMode(): InitialAppMode {
-  const live = getServices()?.settingsService.getAll().system?.appMode;
-  const normalizedLive = normalizeAppMode(live);
-  if (normalizedLive !== null) return normalizedLive;
-  return readPersistedAppModeSync(app.getPath("userData"));
-}
-
 function initialMainWindowBounds(): { x: number; y: number; width: number; height: number } {
   const { workArea } = screen.getPrimaryDisplay();
-  // Size the window to match the persisted mode at CREATION time so the OS window never opens chat-shaped then animates to work (or vice-versa) after the
-  // renderer mounts. work → centered canvas; chat → right-docked.
-  return readPersistedAppMode() === "work"
-    ? computeWorkModeBounds(workArea)
-    : computeInitialMainWindowBounds(workArea);
+  return computeInitialMainWindowBounds(workArea);
 }
 
 // Prime frame-zero theme through preload arguments; missing or oversized payloads defer to asynchronous hydration.
@@ -102,11 +81,6 @@ export function initialThemeArgs(): string[] {
   }
   if (serialized.length > INITIAL_THEME_ARG_MAX_BYTES) return [];
   return [`${INITIAL_THEME_ARG_PREFIX}${serialized}`];
-}
-
-// Prime the validated saved mode through the shared initial-app-mode wire format to avoid a wrong-mode first render.
-function initialAppModeArgs(): string[] {
-  return [`${INITIAL_APP_MODE_ARG_PREFIX}${readPersistedAppMode()}`];
 }
 
 // Open one main app window. Several may be open at once; the first live one owns the primary conversation (see `app-state.ts`). Returns the window, or
@@ -139,9 +113,8 @@ export function createWindow(
       // render_html tool renders LLM-produced HTML inside an Electron <webview>. The webview runs on its own webContents / OS process so a malicious or
       // runaway payload (e.g. `while(true){}`) can't freeze the main UI. The <webview> tag is gated by webPreferences.webviewTag.
       webviewTag: true,
-      // Pass the host's cached lastThemePayload + persisted appMode to the renderer so ThemeProvider and the App shell can both init from frame 0 (no flash of
-      // fallback theme / wrong mode). See initialThemeArgs() and initialAppModeArgs() above.
-      additionalArguments: [...initialThemeArgs(), ...initialAppModeArgs()],
+      // Apply the cached theme before the renderer mounts.
+      additionalArguments: initialThemeArgs(),
     },
   });
   registerMainWindow(win, nextMainWindowRole());
