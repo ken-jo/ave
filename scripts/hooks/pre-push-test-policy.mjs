@@ -12,6 +12,9 @@ const deniedPathSegments = new Set([
   "screenshots",
 ]);
 
+// These suites inspect shared generated branding assets, rather than source-only
+// fixtures. This is a preparation boundary, not evidence that a test is flaky;
+// keep it until concurrent asset regeneration is covered by the targeted tier.
 const generatedAssetTestBasenames = new Set([
   "app-icon-assets.test.ts",
   "desktop-packaging.test.ts",
