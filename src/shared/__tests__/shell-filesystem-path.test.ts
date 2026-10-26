@@ -25,12 +25,21 @@ describe("physical filesystem path contracts", () => {
     });
   });
 
-  it("marks a parent component beyond a missing ancestor as unresolved", () => {
+  it.runIf(process.platform !== "win32")("marks a parent component beyond a missing ancestor as unresolved", () => {
     const result = inspectPhysicalFilesystemPath(`missing${sep}..${sep}metadata`, root, 64);
     expect(result.unresolvedParentTraversal).toBe(true);
     expect(result.firstMissingPath).toBeUndefined();
   });
 
+  it.runIf(process.platform === "win32")("resolves a parent component beyond a missing ancestor lexically, as Win32 opens it", () => {
+    const result = inspectPhysicalFilesystemPath(`missing${sep}..${sep}metadata`, root, 64);
+    expect(result).toEqual({
+      path: join(root, "metadata"),
+      firstMissingPath: join(root, "metadata"),
+      unresolvedParentTraversal: false,
+      routingSymlinkPaths: [],
+    });
+  });
   it.runIf(process.platform !== "win32")("reports routing link names separately from their physical targets", () => {
     const physical = join(root, "physical");
     const route = join(root, "route");

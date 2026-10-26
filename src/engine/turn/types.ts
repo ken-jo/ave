@@ -116,6 +116,8 @@ export interface TurnCallbacks {
   onError?: (error: string, systemNotice?: "context-error" | "stream-error",
     // Pass classification only; shared failure summaries must never receive raw error text.
     classifierCategory?: string,
+    /** A failed maintenance operation does not terminate the chat turn. */
+    operation?: "compaction",
   ) => void;
   onCompactOccurred?: (result: {
     removedMessages: number;

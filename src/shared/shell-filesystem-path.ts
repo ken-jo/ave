@@ -38,6 +38,7 @@ export function resolvePhysicalFilesystemPath(
 export interface PhysicalFilesystemPathResolution {
   path: string;
   firstMissingPath: string | undefined;
+  /** POSIX: a `..` after a missing component, whose meaning depends on what that component becomes. Win32 normalizes `..` lexically before opening, so there the resolved path is already the opened one and this stays false. */
   unresolvedParentTraversal: boolean;
   routingSymlinkPaths: readonly string[];
 }

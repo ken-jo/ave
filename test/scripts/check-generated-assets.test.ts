@@ -324,6 +324,35 @@ describe("generate-ave-icons", () => {
 
     expect(readFileSync(icon).equals(generated)).toBe(true);
   }, 60_000);
+
+  it("prunes obsolete icon sizes without making published assets disappear", () => {
+    const root = generatorRoot();
+    generate(root);
+    const inventory: string[] = JSON.parse(readFileSync(join(root, MANIFEST), "utf8"));
+    const obsolete = join(root, "build/icons/999x999.png");
+    writeFileSync(obsolete, "obsolete");
+    const observer = join(root, "observe-assets.cjs");
+    // Inspect the completed inventory at the removal boundary, when another
+    // process can run its post-generation check before regeneration finishes.
+    writeFileSync(observer, `
+      const fs = require("node:fs");
+      const assert = require("node:assert/strict");
+      const paths = ${JSON.stringify(inventory.map((path) => join(root, path)))};
+      const remove = fs.rmSync;
+      fs.rmSync = function (...args) {
+        const result = remove.apply(this, args);
+        for (const path of paths) assert.ok(fs.existsSync(path), "Published asset disappeared: " + path);
+        return result;
+      };
+    `);
+    const result = spawnSync(nodeCommand, ["--require", observer, join(root, "scripts/generate-ave-icons.cjs")], {
+      cwd: root, encoding: "utf8",
+    });
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    expect(existsSync(obsolete)).toBe(false);
+    expect(JSON.parse(readFileSync(join(root, MANIFEST), "utf8"))).toEqual(inventory);
+  }, 60_000);
 });
 
 describe("generated-asset manifest", () => {

@@ -31,7 +31,8 @@ vi.mock("electron", () => ({
 }));
 
 // Read stat and contents from the same file handle to avoid a path-swap race.
-vi.mock("node:fs/promises", () => ({
+vi.mock("node:fs/promises", async (importOriginal) => ({
+  ...await importOriginal<typeof import("node:fs/promises")>(),
   open: vi.fn(async () => {
     if (fsState.statThrows) throw new Error("ENOENT");
     return {

@@ -180,6 +180,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["chat", CHANNELS.chat.sessions, []],
   ["chat", CHANNELS.chat.mainActiveState, []],
   ["chat", CHANNELS.chat.sessionHistory, ["s"]],
+  ["chat", CHANNELS.chat.listShellTasks, ["main", "11111111-1111-4111-8111-111111111111"]],
+  ["chat", CHANNELS.chat.controlShellTask, ["main", "11111111-1111-4111-8111-111111111111", "background"]],
   ["chat", CHANNELS.memory.entriesList, [{}]],
   // Secret writes and the external-link opener.
   ["settings", CHANNELS.settings.update, [{}]],
@@ -201,6 +203,8 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ...Object.values(CHANNELS.pluginStudio).map((channel): readonly [string, string, unknown[]] => ["plugin-studio", channel, []]),
   // Side chat runs arbitrary tools on a second loop.
   ["sidechat", CHANNELS.sidechat.send, [{ input: "x" }]],
+  ["sidechat", CHANNELS.sidechat.listShellTasks, ["11111111-1111-4111-8111-111111111111"]],
+  ["sidechat", CHANNELS.sidechat.controlShellTask, ["11111111-1111-4111-8111-111111111111", "background"]],
   ["sidechat", CHANNELS.sidechat.getSubAgentTranscript, [{ originSessionId: "test-session", childSessionId: "child-session" }]],
   // Routines and the session tasks list.
   ["routines", ROUTINES.list, []],
@@ -239,6 +243,7 @@ const HOST_ONLY_CHANNELS: ReadonlyArray<readonly [string, string, unknown[]]> = 
   ["attach", CHANNELS.attach.redeemDrop, ["token"]],
   ["preview", CHANNELS.preview.readFile, ["/x"]],
   ["preview", CHANNELS.preview.readDocument, ["/x.csv", 0]],
+  ["preview", CHANNELS.preview.documentOpenAck, [{ requestId: "request", sessionId: "session", opened: true }]],
   // Usage and cost history.
   ["usage", CHANNELS.usage.range, [{}]],
   ["usage", CHANNELS.usage.pricingOverrides, []],
@@ -346,7 +351,9 @@ describe("host-renderer-only IPC channels", () => {
   });
 
   it.each(HOST_ONLY_CHANNELS)("%s %s does not refuse the host renderer", async (_domain, channel, args) => {
-    await invoke(channel, hostFrameEvent(), args);
+    const event = hostFrameEvent();
+    if (channel === CHANNELS.preview.documentOpenAck) Object.assign(event.sender, { mainFrame: event.senderFrame });
+    await invoke(channel, event, args);
     expect(guardRowsFor(channel)).toEqual([]);
     if (channel === CHANNELS.workspace.searchFiles) {
       expect(searchWorkspaceFiles).toHaveBeenCalledTimes(1);

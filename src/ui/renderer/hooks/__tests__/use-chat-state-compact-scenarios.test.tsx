@@ -41,6 +41,19 @@ function dispatchEvent(streamHandler: { current: StreamHandler | null }, ev: Cha
 }
 
 describe("useChatState — compact lifecycle scenarios", () => {
+  it("uses the checkpoint event as the only successful manual compaction history marker", async () => {
+    const { api, streamHandler } = makeCapturedApi();
+    const { result } = renderHook(() => useChatState(api, () => {}));
+    api.chatCompact = vi.fn(async () => {
+      streamHandler.current?.({ type: "compact_notice", removedMessages: 3, freedTokens: 100, summary: "Preserved decisions" });
+      return { compacted: true, removedMessageCount: 3, compactedAt: "x", summary: "Preserved decisions" };
+    });
+    await act(async () => { await result.current.handleCompactCommand("/compact"); });
+    expect(result.current.entries.filter((entry) => entry.kind === "checkpoint")).toHaveLength(1);
+    expect(result.current.entries.filter((entry) => entry.kind === "system")).toHaveLength(0);
+    expect(result.current.entries.find((entry) => entry.kind === "checkpoint")).toMatchObject({ summary: "Preserved decisions" });
+  });
+
   it("S1: compact_started flips isCompacting on (StatusBar hint visible)", () => {
     const { api, streamHandler } = makeCapturedApi();
     const { result } = renderHook(() => useChatState(api, () => {}));
@@ -517,5 +530,23 @@ describe("useChatState — compact lifecycle scenarios", () => {
 
     expect(result.current.compactTriggerSource).toBeNull();
     expect(result.current.isCompacting).toBe(false);
+  });
+});
+
+
+describe("nonterminal compaction failure transcript", () => {
+  it("clears compaction progress and retains subsequent text on the same stream", () => {
+    const { api, streamHandler } = makeCapturedApi();
+    const notify = vi.fn();
+    const { result } = renderHook(() => useChatState(api, notify));
+    dispatchEvent(streamHandler, { type: "text_delta", streamId: 1, text: "Before " });
+    dispatchEvent(streamHandler, { type: "compact_started", streamId: 1 });
+    dispatchEvent(streamHandler, { type: "compact_failed", streamId: 1 });
+    expect(result.current.isCompacting).toBe(false);
+    expect(result.current.entries.some((entry) => entry.kind === "system" && /압축|compaction/.test(entry.text))).toBe(true);
+    dispatchEvent(streamHandler, { type: "text_delta", streamId: 1, text: "after" });
+    dispatchEvent(streamHandler, { type: "done", streamId: 1 });
+    expect(result.current.entries).toContainEqual(expect.objectContaining({ kind: "assistant", text: "Before after", streaming: false }));
+    expect(notify).not.toHaveBeenCalled();
   });
 });

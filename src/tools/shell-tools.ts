@@ -2,6 +2,9 @@ import type {
   ToolOutputArtifactInfo,
   ToolOutputCapture,
 } from "../shared/tool-output-artifact.js";
+import type { ShellTask, ShellTaskAction, ShellTaskActionResult } from "../shared/shell-tasks.js";
+import { SHELL_TASK_OUTPUT_PREVIEW_CHARS } from "../shared/shell-tasks.js";
+import { createLogger } from "../lib/logger.js";
 /**
  * Host shell tool family: the `bash` and `powershell` execution tools, the
  * session-scoped background-shell registry, and the `bash_output` /
@@ -118,6 +121,11 @@ type PipedChild = ChildProcessByStdio<null, Readable, Readable>;
 // Output-formatting contract shared verbatim by both shell dialects.
 const OUTPUT_CAP = 12_000;
 const TRUNCATION_MARKER = "\n...[truncated]...";
+const shellTaskLog = createLogger("shell-tasks");
+
+function shellTaskOutputPreview(output: string, truncated = false): Pick<ShellTask, "output" | "outputTruncated"> {
+  return { output: output.slice(-SHELL_TASK_OUTPUT_PREVIEW_CHARS), outputTruncated: truncated || output.length > SHELL_TASK_OUTPUT_PREVIEW_CHARS };
+}
 
 function formatOutput(raw: string, captureTruncated = false): string {
   const text = raw.replace(/\r\n/g, "\n").trim();
@@ -232,6 +240,7 @@ interface OutputCollectorOptions {
   readonly cwdProbe?: Pick<ShellCwdProbe, "start" | "end">;
   /** Display-only live output; the formatted result stays bounded. */
   readonly progress?: ToolOutputProgressSink;
+  readonly retainForHandoff?: boolean;
 }
 
 function createOutputCollector(child: PipedChild, options: OutputCollectorOptions = {}) {
@@ -245,6 +254,19 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
   let capture: ToolOutputCapture | undefined;
   let finalized = false;
   let paused = false;
+  let backgroundOutput: ((chunk: string) => void) | undefined;
+  let handoffOutput = "";
+  let handoffTruncated = false;
+  const handoffStdoutDecoder = new StringDecoder("utf8");
+  const handoffStderrDecoder = new StringDecoder("utf8");
+  const retainHandoffOutput = (decoded: string): void => {
+    if (!options.retainForHandoff) return;
+    const remaining = MAX_OUTPUT_CHARS - handoffOutput.length;
+    let retained = decoded.slice(0, remaining);
+    if (retained.length > 0 && /[\uD800-\uDBFF]$/.test(retained)) retained = retained.slice(0, -1);
+    handoffOutput += retained;
+    handoffTruncated ||= retained.length < decoded.length;
+  };
   // The probe reports on stderr; its bytes never reach the display buffer,
   // the output artifact, or live progress.
   const probeFilter = cwdProbe === undefined ? undefined : new ShellCwdProbeFilter(cwdProbe);
@@ -282,19 +304,46 @@ function createOutputCollector(child: PipedChild, options: OutputCollectorOption
   };
   return {
     collect(chunk: Buffer): void {
+      if (backgroundOutput) { backgroundOutput(handoffStdoutDecoder.write(chunk)); return; }
       if (finalized) return;
+      retainHandoffOutput(handoffStdoutDecoder.write(chunk));
       collect(chunk);
       live?.write("stdout", chunk);
     },
     collectStderr(chunk: Buffer): void {
+      if (backgroundOutput) {
+        const filtered = probeFilter === undefined ? chunk : probeFilter.push(chunk);
+        backgroundOutput(handoffStderrDecoder.write(filtered));
+        return;
+      }
       if (finalized) return;
-      collectStderrBytes(probeFilter === undefined ? chunk : probeFilter.push(chunk));
+      const filtered = probeFilter === undefined ? chunk : probeFilter.push(chunk);
+      retainHandoffOutput(handoffStderrDecoder.write(filtered));
+      collectStderrBytes(filtered);
     },
     async finish(interrupted: boolean): Promise<Record<string, unknown>> {
-      if (probeFilter !== undefined && !finalized) collectStderrBytes(probeFilter.flush());
+      if (probeFilter !== undefined && !finalized && !backgroundOutput) collectStderrBytes(probeFilter.flush());
       live?.close();
       finalized = true;
       return capture ? { outputArtifact: await capture.finish(interrupted) } : {};
+    },
+    handOffOutput(sink: (chunk: string) => void): void {
+      backgroundOutput = sink;
+      // Finalizing a foreground artifact must not leave the continuing pipes paused.
+      child.stdout.resume();
+      child.stderr.resume();
+    },
+    finishBackground(): void {
+      if (backgroundOutput) {
+        if (probeFilter) backgroundOutput(handoffStderrDecoder.write(probeFilter.flush()));
+        backgroundOutput(handoffStdoutDecoder.end());
+        backgroundOutput(handoffStderrDecoder.end());
+      }
+      backgroundOutput = undefined;
+    },
+    abandonCapture(): void { capture?.abandon?.(); },
+    handoffSnapshot(): { output: string; truncated: boolean } {
+      return { output: handoffOutput, truncated: handoffTruncated };
     },
     /** The shell's final directory as it reported it, when the probe completed. */
     reportedCwd(): string | undefined {
@@ -349,6 +398,7 @@ function watchShellLifetime(
     get termination() { return termination; },
     get timedOut() { return timedOut; },
     get aborted() { return aborted; },
+    releaseSignal(): void { signal?.removeEventListener("abort", cancel); },
     dispose(): void {
       clearTimeout(timer);
       signal?.removeEventListener("abort", cancel);
@@ -495,6 +545,10 @@ export interface BackgroundShellManager {
     startedAt: string;
     /** True only when this child was spawned as a detached POSIX group leader. */
     killProcessGroup?: boolean;
+    /** An adopted foreground pipe keeps its existing filter and forwards output. */
+    captureOutput?: boolean;
+    initialOutput?: string;
+    initialOutputTruncated?: boolean;
   }): string;
   registerBroker(input: {
     sessionId: string;
@@ -520,8 +574,12 @@ export interface BackgroundShellManager {
     signal?: AbortSignal,
   ): Promise<BackgroundShellReadResult | ToolExecutionResult | undefined>;
   read(sessionId: string, shellId: string): BackgroundShellReadResult | undefined;
+  list(sessionId: string): ShellTask[];
+  appendOutput(sessionId: string, shellId: string, chunk: string): void;
   waitForOutput(sessionId: string, shellId: string, waitMs: number, signal?: AbortSignal, waitFor?: BackgroundShellWaitFor): Promise<void>;
   kill(sessionId: string, shellId: string): BackgroundShellReadResult | undefined;
+  /** User lifecycle cancellation does not consume the model's output cursor. */
+  stop(sessionId: string, shellId: string): boolean;
   waitForLocalCleanup(sessionId: string): Promise<void>;
   /** Kill + drop every shell owned by a session (call on session end). */
   disposeSession(sessionId: string): number;
@@ -910,6 +968,15 @@ function createManager(): BackgroundShellManager {
     return entry?.sessionId === sessionId ? entry : undefined;
   };
 
+  const stopOwned = (sessionId: string, shellId: string): BackgroundShellEntry | undefined => {
+    const entry = owned(sessionId, shellId);
+    if (!entry) return undefined;
+    if (entry.status === "running") entry.status = "killed";
+    entry.terminate();
+    notify(entry);
+    return entry;
+  };
+
   const applyBrokerTerminal = (
     entry: BrokerBackgroundShellEntry,
     result: WorkloadBrokerSuccessResults["shell.read"] |
@@ -929,7 +996,7 @@ function createManager(): BackgroundShellManager {
   };
 
   return {
-    register({ sessionId, command, child, startedAt, killProcessGroup = false }): string {
+    register({ sessionId, command, child, startedAt, killProcessGroup = false, captureOutput = true, initialOutput = "", initialOutputTruncated = false }): string {
       // Keep the registry lean within a long-lived session: drop this session's
       // already-finished shells whose output has been fully read before adding a
       // new one. Never-read terminal shells are preserved (the model may still
@@ -976,8 +1043,8 @@ function createManager(): BackgroundShellManager {
         status: "running",
         exitCode: null,
         signal: null,
-        output: "",
-        outputTruncated: false,
+        output: initialOutput.slice(0, MAX_OUTPUT_CHARS),
+        outputTruncated: initialOutputTruncated,
         readCursor: 0,
         startedAt,
         stopTracking,
@@ -988,8 +1055,10 @@ function createManager(): BackgroundShellManager {
 
       const onStdout = (c: Buffer): void => append(entry, c.toString("utf-8"));
       const onStderr = (c: Buffer): void => append(entry, c.toString("utf-8"));
-      child.stdout?.on("data", onStdout);
-      child.stderr?.on("data", onStderr);
+      if (captureOutput) {
+        child.stdout?.on("data", onStdout);
+        child.stderr?.on("data", onStderr);
+      }
       // A descendant may retain the output pipes after its parent exits, so
       // close is too late to own cleanup. End the owned group at root exit.
       child.once("exit", () => {
@@ -1128,6 +1197,24 @@ function createManager(): BackgroundShellManager {
       return entry ? snapshot(entry) : undefined;
     },
 
+    list(sessionId): ShellTask[] {
+      const local = [...shells.values()].filter((entry) => entry.sessionId === sessionId).map((entry): ShellTask => ({
+        shellId: entry.shellId, command: entry.command, startedAt: entry.startedAt,
+        status: entry.status, backgrounded: true, canBackground: false,
+        canStop: entry.status === "running", ...shellTaskOutputPreview(entry.output, entry.outputTruncated),
+      }));
+      // Broker lifecycle actions require a fresh tool authority; the UI does not mint one.
+      return [...local, ...[...brokerShells.values()].filter((entry) => entry.sessionId === sessionId).map((entry): ShellTask => ({
+        shellId: entry.shellId, command: entry.command, startedAt: "", status: entry.status,
+        backgrounded: true, canBackground: false, canStop: false, output: "", outputTruncated: false,
+      }))];
+    },
+
+    appendOutput(sessionId, shellId, chunk): void {
+      const entry = owned(sessionId, shellId);
+      if (entry) append(entry, chunk);
+    },
+
     async waitForOutput(sessionId, shellId, waitMs, signal, waitFor): Promise<void> {
       const delay = backgroundOutputWaitSchema.parse(waitMs);
       const condition = backgroundOutputWaitForSchema.parse(waitFor);
@@ -1161,15 +1248,11 @@ function createManager(): BackgroundShellManager {
     },
 
     kill(sessionId, shellId): BackgroundShellReadResult | undefined {
-      const entry = owned(sessionId, shellId);
-      if (!entry) return undefined;
-      if (entry.status === "running") {
-        entry.status = "killed";
-      }
-      entry.terminate();
-      notify(entry);
-      return snapshot(entry);
+      const entry = stopOwned(sessionId, shellId);
+      return entry ? snapshot(entry) : undefined;
     },
+
+    stop(sessionId, shellId): boolean { return stopOwned(sessionId, shellId) !== undefined; },
 
     async waitForLocalCleanup(sessionId): Promise<void> {
       while (localCleanup.has(sessionId)) await Promise.all([...localCleanup.get(sessionId)!]);
@@ -1262,6 +1345,36 @@ function createManager(): BackgroundShellManager {
 
 /** Process-wide singleton, mirroring managed-child-processes.ts. */
 export const backgroundShellManager: BackgroundShellManager = createManager();
+
+const foregroundShellTasks = new Map<string, {
+  sessionId: string;
+  snapshot: () => ShellTask;
+  background: () => ShellTaskActionResult;
+}>();
+
+export function listShellTasks(sessionId: string): ShellTask[] {
+  return [
+    ...[...foregroundShellTasks.values()].filter((task) => task.sessionId === sessionId).map((task) => task.snapshot()),
+    ...backgroundShellManager.list(sessionId),
+  ];
+}
+
+export function controlShellTask(sessionId: string, action: ShellTaskAction, shellId?: string): ShellTaskActionResult {
+  if (action === "background") {
+    const task = shellId === undefined
+      ? [...foregroundShellTasks.values()].reverse().find((task) => task.sessionId === sessionId)
+      : foregroundShellTasks.get(shellId);
+    if (!task || task.sessionId !== sessionId) return { ok: false, error: "shell-not-found" };
+    return task.background();
+  }
+  if (shellId === undefined || backgroundShellManager.isBrokerShell(sessionId, shellId)) {
+    return { ok: false, error: "shell-not-found" };
+  }
+  // Stopping cancels this session's existing child; it never starts another execution.
+  return backgroundShellManager.stop(sessionId, shellId)
+    ? { ok: true, shellId }
+    : { ok: false, error: "shell-not-found" };
+}
 
 /**
  * The one shell teardown for an ending session, parent or sub-agent: stop its
@@ -1646,6 +1759,7 @@ export class BashTool extends ZodTool<typeof BashToolInputSchema> {
     const spawnedResult = await spawnWithTimeout(
       input.command, hostSpawnAuthorization?.cwdIdentity.realpath ?? resolvedCwd, input.timeoutSeconds, prepared, ctx.abortSignal,
       captureFactoryFromContext(ctx), toolOutputProgressFromMetadata(ctx.metadata), hostSpawnAuthorization,
+      sessionIdFromContext(ctx), !hostShellPlan.requiresExplicitUserApproval && !disposableExecution && process.platform !== "win32",
     );
     // A disposable route's directory belongs to its own lifecycle, not the
     // host session's.
@@ -2257,6 +2371,8 @@ async function spawnWithTimeout(
   outputCaptureFactory?: BoundOutputCaptureFactory,
   progress?: ToolOutputProgressSink,
   spawnAuthorization?: HostShellSpawnAuthorization,
+  sessionId?: string,
+  backgroundable = false,
 ): Promise<SpawnResult> {
   const releaseClaim = claimPreparedShellInvocation(prepared);
   try {
@@ -2283,19 +2399,64 @@ async function spawnWithTimeout(
       if (lifetime.termination) void lifetime.termination.then(cleanupPreparedAfterTermination);
       else cleanupPreparedAfterTermination();
     });
-    trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
+    const stopTracking = trackManagedChildProcess(child, { killProcessGroup: process.platform !== "win32", label: "tool:bash" });
 
-    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress });
+    const outputCollector = createOutputCollector(child, { captureFactory: outputCaptureFactory, cwdProbe: probe, progress, retainForHandoff: backgroundable });
     child.stdout.on("data", outputCollector.collect);
     child.stderr.on("data", outputCollector.collectStderr);
 
     let settled = false;
 
     const lifetime = watchShellLifetime(child, timeoutSeconds, signal);
+    let backgrounded = false;
+    const taskId = randomUUID();
+    const startedAt = new Date().toISOString();
+    if (sessionId !== undefined) foregroundShellTasks.set(taskId, {
+      sessionId,
+      snapshot: () => ({
+        shellId: taskId, command, startedAt, status: "running", backgrounded: false,
+        canBackground: backgroundable, canStop: false, ...shellTaskOutputPreview(backgroundable ? outputCollector.handoffSnapshot().output : outputCollector.format(), outputCollector.handoffSnapshot().truncated),
+      }),
+      background: () => {
+        if (!backgroundable || settled || lifetime.aborted || lifetime.timedOut || child.exitCode !== null || child.signalCode !== null) {
+          return { ok: false, error: "background-unavailable" };
+        }
+        const initialOutput = outputCollector.handoffSnapshot();
+        let shellId: string;
+        try {
+          assertManagedChildProcessAdmissionOpen("tool:bash:background");
+          shellId = backgroundShellManager.register({
+            sessionId, command, child, startedAt, killProcessGroup: true, captureOutput: false,
+            initialOutput: initialOutput.output, initialOutputTruncated: initialOutput.truncated,
+          });
+        } catch (err) {
+          shellTaskLog.warn({ err }, "shell handoff refused by lifecycle admission");
+          return { ok: false, error: "background-unavailable" };
+        }
+        // Commit only after the new lifecycle owner accepts this exact admitted child.
+        settled = true;
+        backgrounded = true;
+        foregroundShellTasks.delete(taskId);
+        lifetime.releaseSignal();
+        stopTracking();
+        outputCollector.handOffOutput((chunk) => backgroundShellManager.appendOutput(sessionId, shellId, chunk));
+        void outputCollector.finish(true).catch(() => {
+          try { outputCollector.abandonCapture(); } catch { /* The continuing child still has its session owner. */ }
+          return { outputCaptureFailed: true };
+        }).then((artifactMetadata) => resolve({
+          output: JSON.stringify({ backgrounded: true, shellId, status: "running", hint: "Read with bash_output; stop with bash_kill. The original deadline still applies and session end stops this command." }),
+          isError: false,
+          metadata: { ...artifactMetadata, backgrounded: true, shellId },
+        }));
+        return { ok: true, shellId };
+      },
+    });
 
     const finish = async (code: number | null, signal: NodeJS.Signals | null = null): Promise<void> => {
       if (lifetime.termination) await lifetime.termination;
       lifetime.dispose();
+      foregroundShellTasks.delete(taskId);
+      if (backgrounded) outputCollector.finishBackground();
       if (settled) return;
       settled = true;
       const rejected = control?.rejected === true;
@@ -2327,6 +2488,8 @@ async function spawnWithTimeout(
       void (async () => {
         if (settled) return;
         settled = true;
+        foregroundShellTasks.delete(taskId);
+        lifetime.dispose();
         control?.dispose();
         const artifactMetadata = await outputCollector.finish(true);
         resolve({

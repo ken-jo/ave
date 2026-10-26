@@ -1,5 +1,6 @@
-const { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } = require("node:fs");
-const { join, relative, resolve, sep } = require("node:path");
+const { randomUUID } = require("node:crypto");
+const { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } = require("node:fs");
+const { basename, join, relative, resolve, sep } = require("node:path");
 const { deflateSync } = require("node:zlib");
 const { normalizedImage } = require("./lib/normalized-image.cjs");
 
@@ -534,11 +535,26 @@ function encodeIco(sourceRgba, sourceSize, sizes) {
 // Record all asset writes through emit so the manifest and guard share one output inventory.
 const emitted = [];
 
-// Keep pixel-identical images: runtime-dependent compression bytes must not dirty the worktree.
-function emit(path, contents) {
-  const before = existsSync(path) ? normalizedImage(readFileSync(path)) : null;
+// Preserve identical bytes and pixels; readers must only see complete assets.
+function writeAsset(path, contents) {
+  const bytes = Buffer.isBuffer(contents) ? contents : Buffer.from(contents);
+  const previous = existsSync(path) ? readFileSync(path) : null;
+  if (previous?.equals(bytes)) return;
+  const before = previous === null ? null : normalizedImage(previous);
   const after = before === null ? null : normalizedImage(contents);
-  if (before === null || after === null || !before.equals(after)) writeFileSync(path, contents);
+  if (before !== null && after !== null && before.equals(after)) return;
+  // Stage outside the icon set so its orphan cleanup cannot remove active writes.
+  const staged = join(buildDir, `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
+  try {
+    writeFileSync(staged, bytes, { flag: "wx" });
+    renameSync(staged, path);
+  } finally {
+    rmSync(staged, { force: true });
+  }
+}
+
+function emit(path, contents) {
+  writeAsset(path, contents);
   emitted.push(path);
 }
 
@@ -572,9 +588,15 @@ function main() {
     );
   }
 
-  // Rebuild from empty so removed sizes cannot remain packaged as orphans.
-  rmSync(desktopIconSetDir, { recursive: true, force: true });
+  // Remove obsolete outputs only. Other generators and completed-manifest
+  // readers can still be using every size that remains in the inventory.
   mkdirSync(desktopIconSetDir, { recursive: true });
+  const desktopIconNames = new Set(DESKTOP_ICON_SET_SIZES.map((size) => `${size}x${size}.png`));
+  for (const name of readdirSync(desktopIconSetDir)) {
+    if (!desktopIconNames.has(name)) {
+      rmSync(join(desktopIconSetDir, name), { recursive: true, force: true });
+    }
+  }
   for (const size of DESKTOP_ICON_SET_SIZES) {
     // The packager reads pixel size from the filename.
     emit(
@@ -587,7 +609,7 @@ function main() {
   const manifest = emitted
     .map((path) => relative(root, path).split(sep).join("/"))
     .sort();
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeAsset(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 
   for (const path of emitted) console.log(`Generated ${path}`);
 }

@@ -12,6 +12,7 @@ async function injectAskQuestion(
   app: ElectronApplication,
   id: string,
   item: AskQuestionItem,
+  sessionId: string,
 ): Promise<boolean> {
   return app.evaluate(
     ({ BrowserWindow }, payload) => {
@@ -19,12 +20,13 @@ async function injectAskQuestion(
       if (!win) return false;
       win.webContents.send('ave:ask-user-question:request', {
         id: payload.id,
+        sessionId: payload.sessionId,
         createdAt: Date.now(),
         questions: [payload.item],
       });
       return true;
     },
-    { id, item },
+    { id, item, sessionId },
   );
 }
 
@@ -37,7 +39,11 @@ async function ensureQuestionOverlayVisible(
     choices: ['계속', '중단'],
   },
 ): Promise<boolean> {
-  const injected = await injectAskQuestion(app, id, item);
+  const sessionId = await mainWindow.evaluate(async () => {
+    const api = (window as unknown as { aveApi: { chatSessions: () => Promise<{ current: string }> } }).aveApi;
+    return (await api.chatSessions()).current;
+  });
+  const injected = await injectAskQuestion(app, id, item, sessionId);
   const overlay = mainWindow.locator(testIdSelector(TEST_IDS.questionOverlay));
   return overlay
     .waitFor({ state: 'visible', timeout: injected ? 5_000 : 10_000 })
@@ -70,10 +76,12 @@ test.describe('ask_user_question overlay layout', () => {
   });
 
   for (const viewport of [
-    { width: 1100, height: 720 },
-    { width: 1440, height: 900 },
+    { width: 360, height: 900 },
+    { width: 900, height: 900 },
+    { width: 1243, height: 900 },
+    { width: 1600, height: 900 },
   ]) {
-    test(`overlay fills the chat width and is flush with its dock at ${viewport.width}x${viewport.height}`, async ({
+    test(`decision card shares the composer gutter and has four rounded corners at ${viewport.width}x${viewport.height}`, async ({
       app,
       mainWindow,
     }) => {
@@ -95,6 +103,8 @@ test.describe('ask_user_question overlay layout', () => {
         const o = overlay.getBoundingClientRect();
         const c = card.getBoundingClientRect();
         const d = dock.getBoundingClientRect();
+        const composer = dock.querySelector<HTMLElement>('[data-testid="composer-frame"]')!;
+        const f = composer.getBoundingClientRect();
         return {
           dockLeft: d.left,
           dockRight: d.right,
@@ -104,15 +114,24 @@ test.describe('ask_user_question overlay layout', () => {
           cardRight: c.right,
           cardBottom: c.bottom,
           dockBottom: d.bottom,
+          radius: getComputedStyle(card).borderRadius,
+          composerRadius: getComputedStyle(document.querySelector<HTMLElement>('[data-testid="composer-frame"]')!).borderRadius,
+          composerLeft: f.left,
+          composerRight: f.right,
+          gap: parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.5,
+          scrollWidth: document.documentElement.scrollWidth,
+          viewportWidth: document.documentElement.clientWidth,
         };
       });
 
       expect(geometry, 'layout elements must exist').not.toBeNull();
       expect(Math.abs(geometry!.overlayLeft - geometry!.dockLeft)).toBeLessThanOrEqual(1);
       expect(Math.abs(geometry!.overlayRight - geometry!.dockRight)).toBeLessThanOrEqual(1);
-      expect(Math.abs(geometry!.cardLeft - geometry!.dockLeft)).toBeLessThanOrEqual(1);
-      expect(Math.abs(geometry!.cardRight - geometry!.dockRight)).toBeLessThanOrEqual(1);
-      expect(Math.abs(geometry!.cardBottom - geometry!.dockBottom)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry!.cardLeft - geometry!.composerLeft)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry!.cardRight - geometry!.composerRight)).toBeLessThanOrEqual(1);
+      expect(Math.abs(geometry!.cardBottom - geometry!.dockBottom + geometry!.gap)).toBeLessThanOrEqual(1);
+      expect(geometry!.radius).toBe(geometry!.composerRadius);
+      expect(geometry!.scrollWidth).toBeLessThanOrEqual(geometry!.viewportWidth);
     });
   }
 

@@ -11,6 +11,7 @@ import { registerComposerTarget } from "../preview/composer-targets.js";
 import { ComposerApiKeyChip, resolveComposerRuntimeGates } from "./ChatComposerDock.js";
 import { AttachButton, ShortcutsButton, TurnControlButton } from "./InputActionBar.js";
 import { MessageQueuePanel } from "./MessageQueuePanel.js";
+import { ShellTasksPanel } from "./ShellTasksPanel.js";
 import { useSideChat } from "../hooks/use-side-chat.js";
 import { useChatScroll } from "../hooks/use-chat-scroll.js";
 import { useMessageQueue } from "../hooks/use-message-queue.js";
@@ -30,6 +31,9 @@ import { sessionOwnedBy } from "./chat-group-session-registry.js";
 import { formatIpcError } from "../format-ipc-error.js";
 import { errorMessage } from "../../../shared/error-message.js";
 import { DEFAULT_PROCESSING_DISPLAY_LEVEL } from "../../../shared/processing-display-level.js";
+import { estimateOutgoingUserMessageTokens } from "../../../shared/multimodal-token-estimate.js";
+import { useContextBudget } from "../hooks/use-context-budget.js";
+import { ComposerContextNotice } from "./ComposerContextNotice.js";
 
 /**
  * A sidebar row asking one tile to show a stored side chat.
@@ -69,7 +73,8 @@ export type SideChatRuntime = Pick<ChatContextValue,
   | "hasApiKey" | "settingsLoaded" | "onOpenSettings"
   | "subscriptionRuntimePolicy" | "subscriptionImageAttachmentProvider" | "subscriptionFileAttachmentProvider"
   | "subscriptionUnavailableProvider" | "subscriptionPendingProvider"
-  | "llmVendor" | "llmModel" | "llmRouteModalities" | "processingDisplayLevel" | "usageAvailable">;
+  | "llmVendor" | "llmModel" | "llmRouteModalities" | "processingDisplayLevel" | "usageAvailable"
+  | "llmContextWindow" | "llmInputLimit" | "autoCompactEnabled">;
 
 interface SideChatViewProps {
   api: AveApi;
@@ -299,6 +304,10 @@ function SideChatSession({
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const attachmentNCounter = useRef(0);
   const composerRef = useRef<ComposerHandle | null>(null);
+  const shellTasksApi = useMemo(() => ({
+    chatListShellTasks: sideChat.listShellTasks,
+    chatControlShellTask: sideChat.controlShellTask,
+  }), [sideChat]);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
 
   // Side chat is a second ConversationLoop, not a second credential policy. Read the app-level readiness contract so it
@@ -331,6 +340,17 @@ function SideChatSession({
   const composerInputDisabled = !attachmentInputsReady || runtimeUnavailable || hasApiKey === false;
   const composerSendDisabled = composerInputDisabled || draftHasUnsupportedAttachment;
   const hasDraft = draft.trim().length > 0 || attachments.length > 0;
+  const composedDraft = useMemo(
+    () => composeOutgoing({ raw: draft.trim(), attachments, activePreset: null }),
+    [draft, attachments],
+  );
+  const { contextOverflowPct } = useContextBudget({
+    entries,
+    contextWindow: runtime?.llmContextWindow ?? 0,
+    inputLimit: runtime?.llmInputLimit,
+    draftTokenEstimate: estimateOutgoingUserMessageTokens(composedDraft.text, composedDraft.attachments),
+    enabled: runtime?.usageAvailable !== false,
+  });
 
   // Up/Down recall in the side composer walks this side conversation's prompts.
   const promptHistory = useMemo(() => collectPromptHistory(entries), [entries]);
@@ -543,6 +563,7 @@ function SideChatSession({
           </div>
         ) : null}
         {boundSurface ? <BoundSurfaceChip surface={boundSurface} /> : targetChip}
+        <ComposerContextNotice percent={contextOverflowPct} autoCompactEnabled={runtime?.autoCompactEnabled} />
         <ComposerFrame>
           <Composer
             ref={composerRef}
@@ -599,6 +620,7 @@ function SideChatSession({
                 runtimeImageAttachmentProvider ?? runtimeFileAttachmentProvider
               }
             />
+            {sessionId && <ShellTasksPanel api={shellTasksApi} sessionId={sessionId} composerRef={composerRef} />}
             <div className="ml-auto flex shrink-0 items-center gap-1.5">
               <ShortcutsButton />
               <TurnControlButton

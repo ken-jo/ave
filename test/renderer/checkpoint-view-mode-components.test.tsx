@@ -3,6 +3,7 @@ import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
 import { ViewModeBanner } from "../../src/ui/renderer/components/ViewModeBanner.js";
 import { CheckpointDivider } from "../../src/ui/renderer/components/TranscriptRenderer.js";
+import { t } from "../../src/i18n/runtime.js";
 
 describe("ViewModeBanner", () => {
   it("renders nothing when viewMode is null", () => {
@@ -29,6 +30,23 @@ describe("ViewModeBanner", () => {
 });
 
 describe("CheckpointDivider", () => {
+  it("owns its summary and quiet navigation as one transcript unit", () => {
+    const { getByTestId } = render(
+      <CheckpointDivider messageCount={3} compactNum={2} compactStatus="summarized"
+        summary="Preserved decisions" onEnterView={vi.fn()} onBranchFrom={vi.fn()} />,
+    );
+    const unit = getByTestId("checkpoint-divider");
+    expect(getByTestId("summary-toast").parentElement).toBe(unit);
+    expect(getByTestId("checkpoint-actions").parentElement).toBe(unit);
+    expect(unit.textContent).not.toMatch(/📦|📖|↩/u);
+    for (const id of ["ck-btn-view", "ck-btn-fork"]) {
+      expect(getByTestId(id)).toHaveClass("bg-secondary", "text-secondary-foreground", "focus-visible:ring-ring");
+      expect(getByTestId(id)).not.toHaveClass("border");
+    }
+    expect(getByTestId("ck-btn-view")).toHaveAttribute("aria-label", t("checkpointDivider.viewAriaLabel", { num: 2 }));
+    expect(getByTestId("ck-btn-fork")).toHaveAttribute("aria-label", t("checkpointDivider.branchAriaLabel", { num: 2 }));
+  });
+
   it("renders without action buttons when compactNum is absent", () => {
     const { container } = render(
       <CheckpointDivider messageCount={10} />,

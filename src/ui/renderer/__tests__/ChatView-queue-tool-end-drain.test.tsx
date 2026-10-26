@@ -107,7 +107,7 @@ describe("message queue — mid-turn tool_end drain", () => {
     });
   });
 
-  it("clears the queue only once the engine has accepted the hand-off", async () => {
+  it("reserves rows until acceptance and keeps them visible until delivery", async () => {
     const guide = deferred<{ ok: true }>();
     const { emitChatStream, api, pendingSend } = await queueOneWhileStreaming();
     api.chatGuide.mockImplementationOnce(async () => guide.promise);
@@ -117,10 +117,11 @@ describe("message queue — mid-turn tool_end drain", () => {
     });
     await waitFor(() => expect(api.chatGuide).toHaveBeenCalledTimes(1));
 
-    // Hand-off in flight, not yet confirmed → the row is still the user's: present, and still editable.
+    // Awaiting acceptance: visible and reserved, without claiming the engine has accepted it.
     expect(getQueueStore()!.size()).toBe(1);
     expect(getQueueStore()!.getItems()[0]!.handedOffAs).toBeUndefined();
-    expect(getQueueStore()!.getPending()).toHaveLength(1);
+    expect(getQueueStore()!.getItems()[0]!.handoffReservationId).toBeDefined();
+    expect(getQueueStore()!.getPending()).toHaveLength(0);
 
     await act(async () => {
       guide.resolve({ ok: true });
@@ -174,7 +175,7 @@ describe("message queue — mid-turn tool_end drain", () => {
     });
   });
 
-  it("keeps a row the user rewrote while the hand-off was in flight", async () => {
+  it("keeps the submitted wording fixed while the hand-off is in flight", async () => {
     const guide = deferred<{ ok: true }>();
     const { emitChatStream, api, pendingSend } = await queueOneWhileStreaming();
     api.chatGuide.mockImplementationOnce(async () => guide.promise);
@@ -185,10 +186,10 @@ describe("message queue — mid-turn tool_end drain", () => {
     await waitFor(() => expect(api.chatGuide).toHaveBeenCalledTimes(1));
     expect(api.chatGuide.mock.calls[0][0]).toContain("대기 중 추가 요청");
 
-    // Items stay editable while the call is in flight — the whole point of not taking them optimistically.
+    // A reservation prevents the visible wording from diverging from the submitted batch.
     const queued = getQueueStore()!.getItems()[0]!;
     await act(async () => {
-      getQueueStore()!.update(queued.id, "고쳐 쓴 요청");
+      expect(getQueueStore()!.update(queued.id, "고쳐 쓴 요청")).toBe(false);
     });
 
     await act(async () => {
@@ -196,9 +197,10 @@ describe("message queue — mid-turn tool_end drain", () => {
       await Promise.resolve();
     });
 
-    // The engine only ever saw the OLD wording, so the rewritten row must not be discarded on the strength of its id.
+    // Accepted rows stay visible with exactly the wording the engine received.
     expect(getQueueStore()!.size()).toBe(1);
-    expect(getQueueStore()!.getItems()[0]!.text).toBe("고쳐 쓴 요청");
+    expect(getQueueStore()!.getItems()[0]!.text).toBe("대기 중 추가 요청");
+    expect(getQueueStore()!.getItems()[0]!.handedOffAs).toBe("대기 중 추가 요청");
 
     await act(async () => {
       pendingSend.resolve({ ok: true });

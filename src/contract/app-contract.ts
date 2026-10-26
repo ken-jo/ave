@@ -87,6 +87,9 @@ export const CHANNELS = {
     send: "ave:chat:send",
     guide: "ave:chat:guide",
     abort: "ave:chat:abort",
+    // Host-renderer-only lifecycle controls, scoped to the preload-bound conversation.
+    listShellTasks: "ave:chat:list-shell-tasks",
+    controlShellTask: "ave:chat:control-shell-task",
     new: "ave:chat:new",
     sessions: "ave:chat:sessions",
     compact: "ave:chat:compact",
@@ -735,6 +738,8 @@ export const CHANNELS = {
     // bounded sheet or page, never source bytes. The index selects a sheet
     // for table formats or a page for presentations/PDF. INTERNAL.
     readDocument: "ave:preview:read-document",
+    documentOpenRequest: "ave:preview:document-open-request",
+    documentOpenAck: "ave:preview:document-open-ack",
   },
   workspace: {
     pickRoot: "ave:workspace:pick-root",
@@ -828,6 +833,8 @@ export const CHANNELS = {
     new: "ave:sidechat:new", // invoke → { ok, sessionId }
     load: "ave:sidechat:load", // invoke (sessionId) → { ok, messages }
     abort: "ave:sidechat:abort", // invoke { sendRequestId } → { ok }
+    listShellTasks: "ave:sidechat:list-shell-tasks",
+    controlShellTask: "ave:sidechat:control-shell-task",
     paneHistory: "ave:sidechat:pane-history", // invoke { tabId } → { ok, sessionId|null, messages } (no session switch)
     endPaneChat: "ave:sidechat:end-pane-chat", // invoke { tabId, reason } → { ok, sessionId|null }
     getSubAgentTranscript: "ave:sidechat:get-sub-agent-transcript", // invoke → owner-scoped child transcript

@@ -1,6 +1,9 @@
 // i18n fragment. Source: src/ui/renderer/components/MessageQueuePanel.tsx.
 export const en = {
   "messageQueuePanel.panelTitle": "Message Queue",
+  "messageQueuePanel.moveUp": "Move up (Alt+↑)",
+  "messageQueuePanel.moveDown": "Move down (Alt+↓)",
+  "messageQueuePanel.movedAnnouncement": "Moved {text} to position {position} of {count}",
   "messageQueuePanel.selectedCount": "{count} selected",
   "messageQueuePanel.cmdEnterHint": "(⌘⏎ target)",
   "messageQueuePanel.collapsedHint": "auto-injected at next break-point",
@@ -16,11 +19,16 @@ export const en = {
   "messageQueuePanel.removeAriaLabel": "Remove",
   "messageQueuePanel.removeTitle": "Remove",
   "messageQueuePanel.handedOffBadge": "delivering",
+  "messageQueuePanel.handoffInProgressBadge": "sending",
+  "messageQueuePanel.handoffInProgressTitle": "Waiting for the model to accept this message.",
   "messageQueuePanel.handedOffTitle": "Handed to the model — it appears above once the current step finishes.",
   "messageQueuePanel.heldByApprovalHint": "held until the pending approval is answered",
 } as const;
 export const ko: Record<keyof typeof en, string> = {
   "messageQueuePanel.panelTitle": "메시지 큐",
+  "messageQueuePanel.moveUp": "위로 이동 (Alt+↑)",
+  "messageQueuePanel.moveDown": "아래로 이동 (Alt+↓)",
+  "messageQueuePanel.movedAnnouncement": "{text} 항목을 {count}개 중 {position}번째로 이동했습니다",
   "messageQueuePanel.selectedCount": "{count} 선택",
   "messageQueuePanel.cmdEnterHint": "(⌘⏎ 대상)",
   "messageQueuePanel.collapsedHint": "다음 brake-point 에 자동 주입",
@@ -36,6 +44,8 @@ export const ko: Record<keyof typeof en, string> = {
   "messageQueuePanel.removeAriaLabel": "제거",
   "messageQueuePanel.removeTitle": "제거",
   "messageQueuePanel.handedOffBadge": "주입됨",
+  "messageQueuePanel.handoffInProgressBadge": "전달 중",
+  "messageQueuePanel.handoffInProgressTitle": "모델이 메시지를 수락하기를 기다리고 있습니다.",
   "messageQueuePanel.handedOffTitle": "모델에 전달됨 — 현재 단계가 끝나면 위 대화에 나타납니다.",
   "messageQueuePanel.heldByApprovalHint": "대기 중인 승인에 답할 때까지 보류됩니다",
 };
