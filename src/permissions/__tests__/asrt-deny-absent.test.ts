@@ -9,6 +9,7 @@ import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
 import { useVerifiedAveHomePrivacy } from "../../__tests__/support/ave-home-privacy.js";
 import * as evidence from "../../shared/windows-read-deny-evidence.js";
 import * as srtWinIntegrity from "../srt-win-integrity.js";
+import * as denyAcl from "../windows-deny-acl.js";
 import {
   buildPerCommandSandboxCustomConfig, buildSandboxConfig, grantWindowsWorkerFilesystemAccess,
   initializeAsrtSandbox, isAsrtSandboxActive, registerWorkerUnixSocketDir,
@@ -62,6 +63,10 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
     vi.spyOn(runtime, "revokeWindowsAcl").mockReturnValue([]);
     vi.spyOn(runtime, "stampWindowsAcl").mockImplementation(() => {});
     vi.spyOn(runtime, "restoreWindowsAcl").mockReturnValue([]);
+    vi.spyOn(denyAcl, "readWindowsDenyAcls").mockImplementation(paths => paths.map(() => ({
+      denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: denyAcl.WINDOWS_READ_DENY_MASK,
+      parentMask: 0x40, directory: false,
+    })));
   });
 
   afterEach(async () => {
@@ -82,6 +87,152 @@ describe.runIf(process.platform === "win32")("Windows deny target handoff", () =
   function paths(entries: readonly runtime.FilesystemPathEntry[] | undefined): string[] {
     return (entries ?? []).map(entry => (typeof entry === "string" ? entry : entry.path).replace(/[\\/]+$/, ""));
   }
+
+  it("preserves machine read protection when a parent receives a write grant", async () => {
+    captureRuntime();
+    const machine = join(root, "machine");
+    const grant = join(machine, "Ave");
+    mkdirSync(grant, { recursive: true });
+    vi.stubEnv("ProgramData", machine);
+    const target = join(grant, "secret");
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] });
+    try {
+      expect(runtime.stampWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({
+        denyRead: expect.arrayContaining([target]), denyWrite: expect.arrayContaining([target]),
+      }));
+    } finally { held.release(); }
+  });
+
+  it("refuses a write envelope containing an initially unmatched deny glob", async () => {
+    captureRuntime();
+    const grant = join(root, "workspace");
+    mkdirSync(grant);
+    const pattern = join(grant, "*.secret");
+    await initializeAsrtSandbox({ denyRead: [pattern], denyWrite: [pattern] });
+    writeFileSync(join(grant, "new.secret"), "secret");
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
+      .rejects.toThrow(/glob/i);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("includes wrap-only machine read rows in native protection before granting writes", async () => {
+    captureRuntime();
+    const machine = join(root, "machine");
+    const grant = join(machine, "Ave");
+    mkdirSync(grant, { recursive: true });
+    vi.stubEnv("ProgramData", machine);
+    const target = join(grant, "secret");
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({});
+    await wrapToolCommand("echo before", { commandId: TEST_COMMAND_ID, filesystem: { denyRead: [target] } });
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] });
+    try {
+      expect(runtime.stampWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ denyRead: expect.arrayContaining([target]) }));
+    } finally { held.release(); }
+  });
+
+  it("refuses a successful stamp that leaves an absent target unprotected", async () => {
+    captureRuntime();
+    const grant = join(root, "unverifiable");
+    mkdirSync(grant);
+    const target = join(grant, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => ({
+      denyMask: 0, inheritableMask: 0, parentMask: 0, directory: false,
+    })));
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
+      .rejects.toThrow(/verif|DACL/i);
+    expect(runtime.stampWindowsAcl).toHaveBeenCalled();
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    expect(isAsrtSandboxActive()).toBe(true);
+    await expect(wrapToolCommand("echo refused", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/reset the sandbox session/);
+    await expect(wrapWorkerCommand("echo refused", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/reset the sandbox session/);
+  });
+
+  it("unions native read protection with a write-only policy row", async () => {
+    captureRuntime();
+    const grant = join(root, "native-union");
+    mkdirSync(grant);
+    const target = join(grant, "secret");
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({ denyWrite: [target] });
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] });
+    try {
+      expect(runtime.stampWindowsAcl).toHaveBeenCalledWith(expect.objectContaining({ denyRead: expect.arrayContaining([target]) }));
+      expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(denyAcl.readWindowsDenyAcls).mock.invocationCallOrder[1])
+        .toBeLessThan(vi.mocked(runtime.grantWindowsAcl).mock.invocationCallOrder[0]!);
+    } finally { held.release(); }
+  });
+
+  it("verifies a partial stamp failure before refusing access without releasing the session", async () => {
+    captureRuntime();
+    const grant = join(root, "partial-union");
+    mkdirSync(grant);
+    const target = join(grant, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    vi.mocked(runtime.stampWindowsAcl).mockImplementation(() => { throw new Error("Fixture partial stamp"); });
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
+      .rejects.toThrow("Fixture partial stamp");
+    expect(denyAcl.readWindowsDenyAcls).toHaveBeenCalledTimes(2);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    expect(runtime.restoreWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("refuses the session when a partial stamp loses native read protection", async () => {
+    captureRuntime();
+    const grant = join(root, "lost-read");
+    mkdirSync(grant);
+    const target = join(grant, "secret");
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    vi.mocked(runtime.stampWindowsAcl).mockImplementation(() => { throw new Error("Fixture partial stamp"); });
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementationOnce(paths => paths.map(() => ({
+      denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false,
+    }))).mockImplementation(paths => paths.map(() => ({
+      denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false,
+    })));
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
+      .rejects.toThrow(/reset the sandbox session/);
+    await expect(wrapToolCommand("echo refused", { commandId: TEST_COMMAND_ID })).rejects.toThrow(/reset the sandbox session/);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+    expect(runtime.restoreWindowsAcl).not.toHaveBeenCalled();
+  });
+
+  it("keeps write-only protection readable when native state has no stronger deny", async () => {
+    captureRuntime();
+    const grant = join(root, "write-only");
+    mkdirSync(grant);
+    const target = join(grant, "secret");
+    writeFileSync(target, "secret");
+    await initializeAsrtSandbox({ denyWrite: [target] });
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => ({
+      denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false,
+    })));
+    const held = await grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] });
+    try {
+      expect(vi.mocked(runtime.stampWindowsAcl).mock.calls.at(-1)?.[0].denyRead).not.toContain(target);
+      expect(vi.mocked(runtime.stampWindowsAcl).mock.calls.at(-1)?.[0].denyWrite).toContain(target);
+    } finally { held.release(); }
+  });
+
+  it.each([
+    { denyMask: denyAcl.WINDOWS_WRITE_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: false },
+    { denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: 0, parentMask: 0, directory: false },
+    { denyMask: denyAcl.WINDOWS_READ_DENY_MASK, inheritableMask: 0, parentMask: 0x40, directory: true },
+  ])("refuses insufficient native deny evidence %#", async native => {
+    captureRuntime();
+    const grant = join(root, "insufficient");
+    mkdirSync(grant);
+    const target = join(grant, "secret");
+    await initializeAsrtSandbox({ denyRead: [target], denyWrite: [target] });
+    vi.mocked(denyAcl.readWindowsDenyAcls).mockImplementation(paths => paths.map(() => native));
+    await expect(grantWindowsWorkerFilesystemAccess({ holderPid: process.pid + 1, allowWrite: [grant] }))
+      .rejects.toThrow(/verification/);
+    expect(runtime.grantWindowsAcl).not.toHaveBeenCalled();
+  });
 
   it("stamps newly reachable denies for the session before granting a worker write", async () => {
     const wrap = captureRuntime();

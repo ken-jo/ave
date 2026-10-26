@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import * as os from "node:os";
-import { join, relative } from "node:path";
+import { join, relative, sep } from "node:path";
 import * as runtime from "@anthropic-ai/sandbox-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { TEST_COMMAND_ID } from "../../__tests__/support/egress-fixture.js";
@@ -10,6 +10,8 @@ import { initializeRequiredSandbox } from "../../__tests__/support/native-sandbo
 import { checkAsrtDependencies, isAsrtSandboxActive, resetAsrtSandbox, wrapToolCommand } from "../asrt-sandbox.js";
 import { windowsSandboxCanSpawn } from "./test-helpers.js";
 import { holdWindowsFilesystemGrant } from "../windows-acl-grant-holder.js";
+import { win32SystemBinary } from "../../shared/ave-home.js";
+import { windowsPowerShellEnv } from "../../shared/windows-powershell-env.js";
 
 useVerifiedAveHomePrivacy();
 
@@ -21,6 +23,7 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
   let root: string;
 
   beforeEach(async (context) => {
+    if (!/^d:[\\/]/i.test(os.tmpdir())) throw new Error("Native ACL fixtures require D: temporary storage");
     root = mkdtempSync(join(os.tmpdir(), "deny-absent-native-"));
     vi.stubEnv("HOME", root);
     vi.stubEnv("USERPROFILE", root);
@@ -30,9 +33,13 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
     if (dependencies.errors.length > 0) {
       const reason = `Native Windows sandbox unavailable: ${dependencies.errors.join("; ")}`;
       console.warn(reason);
+      if (process.env.CI) throw new Error(reason);
       context.skip(reason);
     }
-    if (!(await windowsSandboxCanSpawn())) context.skip("Native Windows sandbox cannot spawn on this host; see capability warning");
+    if (!(await windowsSandboxCanSpawn())) {
+      if (process.env.CI) throw new Error("Native Windows sandbox cannot spawn on the provisioned runner");
+      context.skip("Native Windows sandbox cannot spawn on this host; see capability warning");
+    }
     const manager = runtime.SandboxManager;
     const initialize = manager.initialize.bind(manager);
     const wrap = manager.wrapWithSandboxArgv.bind(manager);
@@ -102,5 +109,66 @@ describe.runIf(process.platform === "win32")("Windows absent deny native enforce
     } finally {
       held.release();
     }
+  }, 60_000);
+
+  it("keeps a machine file unreadable after its parent receives a write grant", async () => {
+    const machine = join(root, "machine");
+    const workspace = join(machine, "Ave");
+    mkdirSync(workspace, { recursive: true });
+    vi.stubEnv("ProgramData", machine);
+    const target = join(workspace, "secret");
+    writeFileSync(target, "secret");
+    await initializeRequiredSandbox({ allowRead: [root], denyRead: [target], denyWrite: [target] });
+    const earlier = await wrapToolCommand(`type "${target}"`, { commandId: TEST_COMMAND_ID });
+    const held = await holdWindowsFilesystemGrant({ label: "machine-deny-native", allowRead: [], allowWrite: [workspace] });
+    try {
+      expect(() => execFileSync(earlier.argv[0]!, earlier.argv.slice(1), {
+        env: { ...process.env, ...earlier.env }, cwd: root, windowsHide: true,
+      })).toThrow();
+    } finally { held.release(); }
+  }, 60_000);
+
+  it("refuses a native write grant beneath an initially unmatched deny glob", async () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const pattern = join(workspace, "*.secret");
+    await initializeRequiredSandbox({ allowRead: [root], denyRead: [pattern], denyWrite: [pattern] });
+    writeFileSync(join(workspace, "new.secret"), "secret");
+    await expect(holdWindowsFilesystemGrant({ label: "glob-deny-native", allowRead: [], allowWrite: [workspace] }).then(held => { held.release(); }))
+      .rejects.toThrow(/glob/i);
+  }, 60_000);
+
+  it("refuses a dropped native placeholder when its fixture parent denies owner creation", async () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, "secret");
+    await initializeRequiredSandbox({ allowRead: [root], denyRead: [target], denyWrite: [target] });
+    const command = `$ErrorActionPreference='Stop'; $path='${workspace.replace(/'/g, "''")}';
+      $sid=[Security.Principal.WindowsIdentity]::GetCurrent().User;
+      $rule=[Security.AccessControl.FileSystemAccessRule]::new($sid, [Security.AccessControl.FileSystemRights]3, 'Deny');
+      $acl=Get-Acl -LiteralPath $path; $acl.AddAccessRule($rule); Set-Acl -LiteralPath $path -AclObject $acl;`;
+    const run = (script: string) => execFileSync(win32SystemBinary("WindowsPowerShell/v1.0/powershell"),
+      ["-NoProfile", "-NonInteractive", "-Command", script], {
+        env: windowsPowerShellEnv(), windowsHide: true,
+      });
+    run(command);
+    try {
+      expect(() => writeFileSync(target, "owner cannot create")).toThrow();
+      await expect(holdWindowsFilesystemGrant({ label: "dropped-deny-native", allowRead: [], allowWrite: [workspace] }).then(held => { held.release(); }))
+        .rejects.toThrow(/verif|DACL/i);
+      expect(lstatSync(target, { throwIfNoEntry: false })).toBeUndefined();
+    } finally {
+      run(command.replace("$acl.AddAccessRule($rule)", "$acl.RemoveAccessRuleSpecific($rule)"));
+    }
+  }, 60_000);
+
+  it("preserves a directory placeholder and verifies its inherited deny", async () => {
+    const workspace = join(root, "workspace");
+    mkdirSync(workspace);
+    const target = join(workspace, "private");
+    await initializeRequiredSandbox({ allowRead: [root], denyRead: [target + sep], denyWrite: [target + sep] });
+    const held = await holdWindowsFilesystemGrant({ label: "directory-deny-native", allowRead: [], allowWrite: [workspace] });
+    try { expect(lstatSync(target).isDirectory()).toBe(true); }
+    finally { held.release(); }
   }, 60_000);
 });

@@ -37,6 +37,7 @@ import {
 import { defaultHooksDir } from "../hooks/hook-discovery.js";
 import { readWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../shared/windows-read-deny-evidence.js";
 import type { SandboxWindowsStatusInfo } from "../shared/sandbox-capability-info.js";
+import { readWindowsDenyAcls, WINDOWS_READ_DENY_MASK, WINDOWS_WRITE_DENY_MASK } from "./windows-deny-acl.js";
 
 import type {
   SandboxRuntimeConfig,
@@ -319,6 +320,7 @@ interface AsrtSandboxSession {
   readonly windowsLiveGrants: Map<string, WindowsLiveGrantCounts>;
   readonly windowsWrapDenyRead: Set<string>;
   readonly windowsWrapDenyWrite: Set<string>;
+  windowsDenyFailure?: Error;
 }
 
 interface WindowsLiveGrantSnapshot {
@@ -327,6 +329,10 @@ interface WindowsLiveGrantSnapshot {
 }
 
 let sandboxSession: AsrtSandboxSession | undefined;
+
+function assertWindowsDenyProtection(): void {
+  if (sandboxSession?.windowsDenyFailure !== undefined) throw sandboxSession.windowsDenyFailure;
+}
 
 function snapshotWindowsLiveGrants(session: AsrtSandboxSession | undefined): WindowsLiveGrantSnapshot {
   const entries = [...(session?.windowsLiveGrants ?? [])];
@@ -1137,7 +1143,6 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
   writeGrants: readonly FilesystemPathEntry[],
   kind: "read" | "write",
   readDenyEvidence?: WindowsReadDenySnapshot,
-  onWriteReachableDeny?: (entry: FilesystemPathEntry) => void,
 ): (T | string)[] {
   if (process.platform !== "win32") return [...entries];
   let machineRoots: readonly string[] | undefined;
@@ -1178,7 +1183,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
     }
   });
   const literals = entries.filter((entry) => typeof entry !== "string")
-    .filter(entry => retainedMachineRows.has(entry) || keepWindowsDenyTarget(entry, expandedPaths.get(entry)!, expandedWriteGrants, onWriteReachableDeny));
+    .filter(entry => retainedMachineRows.has(entry) || keepWindowsDenyTarget(entry, expandedPaths.get(entry)!, expandedWriteGrants));
   const paths = entries.filter((entry): entry is T & string => typeof entry === "string");
   const homes = sensitiveDenyHomes();
   const aveHomes = [aveHome(), ...homes.map((home) => join(home, ".ave"))];
@@ -1212,7 +1217,7 @@ function windowsDenyTargets<T extends FilesystemPathEntry>(
         return true;
       }
     })
-    .filter(path => retainedMachineRows.has(path) || keepWindowsDenyTarget(path, expandedPaths.get(path)!, expandedWriteGrants, onWriteReachableDeny))
+    .filter(path => retainedMachineRows.has(path) || keepWindowsDenyTarget(path, expandedPaths.get(path)!, expandedWriteGrants))
     .map((path): T | string => (!/[\\/]$/.test(path) && directories.has(caseFoldForMatch(path)) ? `${path}\\` : path))
     .concat(literals);
 }
@@ -1221,7 +1226,6 @@ function keepWindowsDenyTarget(
   entry: FilesystemPathEntry,
   expanded: string,
   expandedGrants: readonly string[],
-  onWriteReachableDeny?: (entry: FilesystemPathEntry) => void,
 ): boolean {
   const path = typeof entry === "string" ? entry : entry.path;
   if (isUncPath(expanded) || ((typeof entry === "string" || !entry.literal) && containsGlobCharsWin(expanded))) return true;
@@ -1233,7 +1237,6 @@ function keepWindowsDenyTarget(
     // An unproven grant identity cannot justify leaving a target unprotected.
     writeReachable = true;
   }
-  if (writeReachable) onWriteReachableDeny?.(entry);
   let present: boolean;
   try {
     present = lstatSync(target, { throwIfNoEntry: false }) !== undefined;
@@ -1364,7 +1367,6 @@ export function buildSandboxConfig(
   trustedSettings: TrustedSandboxSettings,
   readDenyEvidence?: WindowsReadDenySnapshot,
   liveGrants: WindowsLiveGrantSnapshot = {},
-  onWindowsWriteReachableDeny?: (kind: "denyRead" | "denyWrite", entry: FilesystemPathEntry) => void,
 ): SandboxRuntimeConfig {
   const srtWinPath = process.platform === "win32" && trustedSettings.windows?.externalConfinement !== true
     ? getVerifiedSrtWinExePath() : undefined;
@@ -1446,11 +1448,9 @@ export function buildSandboxConfig(
       windowsWriteGrants,
       "read",
       readDenyEvidence,
-      onWindowsWriteReachableDeny === undefined ? undefined : entry => onWindowsWriteReachableDeny("denyRead", entry),
     ),
     allowWrite,
-    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write", undefined,
-      onWindowsWriteReachableDeny === undefined ? undefined : entry => onWindowsWriteReachableDeny("denyWrite", entry)),
+    denyWrite: windowsDenyTargets(denyWriteUnion, trustedSettings.userDataDir, windowsGrants, windowsWriteGrants, "write"),
     ...(allowRead !== undefined ? { allowRead } : {}),
   };
 
@@ -1766,6 +1766,7 @@ export async function wrapToolCommand(
   if (!isAsrtSandboxActive()) {
     throw new Error("wrapToolCommand: ASRT sandbox is not active (initialize at boot first)");
   }
+  assertWindowsDenyProtection();
   // A wrapped command is a confined process that may write a plugin tree.
   noteConfinedProcessesMayRun();
   // Publish before wrapping: the runtime sets TMPDIR inside the command, ahead of any environment the spawning caller supplies. Idempotent.
@@ -1945,6 +1946,7 @@ async function wrapLongLivedCommand(
   if (!isAsrtSandboxActive()) {
     throw new Error(`${caller}: ASRT sandbox is not active (initialize at boot first)`);
   }
+  assertWindowsDenyProtection();
   noteConfinedProcessesMayRun();
   // Publish before wrapping: the runtime sets TMPDIR inside the command, ahead of any environment the spawning caller supplies. Idempotent.
   useAppOwnedSandboxTempRoot();
@@ -2135,6 +2137,7 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
   if (sandboxSession !== session || !active) {
     throw new Error("Windows filesystem grant session was reset");
   }
+  assertWindowsDenyProtection();
 
   const srtWin = resolveSrtWin({ path: getVerifiedSrtWinExePath() });
   const user = getWindowsSandboxUserStatus({ srtWin });
@@ -2159,32 +2162,58 @@ export async function grantWindowsWorkerFilesystemAccess(opts: {
 
   const settings = withWorkerUnixSockets(_baseTrustedSettings);
   const liveGrants = snapshotWindowsLiveGrants(session);
-  const before = buildSandboxConfig(settings, _baseReadDenyEvidence, liveGrants);
-  const writeReachable: Record<"denyRead" | "denyWrite", FilesystemPathEntry[]> = { denyRead: [], denyWrite: [] };
   const pending = buildSandboxConfig(settings, _baseReadDenyEvidence, {
     allowRead: [...(liveGrants.allowRead ?? []), ...allowRead.map(path => ({ path, literal: true as const }))],
     allowWrite: [...(liveGrants.allowWrite ?? []), ...allowWrite.map(path => ({ path, literal: true as const }))],
-  }, (kind, entry) => writeReachable[kind].push(entry));
-  const deniesToStamp = (kind: "denyRead" | "denyWrite"): FilesystemPathEntry[] => {
-    const previous = new Set(before.filesystem[kind].map(entry => typeof entry === "string" ? entry : entry.path));
-    // A target omitted by an earlier wrap may now exist, so fresh config equality alone cannot prove it was stamped.
-    const rows = new Map<string, FilesystemPathEntry>();
-    for (const entry of [...pending.filesystem[kind].filter(entry => !previous.has(typeof entry === "string" ? entry : entry.path)),
-      ...writeReachable[kind]]) {
-      rows.set(typeof entry === "string" ? entry : entry.path, entry);
+  });
+  const obligations = new Map<string, { path: string; read: boolean }>();
+  for (const kind of ["denyRead", "denyWrite"] as const) {
+    // Raw rows include omitted targets and unmatched patterns from initialization and every earlier wrap.
+    for (const entry of [...(settings[kind] ?? []), ...pending.filesystem[kind]]) {
+      const path = stripExtendedPathPrefix(expandWindowsEnvRefs(expandLeadingTilde(typeof entry === "string" ? entry : entry.path)));
+      const glob = (typeof entry === "string" || !entry.literal) && containsGlobCharsWin(path);
+      const boundary = glob ? globPatternBaseDir(toForwardSlashes(path)) : path;
+      if (!allowWrite.some(grant => isGrantPathWithin(grant, boundary) || isGrantPathWithin(boundary, grant))) continue;
+      if (glob) throw new Error("Windows filesystem write grant overlaps a deny glob");
+      const key = windowsReadDenyKey(path);
+      const previousRow = obligations.get(key);
+      obligations.set(key, {
+        path: previousRow !== undefined && /[\\/]$/.test(previousRow.path) ? previousRow.path : path,
+        read: kind === "denyRead" || previousRow?.read === true,
+      });
     }
-    return [...rows.values()];
-  };
-  const denyRead = expandWindowsFsPaths(deniesToStamp("denyRead"), { mode: "deny" });
-  const denyWrite = expandWindowsFsPaths(deniesToStamp("denyWrite"), { mode: "deny" });
-  if (denyRead.length > 0 || denyWrite.length > 0) {
+  }
+  const rows = [...obligations.values()];
+  const targets = rows.map(row => row.path);
+  const previous = readWindowsDenyAcls(targets, sandboxUserSid);
+  const denyRead = rows.filter((row, index) => row.read || (previous[index]!.denyMask & ~WINDOWS_WRITE_DENY_MASK) !== 0).map(row => row.path);
+  const denyWrite = targets;
+  if (targets.length > 0) {
+    let stampFailure: unknown;
     try {
       stampWindowsAcl({ sandboxUserSid, holderPid: process.pid, denyRead, denyWrite, srtWin });
     } catch (error) {
-      // Releasing this holder would also release initialization's protection; partial stamps remain protective.
+      stampFailure = error;
       log.warn(`[sandbox-deny-target] Refusing Windows filesystem grant: ${errorMessage(error)}`);
-      throw error;
     }
+    // Verify even after a partial stamp. Never release the session holder on failure.
+    try {
+      const native = readWindowsDenyAcls(targets, sandboxUserSid);
+      const readTargets = new Set(denyRead);
+      for (const [index, row] of rows.entries()) {
+        const state = native[index]!;
+        const mask = readTargets.has(row.path) ? WINDOWS_READ_DENY_MASK : WINDOWS_WRITE_DENY_MASK;
+        if ((state.denyMask & mask) !== mask || (state.parentMask & 0x40) !== 0x40
+          || (state.directory && (state.inheritableMask & mask) !== mask)) {
+          throw new Error("Windows deny DACL verification failed");
+        }
+      }
+    } catch (error) {
+      // Keep activity sealed on so callers cannot fall back to host execution.
+      session.windowsDenyFailure = new Error("Windows deny DACL verification failed; reset the sandbox session", { cause: error });
+      throw session.windowsDenyFailure;
+    }
+    if (stampFailure !== undefined) throw stampFailure;
   }
 
   if (allowRead.length > 0 || allowWrite.length > 0) {
