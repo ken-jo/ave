@@ -368,3 +368,41 @@ describe("selected file reference isolation", () => {
     expect(reads).toBe(2);
   });
 });
+
+
+describe("reference preparation cancellation", () => {
+  it("refuses an already-cancelled reference before checkpoint or governed reads", async () => {
+    const reference = await capture();
+    const controller = new AbortController(); controller.abort(new Error("stopped"));
+    const read = vi.spyOn(loop.toolExecutor, "executeAll");
+    const review = vi.spyOn(checkpoints, "getTurnChangeReview");
+    await expect(expandFileMentionContext(loop, marker(reference), "user-keyboard", [], controller.signal)).rejects.toThrow("stopped");
+    expect(read).not.toHaveBeenCalled(); expect(review).not.toHaveBeenCalled();
+  });
+
+  it("forwards admission cancellation through governed reads and rechecks before returning context", async () => {
+    const reference = await capture();
+    const controller = new AbortController();
+    const read = vi.spyOn(loop.toolExecutor, "executeAll");
+    hooks.registerPostHook("stop-reference-read", () => { controller.abort(new Error("stopped")); });
+    await expect(expandFileMentionContext(loop, marker(reference), "user-keyboard", [], controller.signal)).rejects.toThrow("stopped");
+    expect(read).toHaveBeenCalledWith(expect.any(Array), expect.objectContaining({ abortSignal: controller.signal }));
+  });
+});
+
+
+describe("checkpoint preparation cancellation", () => {
+  it("stops after an in-flight checkpoint read before authorizing file access", async () => {
+    const reference = await capture();
+    const controller = new AbortController();
+    const original = checkpoints.getTurnChangeReview;
+    vi.spyOn(checkpoints, "getTurnChangeReview").mockImplementationOnce(async (...args) => {
+      const result = await original(...args);
+      controller.abort(new Error("stopped"));
+      return result;
+    });
+    const read = vi.spyOn(loop.toolExecutor, "executeAll");
+    await expect(expandFileMentionContext(loop, marker(reference), "user-keyboard", [], controller.signal)).rejects.toThrow("stopped");
+    expect(read).not.toHaveBeenCalled();
+  });
+});

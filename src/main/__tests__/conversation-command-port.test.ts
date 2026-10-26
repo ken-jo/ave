@@ -39,7 +39,7 @@ function makeFixture(
     },
   } as unknown as IpcDeps;
   const runtime = createConversationSurfaceRuntime();
-  return { port: createConversationCommandPort(deps, runtime), runTurn, markMainActiveFresh };
+  return { port: createConversationCommandPort(deps, runtime), runtime, runTurn, markMainActiveFresh };
 }
 
 function bridgeBindingFixture() {
@@ -284,5 +284,46 @@ describe("ConversationCommandPort", () => {
       { kind: "external-surface", actorId: "spoofed" } as never,
       { input: "x" },
     )).toThrow("conversation-command-actor-unsupported");
+  });
+});
+
+
+describe("desktop admission cancellation", () => {
+  it("cancels before deferred preparation without entering the model", async () => {
+    const { port, runtime, runTurn } = makeFixture();
+    const pending = port.execute(DESKTOP_CONVERSATION_ACTOR, {
+      kind: "message.send", payload: { input: "ordinary input", inputOrigin: "user-keyboard", userActivation: true },
+    });
+    expect(runtime.activity.isBusy()).toBe(true);
+    runtime.activity.abortActiveTurn();
+    await expect(pending).resolves.toMatchObject({ stopReason: "interrupted" });
+    expect(runTurn).not.toHaveBeenCalled();
+    expect(runtime.activity.isBusy()).toBe(false);
+    await expect(port.execute(DESKTOP_CONVERSATION_ACTOR, { kind: "message.send", payload: { input: "next", inputOrigin: "user-keyboard", userActivation: true } })).resolves.toEqual(completedTurn);
+    expect(runTurn).toHaveBeenCalledOnce();
+    expect((runTurn.mock.calls[0]?.[2] as AbortSignal).aborted).toBe(false);
+  });
+});
+
+
+describe("desktop active turn cancellation", () => {
+  it("propagates the admission signal into an active model turn", async () => {
+    let observed!: AbortSignal;
+    let started!: () => void;
+    let finish!: () => void;
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const { port, runtime } = makeFixture((...args) => new Promise<typeof completedTurn>((resolve) => {
+      observed = args[2] as AbortSignal;
+      finish = () => resolve(completedTurn);
+      started();
+    }));
+    const pending = port.execute(DESKTOP_CONVERSATION_ACTOR, {
+      kind: "message.send", payload: { input: "ordinary input", inputOrigin: "user-keyboard", userActivation: true },
+    });
+    await entered;
+    runtime.activity.abortActiveTurn();
+    expect(observed.aborted).toBe(true);
+    finish();
+    await pending;
   });
 });

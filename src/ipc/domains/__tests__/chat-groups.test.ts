@@ -1,6 +1,8 @@
 import { mkdtemp, readFile, writeFile, rm, realpath } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import * as fileMentionContext from "../../handlers/file-mention-context.js";
+import { formatFileMentionReference } from "../../../shared/file-mention-reference.js";
 import { checkpointFileMutation, withCodeCheckpoint } from "../../../memory/code-checkpoints.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { sessionUuid } from "../../../__tests__/support/session-uuid.js";
@@ -226,6 +228,56 @@ describe("ave:chat:* with chat groups", () => {
     expect(() => invoke(CHANNELS.chat.hasProvider)).toThrow("chat-group-required");
     expect(() => invoke(CHANNELS.chat.hasProvider, "   ")).toThrow("chat-group-required");
     expect(resolveChatGroupLoop).not.toHaveBeenCalled();
+  });
+
+  it.each([{ operation: "send", pausingGoal: false }, { operation: "send", pausingGoal: true },
+    { operation: "edit", pausingGoal: false }, { operation: "edit", pausingGoal: true }])("honors desktop Stop while reference expansion is paused, mode: $operation, pending goal: $pausingGoal", async ({ operation, pausingGoal }) => {
+    const { invoke, main, sessionGoalStore } = await registerWithGroups();
+    let releasePause = () => {};
+    let restorePause = () => {};
+    if (pausingGoal) {
+      await sessionGoalStore.set(main.getSessionId(), "finish the goal");
+      const originalPause = sessionGoalStore.pause.bind(sessionGoalStore);
+      const pauseHeld = new Promise<void>((resolve) => { releasePause = resolve; });
+      const pause = vi.spyOn(sessionGoalStore, "pause").mockImplementationOnce(async (sessionId) => {
+        await pauseHeld; return originalPause(sessionId);
+      });
+      restorePause = () => pause.mockRestore();
+    }
+    const model = vi.fn(async () => ({ text: "must not start", toolCalls: [], route: "default", stopReason: "end_turn" }));
+    Object.assign(main, { runTurn: model });
+    let entered!: () => void;
+    const expansionEntered = new Promise<void>((resolve) => { entered = resolve; });
+    let resume!: () => void;
+    const blocked = new Promise<void>((resolve) => { resume = resolve; });
+    let observedSignal: AbortSignal | undefined;
+    const expansion = vi.spyOn(fileMentionContext, "expandFileMentionContext").mockImplementationOnce(async (_loop, input, _origin, _attachments, signal) => {
+      observedSignal = signal;
+      entered();
+      await blocked;
+      return { input };
+    });
+    try {
+      const input = formatFileMentionReference(1, { path: "src/source.ts", startLine: 3, endLine: 5, turnId: "main-q1", hunkId: "a".repeat(64) });
+      const original = [...main.getHistory().getMessages()];
+      const sending = Promise.resolve(operation === "edit"
+        ? invoke(CHANNELS.chat.editResend, "main-q1", input, MAIN_CHAT_GROUP_ID)
+        : invoke(CHANNELS.chat.send, { input, inputOrigin: "user-keyboard", userActivation: true }, MAIN_CHAT_GROUP_ID));
+      await expansionEntered;
+      const stopping = Promise.resolve(invoke(CHANNELS.chat.abort, MAIN_CHAT_GROUP_ID));
+      const cancelledDuringPreparation = observedSignal?.aborted;
+      resume();
+      await sending.catch(() => {});
+      if (pausingGoal) expect(runtimes[0]!.activity.isBusy()).toBe(true);
+      releasePause();
+      await stopping;
+      expect(model).not.toHaveBeenCalled();
+      expect(observedSignal).toBeInstanceOf(AbortSignal);
+      expect(cancelledDuringPreparation).toBe(true);
+      await expect(stopping).resolves.toEqual({ ok: true });
+      await expect(sending).resolves.toMatchObject(operation === "edit" ? { ok: true, result: { stopReason: "interrupted" } } : { stopReason: "interrupted" });
+      expect(main.getHistory().getMessages()).toEqual(original);
+    } finally { resume(); releasePause(); restorePause(); expansion.mockRestore(); }
   });
 
   it("lists custom commands from the project of the tile that asked", async () => {

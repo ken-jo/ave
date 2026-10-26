@@ -191,3 +191,20 @@ describe("ConversationActivityCoordinator onTurnSettled", () => {
     });
   });
 });
+
+
+describe("admitted turn cancellation", () => {
+  it("latches cancellation before deferred preparation and gives the next lease a fresh signal", async () => {
+    const coordinator = createConversationActivityCoordinator();
+    const signals: AbortSignal[] = [];
+    const first = coordinator.trackTurn(async (signal) => { signals.push(signal); });
+    coordinator.abortActiveTurn();
+    await first;
+    expect(signals[0]?.aborted).toBe(true);
+    const second = coordinator.trackTurn(async (signal) => { signals.push(signal); });
+    await second;
+    coordinator.abortActiveTurn();
+    expect(signals[1]?.aborted).toBe(false);
+    expect(signals[0]).not.toBe(signals[1]);
+  });
+});

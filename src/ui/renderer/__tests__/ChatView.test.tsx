@@ -1062,13 +1062,13 @@ describe("ChatView", () => {
     await act(async () => fireEvent.click(panelToggle));
     const fileLauncher = await waitFor(() => within(container).getByTestId("chat-side-panel-launcher-file-browser"));
     await act(async () => fireEvent.click(fileLauncher));
-    await waitFor(() => expect(window.ave.preview.readFile).toHaveBeenCalledWith(first.path, { offset: 2, limit: 2, workspaceRoot: projectRoot }));
+    await waitFor(() => expect(window.ave.preview.readFile).toHaveBeenCalledWith(`${projectRoot}/${first.path}`, { offset: 2, limit: 2, workspaceRoot: projectRoot }));
     await act(async () => fireEvent.click(within(container).getByTestId("chat-side-panel-file-filter-session")));
     const sourceFolder = await within(container).findByRole("treeitem", { name: /^src/ });
     await act(async () => fireEvent.click(sourceFolder));
     const secondFile = await within(container).findByRole("treeitem", { name: /second.ts/ });
     await act(async () => fireEvent.click(secondFile));
-    await waitFor(() => expect(window.ave.preview.readFile).toHaveBeenCalledWith(second.path, { offset: 6, limit: 2, workspaceRoot: projectRoot }));
+    await waitFor(() => expect(window.ave.preview.readFile).toHaveBeenCalledWith(`${projectRoot}/${second.path}`, { offset: 6, limit: 2, workspaceRoot: projectRoot }));
     expect(container.querySelector('[data-testid="chat-side-panel-file-preview"]')?.textContent).not.toContain(projectRoot);
   });
 

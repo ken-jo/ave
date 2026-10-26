@@ -968,7 +968,7 @@ describe("ave:chat:send provenance", () => {
     expect(loop.runTurn).toHaveBeenCalledWith(
       input,
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({
         inputOrigin: "plugin-emitted",
         originSource: "overlay:test",
@@ -989,7 +989,7 @@ summarize the repo
     expect(loop.runTurn).toHaveBeenCalledWith(
       input,
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({
         inputOrigin: "mcp-prompt-emitted",
         originSource: "mcp-prompt:demo",
@@ -1003,7 +1003,7 @@ summarize the repo
     await setupHandlers(loop);
     const input = `<plugin-prompt source="plugin-prompt:writer-plugin:draft">\nDraft a note\n</plugin-prompt>`;
     await invokeRegisteredHandler(handlers, "ave:chat:send", { input, inputOrigin: "plugin-prompt-emitted" }, "main");
-    expect(loop.runTurn).toHaveBeenCalledWith(input, expect.any(Object), undefined,
+    expect(loop.runTurn).toHaveBeenCalledWith(input, expect.any(Object), expect.any(AbortSignal),
       expect.objectContaining({ inputOrigin: "plugin-prompt-emitted", originSource: "plugin-prompt:writer-plugin:draft" }));
     const missing = await invokeRegisteredHandler(handlers, "ave:chat:send", {
       input: "Draft a note", inputOrigin: "plugin-prompt-emitted",
@@ -1160,7 +1160,7 @@ B${i}
     expect(loop.runTurn).toHaveBeenCalledWith(
       "hello",
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({ inputOrigin: "user-keyboard" }),
     );
   });
@@ -1188,7 +1188,7 @@ B${i}
     expect(loop.runTurn).toHaveBeenCalledWith(
       "hello",
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({
         inputOrigin: "user-keyboard",
         rolePrompt: {
@@ -1214,7 +1214,7 @@ B${i}
       input: "hello", inputOrigin: "user-keyboard", userActivation: true,
       personaPromptId: "agent-plugin:writer-plugin:reviewer",
     }, "main");
-    expect(loop.runTurn).toHaveBeenCalledWith("hello", expect.any(Object), undefined,
+    expect(loop.runTurn).toHaveBeenCalledWith("hello", expect.any(Object), expect.any(AbortSignal),
       expect.objectContaining({ rolePrompt: expect.objectContaining({ origin }) }));
     const rejected = await invokeRegisteredHandler(handlers, "ave:chat:send", {
       input: "queued", inputOrigin: "queue-auto", personaPromptId: "agent-plugin:writer-plugin:reviewer",
@@ -1410,7 +1410,7 @@ B${i}
     expect(loop.runTurn).toHaveBeenCalledWith(
       "new text",
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({
         inputOrigin: "user-keyboard",
         rolePrompt: {
@@ -1686,7 +1686,7 @@ B${i}
     expect(loop.runTurn).toHaveBeenCalledWith(
       "retry text",
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({
         inputOrigin: "user-keyboard",
         rolePrompt: {
@@ -1731,7 +1731,7 @@ describe("sub-agent parent mailbox on manual turns", () => {
     expect(loop.runTurn).toHaveBeenCalledWith(
       "What changed?",
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({
         inputOrigin: "user-keyboard",
         initialGuidance: expect.stringMatching(/\[Sub-Agent: Researcher\]\nfinished$/),
@@ -1883,7 +1883,7 @@ describe("sub-agent autonomous parent wake", () => {
     expect(loop.runTurn).toHaveBeenCalledWith(
       expect.stringMatching(/\[Sub-Agent: Researcher\]\nfinished$/),
       expect.any(Object),
-      undefined,
+      expect.any(AbortSignal),
       expect.objectContaining({
         inputOrigin: "agent-message",
         approvalReasonPrefix: "[Sub-Agent: Researcher]",

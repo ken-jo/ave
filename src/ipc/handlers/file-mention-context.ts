@@ -131,7 +131,9 @@ export async function expandFileMentionContext(
   input: string,
   inputOrigin: ChatSendInputOrigin,
   attachments: readonly UserContentPart[] = [],
+  abortSignal?: AbortSignal,
 ): Promise<{ input: string; displayText?: string }> {
+  abortSignal?.throwIfAborted();
   const parsed = parseFileMentionReferences(input);
   if (parsed.length === 0) return { input };
   if (inputOrigin !== "user-keyboard" && inputOrigin !== "queue-auto") {
@@ -147,6 +149,7 @@ export async function expandFileMentionContext(
   const turnId = latestTurnId(loop);
   if (!turnId || mentions.some(({ reference }) => reference.turnId !== turnId)) throw new Error("file-reference-stale");
   const assertCurrent = () => {
+    abortSignal?.throwIfAborted();
     if (loop.getSessionId() !== sessionId || loop.getSessionEpoch() !== epoch
       || loop.getSessionExecutionCwd() !== cwd || latestTurnId(loop) !== turnId) throw new Error("file-reference-stale");
   };
@@ -187,7 +190,7 @@ export async function expandFileMentionContext(
       input: { path: absolute, offset: reference.startLine - 1, limit: Math.min(reference.endLine - reference.startLine + 1, FILE_MENTION_REFERENCE_POLICY.maxDiffLines) },
     }], {
       sessionId, executionCwd: cwd,
-      abortSignal: loop.currentAbortController?.signal,
+      abortSignal,
       permissionContext: {
         headless: loop.deps.headless,
         approvalSurface: loop.deps.approvalSurface,
@@ -201,7 +204,9 @@ export async function expandFileMentionContext(
     });
     assertCurrent();
     if (!result || result.is_error || result.authorizationRequired) throw new Error("file-reference-read-denied");
-    if (await fileReadKey(absolute) !== key || !lookupFileRead(sessionId, key)?.sha256) {
+    const verifiedKey = await fileReadKey(absolute);
+    assertCurrent();
+    if (verifiedKey !== key || !lookupFileRead(sessionId, key)?.sha256) {
       throw new Error("file-reference-read-unverified");
     }
     if (JSON.stringify(await readReview()) !== identity) throw new Error("file-reference-stale");

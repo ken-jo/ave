@@ -11,6 +11,8 @@ export interface ConversationActivityCoordinator {
   // Includes every state in which mutating the shared main loop would be unsafe.
   isBusy(): boolean;
   activeTurn(): Promise<unknown> | null;
+  /** Cancel the admitted lease, including preparation before the loop creates its controller. */
+  abortActiveTurn(reason?: Error): void;
   activeMutation(): Promise<unknown> | null;
   /** Share the loop transition guard so every surface sees busy before cleanup yields.
    * Transition settlement must notify idle listeners even outside a coordinator lease. */
@@ -18,9 +20,9 @@ export interface ConversationActivityCoordinator {
   /** Close admission synchronously, capture its owner, then let the caller drain before transition. */
   beginSessionTransitionAdmission(): ConversationActivityTransitionLease | null;
   /** Defer factory work until its exclusive lease is visible to re-entrant callers. */
-  trackTurn<T>(factory: () => Promise<T>): Promise<T>;
+  trackTurn<T>(factory: (signal: AbortSignal) => Promise<T>): Promise<T>;
   /** Fail admission before a command mutates state, without constructing a rejected promise. */
-  tryTrackTurn<T>(factory: () => Promise<T>): Promise<T> | null;
+  tryTrackTurn<T>(factory: (signal: AbortSignal) => Promise<T>): Promise<T> | null;
   trackMutation<T>(factory: () => Promise<T>): Promise<T> | null;
   /** Notify after the turn lease clears so listeners can safely start the next turn. */
   onTurnSettled(listener: () => void): () => void;
@@ -35,6 +37,7 @@ export function createConversationActivityCoordinator(
 ): ConversationActivityCoordinator {
   let nextStreamId = 0;
   let activeTurn: Promise<unknown> | null = null;
+  let activeTurnController: AbortController | null = null;
   let activeMutation: Promise<unknown> | null = null;
   let activeSessionTransitionAdmission: object | null = null;
   let sessionTransitionGuard: (() => boolean) | null = null;
@@ -66,18 +69,23 @@ export function createConversationActivityCoordinator(
     return nextStreamId;
   };
 
-  const tryTrackTurn = <T>(factory: () => Promise<T>): Promise<T> | null => {
+  const tryTrackTurn = <T>(factory: (signal: AbortSignal) => Promise<T>): Promise<T> | null => {
     if (isBusy()) return null;
-    const lease = Promise.resolve().then(factory).finally(() => {
-      if (activeTurn === lease) activeTurn = null;
+    const controller = new AbortController();
+    const lease = Promise.resolve().then(() => factory(controller.signal)).finally(() => {
+      if (activeTurn === lease) {
+        activeTurn = null;
+        activeTurnController = null;
+      }
       notifyTurnSettled();
       notifyIfIdle();
     });
     activeTurn = lease;
+    activeTurnController = controller;
     return lease;
   };
 
-  const trackTurn = <T>(factory: () => Promise<T>): Promise<T> =>
+  const trackTurn = <T>(factory: (signal: AbortSignal) => Promise<T>): Promise<T> =>
     tryTrackTurn(factory) ?? Promise.reject(new Error(busyError));
 
   const trackMutation = <T>(factory: () => Promise<T>): Promise<T> | null => {
@@ -94,6 +102,7 @@ export function createConversationActivityCoordinator(
     allocateStreamId,
     isBusy,
     activeTurn: () => activeTurn,
+    abortActiveTurn: (reason = new Error("user cancelled turn")) => activeTurnController?.abort(reason),
     activeMutation: () => activeMutation,
     bindSessionTransitionGuard: (guard: () => boolean, onSettled: (notify: () => void) => () => void) => {
       unsubscribeSettled?.();
