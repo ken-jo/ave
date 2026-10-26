@@ -16,7 +16,7 @@ import type { AddressInfo } from "node:net";
 import { lookup as lookupAll } from "node:dns/promises";
 // Ave patch test seam, reached by file path (not on the package entry).
 import { setDestinationResolverForTesting } from "@anthropic-ai/sandbox-runtime/dist/sandbox/sandbox-manager.js";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmdirSync, rmSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, parse, resolve, sep } from "node:path";
 import { shellQuote } from "../../lib/shell-resolver.js";
@@ -24,6 +24,11 @@ import { gitFixtureEnv } from "../../__tests__/support/git-fixture-env.mjs";
 import { initializeRequiredSandbox, shouldSkipNativeSandboxTests } from "../../__tests__/support/native-sandbox.js";
 import { getLocale, setLocale } from "../../i18n/index.js";
 import { TOOL_TIMEOUT_POLICY } from "../../shared/tool-timeout-policy.js";
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs")>();
+  return { ...actual, lstatSync: vi.fn(actual.lstatSync) };
+});
 
 vi.mock("node:os", async (importOriginal) => {
   const original = await importOriginal<typeof import("node:os")>();
@@ -71,6 +76,8 @@ import { getApplySeccompBinaryPath } from "@anthropic-ai/sandbox-runtime/dist/sa
 import { asrtCanInitialize } from "./test-helpers.js";
 import { _resetConfinedProcessPhaseForTests, confinedProcessesMayBeRunning } from "../../lib/confined-process-phase.js";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
+import { retryOnTransientFsLock } from "../../lib/transient-fs-lock-retry.js";
+import { srtWinPrivateDirectories } from "../srt-win-integrity.js";
 import { spawnWithSandbox } from "../../tools/shell-tools.js";
 import { prepareSandboxFixture } from "../../tools/__tests__/support/prepared-shell.js";
 import { preparedShellExecutableReadPaths } from "../../tools/prepared-shell-invocation.js";
@@ -117,6 +124,16 @@ afterAll(async () => {
     process.env.AVE_HOME = originalAveHome;
   }
   await cleanupTmpDir(isolatedWindowsHome);
+});
+
+// The product keeps its private srt-win copy until process exit, which a Vitest worker outlives; remove it non-recursively, as the product does.
+afterAll(async () => {
+  for (const directory of srtWinPrivateDirectories()) {
+    await retryOnTransientFsLock(async () => {
+      for (const name of ["srt-win.exe", "owner.json"]) rmSync(join(directory, name), { force: true });
+      if (existsSync(directory)) rmdirSync(directory);
+    });
+  }
 });
 
 afterEach(async () => {
@@ -609,8 +626,8 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
   const proxyDenied = (r: { code: number | null; stdout: string }) => r.stdout.trim() === "403";
 
   it("in-union host is permitted and out-of-union host is hard-denied with NO askCb", async () => {
-    if (!(await asrtCanInitialize())) return;
     if (process.platform !== "darwin" && process.platform !== "linux") return;
+    if (!(await asrtCanInitialize())) return;
 
     const askCalls: Array<{ host: string }> = [];
     const recordingAskCb = async (p: { host: string; port: number | undefined }) => {
@@ -635,8 +652,8 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
   }, 60_000);
 
   it("changing the union changes the result (the shared config genuinely enforces)", async () => {
-    if (!(await asrtCanInitialize())) return;
     if (process.platform !== "darwin" && process.platform !== "linux") return;
+    if (!(await asrtCanInitialize())) return;
 
     await initializeAsrtSandbox({ allowedDomains: [ALLOWED_HOST], strictAllowlist: true });
     // With OTHER_HOST out of the union it is denied.
@@ -655,8 +672,8 @@ describe("asrt-sandbox — REAL enforcement via the SHARED config (strict union 
   }, 60_000);
 
   it("a host derived from a CONFIGURED endpoint (settings → computeDynamicEndpointHosts) is allowed, a host from no endpoint is not", async () => {
-    if (!(await asrtCanInitialize())) return;
     if (process.platform !== "darwin" && process.platform !== "linux") return;
+    if (!(await asrtCanInitialize())) return;
 
     // DYNAMIC-ENDPOINT PROVENANCE: the allow-list host comes from a SETTINGS baseUrl reduced via computeDynamicEndpointHosts — the exact boot path for a user-configured Azure/embedding endpoint — NOT a hardcoded literal.
     const dynamicHostsFor = (baseUrl: string) =>
@@ -1137,15 +1154,19 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
 
   it("projects subscription runtime state into both OS deny floors for a custom profile", () => {
     const profile = join(tmpdir(), "ave-subscription-custom-profile");
-    process.env.AVE_HOME = profile;
-    const runtime = join(profile, "subscription-runtimes") + (process.platform === "win32" ? sep : "");
-    expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
-    expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
-    const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
-    expect(bare(config.filesystem.denyRead)).toContain(runtime);
-    expect(bare(config.filesystem.denyWrite)).toContain(runtime);
-    expect(config.filesystem.denyRead).not.toContain(profile);
-    expect(config.filesystem.denyWrite).not.toContain(profile);
+    vi.stubEnv("AVE_HOME", profile);
+    try {
+      const runtime = join(profile, "subscription-runtimes") + (process.platform === "win32" ? sep : "");
+      expect(getDefaultSensitiveReadDenyPaths()).toContain(runtime);
+      expect(getDefaultSensitiveWriteDenyPaths()).toContain(runtime);
+      const config = buildSandboxConfig({ allowedDomains: [], denyRead: [], denyWrite: [] });
+      expect(bare(config.filesystem.denyRead)).toContain(bare([runtime])[0]);
+      expect(bare(config.filesystem.denyWrite)).toContain(bare([runtime])[0]);
+      expect(config.filesystem.denyRead).not.toContain(profile);
+      expect(config.filesystem.denyWrite).not.toContain(profile);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("FIX 1 — Linux XDG_CONFIG_HOME: when set, userData base uses $XDG_CONFIG_HOME not ~/.config", () => {
@@ -1341,11 +1362,20 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
     process.env.AVE_ASRT_TEST_HOME = profile;
     setProcessPlatform("win32");
     const nativeRealpath = realpathSync.native;
-    // A `C:\` grant now contains machine roots, so the drive-root row uses a synthetic, uninstalled drive.
+    // These synthetic roots exercise path coverage without an installed drive or network share.
     const realpath = vi.spyOn(realpathSync, "native").mockImplementation(((path) => {
       const candidate = resolve(String(path));
-      return /^Z:\\/i.test(candidate) ? candidate : nativeRealpath(path);
+      if (/^Z:\\/i.test(candidate) || /^\\\\server\\profiles(?:\\|$)/i.test(candidate)) return candidate;
+      return nativeRealpath(path);
     }) as typeof realpathSync.native);
+    const nativeLstat = vi.mocked(lstatSync).getMockImplementation()!;
+    vi.mocked(lstatSync).mockImplementation(((path, options) => {
+      if (/^\\\\server\\profiles(?:\\|$)/i.test(resolve(String(path)))) {
+        if (options?.throwIfNoEntry === false) return undefined;
+        throw Object.assign(new Error("Synthetic network entry is absent"), { code: "ENOENT" });
+      }
+      return nativeLstat(path, options);
+    }) as typeof lstatSync);
     try {
       const config = buildSandboxConfig({
         allowedDomains: [],
@@ -1356,6 +1386,7 @@ describe("asrt-sandbox — sensitive read deny-list (host-secret hardening)", ()
       expect(bare(config.filesystem.denyRead).includes(target)).toBe(kept);
       expect(bare(config.filesystem.denyWrite).includes(target)).toBe(kept);
     } finally {
+      vi.mocked(lstatSync).mockImplementation(nativeLstat);
       realpath.mockRestore();
       setProcessPlatform(ORIGINAL_PLATFORM_FOR_DENY_TEST);
       if (prevTestHome === undefined) delete process.env.AVE_ASRT_TEST_HOME;
@@ -1551,8 +1582,8 @@ describe("asrt-sandbox — worker-UDS register/unregister (shared-config, not pe
   });
 
   it("register/unregister round-trip on a LIVE sandbox keeps the config consistent (idempotent)", async () => {
-    if (!(await asrtCanInitialize())) return;
     if (process.platform !== "darwin" && process.platform !== "linux") return;
+    if (!(await asrtCanInitialize())) return;
 
     await initializeAsrtSandbox({ allowedDomains: ["example.com"], strictAllowlist: true });
     // First register pushes the dir; a second holder of it only adds a holder.
