@@ -62,12 +62,43 @@ function guardedFetchOptions(fetchImpl: typeof fetch) {
 }
 
 describe("LLM model list sync", () => {
-  it.each(["openai-chat", "openai-responses", "anthropic-messages", "google-gemini"] as const)("rejects a remote HTTP custom %s model endpoint", async (wire) => {
-    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl: "http://custom.example/v1", wire });
+  it.each(["openai-chat", "openai-responses", "anthropic-messages", "google-gemini"] as const)("withholds saved credentials from a draft %s endpoint", async (wire) => {
+    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl: "https://saved.example/v1", wire });
     const fetchImpl = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: "fixture" }] }));
-    const result = await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible" }, guardedFetchOptions(fetchImpl));
-    expect(result).toMatchObject({ ok: false, error: "invalid-model-list-endpoint" });
-    expect(fetchImpl).not.toHaveBeenCalled();
+    await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible", baseUrl: "http://draft.example/v1", wire }, guardedFetchOptions(fetchImpl));
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const headers = new Headers(fetchImpl.mock.calls[0]![1]?.headers);
+    for (const header of ["authorization", "x-api-key", "x-goog-api-key"]) expect(headers.has(header)).toBe(false);
+    expect(settings.getSecret).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["openai-responses", "http://10.10.2.100:30000/v1", "Authorization", { data: [{ id: "native-model" }] }],
+    ["anthropic-messages", "http://192.168.1.20/v1", "x-api-key", { data: [{ id: "native-model" }] }],
+    ["google-gemini", "http://gpu-box.lan/v1", "x-goog-api-key", { models: [{ name: "models/native-model", supportedGenerationMethods: ["generateContent"] }] }],
+  ] as const)("lists saved private %s models with exact-origin access", async (wire, baseUrl, header, payload) => {
+    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl, wire });
+    const options = guardedFetchOptions(vi.fn<typeof fetch>(async () => Response.json(payload)));
+    const access = vi.fn<typeof import("../../../core/network-guard.js").ensurePublicHttpUrl>(async (url, policy) => {
+      expect(typeof policy?.allowPrivateNetworks === "function" && policy.allowPrivateNetworks(new URL(url))).toBe(true);
+      expect(typeof policy?.allowPrivateNetworks === "function" && policy.allowPrivateNetworks(new URL("http://other.lan/v1"))).toBe(false);
+      return new URL(url);
+    });
+    const result = await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible" }, { ...options, ensurePublicUrl: access });
+    expect(result).toMatchObject({ ok: true, models: ["native-model"] });
+    expect(new Headers((options.fetchImpl as ReturnType<typeof vi.fn<typeof fetch>>).mock.calls[0]![1]?.headers).get(header)).toContain("sk-or-test");
+  });
+
+  it.each([
+    ["anthropic-messages", "limit", { data: [{ id: "draft-model" }] }],
+    ["google-gemini", "pageSize", { models: [{ name: "models/draft-model", supportedGenerationMethods: ["generateContent"] }] }],
+  ] as const)("uses the draft %s wire instead of the stored wire", async (wire, pageKey, payload) => {
+    const settings = makeSettingsService({ provider: "openai-compatible", baseUrl: "https://saved.example/v1", wire: "openai-chat" });
+    const fetchImpl = vi.fn<typeof fetch>(async () => Response.json(payload));
+    const result = await listLlmModelsFromSettings(settings as never, { vendor: "openai-compatible", baseUrl: "https://draft.example/v1", wire }, guardedFetchOptions(fetchImpl));
+    expect(result).toMatchObject({ ok: true, models: ["draft-model"] });
+    expect(new URL(String(fetchImpl.mock.calls[0]![0])).searchParams.has(pageKey)).toBe(true);
+    expect(settings.getSecret).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -359,7 +390,7 @@ describe("LLM model list sync", () => {
     const result = await listLlmModelsFromSettings(
       makeSettingsService({
         provider: "openai-compatible",
-        baseUrl: "http://localhost:30000/v1",
+        baseUrl: "http://10.10.2.100:30000/v1",
         secret: "internal-key",
       }) as never,
       { vendor: "openai-compatible" },
@@ -372,11 +403,11 @@ describe("LLM model list sync", () => {
 
     expect(result).toMatchObject({
       ok: true,
-      endpoint: "http://localhost:30000/v1/models",
+      endpoint: "http://10.10.2.100:30000/v1/models",
       models: ["Qwen3.6-35B-A3B-NVFP4"],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      "http://localhost:30000/v1/models",
+      "http://10.10.2.100:30000/v1/models",
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: "Bearer internal-key" }),
       }),
@@ -471,19 +502,19 @@ describe("LLM model list sync", () => {
     const result = await listLlmModelsFromSettings(
       makeSettingsService({
         provider: "openai-compatible",
-        baseUrl: "https://saved.example/v1",
+        baseUrl: "http://saved.example/v1",
       }) as never,
-      { vendor: "openai-compatible", baseUrl: "https://draft.example/v1" },
+      { vendor: "openai-compatible", baseUrl: "http://draft.example/v1" },
       { fetchImpl, ensurePublicUrl, fetchPublicHttpResponseImpl },
     );
 
     expect(result).toMatchObject({
       ok: true,
-      endpoint: "https://draft.example/v1/models",
+      endpoint: "http://draft.example/v1/models",
       models: ["draft/model"],
     });
     expect(fetchImpl).toHaveBeenCalledWith(
-      "https://draft.example/v1/models",
+      "http://draft.example/v1/models",
       expect.objectContaining({ headers: { Accept: "application/json" } }),
     );
   });

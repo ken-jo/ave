@@ -507,6 +507,16 @@ beforeEach(() => {
 });
 
 describe("LlmTab provider cards", () => {
+  it("pairs the saved custom wire with its model discovery endpoint", async () => {
+    const { api } = profileApi({
+      vendors: { "openai-compatible": { baseUrl: "https://custom.example/v1", wire: "google-gemini" } },
+    }, { hasApiKey: storedKeysFor("openai-compatible") });
+    await renderTab(api, { vendor: "claude", model: "claude-sonnet-4-6" });
+    await waitFor(() => expect(api.listLlmModels).toHaveBeenCalledWith(expect.objectContaining({
+      vendor: "openai-compatible", baseUrl: "https://custom.example/v1", wire: "google-gemini",
+    })));
+  });
+
   it("opens subscription setup from its grouped entry", async () => {
     installSubscription([codexView(), claudeCodeView()]);
     await renderTab(profileApi({}).api);

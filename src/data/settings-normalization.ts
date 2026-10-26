@@ -749,7 +749,7 @@ export function normalizeMarketplace(input: unknown): MarketplaceSettings {
   if (isGitRuntimeMode(gitMode)) merged.git = { mode: gitMode };
   else delete merged.git;
   if (raw.installedProviderIds !== undefined && !Array.isArray(raw.installedProviderIds)) {
-    throw new LlmProviderSettingsError("marketplace.installedProviderIds must be an array");
+    throw new LlmProviderSettingsError("marketplace.installedProviderIds", "marketplace.installedProviderIds must be an array");
   }
   if (raw.installedProviderIds?.some((id) => !isMarketplaceEligibleLLMVendor(id))) {
     log.warn("marketplace.installedProviderIds contains invalid provider ids");

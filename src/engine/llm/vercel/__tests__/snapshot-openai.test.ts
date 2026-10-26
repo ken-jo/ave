@@ -1146,7 +1146,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
     vi.doUnmock("@ai-sdk/openai-compatible");
   });
 
-  it("allows credentialed loopback HTTP only with an exact-origin guarded provider fetch", async () => {
+  it("allows credentialed HTTP only with an exact-origin guarded provider fetch", async () => {
     vi.resetModules();
     const createCompatSpy = vi.fn(() => vi.fn(() => ({ __mock: "compat" })));
     vi.doMock("@ai-sdk/openai-compatible", () => ({
@@ -1155,14 +1155,14 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 
     const { createGuardedModelProviderFetch } = await import("../../marketplace-provider-fetch.js");
     const trustedFetch = createGuardedModelProviderFetch(
-      "http://localhost:30000/v1",
+      "http://10.10.2.100:30000/v1",
       unusedNetworkFetch,
     );
     const { VercelUnifiedProvider } = await import("../adapter.js");
     const provider = new VercelUnifiedProvider(
       "openai-compatible",
       "internal-key",
-      "http://localhost:30000/v1",
+      "http://10.10.2.100:30000/v1",
       trustedFetch,
     );
 
@@ -1176,7 +1176,7 @@ describe("VercelUnifiedProvider openai-compatible", () => {
 
     expect(createCompatSpy).toHaveBeenCalledWith(expect.objectContaining({
       apiKey: "internal-key",
-      baseURL: "http://localhost:30000/v1",
+      baseURL: "http://10.10.2.100:30000/v1",
     }));
 
     vi.doUnmock("@ai-sdk/openai-compatible");

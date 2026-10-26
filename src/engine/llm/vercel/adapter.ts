@@ -9,7 +9,6 @@
  * machinery boundary.
  */
 import { customProviderWire, type CustomProviderWire } from "../../../shared/custom-provider.js";
-import { isAllowedProviderBaseUrl } from "../../../shared/marketplace-package-assets.js";
 import {
   streamText,
   jsonSchema,
@@ -732,16 +731,12 @@ export class VercelUnifiedProvider implements LLMProvider {
     onRequestControls?: StreamTurnParams["onRequestControls"],
   ) {
     const slot = this.protocolVendor();
+    if (this.vendorSlot === "openai-compatible" && !this.providerMetadata && !this.baseUrl) {
+      throw new Error("Custom provider baseUrl is required");
+    }
     assertCredentialedBaseUrlUsesHttps(
       slot, this.providerMetadata?.baseUrl ?? this.baseUrl, this.apiKey, this.customFetch,
     );
-    if (this.vendorSlot === "openai-compatible" && !this.providerMetadata) {
-      if (!this.baseUrl || !isAllowedProviderBaseUrl(this.baseUrl, false)) {
-        throw new Error("Custom provider baseUrl must use https or loopback http");
-      }
-      const url = new URL(this.baseUrl);
-      if (url.username || url.password) throw new Error("Custom provider baseUrl must not contain credentials");
-    }
 
     if (slot === "claude") {
       const nativeFetch = onRequestControls

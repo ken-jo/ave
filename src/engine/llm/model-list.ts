@@ -15,7 +15,6 @@ import {
   type LLMVendorSettingsMap,
 } from "../../shared/llm-vendor-defaults.js";
 import {
-  isAllowedProviderBaseUrl,
   isMarketplaceProviderPresetId,
   marketplaceProviderPresetSecretKey,
   modelDiscoveryPolicyAllowsFetch,
@@ -737,15 +736,6 @@ export async function listLlmModelsFromSettings(
   let endpoint: string;
   try {
     endpoint = modelListEndpointFromBaseUrl(resolved.baseUrl);
-    if (request.vendor === "openai-compatible" && !request.credentialScope
-      && !isAllowedProviderBaseUrl(resolved.baseUrl, false)) {
-      return {
-        ok: false,
-        error: "invalid-model-list-endpoint",
-        endpoint,
-        message: "Custom provider baseUrl must use https or loopback http.",
-      };
-    }
   } catch (err) {
     if (err instanceof ModelListError) {
       return { ok: false, error: err.code, message: err.message };
@@ -784,7 +774,9 @@ export async function listLlmModelsFromSettings(
     };
   }
   const wire = request.vendor === "openai-compatible" && !request.credentialScope
-    ? customProviderWire(getLlmVendorSettings(settingsService.get("llm").vendors, "openai-compatible").wire)
+    ? customProviderWire(request.wire ?? (resolved.isDraftEndpoint
+      ? undefined
+      : getLlmVendorSettings(settingsService.get("llm").vendors, "openai-compatible").wire))
     : undefined;
   const listingVendor = wire === "anthropic-messages" ? "claude"
     : wire === "google-gemini" ? "gemini" : request.vendor;

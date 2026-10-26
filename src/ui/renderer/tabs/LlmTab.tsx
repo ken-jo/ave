@@ -1396,6 +1396,7 @@ export function LlmTab(props: LlmTabProps) {
       provider: string,
       options: {
         baseUrl?: string;
+        wire?: CustomProviderWire;
         force?: boolean;
         credentialScope?: string;
         modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
@@ -1457,6 +1458,7 @@ export function LlmTab(props: LlmTabProps) {
           const result = await api.listLlmModels({
             vendor: provider,
             ...(baseUrl ? { baseUrl } : {}),
+            ...(provider === "openai-compatible" && !credentialScope && options.wire !== undefined ? { wire: options.wire } : {}),
             ...(credentialScope ? { credentialScope } : {}),
             ...(options.modelDiscoveryPolicy ? { modelDiscoveryPolicy: options.modelDiscoveryPolicy } : {}),
           });
@@ -1727,6 +1729,7 @@ export function LlmTab(props: LlmTabProps) {
     vendorId: string;
     options: {
       baseUrl?: string;
+      wire?: CustomProviderWire;
       credentialScope?: string;
       modelDiscoveryPolicy?: MarketplaceProviderModelDiscoveryPolicy;
     };
@@ -1744,11 +1747,12 @@ export function LlmTab(props: LlmTabProps) {
       vendorId,
       options: {
         ...(baseUrl ? { baseUrl } : {}),
+        ...(vendorId === "openai-compatible" && !credentialScope ? { wire: customProviderWire(savedVendorBlocks[vendorId]?.wire) } : {}),
         ...(credentialScope ? { credentialScope } : {}),
         ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
       },
     };
-  }, [credentialedProviderIds, installedPresetById, rowRequiresApiKey]);
+  }, [credentialedProviderIds, installedPresetById, rowRequiresApiKey, savedVendorBlocks]);
 
   const configuredApiRoutes = useMemo<readonly ConfiguredApiRoute[]>(() => {
     const routes = new Map<string, ConfiguredApiRoute>();

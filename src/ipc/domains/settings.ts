@@ -29,6 +29,7 @@ import {
   type MarketplaceProviderModelDiscoveryPolicy,
 } from "../../shared/marketplace-package-assets.js";
 import type { LlmModelListRequest } from "../../shared/llm-model-list.js";
+import { customProviderWire } from "../../shared/custom-provider.js";
 import type { IpcDeps } from "../types.js";
 import type {
   LLMSettings,
@@ -1080,6 +1081,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     return listLlmModelsFromSettings(settingsService, {
       vendor,
       baseUrl,
+      ...(request?.wire !== undefined ? { wire: customProviderWire(request.wire) } : {}),
       credentialScope,
       ...(modelDiscoveryPolicy ? { modelDiscoveryPolicy } : {}),
     }, {
