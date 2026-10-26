@@ -24,6 +24,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["main/browser/browser-workspace-desktop.ts", ["browserWorkspace.permissionPrompt."]], // native site-permission dialog
   ["main/global-shortcuts.ts", ["startupTab."]], // shortcut notifications
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
+  ["main/provider-settings-startup-error.ts", ["providerSettingsError."]], // startup settings error dialog
   ["main/startup-launch.ts", ["startupTab."]], // login-item dialogs
   ["shared/format-time.ts", ["sidebar."]], // relative times in the sidebar
   ["shared/plugin-provenance.ts", ["alerts."]], // plugin identity on cards and notifications
