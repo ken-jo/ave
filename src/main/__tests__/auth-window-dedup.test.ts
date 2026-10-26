@@ -241,6 +241,11 @@ describe("host OAuth auth window", () => {
     let params: URLSearchParams | undefined;
     let proofVerified = false;
     let windowCompletion: Promise<void> | undefined;
+    // The session opens the window detached; keep the client's own failure so it is reported instead of "sign-in-failed".
+    let clientError: unknown;
+    // The token exchange waits until the client has read the callback's 200, so completion cannot close the listener mid-read.
+    let callbackRead!: () => void;
+    const callbackAnswered = new Promise<void>(resolve => { callbackRead = resolve; });
     const login = new ChatGptPlanSession({
       secrets: { isSecretStorageEncrypted: () => true, getEncryptedSecret: key => values.get(key) ?? null,
         setSecret: async (key, value) => { values.set(key, value); }, deleteSecret: async key => { values.delete(key); } },
@@ -250,6 +255,7 @@ describe("host OAuth auth window", () => {
       fetch: (async (input, init) => {
         const body = new URLSearchParams(String(init?.body ?? ""));
         if (String(input) === endpoints.CHATGPT_PLAN_TOKEN_URL) {
+          await callbackAnswered;
           proofVerified = createHash("sha256").update(body.get("code_verifier")!).digest("base64url") === params!.get("code_challenge");
           return new Response(JSON.stringify({ access_token: "fixture-access", refresh_token: "fixture-refresh", id_token: "fixture-id",
             token_type: "Bearer", expires_in: 3600, scope: "chatgpt.tokens.use.direct email offline_access openid profile resource.invoke" }), { headers: { "content-type": "application/json" } });
@@ -259,20 +265,29 @@ describe("host OAuth auth window", () => {
           revocation_endpoint: endpoints.CHATGPT_PLAN_REVOCATION_URL }), { headers: { "content-type": "application/json" } });
       }) as typeof fetch,
       openAuthorizationUrl: async (url, options) => {
-        params = new URL(url).searchParams;
-        windowCompletion = openOAuthInAuthWindow(parent(), url, options);
-        const callback = new URL(params.get("redirect_uri")!);
-        callback.search = "code=forged&state=wrong&client_id=fixture-client";
-        expect((await fetch(callback)).status).toBe(404);
-        expect(proofVerified).toBe(false);
-        callback.search = new URLSearchParams({ code: "fixture-code", state: params.get("state")!, client_id: "fixture-client" }).toString();
-        expect((await fetch(callback)).status).toBe(200);
+        try {
+          params = new URL(url).searchParams;
+          windowCompletion = openOAuthInAuthWindow(parent(), url, options);
+          const callback = new URL(params.get("redirect_uri")!);
+          callback.search = "code=forged&state=wrong&client_id=fixture-client";
+          const forged = await fetch(callback);
+          await forged.text();
+          expect(forged.status).toBe(404);
+          expect(proofVerified).toBe(false);
+          callback.search = new URLSearchParams({ code: "fixture-code", state: params.get("state")!, client_id: "fixture-client" }).toString();
+          const answered = await fetch(callback);
+          await answered.text();
+          expect(answered.status).toBe(200);
+        } catch (error) {
+          clientError = error;
+          throw error;
+        } finally { callbackRead(); }
         await windowCompletion;
       },
     });
     const { completion } = await login.startSignIn();
     try {
-      await completion;
+      await completion.catch(error => { throw clientError ?? error; });
       await windowCompletion;
       expect(proofVerified).toBe(true);
       expect(login.status().connection).toBe("connected");
