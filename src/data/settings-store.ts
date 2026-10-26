@@ -56,6 +56,7 @@ import {
   type Locale,
 } from "../i18n/locale.js";
 import { isSidebarTab, type SidebarTab } from "../shared/sidebar-tab.js";
+import { isSidebarState, type SidebarState } from "../shared/sidebar-state.js";
 import { type InlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab, type SettingsTab } from "../shared/settings-tabs.js";
 import {
@@ -680,6 +681,8 @@ export interface SystemSettings {
   /** Persisted width (px) of the primary (left) navigation sidebar card, set by the inner-edge drag handle. Durable shell-layout preference;
    * clamped to [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH] at drag time in the renderer. Default 232 (matches the historical expanded rail padding reserve). */
   sidebarWidth?: number;
+  /** Explicit navigation visibility. Absent lets the renderer choose its width-dependent default. */
+  sidebarState?: SidebarState;
   /** Persisted TOP-pane percent of the workspace-rail vertical (list↕viewer) split, one field per tab kind whose body is a list-over-viewer layout (file-browser / preview / subagent). A browser
    * tab is its address row and page only, so it has no split. Clamped to the [SIDE_PANEL_SPLIT_MIN_PERCENT, SIDE_PANEL_SPLIT_MAX_PERCENT] pane range at drag time in the renderer. Default 45. */
   sidePanelSplitFilePercent?: number;
@@ -1287,6 +1290,7 @@ export class SettingsService {
         );
       }
       acceptField(next, "sidebarActiveTab", partial.system.sidebarActiveTab, isSidebarTab, "system", PATCHED_FIELD);
+      acceptField(next, "sidebarState", partial.system.sidebarState, isSidebarState, "system", PATCHED_FIELD);
       acceptField(next, "activeView", partial.system.activeView, isActiveViewKey, "system", PATCHED_FIELD);
       // The reason only is logged on refusal (`normalizeMainLayout`): the value holds page addresses that may carry tokens. A refused patch keeps the saved layout.
       const patchedLayout = normalizeMainLayout(partial.system.mainLayout);

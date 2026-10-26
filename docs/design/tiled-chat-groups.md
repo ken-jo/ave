@@ -175,12 +175,20 @@ are unavailable while folded. Adopting another conversation can focus its group
 and may release only an idle group when the group ceiling requires it. If no
 eligible group is idle, refuse the adoption and keep the existing conversations.
 
-The sidebar retains its collapsed icon rail. An expanded sidebar pushes the
-canvas only when enough width remains; otherwise it overlays the canvas.
-Escape and an outside click collapse the overlay. The transcript always uses
-the reading-column layout, with its composer spanning the available width
-below that column. The project selector and suggested tasks use their normal
-container layout wherever they fit.
+The sidebar has three states: expanded, an icons-only rail, and fully hidden.
+Explicit choices persist in `system.sidebarState` across resizing and restart.
+Without a saved choice, it is hidden at the minimum window width and expanded
+above it. The existing toggle switches expanded and rail; **Hide sidebar** in
+the footer removes the entire sidebar and its content reserve. **Show sidebar**
+in the title bar reopens it expanded. The project and general sections share
+the same navigation in expanded and rail states.
+
+An expanded sidebar pushes the canvas only when enough width remains;
+otherwise it overlays the canvas, using the shell threshold and hysteresis
+above. Escape and an outside click collapse the overlay to the rail. The
+transcript always uses the reading-column layout, with its composer spanning
+the available width below that column. The project selector and suggested
+tasks use their normal container layout wherever they fit.
 
 The one-time settings migration removes the obsolete layout preference
 from disk, records completion, and preserves other settings. The former

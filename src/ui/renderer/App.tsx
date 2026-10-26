@@ -68,6 +68,9 @@ import {
 import { buildQuickActions } from "./components/command-actions.js";
 import { useAppUpdate } from "./hooks/use-app-update.js";
 import { useContainerNarrow } from "./hooks/use-container-narrow.js";
+import { useSidebarState } from "./hooks/use-sidebar-state.js";
+import { Button } from "../../components/ui/button.js";
+import { PanelLeftOpen } from "lucide-react";
 import { SIDEBAR_WIDTH_PREF, usePanelWidth } from "./hooks/use-panel-width.js";
 import { useActiveView } from "./hooks/use-active-view.js";
 import { useSettingsTab } from "./hooks/use-settings-tab.js";
@@ -192,7 +195,6 @@ export function App() {
     chatGroupCanvasRef.current = element;
     setCanvasElement(element);
   }, []);
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Persisted sidebar width drives both the card and the canvas reserve.
   const {
     width: sidebarWidth,
@@ -200,10 +202,29 @@ export function App() {
     commitWidth: commitSidebarWidth,
   } = usePanelWidth(api, SIDEBAR_WIDTH_PREF);
   const pushThreshold = sidebarPushThreshold(sidebarWidth);
-  const { isNarrow: sidebarNarrow } = useContainerNarrow(shellElement, {
+  const { isNarrow: sidebarNarrow, width: shellWidth } = useContainerNarrow(shellElement, {
     enter: pushThreshold, exit: pushThreshold + NARROW_DEAD_BAND_PX,
   });
-  const sidebarOverlay = sidebarNarrow && !sidebarCollapsed;
+  const { sidebarState, setSidebarState } = useSidebarState(api, shellWidth);
+  const sidebarCollapsed = sidebarState === "rail";
+  const sidebarHidden = sidebarState === "hidden";
+  const sidebarOverlay = sidebarNarrow && sidebarState === "expanded";
+  const sidebarFocusPending = useRef(false);
+  useEffect(() => {
+    if (!sidebarFocusPending.current) return;
+    sidebarFocusPending.current = false;
+    shellElement?.querySelector<HTMLButtonElement>(sidebarHidden
+      ? '[data-testid="sidebar-show"]'
+      : '[data-testid="sidebar-collapse-toggle"]')?.focus({ preventScroll: true });
+  }, [sidebarHidden, shellElement]);
+  const hideSidebar = useCallback(() => {
+    sidebarFocusPending.current = true;
+    setSidebarState("hidden");
+  }, [setSidebarState]);
+  const showSidebar = useCallback(() => {
+    sidebarFocusPending.current = true;
+    setSidebarState("expanded");
+  }, [setSidebarState]);
 
   // Tile geometry follows docs/design/tiled-chat-groups.md.
   const chatGroups = useChatGroups(canvasElement);
@@ -1739,7 +1760,7 @@ export function App() {
                 context for the floating-card Sidebar, so the card's `top-0` reaches
                 the window top — extending UP into the traffic-light band and
                 reclaiming that vertical space on the left. */}
-            <div ref={setShellElement} data-testid="app-shell" className="relative flex h-screen min-w-0 flex-col overflow-hidden">
+            <div ref={setShellElement} data-testid="app-shell" data-sidebar-state={sidebarState} className="relative flex h-screen min-w-0 flex-col overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
@@ -1754,8 +1775,23 @@ export function App() {
                   either: it keeps the collapsed lead and the card floats
                   over the path the way it floats over the tile. */}
               <CustomTitleBar
-                leadClearance={sidebarCollapsed || sidebarOverlay ? collapsedBandLeadClearance(isDarwinPlatform()) : sidebarWidth + SHELL_GUTTER + CONTENT_TITLE_INSET}
+                keepVisibleInFullscreen={sidebarHidden}
+                leadClearance={sidebarHidden ? 0 : sidebarCollapsed || sidebarOverlay ? collapsedBandLeadClearance(isDarwinPlatform()) : sidebarWidth + SHELL_GUTTER + CONTENT_TITLE_INSET}
               >
+                {sidebarHidden && (
+                  <Button
+                    data-testid="sidebar-show"
+                    variant="ghost"
+                    size="icon"
+                    className="h-(--chrome-icon-button) w-(--chrome-icon-button) shrink-0"
+                    title={t("mainToolbar.showSidebar")}
+                    aria-label={t("mainToolbar.showSidebar")}
+                    onClick={showSidebar}
+                    style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+                  >
+                    <PanelLeftOpen className="h-4 w-4" />
+                  </Button>
+                )}
                 <MainToolbar
                   viewNav={viewNav}
                   streaming={streaming}
@@ -1782,7 +1818,7 @@ export function App() {
                   column above (NOT this content row) so its `top-0` spans up into the
                   band. The content `<main>` carries left padding equal to the card
                   width + insets so the rail never occludes the canvas. */}
-              <Sidebar
+              {!sidebarHidden && <Sidebar
                 activeView={activeView}
                 onSelect={handleViewSelectWithDoctor}
                 onSelectInNewPane={chatGroups.isSingleTile ? undefined : openViewInNewPane}
@@ -1816,7 +1852,8 @@ export function App() {
                 projects={workspaceProjects}
                 collapsed={sidebarCollapsed}
                 overlay={sidebarOverlay}
-                onToggleCollapse={() => setSidebarCollapsed((v) => !v)}
+                onToggleCollapse={() => setSidebarState(sidebarCollapsed ? "expanded" : "rail")}
+                onHide={hideSidebar}
                 width={sidebarWidth}
                 onWidthChange={setSidebarWidth}
                 onWidthCommit={commitSidebarWidth}
@@ -1835,15 +1872,15 @@ export function App() {
                 onToggleSessionStar={handleToggleSessionStar}
                 isProjectPinned={isProjectPinned}
                 onToggleProjectPin={toggleProjectPin}
-              />
+              />}
               <div className="relative flex min-h-0 min-w-0 flex-1 overflow-hidden">
                 <main
                   data-sidebar-overlay={sidebarOverlay ? "true" : undefined}
                   className={`relative flex min-h-0 min-w-0 flex-1 flex-col bg-background transition-[padding] duration-200 ease-out motion-reduce:transition-none ${
-                    sidebarCollapsed || sidebarOverlay ? "pl-(--shell-collapsed-rail-reserve)" : ""
+                    !sidebarHidden && (sidebarCollapsed || sidebarOverlay) ? "pl-(--shell-collapsed-rail-reserve)" : ""
                   }`}
                   // Overlay navigation retains the collapsed reserve without shrinking the canvas.
-                  style={sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${sidebarWidth + SHELL_GUTTER}px` }}
+                  style={sidebarHidden ? { paddingLeft: 0 } : sidebarCollapsed || sidebarOverlay ? undefined : { paddingLeft: `${sidebarWidth + SHELL_GUTTER}px` }}
                 >
                   {/* The window's notice strip — the announcement banner, the
                       permission-memory toast and the window status toasts

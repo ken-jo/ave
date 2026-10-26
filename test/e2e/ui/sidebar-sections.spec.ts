@@ -22,7 +22,7 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
     settings: {
       ...buildLlmSettings(),
       system: {
-        appMode: "work", sidebarWidth: 200,
+        sidebarWidth: 200,
         mainLayout: {
           version: 1, tree: { kind: "leaf", chatGroupId: "main" }, focusedId: "main", surfaces: {}, panelOpenIds: [],
           sideTabs: { main: [
@@ -68,11 +68,9 @@ test("keeps stacked sections and mixed rows inside a narrow sidebar", async ({},
       await page.keyboard.press("Shift+Tab");
       await expect(browserRow).toBeFocused();
       await page.keyboard.press("Space");
-      if (width === 1100) {
-        await expect(browserRow).toHaveAttribute("aria-current", "page");
-      } else {
-        await expect(browserRow).not.toHaveAttribute("aria-current");
-      }
+      await expect(page.getByTestId("chat-side-panel-motion")).toHaveAttribute("data-panel-mode", width === 1100 ? "docked" : "overlay");
+      await expect(page.getByTestId("chat-side-panel-browser-webview")).toBeVisible();
+      await expect(browserRow).toHaveAttribute("aria-current", "page");
       await page.screenshot({ path: testInfo.outputPath(`sidebar-${width}.png`) });
       await page.getByTestId("sidebar-settings").focus();
       await page.keyboard.press("Enter");

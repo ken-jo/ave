@@ -482,7 +482,10 @@ Important rules:
   `src/shared/shell-geometry.ts` owns window bounds and layout thresholds;
   `use-container-narrow.ts` applies them to independent shell and canvas
   measurements. Panels dock or overlay inside their tile without changing OS
-  window bounds. See [responsive geometry](../design/tiled-chat-groups.md#responsive-shell-and-canvas).
+  window bounds. The sidebar's expanded, rail, or hidden choice persists in
+  `system.sidebarState`; without a saved choice, the minimum-width window
+  starts hidden. Hidden navigation reserves no content width and reopens from
+  the title bar. See [responsive geometry](../design/tiled-chat-groups.md#responsive-shell-and-canvas).
 - Several main windows may be open ("New Window", `CmdOrCtrl+Shift+N`, or the
   tray). Only a packaged app on its real profile registers itself as the OS
   `ave://` handler; unpackaged, E2E, relocated-`AVE_HOME` and `--user-data-dir`

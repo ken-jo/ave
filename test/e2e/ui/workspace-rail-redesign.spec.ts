@@ -85,10 +85,11 @@ test.describe("workspace rail redesign", () => {
     const motion = page.getByTestId("chat-side-panel-motion");
     await expect(motion).toHaveAttribute("data-panel-mode", "docked");
 
-    // Below docking width, float inside the tile without dimming or narrowing the transcript.
-    await page.setViewportSize({ width: 360, height: 840 });
+    // Choose the rail before narrowing so this checks its reserved transcript width.
     const sidebarToggle = page.getByTestId("sidebar-collapse-toggle");
     if (await sidebarToggle.getAttribute("aria-pressed") === "true") await sidebarToggle.click();
+    // Below docking width, float inside the tile without dimming or narrowing the transcript.
+    await page.setViewportSize({ width: 360, height: 840 });
     await expect(sidebarToggle).toHaveAttribute("aria-pressed", "false");
     await expect(motion).toHaveAttribute("data-panel-mode", "overlay");
     // The panel portal belongs beside its pane transcript, not inside it.

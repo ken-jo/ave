@@ -56,6 +56,7 @@ import {
 import { isGitRuntimeMode } from "../shared/git-runtime-mode.js";
 import { isProcessingDisplayLevel } from "../shared/processing-display-level.js";
 import { isSidebarTab } from "../shared/sidebar-tab.js";
+import { isSidebarState } from "../shared/sidebar-state.js";
 import { isInlineViewKey } from "../shared/view-key.js";
 import { normalizeSettingsTab } from "../shared/settings-tabs.js";
 import {
@@ -1192,6 +1193,7 @@ export function normalizeSystem(input: unknown): SystemSettings {
     );
   }
   acceptField(result, "sidebarActiveTab", obj.sidebarActiveTab, isSidebarTab, "system", STORED_FIELD);
+  acceptField(result, "sidebarState", obj.sidebarState, isSidebarState, "system", STORED_FIELD);
   acceptField(result, "activeView", obj.activeView, isActiveViewKey, "system", STORED_FIELD);
   // Avoid acceptNormalizedField here: its rejected-value warning could expose page tokens.
   const storedLayout = normalizeMainLayout(obj.mainLayout);

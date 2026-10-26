@@ -131,6 +131,8 @@ export interface SidebarProps {
   overlay?: boolean;
   /** Toggle the rail — the leading cluster button next to the traffic lights. */
   onToggleCollapse: () => void;
+  /** Hide the entire sidebar; the shell retains a title-bar reopen control. */
+  onHide?: () => void;
   /** Expanded card width (px). Ignored while collapsed (fixed icon rail). */
   width?: number;
   /** Per-move drag update of the sidebar width (state only). */
@@ -1793,6 +1795,7 @@ export function Sidebar({
   collapsed,
   overlay = false,
   onToggleCollapse,
+  onHide,
   width = SIDEBAR_DEFAULT_WIDTH,
   onWidthChange,
   onWidthCommit,
@@ -2288,7 +2291,7 @@ export function Sidebar({
         )}
       </div>
 
-      {/* ── Footer — Settings ────────────────────────────────────────── */}
+      {/* ── Footer ───────────────────────────────────────────────────── */}
       {/* Bottom-pinned (`mt-auto`). The footer's `border-t` divider and its
           row share the SAME uniform spacing rhythm as the nav groups above
           (`py-2` + `space-y-0.5`) — no bespoke margin correction. */}
@@ -2336,6 +2339,19 @@ export function Sidebar({
             ) : undefined
           }
         />
+        {onHide && (
+          <Button
+            data-testid="sidebar-hide"
+            variant="ghost"
+            className={compact ? `${RAIL_CONTROL_SIZE_CLASS} shrink-0 p-0` : "h-8 w-full justify-start gap-2 px-2 text-xs"}
+            title={t("mainToolbar.hideSidebar")}
+            aria-label={t("mainToolbar.hideSidebar")}
+            onClick={onHide}
+          >
+            <PanelLeftClose className="h-4 w-4 shrink-0" />
+            {!compact && <span>{t("mainToolbar.hideSidebar")}</span>}
+          </Button>
+        )}
       </div>
       </div>
       </div>
