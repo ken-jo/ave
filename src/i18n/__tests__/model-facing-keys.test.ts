@@ -23,6 +23,7 @@ const INTERFACE_KEYS: ReadonlyMap<string, readonly string[]> = new Map([
   ["lib/llm-status-message.ts", ["useChatState."]], // status line
   ["main/auto-updater.ts", ["common.", "mainDialog."]], // update dialogs
   ["main/browser/browser-workspace-desktop.ts", ["browserWorkspace.permissionPrompt."]], // native site-permission dialog
+  ["main/configuration-boot-error.ts", ["homePrivacy."]],
   ["main/global-shortcuts.ts", ["startupTab."]], // shortcut notifications
   ["main/host-api/pick-folders.ts", ["mainDialog."]], // folder picker
   ["main/startup-launch.ts", ["startupTab."]], // login-item dialogs

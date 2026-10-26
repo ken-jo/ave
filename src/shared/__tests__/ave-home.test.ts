@@ -36,11 +36,11 @@ afterEach(async () => {
 });
 
 describe("aveHome", () => {
-  it("uses the pinned boot decision without probing a nonexistent configuration path", () => {
+  it("uses the refused boot location without probing a nonexistent configuration path", () => {
     const dir = join(tmpdir(), "missing-boot-home");
-    setAveHomeConfigurationAtBoot(dir, true);
+    setAveHomeConfigurationAtBoot(dir, false);
     vi.mocked(execFileSync).mockImplementation(() => { throw new Error("Unexpected subprocess"); });
-    expect(aveHomeConfigurationDirectory(dir)).toBe(join(dir, "config"));
+    expect(aveHomeConfigurationDirectory(dir)).toBe(dir);
     expect(execFileSync).not.toHaveBeenCalled();
   });
   it("resolves the default home without writing it", () => {
@@ -76,7 +76,7 @@ function requireRestorePrivilege(context: TestContext): void {
 
 describe("ensureAveHomePrivate", () => {
   const home = useTempPaths("ave-home-privacy-", ".ave");
-  it.runIf(process.platform === "win32")("caches a read-only configuration verification across path owners and case aliases", () => {
+  it.runIf(process.platform === "win32")("rechecks a cached configuration across path owners and case aliases", () => {
     const dir = home();
     setFixtureOwner(dirname(dir));
     expect(ensureAveHomePrivate(dir).enforcement).toBe("win32-dacl");
@@ -85,7 +85,7 @@ describe("ensureAveHomePrivate", () => {
     expect(aveHomeConfigurationDirectory(dir)).toBe(join(dir, "config"));
     expect(permissionSettingsPath(dir)).toBe(join(dir, "config", "settings.json"));
     expect(aveHomeConfigurationDirectory(dir.toUpperCase())).toBe(join(dir.toUpperCase(), "config"));
-    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(1);
+    expect(vi.mocked(execFileSync).mock.calls.slice(before)).toHaveLength(3);
   });
   function check(change: (entry: WindowsDirectoryDacl, index: number) => WindowsDirectoryDacl = (entry) => entry) {
     const dir = home();

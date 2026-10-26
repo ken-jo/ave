@@ -2168,13 +2168,22 @@ with its own owner rule:
   A protected boot completes migration before publishing its verified decision;
   a refused boot pins the legacy paths and skips migration. Readers and writers
   share that decision without probing alternate files. Outside boot, explicit
-  homes require the exact marker content and verify the directory's protection
-  without following links. An existing but untrusted marker raises a named error.
-  Decisions are cached until migration invalidates them or the process restarts.
+  homes require the exact marker content and verify both the root with the same
+  root-admission predicate used at boot and the owner-only configuration directory
+  without following links. Because neither permits foreign child replacement,
+  only the owner can swap these verified directories, so readers may reopen paths.
+  The per-home cache selects the location; each resolution of a switched location,
+  including boot-pinned policy rereads, rechecks both predicates and the marker,
+  refusing missing or untrusted state rather than returning to root copies.
+  Unswitched locations stay at root until migration invalidates their decision.
   Before commit, every retry atomically replaces published copies from validated
   root sources. A linked, unreadable or invalid root source prevents commit and
   retains all roots with a diagnostic. A malformed regular marker can be removed
   for retry only inside a verified protected directory.
+  Every protected boot with a valid marker retries deletion of stale regular root
+  copies without following links; cleanup failures retain a diagnostic for that
+  boot and are retried on the next one. Interactive boot trust failures show a
+  localized native error with the cause, path and recovery instructions before exit.
   Feature storage asserts that boundaries already
   exist and never creates them on Windows.
   Boot reads each boundary's own descriptor on a pinned no-reparse handle.

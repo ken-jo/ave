@@ -31,6 +31,7 @@ import { defaultAveHome } from "./shared/ave-home.js";
 import { ensureCorporateCaInjected } from "./main/corp-ca-runtime.js";
 import { readPersistedCorpCaConfigSync } from "./main/persisted-corp-ca.js";
 import { loadMainStartupDependencies } from "./main/startup-dependencies.js";
+import { showConfigurationBootError } from "./main/configuration-boot-error.js";
 import { updateSplashStatus, waitForMinimumBootstrapSplash } from "./main/bootstrap-splash.js";
 import { registerShutdownHook, runAppShutdownCleanup, runShutdownHooks } from "./main/app-shutdown.js";
 import {
@@ -666,6 +667,7 @@ if (!gotSingleInstanceLock) {
     installSideBrowserPartitionPolicy();
     void main().catch((error) => {
       log.error({ err: error }, "bootstrap failed");
+      if (execRequest === null) showConfigurationBootError(error);
       // Preserve any code already chosen by the run. A failed interactive
       // launch also needs a code that survives app.quit().
       if (execRequest === null) guiBootstrapFailed = true;

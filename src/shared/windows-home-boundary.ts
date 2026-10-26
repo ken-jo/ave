@@ -210,20 +210,44 @@ public static class HomeDirectoryDacl {
     return skipped;
   }
   public static bool ConfigurationCommitted(string path, SecurityIdentifier user, bool elevated, bool recover) {
-    using (var directory = OpenHome(path, user, false, !recover)) {
-      if (directory == null) return false;
-      using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false, !recover)) {
-        if (marker == null) return false;
-        if (!OwnerOnly(Read(directory), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
-        if ((Attributes(marker) & 0x410) != 0) throw new InvalidOperationException("Configuration marker is not a regular file");
-        if (MarkerContentValid(marker)) return true;
+    using (var home = OpenHome(path, user, false, true)) {
+      if (home == null) return false;
+      if (!RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
+      using (var directory = OpenRelative(home, "config", user, 1, true, true, true, !recover)) {
+        if (directory == null) return false;
+        using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false, !recover)) {
+          if (marker == null) return false;
+          if (!OwnerOnly(Read(directory), user, elevated)) throw new InvalidOperationException("Configuration boundary protection is unverified");
+          if ((Attributes(marker) & 0x410) != 0) throw new InvalidOperationException("Configuration marker is not a regular file");
+          if (MarkerContentValid(marker)) return true;
+        }
+        if (!recover) throw new InvalidOperationException("Configuration marker content is invalid");
+        using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false)) {
+          if (marker == null || !Delete(marker, user)) throw new InvalidOperationException("Configuration marker recovery failed");
+        }
+        return false;
       }
-      if (!recover) throw new InvalidOperationException("Configuration marker content is invalid");
-      using (var marker = OpenRelative(directory, ConfigurationMarker, user, 1, false, true, false)) {
-        if (marker == null || !Delete(marker, user)) throw new InvalidOperationException("Configuration marker recovery failed");
-      }
-      return false;
     }
+  }
+  public static string[] CleanupConfiguration(string path, string directory, string[] names, SecurityIdentifier user, bool elevated) {
+    var diagnostics = new System.Collections.Generic.List<string>();
+    using (var home = OpenHome(path, user, false)) {
+      if (home == null || !RootSafe(Read(home), user, elevated, 0x1200a9)) throw new InvalidOperationException("Configuration home protection is unverified");
+      using (var boundary = OpenRelative(home, directory, user, 1, true, true, true, true)) {
+        if (boundary == null || !OwnerOnly(Read(boundary), user, elevated) || !HasMarker(boundary, ConfigurationMarker, user)) throw new InvalidOperationException("Committed configuration protection is unverified");
+        foreach (string name in names) {
+          string oldPath = System.IO.Path.Combine(path, name);
+          try {
+            using (var source = OpenRelative(home, name, user, 1, false, false, false)) {
+              if (source == null) continue;
+              if ((Attributes(source) & 0x410) != 0) { diagnostics.Add("Legacy configuration is a link or non-regular file: " + oldPath); continue; }
+              if (!Delete(source, user)) diagnostics.Add("Legacy configuration cleanup failed: " + oldPath);
+            }
+          } catch (Exception error) { diagnostics.Add("Legacy configuration cleanup failed: " + oldPath + ": " + error.Message); }
+        }
+      }
+    }
+    return diagnostics.ToArray();
   }
   public static string[] ReadConfigurationSources(string path, string[] names, SecurityIdentifier user, bool elevated) {
     var result = new string[names.Length];
@@ -294,7 +318,9 @@ public static class HomeDirectoryDacl {
           EnsureMarker(destination, ConfigurationMarker, user);
           if (!HasMarker(destination, ConfigurationMarker, user)) throw new InvalidOperationException("Configuration migration marker is invalid");
           foreach (var deletion in deletions) {
-            if (!Delete(deletion.Key, user)) diagnostics.Add("Legacy configuration retained after copy: " + deletion.Value);
+            try {
+              if (!Delete(deletion.Key, user)) diagnostics.Add("Legacy configuration retained after copy: " + deletion.Value);
+            } catch (Exception error) { diagnostics.Add("Legacy configuration cleanup failed: " + deletion.Value + ": " + error.Message); }
           }
         } finally {
           for (int index = retained.Count - 1; index >= 0; index--) retained[index].Dispose();
