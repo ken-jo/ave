@@ -122,11 +122,11 @@ describe("dispatch approval and remote-write floors", () => {
     }
   });
 
-  it("bounds repeated dispatch arguments with the shared work counter", () => {
+  it("refuses oversized dispatch arguments before analysis", () => {
     const result = _inspectPowerShellForTest(`Get-ChildItem | % -MemberName InvokeScript -ArgumentList ${"'a',".repeat(3000)}'b'`, CWD);
-    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(result.exhausted).toBe(true);
-    expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
-    expect(result.chars).toBeLessThanOrEqual(result.limits.chars);
+    expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String), analysisLimited: true });
+    expect(result.exhausted).toBe(false);
+    expect(result.steps).toBe(0);
+    expect(result.chars).toBe(0);
   });
 });

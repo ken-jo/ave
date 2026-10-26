@@ -3,11 +3,11 @@ import { literalRuleWord } from "./rule-specifier.js";
 import { wrapperCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { isPowerShellLauncher } from "./shell-prefix-values.js";
 
-const ENCODED_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
-const SCRIPT_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
-const VALUE_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:workingdirectory|configurationname|configurationfile|custompipename|executionpolicy|inputformat|outputformat|settingsfile|version|windowstyle)$/i;
+const DISPLAY_ENCODED_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:e|ec|en|enc|enco|encod|encode|encoded|encodedc|encodedco|encodedcom|encodedcomm|encodedcomma|encodedcomman|encodedcommand)(?::([\s\S]*))?$/i;
+const DISPLAY_SCRIPT_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:c|co|com|comm|comma|comman|command|commandwithargs|cwa|f|fi|fil|file)(?::.*)?$/i;
+const DISPLAY_VALUE_PARAMETER_RE = /^(?:[-–—―]+|\/)(?:workingdirectory|configurationname|configurationfile|custompipename|executionpolicy|inputformat|outputformat|settingsfile|version|windowstyle)$/i;
 
-// The encoded-execution exclusion reads launcher and option identity, never operand content or nested program text.
+// Every explicit argument participates. Conservative e-prefix exclusion also covers ordinary options and data.
 export function encodedPowerShellExecutionReason(argv: readonly (string | null | undefined)[]): string | null {
   const words = argv.map((word) => word ?? undefined);
   const wrapper = wrapperCommand(words, words.length).index;
@@ -15,10 +15,7 @@ export function encodedPowerShellExecutionReason(argv: readonly (string | null |
   if (head === undefined || !isPowerShellLauncher(head)) return null;
   for (let index = wrapper + 1; index < words.length; index += 1) {
     const arg = words[index];
-    if (arg === undefined || SCRIPT_PARAMETER_RE.test(arg)) break;
-    if (VALUE_PARAMETER_RE.test(arg)) { index += 1; continue; }
-    const parameter = ENCODED_PARAMETER_RE.exec(arg);
-    if (parameter !== null && (parameter[1] !== undefined || words[index + 1] !== undefined)) return "encoded PowerShell execution";
+    if (arg?.trim().replace(/^[-/–—―]+/, "").toLowerCase().startsWith("e")) return "encoded PowerShell argument exclusion";
   }
   return null;
 }
@@ -34,9 +31,9 @@ export function decodePowerShellEncodedCommands(input: ShellCommandInput, dialec
     if (head === undefined || !isPowerShellLauncher(head)) continue;
     for (let index = start + 1; index < words.length; index += 1) {
       const arg = words[index];
-      if (arg === undefined || SCRIPT_PARAMETER_RE.test(arg)) break;
-      if (VALUE_PARAMETER_RE.test(arg)) { index += 1; continue; }
-      const flag = ENCODED_PARAMETER_RE.exec(arg);
+      if (arg === undefined || DISPLAY_SCRIPT_PARAMETER_RE.test(arg)) break;
+      if (DISPLAY_VALUE_PARAMETER_RE.test(arg)) { index += 1; continue; }
+      const flag = DISPLAY_ENCODED_PARAMETER_RE.exec(arg);
       if (flag === null) continue;
       const operand = flag[1] ?? words[index + 1];
       const decoded = operand === undefined ? null : decodeLiteralOperand(operand);

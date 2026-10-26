@@ -4,16 +4,14 @@ import { POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
 export type RuleSpecifier =
   | {
       kind: "bash";
-      // Static argv prefix, one entry per token. Never empty.
+      // Raw literal words, including the original quote spelling. Never empty.
       tokens: readonly string[];
       // True for `Bash(<prefix> *)`: the prefix plus any further arguments (or none).
       wildcard: boolean;
     }
   | {
       kind: "powershell";
-      // Quoted dash-leading arguments retain their value role for every command identity.
-      literalParameters?: readonly number[];
-      // Canonical argv prefix: the command name lower-cased with its alias resolved, `-Parameter` names lower-cased, every other token verbatim. Never empty.
+      // Raw literal words with only the permitted command-head normalization. Never empty.
       tokens: readonly string[];
       // True for `PowerShell(<prefix> *)`: the prefix plus any further arguments (or none).
       wildcard: boolean;
@@ -91,7 +89,7 @@ export function literalRuleWord(raw: string, dialect: "bash" | "powershell"): st
   return quote === undefined ? value : undefined;
 }
 
-function shellRuleWords(text: string, body: string, dialect: "bash" | "powershell"): { tokens: string[]; wildcard: boolean; quoted: number[] } {
+function shellRuleWords(text: string, body: string, dialect: "bash" | "powershell"): { tokens: string[]; wildcard: boolean } {
   if (body.length === 0) throw new RuleSpecifierError(text, "empty command");
   const words: string[] = [];
   let start = 0;
@@ -115,19 +113,9 @@ function shellRuleWords(text: string, body: string, dialect: "bash" | "powershel
   const tokens = words.map((raw) => {
     const value = literalRuleWord(raw, dialect);
     if (value === undefined) throw new RuleSpecifierError(text, `argument contains ${dialect === "bash" ? "shell" : "PowerShell"} syntax or a wildcard; arguments must be literal`);
-    return value;
+    return raw;
   });
-  return { tokens, wildcard, quoted: words.flatMap((raw, index) => /^["']/.test(raw) ? [index] : []) };
-}
-
-function formatShellRuleWord(token: string, dialect: "bash" | "powershell", quoted = false): string {
-  const meta = dialect === "bash" ? SHELL_META_RE : POWERSHELL_META_RE;
-  if (!quoted && token.length > 0 && !meta.test(token)) return token;
-  if (!token.includes("'") && !token.includes("\0")) return `'${token}'`;
-  if (dialect === "bash" && !token.includes("\0")) return token.split("'").map((part) => `'${part}'`).join('"\'"');
-  const doubleQuoted = `"${token}"`;
-  if (!token.includes('"') && literalRuleWord(doubleQuoted, dialect) === token) return doubleQuoted;
-  throw new RuleSpecifierError(token, "argument has no supported literal quoted spelling");
+  return { tokens, wildcard };
 }
 
 // Shape test only: true when the pattern is written in the specifier language (`Name(...)`). It does not validate the body; use parseRuleSpecifier.
@@ -165,34 +153,20 @@ function isKnownCmdlet(name: string): boolean {
   return policy !== undefined && policy.native === undefined;
 }
 
-// The canonical spelling of a PowerShell rule argv (a literal argv, or a stored rule's tokens; `null` marks a non-literal token and stays null). Rule
-// identity compares the literal command name: aliases differ between editions and platforms (`sc` is Set-Content in Windows PowerShell 5.1 but
-// sc.exe in PowerShell 7; `ls`, `rm`, `cat`, `curl` and `wget` are native programs on macOS and Linux), so they are resolved only for floor
-// classification, never here. Only a known cmdlet is case-folded: its name, and the NAME of each `-Parameter` (never a value after `:`). A native
-// program's arguments are case-sensitive data (`git branch -d` is not `git branch -D`) and stay verbatim, as does an unknown command's.
-export function canonicalPowerShellRuleTokens<T extends string | null>(tokens: readonly T[], literalParameters: readonly number[] = []): T[] {
+// Normalize only an unquoted command head; every argument retains its original raw word text.
+export function canonicalPowerShellRuleTokens<T extends string | null>(tokens: readonly T[]): T[] {
   const head = tokens[0];
-  const cmdlet = typeof head === "string" && isKnownCmdlet(head);
-  if (!cmdlet) return [...tokens];
-  return tokens.map((token, index) => {
-    if (token === null) return token;
-    if (index === 0) return token.toLowerCase() as T;
-    if (literalParameters.includes(index)) return token;
-    const parameter = /^(-[A-Za-z][A-Za-z0-9]*)(:[\s\S]*)?$/.exec(token);
-    return (parameter ? parameter[1]!.toLowerCase() + (parameter[2] ?? "") : token) as T;
-  });
-}
-
-export function literalPowerShellParameterIndexes(tokens: readonly (string | null)[], quoted: readonly number[]): number[] {
-  return quoted.filter((index) => index > 0 && /^[-\u2013-\u2015]/.test(tokens[index] ?? ""));
+  if (typeof head !== "string" || literalRuleWord(head, "powershell") !== head) return [...tokens];
+  const moduleQualified = /^[A-Za-z_][\w.-]*\\([^\\/]+)$/.exec(head);
+  const name = moduleQualified?.[1] ?? head;
+  const canonicalHead = process.platform === "win32" || isKnownCmdlet(name) ? name.toLowerCase() : name;
+  return [canonicalHead as T, ...tokens.slice(1)];
 }
 
 function parsePowerShell(text: string, body: string): RuleSpecifier {
-  const { tokens, wildcard, quoted } = shellRuleWords(text, body, "powershell");
+  const { tokens, wildcard } = shellRuleWords(text, body, "powershell");
   if (tokens[0] === ".") throw new RuleSpecifierError(text, "the dot-source operator is not a command");
-  const literalParameters = literalPowerShellParameterIndexes(tokens, quoted);
-  return { kind: "powershell", tokens: Object.freeze(canonicalPowerShellRuleTokens(tokens, literalParameters)), wildcard,
-    ...(literalParameters.length > 0 ? { literalParameters: Object.freeze(literalParameters) } : {}) };
+  return { kind: "powershell", tokens: Object.freeze(canonicalPowerShellRuleTokens(tokens)), wildcard };
 }
 
 function parseEdit(text: string, body: string): RuleSpecifier {
@@ -271,8 +245,8 @@ function parseMcp(text: string, body: string): RuleSpecifier {
 
 export function formatRuleSpecifier(spec: RuleSpecifier): string {
   switch (spec.kind) {
-    case "bash": return `Bash(${[...spec.tokens.map((token) => formatShellRuleWord(token, "bash")), ...(spec.wildcard ? ["*"] : [])].join(" ")})`;
-    case "powershell": return `PowerShell(${[...spec.tokens.map((token, index) => formatShellRuleWord(token, "powershell", spec.literalParameters?.includes(index))), ...(spec.wildcard ? ["*"] : [])].join(" ")})`;
+    case "bash": return `Bash(${[...spec.tokens, ...(spec.wildcard ? ["*"] : [])].join(" ")})`;
+    case "powershell": return `PowerShell(${[...spec.tokens, ...(spec.wildcard ? ["*"] : [])].join(" ")})`;
     case "edit": return `Edit(${spec.recursive ? `${spec.path === "/" ? "" : spec.path}/**` : spec.path})`;
     case "webfetch": return `WebFetch(domain:${spec.subdomains ? "*." : ""}${spec.host}${spec.port === undefined ? "" : `:${spec.port}`})`;
     case "network": return `Network(${spec.subdomains ? "*." : ""}${spec.host}${spec.port === undefined ? "" : `:${spec.port}`})`;

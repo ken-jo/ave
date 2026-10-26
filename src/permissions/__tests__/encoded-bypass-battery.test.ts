@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { checkShellPermission, distinctPathArguments } from "../../__tests__/support/permission-lane.js";
 import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +13,7 @@ import * as shellDirectory from "../shell-working-directory-identity.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
 import { normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { validatePermissionRule } from "../rules/rule-files.js";
+import { SHELL_FLOOR_BUDGET_REASON } from "../rules/shell-floor-policy.js";
 import {
   __resetSessionStoreForTest,
   canonicalStringify,
@@ -27,6 +29,8 @@ import { encodeScript } from "./fixtures/encoded-command.js";
 // unsandboxed exact rules require a complete proof of literal argv.
 const DESTRUCTIVE_SCRIPT = "rm -rf /";
 const DESTRUCTIVE_PAYLOAD = "cgBtACAALQByAGYAIAAvAA==";
+const LITERAL_PROOF_INPUT_LIMIT = 2_000;
+const FLOOR_INPUT_LIMIT = 8_000;
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const UTF16LE_BOM_PAYLOAD = "//5yAG0AIAAtAHIAZgAgAC8A";
 
@@ -57,6 +61,7 @@ interface EncodedCase {
   readonly exactAllowed?: boolean;
   readonly offerAllowed?: boolean;
   readonly visibleFloor?: boolean;
+  readonly floorLimited?: boolean;
 }
 
 const ENCODED_CASES: readonly EncodedCase[] = [
@@ -125,7 +130,7 @@ const UNRESOLVED_OPERAND_CASES: readonly EncodedCase[] = [
   { name: "slash encoded flag with a splatted operand", dialect: "powershell", command: "pwsh /ec @payload", allowBody: "pwsh *" },
   { name: "dash-like encoded abbreviation with a subexpression operand", dialect: "powershell", command: "pwsh \u2013enco $(Get-Content ./x.txt)", allowBody: "pwsh *" },
   { name: "full encoded flag with an undecodable literal", dialect: "bash", command: "pwsh -EncodedCommand 'not-base64!'", allowBody: "pwsh *" },
-  { name: "encoded flag missing its operand", exactAllowed: true, dialect: "bash", command: "pwsh -enc", allowBody: "pwsh -enc" },
+  { name: "encoded flag missing its operand", dialect: "bash", command: "pwsh -enc", allowBody: "pwsh -enc" },
   { name: "second dash-like encoded flag with an undecodable literal", dialect: "bash", command: "pwsh \u2014eC 'not-base64!'", allowBody: "pwsh *" },
   { name: "slash encoded abbreviation with an environment operand", dialect: "powershell", command: "pwsh /encodedcomm $env:PAYLOAD", allowBody: "pwsh *" },
   { name: "extended executable name with a variable operand", dialect: "powershell", command: "pwsh-preview -enc $X", allowBody: "pwsh-preview *" },
@@ -211,14 +216,6 @@ afterEach(() => {
   rmSync(stateRoot, { recursive: true, force: true });
 });
 
-function check(command: string, dialect: ShellRuleDialect, runsSandboxed: boolean, headless = false) {
-  return manager.checkDetailed(dialect, "builtin", "shell", null, {
-    ruleSubject: { kind: "shell", dialect, command, cwd },
-    shellExecution: { runsSandboxed },
-    sessionId: SESSION_ID,
-    headless,
-  });
-}
 
 
 function storedAllowPattern(fixture: EncodedCase): string {
@@ -235,9 +232,12 @@ function storedAllowPattern(fixture: EncodedCase): string {
 }
 
 function requireLaneBehavior(fixture: EncodedCase): void {
-  const { command, dialect, exactAllowed = false, visibleFloor = false } = fixture;
+  const { command, dialect } = fixture;
+  const exactAllowed = command.length <= LITERAL_PROOF_INPUT_LIMIT && (fixture.exactAllowed ?? false);
+  const floorLimited = command.length > FLOOR_INPUT_LIMIT || (fixture.floorLimited ?? false);
+  const visibleFloor = floorLimited || (fixture.visibleFloor ?? false);
   const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
-  const offerAllowed = fixture.offerAllowed ?? exactAllowed;
+  const offerAllowed = command.length <= LITERAL_PROOF_INPUT_LIMIT && (fixture.offerAllowed ?? exactAllowed);
   if (offerAllowed) expect.soft(card.exactRule, "literal data can be remembered").not.toBeNull();
   else expect.soft(card.exactRule, "unproven or sensitive commands cannot be remembered").toBeNull();
   expect.soft(card.sessionAllowed).toBe(offerAllowed);
@@ -252,13 +252,14 @@ function requireLaneBehavior(fixture: EncodedCase): void {
         .map((pattern): PermissionRule => ({ pattern, action: "allow" })),
     ] : [];
     manager.setRules(rules);
-    const ordinary = check(command, dialect, false);
+    const ordinary = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
     expect.soft(ordinary.decision, `unsandboxed, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "ask");
-    expect.soft(check(command, dialect, false, true).decision, `headless, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "deny");
-    const sandboxed = check(command, dialect, true);
+    expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision, `headless, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "deny");
+    const sandboxed = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, true);
     expect.soft(sandboxed, `sandboxed, saved=${saved}`).toMatchObject(visibleFloor
       ? { decision: "ask", layer: 2, forceModal: true }
       : { decision: "allow", layer: 3 });
+    if (floorLimited) expect.soft(sandboxed.reason).toBe(SHELL_FLOOR_BUDGET_REASON);
     if (!visibleFloor) expect.soft(sandboxed.forceModal).not.toBe(true);
   }
 }
@@ -283,13 +284,13 @@ const OPAQUE_CARRIER_CASES: readonly EncodedCase[] = [
   { name: "caret escape inside a command string", exactAllowed: true, dialect: "powershell", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
   { name: "caret escape inside a command string from bash", exactAllowed: true, dialect: "bash", command: 'cmd /c "pwsh -en^c %PAYLOAD%"', allowBody: "cmd *" },
   { name: "nine padding chunks before a stdin carrier", exactAllowed: true, offerAllowed: false, allowCommands: [`printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}`, "pwsh -Command -"], dialect: "bash", command: `printf %s ${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD} | pwsh -Command -`, allowBody: "pwsh *" },
-  { name: "two hundred fifty-six padding chunks in an encoded operand", dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
+  { name: "two hundred fifty-six padding chunks in an encoded operand", floorLimited: true, dialect: "powershell", command: `pwsh -enc '${"AAAA ".repeat(256)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
   { name: "one hundred kilobyte input", dialect: "bash", command: `echo ${"a".repeat(100_000)}`, allowBody: "echo *" },
   { name: "stdin to a script-file interpreter", exactAllowed: true, offerAllowed: false, allowCommands: ["printf input", "python3 scripts/consume.py"], dialect: "bash", command: "printf input | python3 scripts/consume.py", allowBody: "python3 *" },
   ...(["bash", "powershell"] as const).flatMap((dialect) => [
     { name: "quoted padding remains literal data", dialect, command: `printf %s '${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "printf *", exactAllowed: true },
     { name: "quoted padding remains a carrier operand", dialect, command: `pwsh -enc '${"AAAA ".repeat(9)}${DESTRUCTIVE_PAYLOAD}'`, allowBody: "pwsh *" },
-    { name: "literal operand after sixty-four decoys", dialect, command: `# ${Array.from({ length: 64 }, (_, index) => encodeScript(`Write-Output decoy${index}`)).join(" ")}
+    { name: "literal operand after sixty-four decoys", floorLimited: dialect === "powershell", dialect, command: `# ${Array.from({ length: 64 }, (_, index) => encodeScript(`Write-Output decoy${index}`)).join(" ")}
 pwsh -enc ${DESTRUCTIVE_PAYLOAD}`, allowBody: "pwsh *" },
   ]),
 ];
@@ -352,7 +353,7 @@ describe.each(["bash", "powershell"] as const)("literal file-execution parity (%
     requireLaneBehavior({ name: "script file", dialect, command, allowBody: command, exactAllowed: true });
     for (const runsSandboxed of [true, false]) {
       manager.setRules([]);
-      expect(check(command, dialect, runsSandboxed)).toMatchObject(runsSandboxed
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(runsSandboxed
         ? FILE_EXECUTION_BASELINE.sandboxed : FILE_EXECUTION_BASELINE.unsandboxed);
     }
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID).decodedCommands ?? []).toEqual([]);
@@ -366,12 +367,6 @@ describe.each(["bash", "powershell"] as const)("literal encoded data (%s)", (dia
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID).decodedCommands ?? []).toEqual([]);
   });
 });
-
-function distinctPathArguments(length: number): string {
-  let command = "printf %s";
-  for (let index = 0; command.length < length; index += 1) command += ` data/path${index}`;
-  return command.slice(0, length);
-}
 
 const PERMISSION_TIMING_CASES = [
   ...[16_384, 100_000].map((length) => ({
@@ -391,6 +386,7 @@ describe.each(["bash", "powershell"] as const)("permission decision input bounds
       vi.spyOn(powerShellPolicy, "inspectPowerShellCommand"),
       vi.spyOn(powerShellPolicy, "powerShellRuleShape"),
       vi.spyOn(powerShellPolicy, "inspectPowerShellVisibleText"),
+      vi.spyOn(shellFloors, "inspectShellCommand"),
       vi.spyOn(shellFloors, "shellExfiltrationSignal"),
       vi.spyOn(shellFloors, "shellSensitivePathSignal"),
       vi.spyOn(riskClassifier, "isDestructiveShellText"),
@@ -398,7 +394,7 @@ describe.each(["bash", "powershell"] as const)("permission decision input bounds
     ];
     try {
       const start = performance.now();
-      const result = check(command, dialect, false);
+      const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
       const elapsed = performance.now() - start;
       expect(result).toMatchObject({ decision: "ask", layer: 6 });
       process.stdout.write(`permission decision ${dialect} ${length} chars ${name}: ${elapsed.toFixed(3)} ms\n`);
@@ -406,7 +402,7 @@ describe.each(["bash", "powershell"] as const)("permission decision input bounds
       expect(elapsed).toBeLessThan(overLimit ? 250 : 2_000);
       if (overLimit) {
         for (const spy of spies) expect(spy).not.toHaveBeenCalled();
-        expect(check(command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 6 });
+        expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true)).toMatchObject({ decision: "deny", layer: 6 });
         for (const spy of spies) expect(spy).not.toHaveBeenCalled();
         const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
         expect(card.exactRule).toBeNull();
@@ -478,15 +474,15 @@ describe("non-literal argument rule proposals", () => {
 });
 
 describe.each(["bash", "powershell"] as const)("quoted literal rule persistence (%s)", (dialect) => {
-  it("saves the canonical literal argv and matches equivalent quoting", async () => {
+  it("saves raw quoted words without sharing another quote style", async () => {
     const command = "git commit -m 'record fixture changes'";
     const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
     const kind = dialect === "bash" ? "Bash" : "PowerShell";
     expect(card.exactRule).toBe(`${kind}(git commit -m 'record fixture changes')`);
     await manager.addRulePersist({ pattern: card.exactRule!, action: "allow" }, { kind: "user" });
-    expect(check(command, dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
-    expect(check('git commit -m "record fixture changes"', dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
-    expect(check("git commit -m 'different message'", dialect, false).decision).toBe("ask");
+    expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, 'git commit -m "record fixture changes"', dialect, false)).toMatchObject({ decision: "ask", layer: 6 });
+    expect(checkShellPermission(manager, cwd, SESSION_ID, "git commit -m 'different message'", dialect, false).decision).toBe("ask");
   });
 
   it.each([
@@ -498,6 +494,22 @@ describe.each(["bash", "powershell"] as const)("quoted literal rule persistence 
   });
 });
 
+
+describe("raw numeric argument identity", () => {
+  it.each(["0x10", "001", "1.0", "1kb"])("keeps quoted %s separate from its bare spelling", (value) => {
+    const quoted = `Write-Output '${value}'`;
+    const bare = `Write-Output ${value}`;
+    const quotedCard = buildShellRuleApproval("powershell", quoted, cwd, { allow: true, deny: true }, SESSION_ID);
+    const bareCard = buildShellRuleApproval("powershell", bare, cwd, { allow: true, deny: true }, SESSION_ID);
+    expect(quotedCard.exactRule).toBe(`PowerShell(write-output '${value}')`);
+    expect(bareCard.exactRule).toBe(`PowerShell(write-output ${value})`);
+    for (const [approved, other, pattern] of [[quoted, bare, quotedCard.exactRule], [bare, quoted, bareCard.exactRule]] as const) {
+      manager.setRules([{ pattern: pattern!, action: "allow" }]);
+      expect(checkShellPermission(manager, cwd, SESSION_ID, approved, "powershell", false)).toMatchObject({ decision: "allow", layer: 3 });
+      expect(checkShellPermission(manager, cwd, SESSION_ID, other, "powershell", false)).toMatchObject({ decision: "ask", layer: 6 });
+    }
+  });
+});
 
 const RULE_SCOPE_CASES = [
   { dialect: "bash", denyScope: "global" },
