@@ -63,9 +63,8 @@ behind a protocol boundary, and it is live on `main`:
 - `src/mcp/plugin-mcp-server.ts`, `plugin-server-projection.ts`,
   `plugin-runtime-delegate.ts`, `plugin-mcp-host.ts`, `plugin-loopback-manager.ts`
   are the in-process arm. `PluginMcpHost` is transport-agnostic.
-- `src/mcp/experimental/stdio-child-transport.ts` and
-  `stdio-server-loop.ts` are the out-of-process arm, already written and tested over
-  in-memory paired streams. Their own headers name this milestone.
+- `src/mcp/experimental/stdio-server-loop.ts` serves the out-of-process arm
+  and is tested over in-memory paired streams.
 
 So the work is **not** "invent an RPC for plugins". It is:
 
@@ -636,7 +635,7 @@ The deciding reason is not preference:
 
 Secondary reasons, in order:
 
-1. `StdioChildTransport` + `StdioServerLoop` already exist and are tested; the
+1. `StdioServerLoop` already exists and is tested; the
    framing (`stdio-framing.ts`) is the same framing the MCP client speaks to
    external stdio servers — its own parser, not shared code — so a plugin built on
    a stock MCP server library frames the same way

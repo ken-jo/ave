@@ -77,29 +77,6 @@
         "blockingFact": "minSupportedAppVersion 0.4.4 already contains the migration, so every supported install that has BOOTED has had the marker stamped. What the floor does not cover is a settings file restored from a pre-v0.4.3 backup onto a current app: after removal its mode:'disabled' would read as pass-through LOW instead of the fail-closed posture the user chose. That is a fail-open, so accepting it is a human decision, not a date.",
         "unblockedBy": "An issue that either (a) rules pre-v0.4.3 backup restores out of support, or (b) replaces the boot-time rewrite with a read-time guard that keeps unmarked mode:'disabled' fail-closed without mutating the file."
       }
-    },
-    {
-      "id": "mcp-stdio-out-of-process-transport",
-      "kind": "dormant-experimental",
-      "status": "experimental-isolated",
-      "owner": "mcp",
-      "introduced": "2026-06-06",
-      "introducedBy": "a91b0b1941164ba50e71b8807e00ec3802fc63f9",
-      "rationale": "The stdio framing loop and child transport are tested foundations for untrusted out-of-process plugins, but the production plugin runtime does not wire them yet.",
-      "codeReferences": [
-        "src/mcp/experimental/stdio-server-loop.ts",
-        "src/mcp/experimental/stdio-child-transport.ts"
-      ],
-      "dataPreservationTests": [],
-      "validation": [
-        "bun run test:vitest -- run src/mcp/__tests__/stdio-server-loop.test.ts src/mcp/__tests__/stdio-child-transport.test.ts"
-      ],
-      "reviewAfter": "2026-08-05",
-      "deleteOrPromoteAfter": "2026-10-04",
-      "sunsetCriteria": [
-        "Promote only with an explicit feature flag or production plugin-runtime wiring plus sandbox coverage.",
-        "Delete if no production wiring or feature flag exists by the deleteOrPromoteAfter date."
-      ]
     }
   ]
 }
