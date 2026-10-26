@@ -58,7 +58,7 @@ describe("adversarial complete manager timing", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`permission nested timing ${JSON.stringify({ depth, chars: command.length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject({ decision: "allow", layer: 3 });
+    for (const result of results) expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
   });
 
@@ -75,9 +75,7 @@ describe("adversarial complete manager timing", () => {
     }
     const median = [...samples].sort((left, right) => left - right)[1]!;
     process.stdout.write(`permission adversarial timing ${JSON.stringify({ dialect, radix, nested, lane: runsSandboxed ? "A" : "B", chars: length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
-    for (const result of results) expect(result).toMatchObject(runsSandboxed
-      ? { decision: "ask", layer: 2, forceModal: true }
-      : { decision: "ask", layer: 6 });
+    for (const result of results) expect(result).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
   });
 });

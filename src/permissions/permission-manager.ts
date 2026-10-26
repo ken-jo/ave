@@ -1186,7 +1186,8 @@ export class PermissionManager {
   ): PermissionCheckResult {
     const result = this.evaluatePermission(toolName, source, category, overlayTriggerOrigin, context);
     // An unattended host cannot answer an unsandboxed shell ask, including a visible floor or an unreadable restriction.
-    if (result.decision === "ask" && context.headless === true && context.ruleSubject?.kind === "shell" && !context.shellExecution?.runsSandboxed) {
+    if (result.decision === "ask" && context.headless === true && context.ruleSubject?.kind === "shell"
+      && (!context.shellExecution?.runsSandboxed || result.forceModal === true)) {
       return { ...result, decision: "deny", forceModal: undefined };
     }
     return result;
@@ -1304,7 +1305,7 @@ export class PermissionManager {
     if (shellFloorSignals?.analysisLimited) return closeShellAnalysis();
     const shellSubject = ruleSubject?.dialect === "bash"
       // No sandbox for this command (off, unavailable, excluded, or an explicit host request): only an exact `Bash(<command>)` allow rule may run it unasked (owner 2026-10-25, unsandboxed shell exact-rule requirement).
-      ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed }
+      ? { command: parsedSubject!, cwd: ruleSubject.cwd, exactAllowOnly: !shellExecution.runsSandboxed || shellFloorSignals?.exactLiteralEvaluation === true }
       : undefined;
     const sessionRules = context.sessionId === undefined || ruleSubject === undefined
       ? [] : this.sessionRules.get(approvalConversationRoot(context.sessionId)) ?? [];
@@ -1314,7 +1315,8 @@ export class PermissionManager {
       : ruleSubject?.dialect === "powershell"
         ? evaluatePowerShellSubject({
           command: parsedPowerShellSubject!,
-          exactAllowOnly: !shellExecution.runsSandboxed,
+          cwd: ruleSubject.cwd,
+          exactAllowOnly: !shellExecution.runsSandboxed || powerShellSignals?.exactLiteralEvaluation === true,
           floorSignal: powerShellSignals!.exfiltration ?? powerShellSignals!.sensitive
             ?? (powerShellSignals!.analysisLimited ? "PowerShell analysis budget exceeded" : null),
         }, this.rules, projectRules, sessionRules)
@@ -1322,7 +1324,7 @@ export class PermissionManager {
     const shellShape = parsedSubject ? analyzeShellForRules(parsedSubject, ruleSubject?.cwd) : undefined;
     // Route-aware shell consent includes known irreversible forms. An opaque word alone does not prove one; reusable-rule matching remains stricter.
     const shellDestructive = ruleSubject !== undefined && (
-      (floorInput?.destructive ?? isDestructiveShellText(ruleSubject.command)) ||
+      (shellFloorSignals?.exactLiteralEvaluation !== true && (floorInput?.destructive ?? isDestructiveShellText(ruleSubject.command))) ||
       (shellShape?.ok && shellShape.commands.some((cmd) => isDestructiveShellArgv(cmd.argv) || noReusableRuleReason(cmd.argv.map((word) => word ?? "")) !== null))
     );
     const ordinaryShellAsk = powerShellSignals?.ordinaryAsk ?? (shellShape?.ok ? shellShape.ordinaryAsk : shellShape?.reason);
@@ -1402,6 +1404,12 @@ export class PermissionManager {
     }
     if (shellFloorSignals?.analysisLimited) {
       return { decision: "ask", reason: SHELL_FLOOR_BUDGET_REASON, layer: 2, forceModal: true };
+    }
+    if (shellFloorSignals?.outcome === "unproven"
+      && !(shellFloorSignals.exactLiteralEvaluation === true && shellRuleEvaluation?.decision === "allow")) {
+      return context.headless === true
+        ? { decision: "deny", reason: shellFloorSignals.ordinaryAsk ?? "Shell command requires runtime evaluation", layer: 2 }
+        : { decision: "ask", reason: shellFloorSignals.ordinaryAsk ?? "Shell command requires runtime evaluation", layer: 2, forceModal: true };
     }
     if (scopedFloor) return { decision: "ask", reason: scopedFloor, layer: 2, forceModal: true };
     // Ask rules (after deny, before every allow lane and mode). A per-call hard ask: never remembered, never auto-reviewed.

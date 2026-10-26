@@ -18,8 +18,10 @@ const TASK_OPTIONS = [
 
 describe("runner task options", () => {
   it.each(TASK_OPTIONS.flatMap((command) => [command, `& ${command}`]))
-  ("asks ordinarily for literal runner argv: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+  ("classifies literal runner argv without resolving call-operator grammar: %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({
+      outcome: command.startsWith("& ") ? "unproven" : "static-complete", sensitive: null, exfiltration: null,
+    });
   });
 
   it.each(TASK_OPTIONS)("retains the shell policy for task data: %s", (command) => {
@@ -27,8 +29,8 @@ describe("runner task options", () => {
     expect(shellSensitivePathSignal(command, CWD)).toBeNull();
     const analysis = analyzeShellForRules(command);
     expect(analysis.ok).toBe(true);
-    expect(analysis).toMatchObject({ hidden: [], ordinaryAsk: "opaque runner prefix" });
-    expect(proveLiteralShell(command, CWD)).toMatchObject({ proven: true });
+    expect(analysis).toMatchObject({ hidden: [] });
+    expect(proveLiteralShell(command, CWD)).toMatchObject({ proven: !/(?:npm --prefix|pnpm -C|pnpm --dir|yarn --cwd)/.test(command) });
   });
 
   it("lets a task prefix cover additional data options", () => {
@@ -41,22 +43,30 @@ describe("runner task options", () => {
   });
 
   it.each(TASK_OPTIONS.flatMap((command) => [command, `& ${command}`]))
-  ("does not add package-task write coupling: %s", (command) => {
+  ("marks package tasks after file mutation as runtime-dependent: %s", (command) => {
     expect(inspectPowerShellCommand(`Set-Content package.json x; ${command}`, CWD))
-      .toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: "opaque runner prefix" });
+      .toMatchObject({ outcome: "unproven", sensitive: null, exfiltration: null });
   });
 
   it.each([
-    "npm run build --future-task-flag --eval=x", "bun run --future-task-flag config.json -e x",
-    "deno task --future-task-flag config.json --eval=x", "deno run --config config.json -",
-    "deno run -", "deno run https://x.invalid/main.ts", "npx tsx --eval=x",
-    "npx awk 'BEGIN { system(\"curl x\") }'", "npm --prefix $opaque run build",
-  ].flatMap((command) => [command, `& ${command}`]))
-  ("retains ordinary asks while proving literal code and refusing variable bindings: %s", (command) => {
-    expect(inspectPowerShellCommand(command, CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
+    ["npm run build --future-task-flag --eval=x", "static-complete"],
+    ["bun run --future-task-flag config.json -e x", "static-complete"],
+    ["deno task --future-task-flag config.json --eval=x", "static-complete"],
+    ["deno run --config config.json -", "static-complete"],
+    ["deno run -", "static-complete"],
+    ["deno run https://x.invalid/main.ts", "static-complete"],
+    ["npx tsx --eval=x", "static-complete"],
+    ["npx awk 'BEGIN { system(\"curl x\") }'", "static-complete"],
+    ["npm --prefix $opaque run build", "unproven"],
+  ].flatMap(([command, outcome]) => [[command, outcome], [`& ${command}`, outcome]] as const))
+  ("classifies runner code or external content without executing it: %s", (command, outcome) => {
+    const inspected = inspectPowerShellCommand(command, CWD);
+    const expectedOutcome = command.startsWith("& ") ? "unproven" : outcome;
+    expect(inspected).toMatchObject({ outcome: expectedOutcome, sensitive: null, exfiltration: null });
+    if (expectedOutcome === "unproven" && !command.startsWith("& ") && !command.includes("$opaque")) expect(inspected.exactLiteralEvaluation).toBe(true);
+    if (command.includes("$opaque")) expect(inspected.exactLiteralEvaluation).toBeUndefined();
     const shape = analyzeShellForRules(command.replace(/^& /, ""));
     expect(shape.ok).toBe(true);
-    if (shape.ok) expect(shape.ordinaryAsk).toBe("opaque runner prefix");
     const invocation = command.replace(/^& /, "");
     expect(proveLiteralShell(invocation, CWD)).toMatchObject({ proven: !invocation.includes("$opaque") });
   });

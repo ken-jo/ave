@@ -261,25 +261,25 @@ describe("AST shell matcher", () => {
   });
 
   it.each([
-    ["npx prettier --write src", "Bash(npx prettier *)"],
-    ["npm exec prettier --write src", "Bash(npm exec prettier *)"],
-    ["pnpm dlx prettier --write src", "Bash(pnpm dlx prettier *)"],
-    ["corepack pnpm dlx prettier src", "Bash(corepack pnpm dlx prettier *)"],
-    ["npx --future value -- prettier src", "Bash(npx --future value -- prettier *)"],
-  ])("a full raw runner prefix can cover %j", (command, pattern) => {
+    ["npx prettier --write src", "Bash(npx prettier *)", true],
+    ["npm exec prettier --write src", "Bash(npm exec prettier *)", true],
+    ["pnpm dlx prettier --write src", "Bash(pnpm dlx prettier *)", true],
+    ["corepack pnpm dlx prettier src", "Bash(corepack pnpm dlx prettier *)", true],
+    ["npx --future value -- prettier src", "Bash(npx --future value -- prettier *)", false],
+  ] as const)("checks a complete runner prefix and its boundary: %s", (command, pattern, allowed) => {
     expect(analyzeShellForRules(command)).toMatchObject({ ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [] });
-    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: [pattern] })).decision).toBe("allow");
+    expect(evaluateShellRules(command, rules({ deny: ["Bash(rm *)"], allow: [pattern] })).decision).toBe(allowed ? "allow" : null);
     expect(evaluateShellRules(command, rules({ allow: ["Bash(prettier *)", "Bash(echo *)"] })).decision).toBeNull();
   });
 
-  it("runner options retain nested interpreter visibility while allowing literal identity", () => {
+  it("retains literal words without proving an ambiguous runner option boundary", () => {
     const command = "npx --config project.json -- node script.mjs --output build";
     expect(analyzeShellForRules(command)).toMatchObject({
       ok: true, hidden: [], ordinaryAsk: "opaque runner prefix", allowBlockers: [],
       commands: [{ argv: ["npx", "--config", "project.json", "--", "node", "script.mjs", "--output", "build"], allowBlockers: [] }],
     });
-    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBe("allow");
-    expect(proveLiteralShell(command)).toMatchObject({ proven: true });
+    expect(evaluateShellRules(command, rules({ allow: ["Bash(npx --config project.json -- node *)"] })).decision).toBeNull();
+    expect(proveLiteralShell(command)).toMatchObject({ proven: false });
   });
 
   it("runner prefixes stay visible to explicit deny and ask rules", () => {
@@ -310,9 +310,12 @@ describe("AST shell matcher", () => {
     if (!shape.ok) throw new Error("Expected a parsed shell command");
     const assignment = command.startsWith("GIT_SSH_COMMAND=") || command.startsWith("export ");
     expect(shape.hidden).toEqual([]);
-    expect(shape.ordinaryAsk).toBeUndefined();
+    const literalEvaluation = !assignment && !["node x.js", "python x.py", "env PATH=/tmp/tools git status"].includes(command);
+    if (assignment || literalEvaluation) expect(shape.ordinaryAsk).toEqual(expect.any(String));
+    else expect(shape.ordinaryAsk).toBeUndefined();
     const literal = !assignment;
-    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBe(literal ? "allow" : null);
+    expect(evaluateShellRules(command, rules({ allow: [`Bash(${program} *)`] })).decision).toBe(literal && !literalEvaluation ? "allow" : null);
+    if (literalEvaluation) expect(evaluateShellRules(command, rules({ allow: [`Bash(${command})`] })).decision).toBe("allow");
     expect(proveLiteralShell(command)).toMatchObject({ proven: literal });
     for (const restriction of [{ deny: ["Bash(rm *)"] }, { ask: ["Bash(rm *)"] }]) {
       expect(evaluateShellRules(command, rules(restriction)).decision).toBeNull();

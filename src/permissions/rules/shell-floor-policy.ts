@@ -2,7 +2,6 @@ export const SHELL_FLOOR_INPUT_LIMIT = 8_000;
 export const SHELL_LITERAL_DATA_LIMIT = 65_536;
 const shellFloorLiteralDataLengths = new WeakMap<object, number>();
 const shellFloorLiteralDataWords = new WeakSet<object>();
-const shellFloorInspectionTexts = new WeakMap<object, string>();
 
 // Only the original-grammar heredoc verifier records this bounded data allowance.
 export function recordShellFloorLiteralData(input: { readonly command: string }, chars: number, words: readonly object[] = []): void {
@@ -14,28 +13,6 @@ export function recordShellFloorLiteralData(input: { readonly command: string },
 }
 export function isShellFloorLiteralData(word: object): boolean { return shellFloorLiteralDataWords.has(word); }
 
-// Flag detection reads original executable word parts. Verified body slices are
-// never included, even inside a substitution's enclosing source span.
-export function shellFloorInspectionText(input: { readonly command: string }): string {
-  if (!shellFloorLiteralDataLengths.has(input)) return input.command;
-  const cached = shellFloorInspectionTexts.get(input);
-  if (cached !== undefined) return cached;
-  const words: string[] = [];
-  const visit = (node: unknown): void => {
-    if (node === null || typeof node !== "object" || shellFloorLiteralDataWords.has(node)) return;
-    if ("kind" in node && (node.kind === "literal" || node.kind === "pattern") && "value" in node && typeof node.value === "string") words.push(node.value);
-    if ("name" in node && "value" in node && "append" in node && typeof node.name === "string") words.push(`${node.name}=`);
-    for (const [key, value] of Object.entries(node)) {
-      if (key === "facts" || key === "source") continue;
-      if (Array.isArray(value)) for (const child of value) visit(child);
-      else if (value !== null && typeof value === "object") visit(value);
-    }
-  };
-  visit(input);
-  const text = words.join(" ");
-  shellFloorInspectionTexts.set(input, text);
-  return text;
-}
 export const SHELL_FLOOR_BUDGET_REASON = "Shell floor analysis budget exceeded";
 const SHELL_PARSER_BUDGET_ERRORS = new Set([
   "Shell analysis source limit exceeded",
@@ -45,10 +22,12 @@ const SHELL_PARSER_BUDGET_ERRORS = new Set([
 ]);
 
 export interface ShellFloorSignals {
+  outcome: "visible-floor" | "unproven" | "static-complete";
   sensitive: string | null;
   exfiltration: string | null;
   ordinaryAsk?: string;
   analysisLimited?: true;
+  exactLiteralEvaluation?: true;
 }
 
 export function shellFloorInputExceeded(input: string | { readonly command: string }): boolean {
@@ -57,7 +36,7 @@ export function shellFloorInputExceeded(input: string | { readonly command: stri
 }
 
 export function shellFloorBudgetSignals(): ShellFloorSignals {
-  return { sensitive: null, exfiltration: null, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON, analysisLimited: true };
+  return { outcome: "unproven", sensitive: null, exfiltration: null, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON, analysisLimited: true };
 }
 
 // Stable limit errors emitted by the repository's parser runtime; syntax refusals are not exhaustion.
@@ -71,15 +50,7 @@ export class ShellFloorLimitError extends Error {}
 
 // Facts live for one decision, independently of execution time or machine load.
 export class ShellFloorContext {
-  readonly visits = { frames: 0, stages: 0, lexes: 0, transfers: 0, walk: 0, inventory: 0, commands: 0, feeder: 0, code: 0, coverage: 0, codeNodes: 0, codeWordLinks: 0, codeSourceChars: 0, codeTokenFacts: 0, codeTokenUses: 0, codeCoverage: 0, codeRangeSteps: 0 };
-  private readonly identities = new WeakMap<object, number>();
-  private nextIdentity = 0;
-
-  identity(node: object): number {
-    let value = this.identities.get(node);
-    if (value === undefined) { value = ++this.nextIdentity; this.identities.set(node, value); }
-    return value;
-  }
+  readonly visits = { frames: 0, stages: 0, lexes: 0, transfers: 0, walk: 0, inventory: 0, commands: 0, feeder: 0, code: 0, coverage: 0, codeNodes: 0, codeWordLinks: 0, codeSourceChars: 0, codeTokenFacts: 0, codeTokenUses: 0, codeCoverage: 0, codeRangeSteps: 0, staticTokens: 0, staticArguments: 0, staticChars: 0, staticNodes: 0, staticViews: 0 };
   readonly facts = new Map<string, unknown>();
   readonly canonicalize = createPathCanonicalizer();
   readonly locationUnder = createSensitiveLocationMatcher(this.canonicalize);

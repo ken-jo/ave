@@ -8,6 +8,7 @@ import { permissionDecisionCostTargetMs } from "../../__tests__/support/permissi
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
+import { parseShellFloorCommand } from "../rules/shell-exfiltration.js";
 
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -99,8 +100,8 @@ const CASES: readonly TimingCase[] = [
     executableChars: runsSandboxed ? 8_000 : 2_000,
   }))),
   { name: "max-quoted-data", command: quotedData(commandWithDistinctPaths(7_984), 65_536), dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 8_000, dataBytes: 65_536 },
-  { name: "admitted-token-cap", command: commandWithWords(MAX_SHELL_ANALYSIS_TOKENS, 8_000), dialect: "bash", runsSandboxed: true, allowed: true, executableChars: 8_000, words: MAX_SHELL_ANALYSIS_TOKENS },
-  { name: "admitted-token-cap-data", command: quotedData(commandWithWords(MAX_SHELL_ANALYSIS_TOKENS - 2, 7_984), 65_536), dialect: "bash", runsSandboxed: true, allowed: true, executableChars: 8_000, dataBytes: 65_536, words: MAX_SHELL_ANALYSIS_TOKENS },
+  { name: "admitted-token-cap", command: commandWithWords(MAX_SHELL_ANALYSIS_TOKENS, 8_000), dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 8_000, words: MAX_SHELL_ANALYSIS_TOKENS },
+  { name: "admitted-token-cap-data", command: quotedData(commandWithWords(MAX_SHELL_ANALYSIS_TOKENS - 2, 7_984), 65_536), dialect: "bash", runsSandboxed: true, allowed: false, executableChars: 8_000, dataBytes: 65_536, words: MAX_SHELL_ANALYSIS_TOKENS },
   { name: "admitted-pipeline", command: pipelineCommand(100, 8_000), dialect: "bash", runsSandboxed: true, allowed: true, executableChars: 8_000, words: 400 },
 ];
 
@@ -119,7 +120,7 @@ describe("bounded complete decision cost", () => {
     process.stdout.write(`decision cost ${JSON.stringify({ name, dialect, lane: runsSandboxed ? "A" : "B", chars: command.length, executableChars, dataBytes, words, samples, median, target: permissionDecisionCostTargetMs, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
     for (const result of results) expect(result).toMatchObject(allowed
       ? { decision: "allow", layer: 3 }
-      : runsSandboxed ? { decision: "ask", layer: 2, forceModal: true } : { decision: "ask", layer: 6 });
+      : { decision: "ask", layer: 2, forceModal: true });
     expect(median).toBeLessThan(permissionDecisionCostTargetMs);
   }, 60_000);
 
@@ -127,13 +128,17 @@ describe("bounded complete decision cost", () => {
     const prefix = nested ? "echo $(:); " : "";
     const prefixWords = nested ? 3 : 0;
     const command = `${prefix}${":;".repeat(MAX_SHELL_ANALYSIS_TOKENS - prefixWords)}`;
-    expect(checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(parseShellFloorCommand(command).analysis.ok).toBe(true);
+    expect(checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true)).toMatchObject(nested
+      ? { decision: "ask", layer: 2, forceModal: true } : { decision: "allow", layer: 3 });
     expect(checkShellPermission(manager, cwd, SESSION_ID, `${command}:`, "bash", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it("counts assignment values across the complete command", () => {
     const command = "A=1;".repeat(MAX_SHELL_ANALYSIS_TOKENS);
-    expect(checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true)).toMatchObject({ decision: "allow", layer: 3 });
+    expect(parseShellFloorCommand(command).analysis.ok).toBe(true);
+    expect(parseShellFloorCommand(`${command}A=1`).analysis.ok).toBe(false);
+    expect(checkShellPermission(manager, cwd, SESSION_ID, command, "bash", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     expect(checkShellPermission(manager, cwd, SESSION_ID, `${command}A=1`, "bash", true)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
@@ -150,7 +155,7 @@ describe("bounded complete decision cost", () => {
 
   it.each([
     { name: "comments", command: "#\n".repeat(4_000), allowed: false },
-    { name: "empty-arithmetic", command: "(())\n".repeat(1_600), allowed: true },
+    { name: "empty-arithmetic", command: "(())\n".repeat(1_600), allowed: false },
   ])("bounds low-record representation $name", ({ name, command, allowed }) => {
     expect(command.length).toBe(8_000);
     const samples: number[] = [];

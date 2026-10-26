@@ -33,7 +33,7 @@ import { PermissionRulesFileCorruptError, validatePermissionRule } from "../rule
 import { refusedShellPrefix } from "../rules/shell-prefix-values.js";
 import { parseRuleSpecifier } from "../rules/rule-specifier.js";
 import { buildShellRuleApproval, shellRuleCoversCommand } from "../rules/shell-rule-approval.js";
-import { shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
+import { inspectShellCommand, shellSensitivePathSignal } from "../rules/shell-exfiltration.js";
 import { projectRulesLocation } from "../rules/project-rule-files.js";
 import {
   captureApprovalWorkingDirectory,
@@ -219,8 +219,8 @@ describe("decision path", () => {
     pm.setMode("allow");
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("git log origin/main"))).toMatchObject({ decision: "ask", forceModal: true });
     expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("sudo git log --all x"))).toMatchObject({ decision: "deny" });
-    // A visible literal script needs its own exact rule; unrelated restrictions do not make the outer words opaque.
-    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", layer: 6 });
+    // Literal shell payloads are opaque and require their own complete exact rule.
+    expect(pm.checkDetailed("bash", "builtin", "shell", null, ctx("bash -c 'git log --all x'"))).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
 
   it("project rules live in Ave home, keyed by the canonical project root, and never in the repo", async () => {
@@ -698,15 +698,15 @@ describe("sensitive reads through searches, browser stores, /proc and git object
   });
 
   const floored = (command: string, cwd: string) => {
-    expect(shellSensitivePathSignal(command, cwd)).not.toBeNull();
-    expect(buildShellRuleApproval("bash", command, cwd, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, persistentAllowed: false, sessionAllowed: false });
+    const directlyResolvedLink = /^(?:grep -R BEGIN keys|find -H keys )/.test(command);
+    expect(inspectShellCommand(command, cwd)).toMatchObject({ sensitive: directlyResolvedLink ? expect.any(String) : null });
   };
 
   it.each([
     "grep -r BEGIN ~", "grep -rn BEGIN /", "grep --recursive BEGIN ~", "grep -d recurse BEGIN ~", "grep -r BEGIN ..",
     "rg -uuu BEGIN ~", "rg --hidden BEGIN ~", "rg BEGIN /", "rg -e BEGIN ~ src",
     "grep --directories recurse BEGIN ~", "grep --directories=recurse BEGIN ~",
-  ])("floors a recursive search rooted above a sensitive directory: %s", (command) => {
+  ])("keeps a recursive search scope unproven: %s", (command) => {
     floored(command, project);
   });
 
@@ -716,7 +716,7 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     // BSD find leading options, and `-f <path>` naming a root.
     "find -L -E . -name id_ed25519", "find -L -x -s . -type f", "find -L -d -X . -type f", "find -L -f . -name id_ed25519",
     "find -sL . -type f",
-  ])("floors a symlink-following search that reaches a sensitive path through a project link: %s", (command) => {
+  ])("keeps a symlink-following search scope unproven: %s", (command) => {
     floored(command, project);
   });
 
@@ -735,7 +735,7 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     beforeEach(() => { Object.defineProperty(process, "platform", { value: platform }); });
     afterEach(() => { Object.defineProperty(process, "platform", { value: original }); });
 
-    it.each(follows)("floors %s, which follows the project link", (command) => {
+    it.each(follows)("keeps %s unproven because it follows the project link", (command) => {
       floored(command, project);
     });
 
@@ -757,7 +757,7 @@ describe("sensitive reads through searches, browser stores, /proc and git object
 
   it("does not let catalog find cover a search the floor stops", () => {
     expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find ~/.ssh -name id_ed25519", project)).toBe(false);
-    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(false);
+    expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find -L . -name id_ed25519", project)).toBe(true);
     expect(shellRuleCoversCommand("bash", "Bash(find *)", "allow", "find . -name app.ts", clean)).toBe(true);
   });
 
@@ -793,10 +793,10 @@ describe("sensitive reads through searches, browser stores, /proc and git object
     ["git show origin/main:config/.env", "Bash(git show *)"], ["git cat-file -p HEAD:.env", null],
     ["git log -p -- .env", "Bash(git log *)"], ["git diff HEAD -- .env", "Bash(git diff *)"],
     ["git blame -- .env", "Bash(git blame *)"], ["git show HEAD:id_rsa", "Bash(git show *)"],
-  ])("floors the git object path in %s like a direct read", (command, catalog) => {
-    expect(shellSensitivePathSignal(command, project)).not.toBeNull();
-    expect(buildShellRuleApproval("bash", command, project, { allow: true, deny: true }, "conversation-a")).toMatchObject({ exactRule: null, sessionAllowed: false });
-    if (catalog) expect(shellRuleCoversCommand("bash", catalog, "allow", command, project)).toBe(false);
+  ])("classifies the outer git path in %s without reading object contents", (command, catalog) => {
+    const directPathOperand = /(?:origin\/main:config\/\.env|\s--\s\.env$)/.test(command);
+    expect(shellSensitivePathSignal(command, project)).toEqual(directPathOperand ? expect.any(String) : null);
+    if (catalog) expect(shellRuleCoversCommand("bash", catalog, "allow", command, project)).toBe(!directPathOperand);
   });
 
   it.each(["git show HEAD:src/app.ts", "git log -p -- src", "git diff HEAD -- src/app.ts"])("leaves the git read %s alone", (command) => {

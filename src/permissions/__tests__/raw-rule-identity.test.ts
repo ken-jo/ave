@@ -4,8 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { buildShellRuleApproval } from "../rules/shell-rule-approval.js";
-import { canonicalRuleSpecifier, normalizeRuleSpecifierInput } from "../rules/rule-specifier.js";
+import { normalizeRuleSpecifierInput } from "../rules/rule-specifier.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
+import { literalShellRulePattern as pattern } from "../../__tests__/support/permission-lane.js";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -14,10 +15,6 @@ function prepare(): { cwd: string; file: string } {
   const cwd = mkdtempSync(join(tmpdir(), "raw-rule-identity-"));
   roots.push(cwd);
   return { cwd, file: join(cwd, "permissions.json") };
-}
-
-function pattern(dialect: ShellRuleDialect, command: string): string {
-  return canonicalRuleSpecifier(`${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`);
 }
 
 function check(manager: PermissionManager, dialect: ShellRuleDialect, command: string, cwd: string, headless = false) {

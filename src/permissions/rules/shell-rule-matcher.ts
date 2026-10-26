@@ -11,7 +11,7 @@ import { isShellFloorLiteralData } from "./shell-floor-policy.js";
 import { isDestructiveShellArgv, noReusableRuleReason, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { errorMessage } from "../../shared/error-message.js";
 import { literalRuleWord, type RuleSpecifier } from "./rule-specifier.js";
-import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk, shellScanProofBlocker } from "./shell-exfiltration.js";
+import { inspectShellCommand, literalShellWord, shellScanOrdinaryAsk, shellScanProofBlocker } from "./shell-exfiltration.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
 import {
   arithmeticEvaluationReason,
@@ -76,10 +76,8 @@ function shapeOf(parsed: ParsedShellCommand, cwd: string | undefined): ShellRule
   const globalBlockers: string[] = [];
   // Depth of `|` stages (after the first) being visited.
   let downstream = 0;
-  const literalWords = new Map<ShellWord, string | undefined>();
   const literalWord = (word: ShellWord): string | undefined => {
-    if (!literalWords.has(word)) literalWords.set(word, literalRuleWord(word.source.raw, "bash"));
-    return literalWords.get(word);
+    return literalShellWord(word);
   };
 
   const scanWord = (word: ShellWord, blockers: string[] | null): void => {
@@ -239,25 +237,71 @@ function matchesBashRuleExact(spec: BashRuleSpecifier, argv: readonly (string | 
 }
 
 // Deny/ask semantics: argv0 compares by program basename (`/bin/rm`); when argv0 is a wrapper program (`sudo -u root rm`, `env A=1 rm`, `timeout 5 rm`, `xargs rm`, `busybox rm`) the rule may start at ANY later word — wrapper option grammars differ too much to skip them exactly; and a multi-verb tool's global options are also tried stripped (`git -C. push` matches `Bash(git push *)`). This only ever widens what a deny/ask rule sees; allow matching never strips wrappers or options.
-function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[], literalTokens: readonly (string | undefined)[], optionSuffixes: Map<string, Map<number, number>>): boolean {
-  const head = argv[0];
-  const starts = head !== undefined && isShellWrapperProgram(head)
-    ? argv.map((_, index) => index)
-    : [0];
-  const matchesWindow = (start: number, argumentStart = start + 1): boolean => {
-    const length = 1 + Math.max(0, argv.length - argumentStart);
-    if (argv[start] === undefined || length < spec.tokens.length) return false;
-    if (!spec.wildcard && length !== spec.tokens.length) return false;
-    return literalTokens.every((token, offset) => {
-      if (token === undefined) return false;
-      const actual = argv[offset === 0 ? start : argumentStart + offset - 1];
-      if (actual === undefined) return false;
-      return offset === 0 ? actual === token || baseProgram(actual) === token : actual === token;
-    });
+let restrictionWorkRecorder: { steps: number } | undefined;
+function chargeRestrictionWork(steps = 1): void {
+  if (restrictionWorkRecorder !== undefined) restrictionWorkRecorder.steps += steps;
+}
+
+export function _recordShellRestrictionWorkForTest(): { readonly steps: number; stop(): void } {
+  const previous = restrictionWorkRecorder;
+  const record = { steps: 0 };
+  restrictionWorkRecorder = record;
+  return {
+    get steps() { return record.steps; },
+    stop() { if (restrictionWorkRecorder === record) restrictionWorkRecorder = previous; },
   };
-  return starts.some((start) => {
-    return matchesWindow(start) || matchesWindow(start, globalOptionsEnd(argv, start, optionSuffixes));
-  });
+}
+
+function restrictionTailMatches(argv: readonly (string | undefined)[], tail: readonly string[], wildcard: boolean): Uint8Array {
+  const matches = new Uint8Array(argv.length + 1);
+  if (tail.length === 0) { matches.fill(1); return matches; }
+  if (!wildcard) {
+    const start = argv.length - tail.length;
+    if (start < 0) return matches;
+    for (let offset = 0; offset < tail.length; offset += 1) {
+      chargeRestrictionWork();
+      if (argv[start + offset] !== tail[offset]) return matches;
+    }
+    matches[start] = 1;
+    return matches;
+  }
+  const fallback = new Uint32Array(tail.length);
+  for (let index = 1, prefix = 0; index < tail.length;) {
+    chargeRestrictionWork();
+    if (tail[index] === tail[prefix]) fallback[index++] = ++prefix;
+    else if (prefix > 0) prefix = fallback[prefix - 1]!;
+    else index += 1;
+  }
+  for (let index = 0, prefix = 0; index < argv.length;) {
+    chargeRestrictionWork();
+    if (argv[index] === tail[prefix]) {
+      index += 1; prefix += 1;
+      if (prefix === tail.length) {
+        matches[index - tail.length] = 1;
+        prefix = fallback[prefix - 1]!;
+      }
+    } else if (prefix > 0) prefix = fallback[prefix - 1]!;
+    else index += 1;
+  }
+  return matches;
+}
+
+function matchesBashRuleForRestriction(spec: BashRuleSpecifier, argv: readonly (string | undefined)[], literalTokens: readonly (string | undefined)[], optionSuffixes: Map<string, Map<number, number>>): boolean {
+  if (literalTokens.length === 0 || literalTokens.some((token) => token === undefined)) return false;
+  const tokens = literalTokens as readonly string[];
+  const head = argv[0];
+  const everyStart = head !== undefined && isShellWrapperProgram(head);
+  const tailMatches = restrictionTailMatches(argv, tokens.slice(1), spec.wildcard);
+  const finalStart = everyStart ? argv.length : Math.min(argv.length, 1);
+  for (let start = 0; start < finalStart; start += 1) {
+    chargeRestrictionWork();
+    const actual = argv[start];
+    if (actual === undefined || (actual !== tokens[0] && baseProgram(actual) !== tokens[0])) continue;
+    if (tailMatches[start + 1]) return true;
+    const optionStart = globalOptionsEnd(argv, start, optionSuffixes);
+    if (optionStart !== start + 1 && tailMatches[optionStart]) return true;
+  }
+  return false;
 }
 
 export interface ShellRuleInput {
@@ -319,22 +363,35 @@ export function evaluateShellRules(input: ShellCommandInput, rules: ShellRuleSet
   if (shape.hidden.length > 0) return { decision: null, reason: shape.hidden[0]! };
   if (shape.allowBlockers.length > 0) return { decision: null, reason: shape.allowBlockers[0]! };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
+  const floor = inspectShellCommand(parsed, cwd);
+  if (floor.exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${floor.exfiltration}` };
+  if (floor.sensitive) return { decision: null, reason: `sensitive path (floor): ${floor.sensitive}` };
   // Floor: destructive text anywhere is never covered by an allow rule.
-  if (isDestructiveShellText(command)
-    || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw) || isDestructiveShellArgv(cmd.argv))) {
+  // An approved literal-evaluation payload is opaque. Its complete raw text is
+  // the exact identity, while destructive checks still inspect the outer argv.
+  if ((!floor.exactLiteralEvaluation && (isDestructiveShellText(command)
+      || shape.commands.some((cmd) => isDestructiveShellText(cmd.raw))))
+    || shape.commands.some((cmd) => isDestructiveShellArgv(floor.exactLiteralEvaluation ? cmd.argv.slice(0, 1) : cmd.argv))) {
     return { decision: null, reason: "destructive command (floor)" };
   }
   // Irreversible forms remain outside reusable command permission.
   for (const cmd of shape.commands) {
-    const unreusable = noReusableRuleReason(cmd.argv);
+    const unreusable = noReusableRuleReason(floor.exactLiteralEvaluation ? cmd.argv.slice(0, 1) : cmd.argv);
     if (unreusable) return { decision: null, reason: `${unreusable} (no allow rule covers it)` };
   }
-  const exfiltration = shellExfiltrationSignal(parsed, cwd);
-  if (exfiltration) return { decision: null, reason: `credential exfiltration (floor): ${exfiltration}` };
-  const sensitive = shellSensitivePathSignal(parsed, cwd);
-  if (sensitive) return { decision: null, reason: `sensitive path (floor): ${sensitive}` };
-  const incomplete = shellScanProofBlocker(parsed, cwd);
-  if (incomplete) return { decision: null, reason: incomplete };
+  if (floor.outcome === "unproven" && !floor.exactLiteralEvaluation) {
+    return { decision: null, reason: floor.ordinaryAsk ?? "Shell command requires runtime evaluation" };
+  }
+  if (floor.exactLiteralEvaluation) {
+    if (shape.commands.length !== 1 || shape.commands[0]!.allowBlockers.length > 0) {
+      return { decision: null, reason: floor.ordinaryAsk ?? "Shell command requires runtime evaluation" };
+    }
+    const rule = rules.allow.find((candidate) => !candidate.spec.wildcard
+      && matchesBashRuleExact(candidate.spec, shape.commands[0]!.rawWords));
+    return rule
+      ? { decision: "allow", patterns: [rule.pattern], reason: `allow rules ${rule.pattern}` }
+      : { decision: null, reason: floor.ordinaryAsk ?? "Shell command requires runtime evaluation" };
+  }
   const patterns: string[] = [];
   for (const cmd of shape.commands) {
     if (cmd.allowBlockers.length > 0) return { decision: null, reason: cmd.allowBlockers[0]! };
