@@ -413,16 +413,22 @@ export function lowerPowerShellText(text: string): string {
 // Structural recursion is bounded independently of machine load.
 export class PowerShellAnalysisContext {
   limited = false;
+  readonly visits = { frames: 0, stages: 0, lexes: 0, views: 0, values: 0, dataFacts: 0, embeddedCodeCalls: 0, obligationNodes: 0, obligationVisits: 0, obligationItems: 0 };
   private frameDepth = 0;
   private expressionDepth = 0;
   readonly facts = new Map<string, unknown>();
   constructor(private readonly disabled: ReadonlySet<PowerShellExpressionKind> = new Set()) {}
 
   enter(source: string): void {
+    this.visits.frames += 1;
     if (source.length > POWERSHELL_ANALYSIS_LIMITS.inputChars || this.frameDepth >= POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
     this.frameDepth += 1;
   }
   leave(): void { this.frameDepth -= 1; }
+  currentFrameDepth(): number { return this.frameDepth; }
+  requireAdditionalFrameDepth(additional: number): void {
+    if (this.frameDepth + additional > POWERSHELL_ANALYSIS_LIMITS.depth) this.exceed();
+  }
   expression<T>(read: () => T): T {
     if (this.expressionDepth >= POWERSHELL_ANALYSIS_LIMITS.expressionDepth) this.exceed();
     this.expressionDepth += 1;
