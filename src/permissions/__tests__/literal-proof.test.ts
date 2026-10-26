@@ -159,20 +159,20 @@ describe("literal exact-rule proof", () => {
     } finally { lex.stop(); }
   });
 
-  it("refuses remembered rules when literal PowerShell path analysis exhausts its budget", () => {
+  it("keeps ordinary literal PowerShell arguments within actual path work", () => {
     const cwd = projectDirectory();
     const command = `printf ${Array<string>(20).fill("a").join(" ")}`;
     const pattern = `PowerShell(${command})`;
     expect(proveLiteralPowerShell(command).proven).toBe(true);
-    expect(inspectPowerShellCommand(command, cwd)).toMatchObject({ analysisLimited: true, sensitive: null, exfiltration: null });
-    expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
-    expect(shellRuleCoversCommand("powershell", pattern, "allow", command, cwd)).toBe(false);
+    expect(inspectPowerShellCommand(command, cwd)).toEqual({ sensitive: null, exfiltration: null });
+    expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBe(pattern);
+    expect(shellRuleCoversCommand("powershell", pattern, "allow", command, cwd)).toBe(true);
     const manager = new PermissionManager(join(cwd, "permissions.json"));
     manager.setMode("allow");
     manager.setRules([withCurrentShellRuleVersion({ pattern, action: "allow" })]);
     const context = { ruleSubject: { kind: "shell" as const, dialect: "powershell" as const, command, cwd }, shellExecution: { runsSandboxed: false } };
-    expect(manager.checkDetailed("powershell", "builtin", "shell", null, context).decision).toBe("ask");
-    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("deny");
-    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, context).decision).toBe("allow");
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, headless: true }).decision).toBe("allow");
+    expect(manager.checkDetailed("powershell", "builtin", "shell", null, { ...context, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "allow", layer: 3 });
   });
 });

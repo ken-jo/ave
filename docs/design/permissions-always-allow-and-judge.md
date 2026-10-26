@@ -33,7 +33,7 @@ design must be reported explicitly.
 
 1. Explicit deny rules deny. The destructive/irreversible and sensitive-path floors require authenticated user consent on every invocation, inside or outside the sandbox; the reviewer cannot approve them. Credential-exfiltration floors have the same behavior. An unsandboxed headless request that would ask under any floor or unreadable restriction denies with its reason and layer preserved.
 2. Explicit ask rules ask. A restriction whose command cannot be inspected also asks.
-3. A sandboxed command allows only after bounded inspection completes. The executable envelope is limited to 8,000 characters; verified quoted literal Bash heredoc bodies with no known code-consuming receiver have a separate aggregate 64 KiB data allowance. Unsafe or ambiguous heredoc syntax and exceeded bounds require modal approval/L2. Shared budget exhaustion immediately stops all analysis: Lane A modal/L2, Lane B ask/L6 or headless deny; no reusable or reviewer allow can satisfy it.
+3. A sandboxed command allows only after bounded inspection completes. The executable envelope is limited to 8,000 characters; Bash heredoc bodies have a separate aggregate 64 KiB data allowance only when every original heredoc delimiter is quoted and there is no known code-consuming receiver. Unsafe or ambiguous heredoc syntax and exceeded bounds require modal approval/L2. Shared budget exhaustion immediately stops all analysis: Lane A modal/L2, Lane B ask/L6 or headless deny; no reusable or reviewer allow can satisfy it.
 4. A command that will run outside the sandbox runs unasked only on an exact allow rule for its proven literal argv (user, project or This session): `Bash(<command>)`, or `PowerShell(<command>)` for PowerShell; otherwise it asks, in every mode (owner decision 2026-10-25, unsandboxed shell exact-rule requirement). This includes sandbox-off/unavailable execution, excluded commands, an unsandboxed retry, an explicit host request and the Windows Plan B. The reviewer and judge are not consulted for it. Headless, a matching exact rule runs it; without one it is denied and audited.
 5. Prefix rules never authorize an unsandboxed command, whether or not a sandbox is active for other commands. This is checked at evaluation time; stored prefixes remain visible and revocable, and still match as deny and ask rules.
 
@@ -53,13 +53,20 @@ nonliteral words and ambiguous raw-word recovery. Visible literal code and
 file/stdin/network indirection remain eligible.
 
 The PowerShell exclusion examines every semantic word across the whole command,
-including a linear lexical scan of literal quoted word interiors. Any PowerShell launcher word arms the
-e-prefix check for every later word in the command, without wrapper lists or
-recursive dialect parsing. The PowerShell launcher list and trim/dash/slash/case normalization
-belong only to detection; the raw key remains unchanged. This intentionally
-catches quoted or delegated launcher spellings and overmatches
-`ExecutionPolicy`. No operand, `-File`, `--`, pipeline/sequence boundary or quoted
-separator ends the check. Literal display decoding remains presentation-only.
+including a linear lexical scan of literal quoted word interiors. Once a
+recognized launcher word is seen, every later token must pass a
+positive character proof after shell quote removal: every code point is a
+Unicode letter, number, punctuation, symbol, or U+0020 ASCII space. Other
+separators, controls, combining marks and unassigned code points are unproven;
+Hangul letters remain literal. Only validated tokens receive the deliberate
+e-prefix overmatch: remove leading `-`, `/`, U+2013/U+2014/U+2015 and
+lowercase; an e-leading result is unproven, including `ExecutionPolicy`.
+No argument-binder whitespace emulation is used. The check never stops at
+`-File`, `--`, pipelines, sequences or quoted separators, requires no
+operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+executable-extension and case normalization are detection-only; raw keys remain
+unchanged.
+Literal display decoding remains presentation-only.
 
 **Shell rule format.** Fresh shell allows, including session rules, record
 `shellRuleVersion: 1` (`SHELL_RULE_CANONICAL_VERSION` in
@@ -436,14 +443,19 @@ original quotes and contents, including complete program-head spelling; only
 interword whitespace normalizes.
 
 Every literal semantic word across the whole command, and lexical words inside
-literal quoted command strings, participates in the PowerShell exclusion. Once a recognized launcher word
-is found, every later word's literal value is trimmed, stripped of leading
-`-`, `/`, U+2013/U+2014/U+2015, and lowercased; e-leading results are unproven.
-No operand is required. `-File`, `--`, pipeline/sequence boundaries and quoted
-separators do not reset the check. No wrapper enumeration or recursive parser
-is used. Detection alone
-normalizes module/basename, executable extension and case. This does not
-normalize the exact rule key or introduce general indirect-code detection.
+literal quoted command strings, participates in the PowerShell exclusion.
+Once a recognized launcher word is seen, every later token must pass a
+positive character proof after shell quote removal: every code point is a
+Unicode letter, number, punctuation, symbol, or U+0020 ASCII space. Other
+separators, controls, combining marks and unassigned code points are unproven;
+Hangul letters remain literal. Only validated tokens receive the deliberate
+e-prefix overmatch: remove leading `-`, `/`, U+2013/U+2014/U+2015 and
+lowercase; an e-leading result is unproven, including `ExecutionPolicy`.
+No argument-binder whitespace emulation is used. The check never stops at
+`-File`, `--`, pipelines, sequences or quoted separators, requires no
+operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+executable-extension and case normalization are detection-only; raw keys remain
+unchanged.
 
 Literal visible `python -c`, `sh -c`, `Invoke-Expression`, `find -exec`,
 `xargs` and similar commands can be covered by exact rules when their outer
@@ -502,20 +514,34 @@ working directories, matcher loops and cross-dialect delegates. Spending that
 budget immediately unwinds to the cached lane-specific refusal. No fallback,
 remaining candidate or later analysis continues after it.
 
-For Lane A, only semantically verified quoted literal Bash heredocs receive a
-separate aggregate 65,536-byte (64 KiB) body-data allowance only when existing
-floor classification finds no known code-consuming receiver. Known interpreter
-consumers through existing wrapper, subshell or pipeline views keep full-body
-normal analysis and the 8,000-character cap. Quoted delimiters alone do not
-prove that a recipient treats stdin as data. Their executable envelope remains
-within 8,000 characters; projected AST grammar and quote semantics are verified
-under the shared prepaid budget. Eligible bodies receive only a linear metered
-data pass and never enter general analyzers, code/floor projections or general
-content inspection. Unquoted heredocs keep the normal cap; unsafe or ambiguous
-syntax fails closed. Exceeding either bound or the work budget requires modal
-approval. Lane B still caps the complete original input at 2,000 characters. Literal
+For Lane A, Bash heredoc bodies have a separate aggregate 65,536-byte (64 KiB)
+data allowance only when every heredoc operator in the original command has a
+quoted delimiter and existing floor classification finds no known
+code-consuming receiver. Known consumers through retained wrapper, subshell
+or pipeline views keep full-body normal analysis and the 8,000-character cap.
+Quoted delimiters alone do not prove that a recipient treats stdin as data.
+The executable envelope remains within 8,000 characters. Body extent comes from
+the original source: no body is deleted, no remaining text is reparsed as proof,
+and no separate line-continuation reader is used. Eligible bodies receive only
+a linear metered data pass, never general code/floor inspection.
+
+One unquoted delimiter cancels every body's data allowance. All text after the
+first heredoc operator's line then receives normal literal checks under the
+normal cap; plain unquoted bodies without expansion remain eligible within
+that cap. Unsafe or ambiguous syntax and exceeded bounds require modal
+approval. Lane B caps the complete original input at 2,000 characters. Literal
 `cat`/`tee -a` data writes remain eligible. Unknown-program stdin remains the
 accepted indirection limit; no new name list or Lane B carrier gate is added.
+
+The shared budget charges actual lexer steps and subsequent analysis work,
+with a ceiling linear in the bounded input length. It does not reserve work
+per whitespace span or charge a loop's maximum possible operations. The original
+grammar bounds permission analysis at 64 actual argument-word records per
+command and counts its rune/token advances against the shared ceiling. Nested
+commands retain separate records without resetting their containing command.
+No host-side shadow lexer predicts grammar work or heredoc extents. General
+structural parsing retains its existing default limits. Exhaustion is sticky
+and terminates all remaining analysis with the lane-specific closed result.
 
 These buckets describe visible-floor evidence; the actual execution route and
 literal proof complete the permission decision. A hard deny rejects the request

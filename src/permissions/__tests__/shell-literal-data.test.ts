@@ -32,13 +32,13 @@ describe("literal heredoc data bounds", () => {
     const command = hereDocument(bytes);
     const prepared = prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget());
     expect(prepared?.literalDataBytes).toBe(bytes);
-    expect(prepared?.command).not.toContain("aaaa");
+    expect(prepared?.command).toBe(command);
     expect(prepared?.parsed?.analysis.ok).toBe(true);
     const inspect = vi.spyOn(shellFloors, "inspectShellCommand");
     try {
       expect(check(command)).toMatchObject({ decision: "allow", layer: 3 });
       expect(String(inspect.mock.calls[0]?.[0] && typeof inspect.mock.calls[0][0] === "object"
-        ? inspect.mock.calls[0][0].command : inspect.mock.calls[0]?.[0]).length).toBeLessThan(100);
+        ? inspect.mock.calls[0][0].command : inspect.mock.calls[0]?.[0]).length).toBe(command.length);
     } finally { inspect.mockRestore(); }
   });
 
@@ -83,4 +83,27 @@ describe("literal heredoc data bounds", () => {
     expect(prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget())).toBeNull();
     expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
+  it("keeps original source and all expansion checks when heredoc quoting is mixed", () => {
+    const command = "cat <<X <<'Y'\nkeep\\\nX\n$(rm -rf /)\nY\nX\nY\n";
+    const prepared = prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget());
+    expect(prepared?.command).toBe(command);
+    expect(prepared?.literalDataBytes).toBe(0);
+    expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    const large = command.replace("$(rm -rf /)", "# " + "a".repeat(9_000) + "\n$(rm -rf /)");
+    expect(prepareShellFloorInput(large, "bash", new ShellFloorWorkBudget())).toBeNull();
+    expect(check(large)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+  it("keeps later unquoted heredocs from sharing a quoted-data allowance", () => {
+    const command = hereDocument(9_000) + "cat <<X\nplain data\nX\n";
+    expect(prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget())).toBeNull();
+    expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+  it("uses the original grammar for a backslash quoted delimiter", () => {
+    const command = hereDocument(9_000, "\\EOF");
+    const prepared = prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget());
+    expect(prepared?.command).toBe(command);
+    expect(prepared?.literalDataBytes).toBe(9_000);
+    expect(check(command)).toMatchObject({ decision: "allow", layer: 3 });
+  });
+
 });

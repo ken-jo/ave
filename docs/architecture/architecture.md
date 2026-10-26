@@ -1583,25 +1583,49 @@ Visible literal code, including interpreter options and delegated commands, is
 eligible for exact rules. File, stdin and network indirection are accepted
 limits, not separately detected blockers; a saved `make` or `python script.py`
 invocation does not fix the code it will later execute. The one execution-form
-exception is a recognized PowerShell launcher word anywhere in the whole command, including lexical words inside literal
-quoted command strings. After a launcher is seen, all later words in the command receive the conservative
-trim/dash/slash/e-prefix check, including across pipelines/sequences and past `-File` and `--`, without an
-operand requirement or wrapper enumeration. The sole launcher list is `pwsh`,
-`pwsh-preview`, `powershell`, `powershell_ise` and their `.exe` forms;
-module/basename/case handling belongs only to this detection.
+exception is a recognized PowerShell launcher word anywhere in the whole
+command, including lexical words inside literal quoted command strings.
+Once a recognized launcher word is seen, every later token must pass a
+positive character proof after shell quote removal: every code point is a
+Unicode letter, number, punctuation, symbol, or U+0020 ASCII space. Other
+separators, controls, combining marks and unassigned code points are unproven;
+Hangul letters remain literal. Only validated tokens receive the deliberate
+e-prefix overmatch: remove leading `-`, `/`, U+2013/U+2014/U+2015 and
+lowercase; an e-leading result is unproven, including `ExecutionPolicy`.
+No argument-binder whitespace emulation is used. The check never stops at
+`-File`, `--`, pipelines, sequences or quoted separators, requires no
+operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+executable-extension and case normalization are detection-only; raw keys remain
+unchanged.
+The sole launcher list is `pwsh`, `pwsh-preview`, `powershell`,
+`powershell_ise` and their `.exe` forms.
 
 For sandboxed commands the sandbox is the boundary. Normal analysis input is
-bounded at 8,000 characters. Verified quoted literal Bash heredoc bodies instead
-have a separate aggregate 64 KiB data allowance only when retained floor
-classification finds no known code-consuming receiver. Known interpreters,
-including through retained wrapper/subshell/pipeline views, keep normal
+bounded at 8,000 characters. Bash heredoc bodies have a separate aggregate
+64 KiB data allowance only when every original heredoc delimiter is quoted and
+retained floor classification finds no known code-consuming receiver. Known
+consumers, including through retained wrapper/subshell/pipeline views, keep
 full-body inspection and the 8,000-character cap. The executable envelope also
-stays within 8,000 characters, with grammar/quote verification using the shared
-prepaid work budget. Those bodies receive only a linear metered
-data pass, not general code/floor inspection; unquoted or ambiguous forms do
-not gain the exemption. Literal `cat`/`tee -a` data writes remain eligible;
+stays within 8,000 characters. Body extent comes from the original source:
+no body is deleted, no remaining text is reparsed as proof, and no separate
+line-continuation reader is used. Eligible bodies receive only a linear metered
+data pass, not general code/floor inspection. One unquoted delimiter cancels
+every body's data allowance; all text after the first heredoc operator's line
+then receives normal literal checks under the normal cap. Plain unquoted
+bodies without expansion remain eligible within that cap. Ambiguous syntax
+fails closed. Literal `cat`/`tee -a` data writes remain eligible;
 unknown-program stdin remains an accepted limit. No new name list or Lane B
 carrier gate is introduced. Complete Lane B input remains capped at 2,000.
+
+The shared budget charges actual lexer steps and subsequent analysis work,
+with a ceiling linear in the bounded input length. It does not reserve work
+per whitespace span or charge a loop's maximum possible operations. The original
+grammar bounds permission analysis at 64 actual argument-word records per
+command and counts its rune/token advances against the shared ceiling. Nested
+commands retain separate records without resetting their containing command.
+No host-side shadow lexer predicts grammar work or heredoc extents. General
+structural parsing retains its existing default limits. Exhaustion is sticky
+and terminates all remaining analysis with the lane-specific closed result.
 
 One shared work budget covers all analysis and delegation. Exhaustion stops all
 remaining analysis immediately: Lane B asks/L6 or denies headless; Lane A

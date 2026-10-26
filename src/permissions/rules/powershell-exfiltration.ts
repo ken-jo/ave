@@ -27,7 +27,7 @@ import {
   shellExfiltrationSignal,
 } from "./shell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, shellFloorBudgetSignals, shellFloorInputExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
-import { ShellFloorWorkBudget, ShellFloorWorkBudgetError } from "./shell-floor-work-budget.js";
+import { ShellFloorWorkBudget, ShellFloorWorkBudgetError, SHELL_FLOOR_WORK_LIMITS } from "./shell-floor-work-budget.js";
 
 class SharedPowerShellBudget extends PowerShellAnalysisBudget {
   constructor(readonly work: ShellFloorWorkBudget, disabled: ReadonlySet<PowerShellExpressionKind> = new Set()) { super(disabled); }
@@ -38,7 +38,7 @@ class SharedPowerShellBudget extends PowerShellAnalysisBudget {
   }
 
   override enter(source: string): void {
-    this.work.reserveSource(source);
+    this.work.enterSource(source);
     super.enter(source);
   }
 }
@@ -107,7 +107,7 @@ class Lexer {
   private depth = 0;
   // Complete command tokens remain usable for positive effects after refusal.
   readonly readable: PsCommand[] = [];
-  constructor(private readonly source: string, private readonly budget: PowerShellAnalysisBudget) {}
+  constructor(private readonly source: string, private readonly budget: PowerShellAnalysisBudget, private readonly commandWordsBounded = true) {}
 
   parseProgram(): PsPipeline[] {
     // Alternate quote delimiters are outside this lexer's supported grammar.
@@ -124,6 +124,10 @@ class Lexer {
     const pipelines: PsPipeline[] = [];
     let stages: PsCommand[] = [];
     let tokens: PsToken[] = [];
+    const pushToken = (token: PsToken): void => {
+      tokens.push(token);
+      if (this.commandWordsBounded && tokens.length > SHELL_FLOOR_WORK_LIMITS.commandTokens) throw new PowerShellBudgetError("Analysis budget exceeded");
+    };
     const endCommand = (): void => {
       if (tokens.length > 0) { stages.push({ tokens }); this.readable.push({ tokens }); }
       tokens = [];
@@ -139,7 +143,7 @@ class Lexer {
       const char = src[this.index]!;
       const next = src[this.index + 1];
       if (char === " " || char === "\t") { this.index += 1; continue; }
-      if (char === ",") { tokens.push(word(",", ",", false, [])); this.index += 1; continue; }
+      if (char === ",") { pushToken(word(",", ",", false, [])); this.index += 1; continue; }
       if (char === "`" && (next === "\n" || next === "\r")) { this.index += next === "\r" && src[this.index + 2] === "\n" ? 3 : 2; continue; }
       if (char === "\n" || char === "\r" || char === ";") { endPipeline(); this.index += 1; continue; }
       if (char === "<" && next === "#") {
@@ -167,7 +171,7 @@ class Lexer {
             throw new PsUnreadable("unsupported background execution");
           }
         }
-        tokens.push(word("&", "&", false, []));
+        pushToken(word("&", "&", false, []));
         this.index += 1;
         continue;
       }
@@ -180,11 +184,11 @@ class Lexer {
       }
       const open = groupOpenAt(src, this.index);
       if (open) {
-        tokens.push(this.parseGroup(open));
+        pushToken(this.parseGroup(open));
         continue;
       }
       if ((char === "@") && (next === "'" || next === "\"") && /^[ \t]*\r?\n/.test(src.slice(this.index + 2))) {
-        tokens.push(this.parseHereString(next));
+        pushToken(this.parseHereString(next));
         continue;
       }
       if (char === "'" || char === "\"") {
@@ -196,10 +200,10 @@ class Lexer {
         const following = src[this.index];
         if (following && !/[\s;|&(){},=+\-<>]/.test(following)) throw new PsUnreadable("unsupported adjacent string fragment");
         if (following && /[=+\-]/.test(following)) token.adjacent = true;
-        tokens.push(token);
+        pushToken(token);
         continue;
       }
-      tokens.push(this.parseBareword());
+      pushToken(this.parseBareword());
     }
     if (closer !== undefined) throw new PsUnreadable("unterminated group");
     endPipeline();
@@ -1187,8 +1191,7 @@ function senderCommandSignal(cmd: PsCommand, fedByPipeline: boolean, ctx: Contex
     const nativeName = head.label && NATIVE_ALIASED.has(head.label) ? head.label : bare;
     if (NATIVE_ALIASED.has(nativeName) || (isNetworkProgram([bare]) && !HTTP_CMDLETS.has(name))) {
       const argv = `${fileInput ? "cat '__ave_pipeline_input__' | " : ""}${bashArgv(nativeName, args, ctx)}`;
-      // Only a short, entirely quoted argv reaches this parser; reserve its scan work.
-      ctx.budget.spend(argv.length * 4, argv.length);
+      // Delegated parsing shares and charges the same decision budget.
       const native = shellExfiltrationSignal(argv, ctx.cwd, sharedWork(ctx.budget));
       if (native === SHELL_FLOOR_BUDGET_REASON) throw new PowerShellBudgetError(native);
       if (native) return native;
@@ -1603,7 +1606,6 @@ function genericInterpreter(name: string): boolean {
 }
 
 function genericTextSignals(text: string, ctx: Context): FloorSignals {
-  ctx.budget.spend(text.length * 4 + 1, text.length);
   const signals = inspectShellCommand(text, ctx.cwd, sharedWork(ctx.budget));
   if (signals.analysisLimited) throw new PowerShellBudgetError(SHELL_FLOOR_BUDGET_REASON);
   return signals;
@@ -1948,9 +1950,9 @@ function sensitiveValues(pipelines: readonly PsPipeline[], ctx: Context): string
 
 // Signals
 
-function lex(command: string, budget: PowerShellAnalysisBudget): { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[] } {
+function lex(command: string, budget: PowerShellAnalysisBudget, commandWordsBounded = true): { pipelines: PsPipeline[] | null; reason?: string; readable?: PsCommand[] } {
   lexRecorder?.push(command);
-  const lexer = new Lexer(command, budget);
+  const lexer = new Lexer(command, budget, commandWordsBounded);
   try {
     return { pipelines: lexer.parseProgram() };
   } catch (error) {
@@ -2198,7 +2200,7 @@ export function _inspectPowerShellForTest(input: ShellCommandInput, cwd?: string
   const budget = new SharedPowerShellBudget(new ShellFloorWorkBudget(), new Set(disabled));
   const signals = runInspection(input, cwd, budget);
   return { ...signals, steps: budget.steps, chars: budget.chars, workSteps: budget.work.steps, workChars: budget.work.chars,
-    exhausted: budget.exhausted, limits: POWERSHELL_ANALYSIS_LIMITS };
+    exhausted: budget.exhausted, limits: { ...POWERSHELL_ANALYSIS_LIMITS, ...budget.workLimits } };
 }
 
 function inspectPowerShell(input: ShellCommandInput, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched = false, probe = false, files = new PowerShellFileProvenance(budget, cwd), pathData = false): FrameSignals {
@@ -2278,7 +2280,7 @@ function* visiblePathWords(text: string): Generator<string> {
 }
 
 function inspectFrame(command: string, cwd: string | undefined, budget: PowerShellAnalysisBudget, launched: boolean, probe: boolean, files: PowerShellFileProvenance, pathData: boolean): FrameSignals {
-  const { pipelines, reason, readable } = lex(command, budget);
+  const { pipelines, reason, readable } = lex(command, budget, !probe);
   if (pipelines !== null) rememberLex(command, pipelines);
   const ctx: Context = { cwd, tainted: new Set(), splats: new Map(), values: new Map(), vocabularyOpaque: false, scopeOpaque: false, launched, literalBoundary: false, files, pathData: new Set(), memberReads: new Set(), ordinary: {}, budget };
   let sensitive: string | null = null;

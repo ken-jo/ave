@@ -222,9 +222,10 @@ lifecycle coverage are described in the architecture contract.
 Host-shell credential/sink classification is separate from exact raw-word
 identity. Unsandboxed input over 2,000 characters asks, or denies headless,
 before command-dependent work. Lane A retains an 8,000-character executable
-envelope limit, with verified quoted literal Bash heredoc bodies separately
-bounded at an aggregate 65,536 bytes. Shared work-budget exhaustion immediately
-stops all analysis: Lane B asks/L6 or denies headless; Lane A requires modal
+envelope limit. Bash heredoc bodies receive a separate aggregate 65,536-byte
+data allowance only when every heredoc operator in the original command has a
+quoted delimiter and no known code-consuming receiver is present. Shared
+work-budget exhaustion immediately stops all analysis: Lane B asks/L6 or denies headless; Lane A requires modal
 approval/L2. No fallback, later candidate, floor, rule, proof or reviewer work
 continues. Exceeding Lane A input/data bounds likewise requires modal approval. An
 identified floor takes precedence over an ordinary reason in the same input.
@@ -386,22 +387,23 @@ The proof checks these conditions in order:
    whitespace; do not normalize the program head. Active variables, command
    substitutions, globs and escape expansion remain unproven. No argument
    binder emulation, numeric conversion or parameter-word lowercasing is used.
-4. Check every literal semantic word across the whole command for a
-   recognized PowerShell launcher, wherever it appears. Lexically inspect word
-   interiors of literal quoted command strings too, in bounded linear scans
-   of semantic values and raw words; no wrapper list or recursive dialect parser is used. Once a launcher
-   word is seen, inspect every later word in the command: trim its literal
-   value, remove all leading `-`, `/`, U+2013, U+2014 and U+2015 characters,
-   lowercase it, and refuse the command if the result starts with `e`.
-   This deliberately includes `ExecutionPolicy`, arbitrary e-leading data and
-   missing operands. Never stop at `-File`, `--`, a pipeline/sequence boundary
-   or a separator inside a quoted value. Detection may normalize a launcher's
-   module/basename, executable extension and case without changing the raw exact key. The
-   [encoded-execution predicate](../../src/permissions/rules/powershell-encoded-command.ts)
+4. Check every literal semantic word across the whole command for a recognized
+   PowerShell launcher, wherever it appears. Inspect literal quoted word
+   interiors too, in bounded linear scans of semantic values and raw words.
+   Once a recognized launcher word is seen, every later token must pass a
+   positive character proof after shell quote removal: every code point is a
+   Unicode letter, number, punctuation, symbol, or U+0020 ASCII space. Other
+   separators, controls, combining marks and unassigned code points are unproven;
+   Hangul letters remain literal. Only validated tokens receive the deliberate
+   e-prefix overmatch: remove leading `-`, `/`, U+2013/U+2014/U+2015 and
+   lowercase; an e-leading result is unproven, including `ExecutionPolicy`.
+   No argument-binder whitespace emulation is used. The check never stops at
+   `-File`, `--`, pipelines, sequences or quoted separators, requires no
+   operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+   executable-extension and case normalization are detection-only; raw keys remain
+   unchanged.
+   The [encoded-execution predicate](../../src/permissions/rules/powershell-encoded-command.ts)
    owns this exclusion; the narrower display decoder never decides permissions.
-   Lexical word boundaries are whitespace, either quote, backtick, semicolon,
-   pipe, ampersand, parentheses, angle/curly brackets, comma and equals sign. These boundaries
-   split words but never reset the already-seen launcher state.
 
 The sole proof launcher list is `pwsh`, `pwsh-preview`, `powershell` and
 `powershell_ise`, plus their `.exe` forms, matched case-insensitively by exact
@@ -454,22 +456,36 @@ classification.
 
 Lane B retains its earlier 2,000-character limit on the complete original
 command; no heredoc exemption changes it. Lane A permits a separate data
-allowance only for semantically verified quoted literal Bash heredocs:
+allowance only when every heredoc operator in the original Bash command has a
+quoted delimiter, including `<<'X'`, `<<"X"` and `<<\X`:
 
-- the aggregate body data across all such heredocs is at most 65,536 bytes
-  (64 KiB), independently of the executable envelope's 8,000-character limit;
-- quoted-delimiter semantics and projected AST grammar must be verified under
-  the shared prepaid work budget; unsafe or ambiguous syntax fails closed;
+- the aggregate body data is at most 65,536 bytes (64 KiB), independently of
+  the executable envelope's 8,000-character limit;
+- body extent comes from analysis of the original source. No body is deleted,
+  no remaining text is reparsed as proof, and no separate line-continuation
+  reader is used. Unsafe or ambiguous syntax fails closed;
 - existing floor classification (`hiddenCodeReason`) must not identify a known
-  code-consuming recipient, including through its retained wrapper, subshell or pipeline
-  views. Such recipients receive no data exemption: normal-size inputs retain
-  full-body floor inspection, and larger inputs keep the normal 8,000-character
-  limit rather than dropping visible code from analysis;
-- body data receives only a linear metered pass and never enters general
-  analyzers, visible-code/floor projections or general content inspection;
-- unquoted heredocs keep the normal input limit, with no data exemption;
+  code-consuming recipient, including through retained wrapper, subshell or
+  pipeline views. Such recipients receive normal full-body floor inspection
+  and the 8,000-character cap;
+- eligible bodies receive only a linear metered data pass, never general code
+  or floor inspection;
+- one unquoted delimiter cancels the allowance for every body. All text after
+  the first heredoc operator's line then receives normal literal checks and
+  the command keeps the normal 8,000-character cap. Plain unquoted bodies
+  without expansion remain eligible within that cap;
 - exceeding either bound or the shared work budget requires per-call modal
   approval rather than automatic sandbox allowance.
+
+The shared budget charges actual lexer steps and subsequent analysis work,
+with a ceiling linear in the bounded input length. It does not reserve work
+per whitespace span or charge a loop's maximum possible operations. The original
+grammar bounds permission analysis at 64 actual argument-word records per
+command and counts its rune/token advances against the shared ceiling. Nested
+commands retain separate records without resetting their containing command.
+No host-side shadow lexer predicts grammar work or heredoc extents. General
+structural parsing retains its existing default limits. Exhaustion is sticky
+and terminates all remaining analysis with the lane-specific closed result.
 
 Quoted delimiters prevent shell expansion; they do not make stdin data when a
 known interpreter will execute it. Literal data writes through `cat` or
