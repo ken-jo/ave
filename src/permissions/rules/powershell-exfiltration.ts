@@ -12,7 +12,7 @@ import { literalRuleWord } from "./rule-specifier.js";
 import { INTERPRETER_SET, SHELL_SET, isPowerShellLauncher, programName, MAX_LITERAL_COMMAND_LENGTH } from "./shell-prefix-values.js";
 import { type ShellCommandInput } from "./shell-prefix-policy.js";
 import { encodedPowerShellExecutionReason } from "./powershell-encoded-command.js";
-import { inspectLiteralShellArgvFacts, sensitivePathInArgumentText, sensitivePathInLiteralArgumentText } from "./shell-exfiltration.js";
+import { inspectLiteralShellArgvFacts, literalArgvRuntimeBinding, sensitivePathInArgumentText, sensitivePathInLiteralArgumentText } from "./shell-exfiltration.js";
 import { shellFloorBudgetSignals, type ShellFloorSignals, ShellFloorContext } from "./shell-floor-policy.js";
 import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 
@@ -591,6 +591,7 @@ function staticProgram(pipelines: readonly PsPipeline[], analysis: PowerShellAna
         stage.payloadIndex = literalEvaluationPayload(stage);
         if (hasUnsupportedFloorBinding(stage)) dynamic = true;
         if (hasAmbiguousPowerShellLauncherArguments(stage)) dynamic = true;
+        if (literalArgvRuntimeBinding(stage.argv, sharedWork(analysis))) dynamic = true;
         stages.push(stage);
       }
     }

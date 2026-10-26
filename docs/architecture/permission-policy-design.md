@@ -313,6 +313,13 @@ callbacks, command names built from output, and commands whose meaning depends
 on a file or cwd changed earlier in the same input. The floor does not simulate
 any of these constructs to recover an allow result.
 
+The callback-capable `git rebase`, `git grep` and `git submodule` families
+are conservatively `unproven` as a whole, including their ordinary operations.
+The pass identifies the subcommand after supported global options and wrappers;
+it neither binds callback options nor parses their payloads. These commands
+require per-call approval even with an exact rule. Other literal Git families,
+including `git commit -m 'message'`, retain ordinary exact-rule eligibility.
+
 Ordinary static package-runner calls such as `npx prettier .`, `npm test`,
 `pnpm dlx tsc` and `corepack pnpm install` remain rule-eligible when their outer
 argv is literal and unambiguous. The runner stays in the exact identity; an

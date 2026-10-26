@@ -6,7 +6,7 @@ import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js
 import { caseFoldForMatch, foldCanonicalPathSeparators, SENSITIVE_PATH_ENTRIES, SENSITIVE_PATH_PATTERNS } from "../sensitive-paths.js";
 import { literalRuleWord } from "./rule-specifier.js";
 import { SHELL_FLOOR_BUDGET_REASON, ShellFloorContext, ShellFloorLimitError, isShellFloorLiteralData, shellFloorBudgetSignals, shellFloorFallbackInputExceeded, shellFloorInputExceeded, shellFloorParserBudgetExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
-import { shellFact, wrapperCommand, type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
+import { globalOptionsEnd, shellFact, wrapperCommand, type ParsedShellCommand, type ShellCommandInput } from "./shell-prefix-policy.js";
 import { RUNNER_COMMAND_PREFIXES, isPowerShellLauncher, literalCommandAfterPrefix, programName as policyProgramName, runnerHasPrefix, runnerName } from "./shell-prefix-values.js";
 
 export const SHELL_EXFIL_VERDICT_REASON = "shell possible credential exfiltration";
@@ -23,9 +23,22 @@ const CURL_DATA = /^(?:-d|--data(?:-ascii|-binary|-raw|-urlencode)?|--json)(?:=|
 const CURL_FORM = /^(?:-F|--form)(?:=|$)/;
 const CURL_UPLOAD = /^(?:-T|--upload-file|-K|--config)(?:=|$)/;
 const WGET_UPLOAD = /^(?:--post-file|--body-file)(?:=|$)/;
+const CURL_FILE_OPTIONS = Object.freeze(["--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode", "--json", "--form", "--header", "--proxy-header", "--upload-file", "--config"]);
+const GIT_CALLBACK_FAMILIES = new Set(["rebase", "grep", "submodule"]);
 const NON_FILE_URL = /^(?!file:)[a-z][a-z0-9+.-]*:\/\//i;
 const UNPARSED_UPLOAD = /\b(?:curl|wget)\b[^\n;&|]*\s(?:-[A-Za-z]*[dF]|--data(?:-binary|-raw|-urlencode|-ascii)?|--json|--form|-T|-K|--upload-file|--config|--post-file|--body-file)(?:=|\s+)?["']?[^\s"']*@?/;
 const DYNAMIC_REASON = "Shell command requires runtime evaluation";
+
+function fileTransferOption(token: string): string {
+  const flag = token.split("=", 1)[0]!;
+  if (!flag.startsWith("--") || flag.length < 8) return token;
+  const matches = CURL_FILE_OPTIONS.filter((name) => name.startsWith(flag));
+  return matches.length === 1 ? matches[0]! + token.slice(flag.length) : token;
+}
+
+function wgetFileSetting(token: string): boolean {
+  return /^(?:post|body)_?file[\t ]*=/i.test(token);
+}
 
 function programName(value: string | undefined): string | undefined {
   if (value === undefined) return undefined;
@@ -160,7 +173,7 @@ function curlShortFileOption(token: string): { kind: "data" | "form" | "upload" 
   }
   return null;
 }
-export interface LiteralShellArgvFacts { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean }
+export interface LiteralShellArgvFacts { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; runtimeBinding?: true }
 export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set(), evaluation?: LiteralEvaluationResult): LiteralShellArgvFacts {
   let sensitive: string | null = null, exfiltration: string | null = null;
   let curl = false, wget = false, scp = false, rsync = false, scripted = false, socat = false, network = false, reader = false, readsPath = false;
@@ -171,9 +184,10 @@ export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)
   for (let index = 0; index < argv.length; index += 1) {
     context.visits.staticTokens += 1;
     if (payloadIndexes.has(index) || inRange(heads.payloadRange, index)) continue;
-    const token = argv[index]; if (token === undefined) continue;
+    const originalToken = argv[index]; if (originalToken === undefined) continue;
+    const token: string = curl ? fileTransferOption(originalToken) : originalToken;
     context.visits.staticArguments += 1; context.visits.staticChars += token.length;
-    const name = heads.headNames?.get(index) ?? programName(token);
+    const name: string | undefined = heads.headNames?.get(index) ?? programName(token);
     const isHead = heads.headIndexes.has(index) || inRange(heads.headRange, index);
     curl ||= isHead && name === "curl"; wget ||= isHead && name === "wget"; scp ||= isHead && name === "scp"; rsync ||= isHead && name === "rsync"; scripted ||= isHead && (name === "sftp" || name === "ftp" || name === "lftp" || name === "tftp"); socat ||= isHead && name === "socat";
     network ||= isHead && name !== undefined && NETWORK_PROGRAMS.has(name);
@@ -197,6 +211,9 @@ export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)
     else if (short?.kind === "form") { if (/(?:^|=)[@<]/.test(short.attached)) exfiltration ??= "curl form from a file"; else if (!short.attached) pendingCurlFile = "form"; }
     else if (short?.kind === "header") { if (/^@/.test(short.attached)) exfiltration ??= "curl header from a file"; else if (!short.attached) pendingCurlFile = "header"; }
     else if (wget && (WGET_UPLOAD.test(token) || /^--(?:post-f|body-f)/.test(token))) exfiltration ??= "wget body from a file";
+    else if (wget && ((token.startsWith("-e") && wgetFileSetting(token.slice(2)))
+      || (token.startsWith("--execute=") && wgetFileSetting(token.slice(10)))
+      || ((token === "-e" || token === "--execute") && wgetFileSetting(argv[index + 1] ?? "")))) exfiltration ??= "wget body from a file";
     else if (scripted && /^(?:-b|--batch-file|--input-file)(?:=|$)/.test(token)) exfiltration ??= "scripted transfer from a file";
     else if (socat && /^(?:FILE|OPEN|GOPEN):/i.test(token)) exfiltration ??= "socat reads a file";
     if ((scp || rsync) && name !== "scp" && name !== "rsync" && !token.startsWith("-")) {
@@ -206,7 +223,7 @@ export function inspectLiteralShellArgvFacts(argv: readonly (string | undefined)
   }
   if (transferOperands >= 2 && transferDestinationRemote) exfiltration ??= `${scp ? "scp" : "rsync"} to a remote target`;
   if (sensitive && (curl || wget || scp || rsync || scripted)) exfiltration ??= `sensitive path argument (${sensitive})`;
-  return { sensitive, exfiltration, network, readsPath };
+  return { sensitive, exfiltration, network, readsPath, ...(heads.runtimeBinding ? { runtimeBinding: true as const } : {}) };
 }
 export function inspectLiteralShellArgv(argv: readonly (string | undefined)[], cwd: string | undefined, context = new ShellFloorContext(), payloadIndexes: ReadonlySet<number> = new Set()): { sensitive: string | null; exfiltration: string | null } {
   const { sensitive, exfiltration } = inspectLiteralShellArgvFacts(argv, cwd, context, payloadIndexes);
@@ -216,11 +233,24 @@ export function inspectLiteralShellArgv(argv: readonly (string | undefined)[], c
 interface StaticPass { sensitive: string | null; exfiltration: string | null; network: boolean; readsPath: boolean; changesCwd?: true; writesFile?: true; unproven?: string; exactLiteralEvaluation?: true }
 function merge(into: StaticPass, value: StaticPass): void { into.sensitive ??= value.sensitive; into.exfiltration ??= value.exfiltration; into.network ||= value.network; into.readsPath ||= value.readsPath; into.changesCwd ||= value.changesCwd; into.writesFile ||= value.writesFile; into.unproven ??= value.unproven; }
 interface IndexRange { from: number; to: number }
-interface LiteralEvaluationResult { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; payloadRange?: IndexRange; ambiguous?: true }
+interface LiteralEvaluationResult { headIndexes: ReadonlySet<number>; headRange?: IndexRange; headNames?: ReadonlyMap<number, string>; payloadRange?: IndexRange; ambiguous?: true; runtimeBinding?: true }
 function inRange(range: IndexRange | undefined, index: number): boolean {
   return range !== undefined && index >= range.from && index < range.to;
 }
+const argvBoundaries = new WeakMap<ShellFloorContext, WeakMap<readonly (string | undefined)[], LiteralEvaluationResult>>();
 function literalEvaluationPayload(argv: readonly (string | undefined)[], context: ShellFloorContext): LiteralEvaluationResult {
+  let boundaries = argvBoundaries.get(context);
+  if (boundaries === undefined) { boundaries = new WeakMap(); argvBoundaries.set(context, boundaries); }
+  const cached = boundaries.get(argv);
+  if (cached !== undefined) return cached;
+  const result = inspectLiteralEvaluationBoundary(argv, context);
+  boundaries.set(argv, result);
+  return result;
+}
+export function literalArgvRuntimeBinding(argv: readonly (string | undefined)[], context: ShellFloorContext): boolean {
+  return literalEvaluationPayload(argv, context).runtimeBinding === true;
+}
+function inspectLiteralEvaluationBoundary(argv: readonly (string | undefined)[], context: ShellFloorContext): LiteralEvaluationResult {
   const read = (index: number): string | undefined => { context.visits.staticTokens += 1; return argv[index]; };
   const wrapped = wrapperCommand(argv);
   context.visits.staticTokens += Math.max(1, wrapped.index + 1);
@@ -316,6 +346,13 @@ function literalEvaluationPayload(argv: readonly (string | undefined)[], context
   const headIndexes = new Set([programIndex]);
   const headNames = packageBoundary && name !== undefined ? new Map([[programIndex, name]]) : undefined;
   if (name === undefined) return { headIndexes: new Set(), ambiguous: true };
+  if (name === "git") {
+    const verbIndex = globalOptionsEnd(argv, programIndex);
+    context.visits.staticTokens += Math.max(1, verbIndex - programIndex);
+    if (GIT_CALLBACK_FAMILIES.has(read(verbIndex) ?? "")) {
+      return { headIndexes, ...(headNames ? { headNames } : {}), ambiguous: true, runtimeBinding: true };
+    }
+  }
   if (isPowerShellLauncher(name)) {
     const option = read(programIndex + 1);
     if (option === undefined) return { headIndexes, ...(headNames ? { headNames } : {}) };
