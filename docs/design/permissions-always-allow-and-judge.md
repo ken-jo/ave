@@ -26,15 +26,15 @@ design must be reported explicitly.
 | `Mcp(<server>)` / `Mcp(<server>:<tool>)` | every tool of a server, or one tool |
 
 - Parsing is strict: anything outside the grammar throws.
-- Storage uses one canonical spelling.
+- Shell rule storage normalizes only interword whitespace. Complete raw program and argument words retain module names, paths, casing and quotes without any head normalization.
 - Legacy Store A glob patterns (`web_fetch`, `write_file:path:/abs`) never start with `Name(`. They are classified by shape and keep their glob semantics unchanged.
 
-**2. Shell decision order.** A persistent shell allow rule authorizes execution outside the sandbox. The host evaluates the actual per-invocation execution plan, rather than a remembered approval or a global setting alone:
+**2. Shell decision order.** A persistent exact shell allow rule authorizes execution outside the sandbox. An unsandboxed command over 2,000 characters immediately asks at L6 or denies headless before parsing, project loading, command rules, floors or review. For inputs within the limit, the host evaluates the actual per-invocation execution plan:
 
 1. Explicit deny rules deny. The destructive/irreversible and visible sensitive-path floors require authenticated user consent on every invocation, inside or outside the sandbox; the reviewer cannot approve them. Visible credential and upload floors have the same behavior.
 2. Explicit ask rules ask. Within-cap syntax refusal, unknown or incompletely consumed argv grammar, and runtime dependence also ask at L2 in the foreground and deny headless. A Lane B input-length or structural-cap refusal reached before static analysis follows the ordinary unsandboxed L6 ask and denies headless. No broad rule, mode or reviewer repairs either result.
 3. A `static-complete` command that will actually run sandboxed follows the sandboxed route without asking.
-4. A command that will run outside the sandbox runs unasked only on a current-format exact `Bash(<command>)` or `PowerShell(<command>)` allow rule of the same dialect (user, project or This session); otherwise it asks in every mode. This includes sandbox-off/unavailable execution, excluded commands, an unsandboxed retry and the Windows Plan B. The reviewer and judge are not consulted for it, and headless it is denied and audited.
+4. A command that will run outside the sandbox runs unasked only on a current-format exact `Bash(<command>)` or `PowerShell(<command>)` allow rule of the same dialect (user, project or This session). With that rule, foreground and headless requests allow at layer 3. Without it, foreground asks in every mode and headless denies and audits. This includes sandbox-off/unavailable execution, excluded commands, an unsandboxed retry and the Windows Plan B. The reviewer and judge are not consulted for it.
 5. A single outer command whose registered evaluator grammar consumes every option and operand and identifies a fully literal payload may use that current-format exact rule even though its static result is `unproven`. Without the exact rule it asks at L2 or denies headless, including on the sandboxed route.
 6. Prefix rules never authorize an unsandboxed or literal-evaluation command. They apply only to `static-complete` sandboxed commands, whose foreground and headless requests follow the normal sandbox route. Stored prefixes remain visible and revocable, and still match as deny and ask rules.
 
@@ -42,7 +42,43 @@ Store A action-key rules and remembered dock grants are not current-format exact
 
 Deny wins over every allow, regardless of specificity or scope. Existing strict-mode and untrusted-origin gates remain before automatic lanes. A session approval never changes the execution plan or switches off the sandbox for later commands. Unsandboxed calls do not consume session or persistent exact-tuple approval memory from Store B: each retry asks afresh unless covered by a current-format exact shell rule.
 
-For shell rule subjects, the permission layer consumes one host-only input, `shellExecution: { runsSandboxed }`. The host invocation authorization pipeline derives this input for native shells from the sealed execution plan; the sandbox producer can supply its per-invocation answer at this single boundary. Whether a sandbox is active for other commands no longer matters (unsandboxed shell exact-rule requirement). Terminal commands carry an explicit plain route. A missing route is also treated as plain, and every shell subject still receives the destructive and sensitive-path floors. The dock never infers sandboxed execution from missing plan evidence. After mandatory human approval floors are satisfied, native fallback execution still requires a one-use, exact-action permit, minted from either authenticated user consent or the completed host policy/reviewer decision.
+The [shell classification contract](../architecture/permission-policy-design.md#shell-credential-and-sink-classification)
+retains the 2,000-character Lane B cap and refuses incomplete analysis,
+nonliteral words and ambiguous raw-word recovery. A simple literal invocation
+through an external file, stdin or network content remains an accepted
+indirection limit only when a registered grammar consumes the known outer command and every
+literal operand; this does not prove the invoked effects. Runtime argv producers such
+as `xargs` remain `unproven`. A literal evaluation payload uses only the narrow
+current-format exact-rule exception and is not generally `static-complete`.
+
+The PowerShell exclusion examines every semantic word across the whole command,
+including a linear lexical scan of literal quoted word interiors. Once a
+recognized launcher word is seen, every later token must pass a
+positive character proof after shell quote removal: every code point is a
+Unicode letter, number, punctuation, symbol, or U+0020 ASCII space. Other
+separators, controls, combining marks and unassigned code points are unproven;
+Hangul letters remain literal. Only validated tokens receive the deliberate
+e-prefix overmatch: remove leading `-`, `/`, U+2013/U+2014/U+2015 and
+lowercase; an e-leading result is unproven, including `ExecutionPolicy`.
+No argument-binder whitespace emulation is used. The check never stops at
+`-File`, `--`, pipelines, sequences or quoted separators, requires no
+operand, and uses no wrapper list or recursive dialect parser. Module/basename,
+executable-extension and case normalization are detection-only; raw keys remain
+unchanged.
+Literal display decoding remains presentation-only.
+
+**Shell rule format.** Fresh shell allows, including session rules, record
+`shellRuleVersion: 1` (`SHELL_RULE_CANONICAL_VERSION` in
+`src/shared/shell-rule-version.ts`). Unversioned or wrong-version Bash and
+PowerShell allows remain silently inert in all scopes. Reads and unrelated
+writes preserve them without stamping a current version. There is no
+migration, new error or UI marker. Deny and ask rules retain their narrowing
+behavior regardless of version. A fresh user-authored current-format rule is
+required to grant authority; lost quote provenance is not reconstructed.
+
+**The approval card (owner decision 2026-10-25, unified approval card).** Every approval card draws one shared row: Deny ▾ | Allow for session ▾ | Allow once. Always deny is in the Deny dropdown; Allow for session, Always allow in this project and Always allow everywhere are in the allow dropdown. Selecting a choice shows the rule it saves and an Edit rule button above the row. On a shell card each remembering choice saves a rule: Always deny a user-global deny rule (the command's literal argv unless edited), the allows a session, project or user-global allow rule (the host-derived exact rule unless edited). The renderer sends `{ action, scope }` and, only when edited, `pattern`. The host validates an edited rule against the card's grammar and requires it to decide the live request, failing clearly otherwise. An allow edited into a wildcard is saved with a warning that it applies only to sandboxed runs; the exact-only rule for unsandboxed execution is unchanged. A network card's Always deny saves a `Network(<host>[:<port>])` deny rule, and its edited allows save `Network(...)` allow rules; unedited allows keep the grant of that lifetime. An exact tool approval maps the allows onto Store B session, project and user-global (`global`, owner decision 2026-10-25: Always allow everywhere) records and Always deny onto an exact deny, edited in Settings; any deny beats any allow, and among allows the conversation, then the project, then the global entry is consulted. Where the host records no exact decision for a request (`exactRecordAllowed: false`), Always deny is shown disabled with the one-shot reason. A folder card's lasting allow reads "Always allow this folder".
+
+For shell rule subjects, the permission layer consumes one host-only input, `shellExecution: { runsSandboxed }`. The host invocation authorization pipeline derives this input for native shells from the sealed execution plan; the sandbox producer can supply its per-invocation answer at this single boundary. Whether a sandbox is active for other commands no longer matters (unsandboxed shell exact-rule requirement). Terminal commands carry an explicit plain route. A missing route is also treated as plain. Shell input receives destructive and sensitive-path inspection only within its lane's character, data and total-token limits. Unsandboxed input over 2,000 characters asks at L6 or denies headless before inspection; sandboxed input over its envelope/heredoc bounds requires modal approval. Exceeding the global 400 executable word/value records stops analysis and returns Lane B ask/L6 or headless deny, or Lane A modal/L2. The dock never infers sandboxed execution from missing plan evidence. After mandatory human approval floors are satisfied, native fallback execution still requires a one-use, exact-action permit, minted from either authenticated user consent or the completed host policy/reviewer decision.
 
 **3. Shell command-rule matching** consumes the original typed parse and the
 static result defined by [Shell Credential And Sink Classification](../architecture/permission-policy-design.md#shell-credential-and-sink-classification).
@@ -97,7 +133,7 @@ static result, explicit restrictions and visible floors remain authoritative.
 
 **7. Approval storage and retained floors.** Existing Store B entries are never converted to command rules. Non-shell matching remains unchanged; plain-shell execution does not reuse them.
 - The shared approval content presents an editable host-derived shell rule suggestion in both the conversation dock and the approval lane card. Project scope is selected initially; Everywhere writes the user file. A saved command rule creates no exact Store B approval.
-- For eligible requests, Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Plain-shell calls disable this control and ignore retained entries. Existing entries keep their original identities.
+- For eligible non-shell requests, Allow for session records an exact Store B approval under the root conversation id. It does not write a rule file or authorize another root conversation. Shell requests instead save a session command rule when the host offers an exact rule and has a session id; retained Store B shell entries remain inert. Existing entries keep their original identities.
 - The destructive floor reads each command's argv: recursive or forced deletion in any option order, recursive or world-writable permission changes, raw disk writers and `find -delete` ask on every invocation.
 - **Irreversible commands never become allow rules,** exact or wildcard. The dock does not suggest them, the store refuses them, and the host rejects a save with `invalid-rule`. These commands require per-call consent, and deny rules may still name them. The list (`isIrreversibleShellArgv`):
   - Always: `mv`, `cp`, `install`, `tee` (any file operand without `-a`), `truncate`, `unlink`, `dropdb`.
@@ -375,7 +411,11 @@ The baseline work used `integration/permissions`. The approval rules UI is deliv
 - `ruleSubject`: a shell command with its dialect, sealed native edit targets, a mediated fetch URL, or the original MCP server/tool identity;
 - `projectRulesCwd`, which the tool pipeline loads through `ensureProjectRulesLoaded` before a synchronous decision. Relative Edit globs use that scope's project root. Bash and PowerShell command rules both use the resolved user, project or session scope.
 
-Checks run in this order:
+An unsandboxed shell input over 2,000 characters immediately asks at L6 or
+denies headless before project loading and all later command processing. The
+sandboxed 8,000-character envelope and aggregate 64 KiB eligible quoted-heredoc
+data bounds are checked before general inspection; stronger non-command denies may still refuse either path. For
+other inputs, checks run in this order:
 
 1. Deny decides at layer 1.
 2. A corrupt Store A, project file or Store B returns a forced ask that names the file for every non-read call. Reads keep the normal matrix so the app stays usable while the file is repaired. Settings identifies unavailable files without overwriting them; the user repairs the file outside the rule list. A corrupt Store B no longer blocks every tool call; the error is logged with the file name.
@@ -557,12 +597,14 @@ anchor-free matching under `C:/Users/<name>/`.
 
 ### Egress and verification boundary
 
-The sink catalogue remains necessary until a separate egress boundary exists.
-Sandbox defaults, platform availability and network enforcement belong to the
+Visible credential/sink floors coexist with the sandbox's filesystem and
+egress boundary. Sandbox defaults, platform availability and network enforcement
+belong to the
 [architecture contract](../architecture/architecture.md#os-execution-sandbox-and-plugin-workers).
-This rule-model change does not introduce a proxy or delegate credential/sink
-analysis to isolation. Plain-shell approval follows the decision order above. Shell URLs and remote package/registry sources alone do
-not replace credential/sink evidence.
+These floors inspect visible input; decoded payload contents do not feed the
+permission decision. Shell URLs and remote package/registry sources alone do
+not replace credential/sink evidence. Unsandboxed permission follows literal
+proof and exact-rule coverage rather than inferred egress safety.
 
 The decision-table and classifier checks establish policy-analysis behavior.
 Native shell execution and proxy/sandbox egress behavior are not validated by

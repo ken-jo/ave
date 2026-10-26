@@ -401,15 +401,26 @@ unproven. PowerShell launchers accept a script only through explicit `-File`
 with a literal `.ps1` operand; a bare launcher or implicit positional file or
 command is unproven.
 
-`Bash(...)` rules match Bash and `PowerShell(...)` rules match PowerShell,
-at user, project or session scope. Unsandboxed automatic allowance requires a
-current-format exact rule with literal raw-word identity. Fresh shell allows,
-including session rules, record `shellRuleVersion: 1`, owned by
-`SHELL_RULE_CANONICAL_VERSION` in `src/shared/shell-rule-version.ts`.
-Unversioned and wrong-version shell allows remain silently inert in all scopes;
-reads and unrelated writes preserve them without stamping a current version.
-No migration, new error or UI marker is introduced. Deny and ask rules retain
-their narrowing authority regardless of version.
+Shell rules are dialect-scoped: `Bash(...)` rules match bash and
+`PowerShell(...)` rules match PowerShell (owner decision 2026-10-25), each at
+user, project or session scope. Exact command rules preserve every literal raw
+word, including the complete program token, module qualifier, case, quote style
+and contents. Only whitespace between words is normalized. No command head or
+argument is unquoted, requoted, case-folded, basename-collapsed or value-converted
+for exact identity. Thus `Alpha\Invoke-Probe` and `Beta\Invoke-Probe`, case
+variants, `Write-Output '0x10'` and `Write-Output 0x10` are distinct keys.
+Module/basename/case normalization belongs only to detection, effect analysis
+and conservative deny/ask matching, never exact allow keys.
+
+Fresh shell allows, including session rules, record `shellRuleVersion: 1`,
+owned by `SHELL_RULE_CANONICAL_VERSION` in
+`src/shared/shell-rule-version.ts`. Unversioned and wrong-version shell allows
+remain silently inert in all scopes. Reads and unrelated writes preserve them
+without stamping a current version. There is no migration, new error,
+invalid-rule marker or UI flow for these rows. Lost old quote provenance is not
+reconstructed; a fresh user-authored rule is required to grant current-format
+authority. Deny and ask rules retain their narrowing authority regardless of
+version.
 
 Wildcard and other broad shell allows apply only to `static-complete` sandboxed
 requests. An unsandboxed request runs without asking only under a current-format
@@ -1183,10 +1194,17 @@ model's shell-environment description and the tool result say the sandbox is
 unavailable. By owner decision 2026-10-25 (unsandboxed shell exact-rule requirement) every plain shell — sandbox off,
 unavailable or not covering the command, an explicit host request, and the
 Windows partial-ASRT plan (`windows-partial-shell-acl-unsafe`) — runs unasked
-only on a current-format exact rule for its dialect, `Bash(<command>)` or
-`PowerShell(<command>)`, after the static floor permits that reuse; otherwise it asks on the
-five-choice card (five-choice shell card) in every mode, and headless it is denied and audited.
-The reviewer and the judge are not consulted for it. The parser and plan in
+only on a current-format exact allow rule for that proven literal command,
+`Bash(<command>)` or `PowerShell(<command>)`, matched on the command's literal
+raw words with the same strictness and only after the static floor permits that
+reuse (owner decision 2026-10-25). Otherwise it asks on the shared
+decision row of the approval card (owner decision 2026-10-25, unified approval
+card) in every mode. Headless, a matching exact rule runs it — for the Plan B
+and an explicit host request too — and without one it is denied and audited.
+The reviewer and the judge are not consulted for it. Wildcard allow rules apply
+only to sandboxed runs; deny rules may be wildcards. Remembered approvals saved
+for plain shells before this decision stay inert, without migration or a card
+marker. The parser and plan in
 [host-shell-execution-plan.ts](../../src/permissions/host-shell-execution-plan.ts),
 the [approval gate](../../src/permissions/approval-gate.ts) and
 [execution permit](../../src/permissions/host-shell-execution-permit.ts) own this
