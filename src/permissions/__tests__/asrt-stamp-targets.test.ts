@@ -380,6 +380,33 @@ describe.runIf(process.platform === "win32")("sandbox stamp target isolation", (
     })).rejects.toThrow(/Sandbox stamp target identity changed/);
   });
 
+  it("accepts a missing tail created as a plain directory before consumption", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const parent = scratch();
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      runtimeDenyWrite(config?.filesystem);
+      mkdirSync(join(parent, "missing"));
+      runtimeDenyWrite(config?.filesystem);
+      return { argv: ["fixture"], env: {} };
+    });
+    await expect(sandbox.wrapToolCommand("echo fixture", {
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(parent, "missing") + "\\"] },
+    })).resolves.toBeDefined();
+  });
+
+  it("refuses a missing tail created as a junction before consumption", async () => {
+    const { SandboxManager, sandbox } = await initializeFixtureSandbox();
+    const parent = scratch();
+    vi.spyOn(SandboxManager, "wrapWithSandboxArgv").mockImplementation(async (_command, _shell, config) => {
+      link(scratch(), join(parent, "missing"));
+      runtimeDenyWrite(config?.filesystem);
+      return { argv: ["fixture"], env: {} };
+    });
+    await expect(sandbox.wrapToolCommand("echo fixture", {
+      commandId: TEST_COMMAND_ID, filesystem: { denyWrite: [join(parent, "missing", "leaf")] },
+    })).rejects.toThrow(/Sandbox stamp target identity changed/);
+  });
+
   it("pins rebuilt session configs on worker registration and release", async () => {
     const { SandboxManager, sandbox } = await initializeFixtureSandbox();
     const updates: SandboxRuntimeConfig[] = [];

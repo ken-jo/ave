@@ -45,8 +45,9 @@ function guardedStampLiterals(paths: string[]): FilesystemPathEntry[] {
       for (const component of stampPathChain(path)) {
         const entry: BigIntStats | undefined = missing ? undefined : lstatSync(component, { bigint: true, throwIfNoEntry: false });
         const linkTarget = entry?.isSymbolicLink() ? readlinkSync(component) : undefined;
-        if (identities.has(component)) {
-          const previous = identities.get(component);
+        const previous = identities.get(component);
+        // A missing component that appears as a non-link cannot redirect the path; record it instead of failing.
+        if (identities.has(component) && !(previous === undefined && entry !== undefined && linkTarget === undefined)) {
           if (entry === undefined ? previous !== undefined : previous === undefined ||
               !sameFileIdentity(previous.identity, entry) || previous.linkTarget !== linkTarget) {
             throw new Error(`Sandbox stamp target identity changed: ${path}`);
