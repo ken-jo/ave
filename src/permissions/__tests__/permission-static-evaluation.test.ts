@@ -156,19 +156,24 @@ describe("runtime execution boundaries", () => {
     expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
   });
 
-  it.each([128, 256, 398])("decides a literal %i-prefix argv through the complete manager", (size) => {
-    const command = `${"npx ".repeat(size)}Write-Output ready`;
-    manager.setRules([withCurrentShellRuleVersion({ pattern: exact("powershell", command), action: "allow" })]);
+  it.each([128, 256, 398].flatMap((size) => [
+    { size, leaf: "Write-Output ready", expected: "ask" as const, layer: 2 },
+    { size, leaf: "printf ready", expected: "allow" as const, layer: 3 },
+  ]))("decides a literal $size-prefix argv with $leaf through the complete manager", ({ size, leaf, expected, layer }) => {
+    const command = `${"npx ".repeat(size)}${leaf}`;
+    const rule = buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule;
+    expect(rule === null).toBe(expected === "ask");
+    manager.setRules(rule === null ? [{ pattern: "*", action: "allow" }] : [withCurrentShellRuleVersion({ pattern: rule, action: "allow" })]);
     for (const sandboxed of [false, true]) {
       const samples: number[] = [];
       for (let observation = 0; observation < 3; observation += 1) {
         const start = performance.now();
         const result = check(command, "powershell", sandboxed);
         samples.push(performance.now() - start);
-        expect(result).toMatchObject({ decision: "allow", layer: 3 });
+        expect(result).toMatchObject({ decision: expected, layer });
       }
       const median = [...samples].sort((left, right) => left - right)[1]!;
-      process.stdout.write(`permission argv timing ${JSON.stringify({ size, lane: sandboxed ? "A" : "B", chars: command.length, samples, median })}\n`);
+      process.stdout.write(`permission argv timing ${JSON.stringify({ size, leaf, expected, lane: sandboxed ? "A" : "B", chars: command.length, samples, median })}\n`);
       expect(median).toBeLessThan(permissionDecisionCostTargetMs);
     }
   });

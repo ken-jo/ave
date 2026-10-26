@@ -26,24 +26,27 @@ function expectLinearGrowth(values: readonly number[], sizes: readonly number[])
 }
 
 describe("linear literal argv inspection", () => {
-  it("does constant work per token for a wide runner-shaped command", () => {
+  it.each([
+    { leaf: "Write-Output ready", expected: "unproven" },
+    { leaf: "printf ready", expected: "static-complete" },
+  ])("does constant work per token for a wide runner-shaped command ending in $leaf", ({ leaf, expected }) => {
     const sizes = [128, 256, 398] as const;
     const results = sizes.map((size) => _inspectPowerShellForTest(
-      `${"npx ".repeat(size)}Write-Output ready`,
+      `${"npx ".repeat(size)}${leaf}`,
       CWD,
     ));
 
     expect(results.map((result) => result.outcome)).toEqual([
-      "static-complete",
-      "static-complete",
-      "static-complete",
+      expected,
+      expected,
+      expected,
     ]);
     expect(results[0]!.visits.staticTokens).toBeGreaterThan(0);
 
     const powerShellWork = results.map((result) => staticWork(result.visits));
     const shellWork = results.map(shellStaticWork);
     const combinedWork = powerShellWork.map((value, index) => value + shellWork[index]!);
-    process.stdout.write(`permission argv work ${JSON.stringify({ sizes, powerShellWork, shellWork, combinedWork })}\n`);
+    process.stdout.write(`permission argv work ${JSON.stringify({ sizes, leaf, powerShellWork, shellWork, combinedWork })}\n`);
     for (const work of [powerShellWork, shellWork, combinedWork]) expectLinearGrowth(work, sizes);
   });
 

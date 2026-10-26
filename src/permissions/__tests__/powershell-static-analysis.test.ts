@@ -248,7 +248,7 @@ describe("PowerShell static floor analysis", () => {
   it("charges flat argv work once", () => {
     const counts = [128, 256, 398].map((count) => {
       const result = _inspectPowerShellForTest(`${"npx ".repeat(count)}Write-Output ready`, CWD);
-      expect(result.outcome).toBe("static-complete");
+      expect(result.outcome).toBe("unproven");
       return result.visits.staticTokens;
     });
     expect(counts[0]).toBeGreaterThan(0);

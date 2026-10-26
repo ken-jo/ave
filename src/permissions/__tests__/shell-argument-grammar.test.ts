@@ -28,6 +28,22 @@ describe("positive shell argument grammars", () => {
     expect(proveStaticArgv(["env", "cp", "source", "runner"], "bash")).toMatchObject({ kind: "static-complete", changesState: true });
     expect(proveStaticArgv(["cd", "-"], "bash").kind).toBe("unproven");
   });
+  it("keeps shell command resolution outside external delegation", () => {
+    for (const prefix of [["env"], ["npx"], ["npm", "exec", "--"]]) {
+      for (const child of [["Write-Output", "ready"], ["iwr", "-Uri", "https://x.invalid", "-InFile", "notes.txt"], ["Invoke-Expression", "dir"], ["eval", "ls"], ["cd", "directory"], ["builtin", "printf", "ready"], ["command", "printf", "ready"]]) {
+        expect(proveStaticArgv([...prefix, ...child], "powershell").kind).toBe("unproven");
+      }
+      expect(proveStaticArgv([...prefix, "eval", "ls"], "bash").kind).toBe("unproven");
+      expect(proveStaticArgv([...prefix, "printf", "ready"], "powershell").kind).toBe("static-complete");
+      const explicitPrefix = prefix[0] === "npx" ? [...prefix, "--"] : prefix;
+      expect(proveStaticArgv([...explicitPrefix, "bash", "-c", "ls"], "powershell").kind).toBe("literal-evaluation");
+    }
+    expect(proveStaticArgv(["eval", "ls"], "powershell").kind).toBe("unproven");
+    expect(proveStaticArgv(["exec", "eval", "ls"], "bash").kind).toBe("unproven");
+    expect(proveStaticArgv(["builtin", "git", "status"], "bash").kind).toBe("unproven");
+    expect(proveStaticArgv(["builtin", "printf", "ready"], "bash").kind).toBe("static-complete");
+    expect(proveStaticArgv(["command", "printf", "ready"], "bash").kind).toBe("static-complete");
+  });
   it.each(["bash", "powershell"] as const)("does not infer an inline shell argument tail in %s", (dialect) => {
     expect(proveStaticArgv(["fish", "--command", "printf ready", "--unknown"], dialect).kind).toBe("unproven");
     expect(proveStaticArgv(["fish", "-c", "printf ready", "-C", "printf other"], dialect).kind).toBe("unproven");

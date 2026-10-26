@@ -86,6 +86,7 @@ const POWERSHELL_GRAMMARS: Readonly<Record<string, CmdletGrammar>> = Object.free
 const SHELL_PROGRAMS = new Set(["sh", "bash", "zsh", "dash", "ksh", "fish"]);
 const PYTHON_PROGRAM = /^python(?:[23](?:\.\d+)?)?$/;
 const NODE_PROGRAMS = new Set(["node", "bun", "ruby", "perl"]);
+const BASH_BUILTINS = new Set([":", "true", "false", "pwd", "cd", "printf", "echo", "eval"]);
 
 export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: "bash" | "powershell", raw?: readonly string[], work?: StaticArgvWork): StaticArgvProof {
   const read = (index: number): string | undefined => {
@@ -147,11 +148,12 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
     return process.platform === "win32" ? token.toLowerCase().replace(/\.exe$/, "") : token;
   }
   let at = 0;
+  let resolution: "bash-command" | "powershell-command" | "native-executable" = dialect === "bash" ? "bash-command" : "powershell-command";
   while (at < argv.length) {
     const original = read(at)!;
     const name = program(original);
     const psName = canonicalPowerShellName(original);
-    if (dialect === "powershell") {
+    if (resolution === "powershell-command") {
       const qualified = original.includes("\\");
       const knownQualification = !qualified || /^Microsoft\.PowerShell\.(?:Utility|Management)\\/i.test(original);
       if (!original.includes("/") && knownQualification) {
@@ -173,9 +175,12 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
     }
     if (name === undefined) return UNPROVEN;
     if (name === "env" || name === "command" || name === "exec" || name === "builtin") {
+      if (name !== "env" && resolution !== "bash-command") return UNPROVEN;
       if (read(at + 1) === "--") at += 1;
       const next = read(++at);
       if (next === undefined || next.startsWith("-") || /^[A-Za-z_][A-Za-z0-9_]*=/.test(next)) return UNPROVEN;
+      if (name === "builtin" && !BASH_BUILTINS.has(next)) return UNPROVEN;
+      if (name === "env" || name === "exec") resolution = "native-executable";
       continue;
     }
     if (name === "npx") {
@@ -189,6 +194,7 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
         break;
       }
       if (!boundary && optionSuffix[at + 1] === 1) return UNPROVEN;
+      resolution = "native-executable";
       continue;
     }
     if (name === "npm" || name === "pnpm" || name === "yarn" || name === "yarnpkg") {
@@ -200,6 +206,7 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
         if (option?.startsWith("--call=")) return at + 1 === argv.length && option.length > 7 ? evaluation([at]) : UNPROVEN;
         if (option === "--") at += 1;
         else if (optionSuffix[at + 1] === 1) return UNPROVEN;
+        resolution = "native-executable";
         continue;
       }
       if (verb === "run" || verb === "run-script") {
@@ -243,7 +250,9 @@ export function proveStaticArgv(argv: readonly (string | undefined)[], dialect: 
       return complete();
     }
     if (name === "cd" && read(at + 1) === "-") return UNPROVEN;
+    if ((name === "cd" || name === ":") && resolution !== "bash-command") return UNPROVEN;
     if (name === "eval") {
+      if (resolution !== "bash-command") return UNPROVEN;
       if (at + 1 >= argv.length || read(at + 1)!.startsWith("-")) return UNPROVEN;
       return evaluation(Array.from({ length: argv.length - at - 1 }, (_, index) => at + 1 + index));
     }
