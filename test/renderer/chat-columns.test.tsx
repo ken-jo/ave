@@ -116,6 +116,7 @@ describe("chat columns", () => {
     const motion = await waitFor(() => {
       const found = view.container.querySelector('[data-testid="chat-side-panel-motion"]');
       expect(found?.getAttribute("data-panel-mode")).toBe("overlay");
+      expect(found?.getAttribute("aria-hidden")).toBe("false");
       return found!;
     });
     expect(motion.getAttribute("aria-hidden")).toBe("false");

@@ -97,17 +97,14 @@ describe("main windows", () => {
     electronMock.app.quit.mockClear();
   });
 
-  it("opens a centered responsive window without a boot mode argument", () => {
-    appState.setServices({
-      settingsService: { getAll: () => ({ system: { appMode: "chat" } }) },
-    } as never);
+  it("opens a centered responsive window with theme-only boot arguments", () => {
     const win = open();
     expect(win.options).toMatchObject({
       x: 339, y: 156, width: 1243, height: 768, minWidth: 360,
       webPreferences: { contextIsolation: true, nodeIntegration: false },
     });
     const options = win.options as { webPreferences: { additionalArguments: string[] } };
-    expect(options.webPreferences.additionalArguments.some((arg) => arg.startsWith("--ave-initial-app-mode="))).toBe(false);
+    expect(options.webPreferences.additionalArguments.every((arg) => arg.startsWith("--ave-initial-theme="))).toBe(true);
   });
 
   it("gives the first window the primary role and every later one the secondary role", () => {

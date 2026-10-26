@@ -36,7 +36,7 @@ type InputStatusRow = React.ComponentProps<typeof ComposerStatusRow>["statusRow"
 
 export interface ChatComposerDockProps {
   dockColumnClass: string;
-  /** Empty work-mode conversation: offer the new-chat project selector. The composer itself stays bottom-docked whether or
+  /** Empty conversation: offer the new-chat project selector. The composer itself stays bottom-docked whether or
    * not the conversation is empty — there is no centered placement and no descent on first send. */
   emptyConversation?: boolean;
   workflowApi: AveApi;

@@ -73,7 +73,7 @@ function isPluginPreparing(cards: PluginCards, pluginId: string): boolean {
   return cards.some((card) => card.id === pluginId && card.loadStatus === "preparing");
 }
 
-/** Keep auth gate refs and drain effects together to preserve login-first/open-on-authed routing in every app mode. */
+/** Keep auth gate refs and drain effects together to preserve login-first/open-on-authed routing at every window width. */
 export function usePluginViewRouting({
   api,
   t,

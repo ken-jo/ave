@@ -1,4 +1,4 @@
-import { useEffect, useState, type RefObject } from "react";
+import { useEffect, useState } from "react";
 import { SIDE_PANEL_MIN_RESERVE } from "../../../shared/side-panel.js";
 import { DOCK_ENTER_WIDTH, DOCK_EXIT_WIDTH, MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../shared/shell-geometry.js";
 
@@ -35,19 +35,20 @@ export function sidePanelLayout(width: number, narrow: boolean): SidePanelLayout
   return { mode: "overlay", min: Math.min(SIDE_PANEL_MIN_RESERVE, width), max: width };
 }
 
-/** Observe the parent so layout decisions cannot change their own measurement; use a 60px hysteresis band and treat missing
- * ResizeObserver as unmeasured wide layout. */
+/** Observe a state-held parent node so replacements reconnect after subtree recovery; layout decisions cannot change their
+ * own measurement. Use a 60px hysteresis band and treat missing ResizeObserver as unmeasured wide layout. */
 export function useContainerNarrow(
-  ref: RefObject<HTMLElement | null>,
+  element: HTMLElement | null,
   { enter = DOCK_ENTER_WIDTH, exit = DOCK_EXIT_WIDTH }: { enter?: number; exit?: number } = {},
 ): UseContainerNarrowResult {
   const [state, setState] = useState<UseContainerNarrowResult>({ isNarrow: false, width: Infinity });
 
   useEffect(() => {
-    const el = ref.current;
     const ResizeObserverImpl = typeof window !== "undefined" ? window.ResizeObserver : undefined;
-    if (!el || typeof ResizeObserverImpl !== "function") return;
+    if (!element || typeof ResizeObserverImpl !== "function") return;
+    let active = true;
     const observer = new ResizeObserverImpl((entries) => {
+      if (!active) return;
       const entry = entries[0];
       const width = entry?.contentBoxSize?.[0]?.inlineSize ?? entry?.contentRect.width ?? Infinity;
       setState((prev) => ({
@@ -55,9 +56,12 @@ export function useContainerNarrow(
         isNarrow: prev.isNarrow ? width < exit : width < enter,
       }));
     });
-    observer.observe(el);
-    return () => observer.disconnect();
-  }, [ref, enter, exit]);
+    observer.observe(element);
+    return () => {
+      active = false;
+      observer.disconnect();
+    };
+  }, [element, enter, exit]);
 
   return state;
 }

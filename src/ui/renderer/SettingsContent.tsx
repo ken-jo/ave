@@ -281,8 +281,8 @@ export function SettingsContent({
 
   // Measure panel width rather than viewport width; split panes can be narrow on wide displays. The dead band prevents
   // resize oscillation.
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  const { isNarrow } = useContainerNarrow(rootRef, { enter: SETTINGS_NARROW_ENTER_WIDTH, exit: SETTINGS_NARROW_EXIT_WIDTH });
+  const [rootElement, setRootElement] = useState<HTMLDivElement | null>(null);
+  const { isNarrow } = useContainerNarrow(rootElement, { enter: SETTINGS_NARROW_ENTER_WIDTH, exit: SETTINGS_NARROW_EXIT_WIDTH });
 
   // Retain narrow navigation depth across resize; a category selected while wide should remain the detail page when
   // narrowed.
@@ -302,11 +302,11 @@ export function SettingsContent({
     if (mobileDepth === "detail") {
       mobileBackRef.current?.focus();
     } else {
-      rootRef.current
+      rootElement
         ?.querySelector<HTMLElement>('[role="tab"][data-state="active"]')
         ?.focus();
     }
-  }, [mobileDepth, isNarrow]);
+  }, [mobileDepth, isNarrow, rootElement]);
 
   // Override primitive active/alignment styles for vertical rows; keep scaled labels on one clipped line.
   const sideTriggerCls =
@@ -326,7 +326,7 @@ export function SettingsContent({
 
   return (
     <SavedToastProvider value={notifySaved}>
-    <div ref={rootRef} className="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
+    <div ref={setRootElement} className="relative flex h-full min-h-0 min-w-0 flex-1 overflow-hidden">
     <Tabs
       orientation="vertical"
       // Keyboard activation: automatic on wide (arrowing a trigger instantly

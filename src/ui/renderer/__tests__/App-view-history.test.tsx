@@ -65,7 +65,7 @@ describe("App view history", () => {
     await waitFor(() => expect(path(container)).toContain("루틴"));
   });
 
-  it("names the destination on the buttons, since chat mode shows no path", async () => {
+  it("names the destination on the buttons when the path cannot fit", async () => {
     const { container } = await renderApp({ hasApiKey: true });
     await ready(container);
     const back = () => container.querySelector(testIdSelector(TEST_IDS.viewPathBack)) as HTMLButtonElement;

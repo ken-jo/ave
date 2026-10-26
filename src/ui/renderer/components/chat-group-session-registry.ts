@@ -70,13 +70,13 @@ export interface ChatGroupSessionHandle {
   /** Which session this tile is holding — the sidebar highlights it. */
   currentSessionId: string;
   /**
-   * The view is not drawing this tile right now (chat mode, or another tile
+   * The view is not drawing this tile right now (a narrow canvas, or another tile
    * maximized). It is still mounted, because its conversation may be mid-turn
    * and the turn's subscription lives here — but nothing it renders is on
    * screen, so it must not CLAIM anything the user has to see.
    */
   hidden: boolean;
-  /** The TREE is not drawing this pane: another tile has its box (maximized, or chat mode's single tile). One of the two
+  /** The TREE is not drawing this pane: another tile has its box (maximized, or focused on a narrow canvas). One of the two
    * reasons `hidden` is true, published apart because they route differently — see `overlayCardTile`. */
   paneHidden: boolean;
   currentSessionProject: SessionProjectSummary;
@@ -200,7 +200,7 @@ export interface OverlayCardPlacement {
   chatGroupId: string | null;
   /**
    * The card names a conversation NO drawn tile is holding — it was closed,
-   * maximized away, or folded out of sight by chat mode.
+   * maximized away, or folded out of sight on a narrow canvas.
    *
    * The card is not drawn until that conversation is opened again, and must
    * not be: its primary action continues the origin conversation, and running

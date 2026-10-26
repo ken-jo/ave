@@ -261,13 +261,17 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
   } = usePanelWidth(api, SIDE_PANEL_WIDTH_PREF);
   // Measure both optional columns so hiding one cannot change the visibility decision.
   const chatViewRootRef = useRef<HTMLDivElement | null>(null);
+  const [chatViewRootElement, setChatViewRootElement] = useState<HTMLDivElement | null>(null);
+  const handleChatViewRootRef = useCallback((element: HTMLDivElement | null) => {
+    chatViewRootRef.current = element;
+    setChatViewRootElement(element);
+  }, []);
   const dockedPanelMotionRef = useRef<HTMLDivElement | null>(null);
   const panelSlot = usePanePanelSlot();
   const inFrame = panelSlot !== null;
   const panelHost = panelSlot?.panel ?? null;
   const tileElement = panelSlot?.tile ?? null;
-  const tileRef = useMemo(() => ({ current: tileElement }), [tileElement]);
-  const { width: containerWidth, isNarrow } = useContainerNarrow(inFrame ? tileRef : chatViewRootRef);
+  const { width: containerWidth, isNarrow } = useContainerNarrow(inFrame ? tileElement : chatViewRootElement);
   const columns = chatColumnsLayout(containerWidth, thumbnailOpen, sidePanelOpen, sidePanelWidth, isNarrow);
   useEffect(() => {
     onColumnsVisibilityChange?.({ thumbnailHiddenForWidth: columns.thumbnailHiddenForWidth, panelHiddenForWidth: columns.panelHiddenForWidth });
@@ -705,7 +709,7 @@ export function ChatView({ api, onAsk, onRunMcpPrompt, onRunPluginPrompt, onEdit
 
   return (
     <div
-      ref={chatViewRootRef}
+      ref={handleChatViewRootRef}
       className="relative flex min-h-0 min-w-0 w-full flex-1 flex-row overflow-hidden"
       data-testid={TEST_IDS.chatViewRoot}
     >

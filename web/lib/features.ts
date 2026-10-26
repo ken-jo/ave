@@ -254,7 +254,7 @@ const ko: Pages = {
         {
           title: "칸마다 따로 도는 대화",
           body: "칸마다 자기 대화 루프가 있어서, 여러 대화가 동시에 답을 받습니다.",
-          pic: { k: "app-subagents", alt: "작업 모드의 세 칸에 각각 다른 대화가 열려 있는 화면" },
+          pic: { k: "app-subagents", alt: "세 칸에 각각 다른 대화가 열려 있는 화면" },
           w: 3,
         },
         {
@@ -275,7 +275,7 @@ const ko: Pages = {
         ["긴 대화는 자동으로 정리됩니다.", "언제 정리할지는 모델 카탈로그가 알려 주는 그 모델의 컨텍스트 창을 기준으로 합니다."],
         ["사용량은 모델별로.", "사용량 탭에서 모델별 토큰과 비용을 보고 CSV로 내보냅니다."],
       ],
-      pic: { k: "app-conversation", alt: "작업 모드에서 local-model이 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화" },
+      pic: { k: "app-conversation", alt: "local-model이 export 명령에 --json 플래그를 넣고 테스트 6개가 통과했다고 답한 대화" },
       flip: true,
     },
     providers: {
@@ -699,7 +699,7 @@ const en: Pages = {
         {
           title: "Each tile on its own loop",
           body: "Every tile runs its own conversation loop, so several conversations get answers at once.",
-          pic: { k: "app-subagents", alt: "Work mode with three tiles, each holding a different conversation" },
+          pic: { k: "app-subagents", alt: "Three tiles, each holding a different conversation" },
           w: 3,
         },
         {
@@ -720,7 +720,7 @@ const en: Pages = {
         ["Long conversations are compacted automatically.", "When to compact follows the model’s context window from the model catalog."],
         ["Usage per model.", "The Usage tab shows tokens and cost per model and exports them as CSV."],
       ],
-      pic: { k: "app-conversation", alt: "Work mode where local-model added a --json flag to the export command and reports that all six tests pass" },
+      pic: { k: "app-conversation", alt: "A conversation where local-model added a --json flag to the export command and reports that all six tests pass" },
       flip: true,
     },
     providers: {

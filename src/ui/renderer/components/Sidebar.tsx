@@ -96,7 +96,7 @@ export interface SidebarProps {
   /** Called with the selected key — same contract as handleViewSelect, which also accepts the `plugin-doctor:<id>` pseudo-key
    * that is intercepted before it can become a location. Hence `string`, not `ViewKey`. */
   onSelect: (viewKey: string) => void;
-  /** Hide new-pane gestures in chat mode; report capacity refusals when invoked in work mode. */
+  /** Hide new-pane gestures on a narrow canvas; report capacity refusals when invoked. */
   onSelectInNewPane?: (viewKey: string) => void;
   /** Plugin views from usePluginMarketplace — same list passed to the main content region. */
   pluginViews: PluginUiExtension[];
@@ -139,8 +139,8 @@ export interface SidebarProps {
   collapsed: boolean;
   /**
    * The expanded card floats OVER the content instead of the shell reserving
-   * room for it (chat mode: a single tile has no width to give). The shell
-   * derives it from the mode verdict; the card then behaves as a transient
+   * room for it when the shell is too narrow to push content. The shell
+   * derives it from its measured width; the card then behaves as a transient
    * surface — it takes focus when it opens, collapses on Escape or a pointer
    * down on the content beside it, and hands focus back to the toggle.
    */
@@ -1877,7 +1877,7 @@ export function Sidebar({
       else onSelect(viewKey);
       after?.();
     };
-    // Absent in chat mode, where there is no second pane to open into. The chord and the menu row go with it, together.
+    // Absent on a narrow canvas, where there is no second pane to open into. The chord and the menu row go with it, together.
     const openBeside = newPane && onSelectInNewPane
       ? () => {
         onSelectInNewPane(viewKey);
@@ -2044,7 +2044,7 @@ export function Sidebar({
               // left-aligns the narrower icon-rail body under the cluster.
               // `flex-1 min-h-0` stretches the bare column to the aside's bottom
               // (matching the expanded card) so the collapsed icon-rail body below
-              // — itself `flex-1` — fills top-to-bottom in chat mode instead of
+              // — itself `flex-1` — fills top-to-bottom instead of
               // hugging content height.
               "w-auto items-start flex-1 min-h-0 pointer-events-none [&>*]:pointer-events-auto"
             : // Anchor the resize handle relatively and stretch the card to the aside bottom; persisted inline width owns sizing.
@@ -2334,7 +2334,7 @@ export function Sidebar({
           viewKey="settings"
           label={t(BUILTIN_LABEL_KEYS.settings)}
           icon={<SettingsIcon className={settingsNeedsApiKey || runtimeUnavailable ? "h-4 w-4 text-destructive" : "h-4 w-4"} />}
-          // Active when settings render inline (work mode).
+          // Active when settings render inline.
           isActive={activeView === "settings"}
           {...viewRowHandlers("settings", { open: onOpenSettings })}
           collapsed={compact}

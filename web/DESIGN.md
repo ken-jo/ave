@@ -154,7 +154,7 @@ Print shows every element in its static form.
     fails the build for a package name the snapshot does not have. No testimonials, customer logos, rankings, or numbers
     without a source in the app; no placeholder text; no company hosts,
     addresses or paths.
-21. Names match the app's labels (Settings → Model, Allow once, Work mode).
+21. Names match the app's labels (Settings → Model, Allow once, Split pane).
 
 ## Libraries
 

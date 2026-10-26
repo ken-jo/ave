@@ -73,14 +73,16 @@ describe("preload — plugin webview asset URLs", () => {
     delete process.env.AVE_DEV_CONSOLE;
   });
 
-  it("exposes no layout-driven window resize APIs or boot mode seed", async () => {
+  it("limits the window surface to isolated previews and publishes the approved worlds", async () => {
     const api = await loadAveApi();
     const windowApi = api.window as Record<string, unknown>;
-    expect(windowApi).not.toHaveProperty("resizeForMode");
-    expect(windowApi).not.toHaveProperty("resizeForSidePanel");
-    expect(CHANNELS.window).not.toHaveProperty("resizeForMode");
-    expect(CHANNELS.window).not.toHaveProperty("resizeForSidePanel");
-    expect(exposed.has("__aveInitialAppMode")).toBe(false);
+    expect(Object.keys(windowApi)).toEqual(["openHtmlPreview"]);
+    expect(Object.keys(CHANNELS.window)).toEqual([
+      "minimize", "toggleMaximize", "close", "syncTitleBarTheme", "maximizedChanged", "fullscreenChanged", "openHtmlPreview",
+    ]);
+    expect([...exposed.keys()].sort()).toEqual([
+      "__aveDevMode", "__aveInitialTheme", "ave", "aveApi", "aveDrop", "aveHost", "avePlatform", "aveWindow",
+    ]);
     expect(windowApi.openHtmlPreview).toBeTypeOf("function");
   });
 

@@ -51,7 +51,7 @@ function getWindowBridge(): {
 
 export interface CustomTitleBarProps {
   /**
-   * Band content — the app toolbar cluster (collapse toggle, Chat/Work mode,
+   * Band content — the app toolbar cluster (collapse toggle,
    * Dev badge, search / star / export). Rendered in the band's left + middle,
    * LEFT of the native window controls. Interactive controls inside must wrap
    * themselves `WebkitAppRegion: "no-drag"`; the band itself is a drag region

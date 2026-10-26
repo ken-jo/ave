@@ -74,12 +74,6 @@ describe("MainToolbar", () => {
     expect(screen.queryByTestId("sidebar-collapse-toggle")).toBeNull();
   });
 
-  it("does not offer a workspace mode switch", () => {
-    renderWithProvider(defaultProps());
-    expect(screen.queryByTestId("app-mode-toggle")).toBeNull();
-    expect(screen.queryByRole("group", { name: "워크스페이스 모드" })).toBeNull();
-  });
-
   it("lines the lifecycle pills up in one row, app update first", () => {
     renderWithProvider(defaultProps({
       appUpdateState: { kind: "available", version: "9.9.9" },

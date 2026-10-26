@@ -186,8 +186,13 @@ export function App() {
   // Persist the current settings tab and return view so restart resumes the same page.
   const { settingsTab, setSettingsTab, restoresApplied: settingsTabRestoresApplied } =
     useSettingsTab(api);
-  const shellRef = useRef<HTMLDivElement>(null);
+  const [shellElement, setShellElement] = useState<HTMLDivElement | null>(null);
   const chatGroupCanvasRef = useRef<HTMLDivElement>(null);
+  const [canvasElement, setCanvasElement] = useState<HTMLDivElement | null>(null);
+  const handleCanvasRef = useCallback((element: HTMLDivElement | null) => {
+    chatGroupCanvasRef.current = element;
+    setCanvasElement(element);
+  }, []);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // Persisted sidebar width drives both the card and the canvas reserve.
   const {
@@ -196,14 +201,14 @@ export function App() {
     commitWidth: commitSidebarWidth,
   } = usePanelWidth(api, SIDEBAR_WIDTH_PREF);
   const pushThreshold = sidebarPushThreshold(sidebarWidth);
-  const { isNarrow: sidebarNarrow } = useContainerNarrow(shellRef, {
+  const { isNarrow: sidebarNarrow } = useContainerNarrow(shellElement, {
     enter: pushThreshold, exit: pushThreshold + NARROW_DEAD_BAND_PX,
   });
   const sidebarOverlay = sidebarNarrow && !sidebarCollapsed;
   const { activeTab: sidebarActiveTab, setActiveTab: setSidebarActiveTab } = useSidebarTab(api);
 
   // Tile geometry follows docs/design/tiled-chat-groups.md.
-  const chatGroups = useChatGroups(chatGroupCanvasRef);
+  const chatGroups = useChatGroups(canvasElement);
   const mainSurfaces = useMainSurfaces();
   // Pane layout, terminal directories and page addresses persist across launches.
   useMainLayout(api, chatGroups, mainSurfaces);
@@ -270,7 +275,7 @@ export function App() {
     });
   }, [api]);
 
-  // Release conversations on tile close or idle-group adoption, never on chat-mode unmount.
+  // Release conversations on tile close or idle-group adoption, never when the canvas folds.
   const closeChatGroup = useCallback((chatGroupId: string) => {
     chatGroups.close(chatGroupId);
     releaseChatGroupLoop(chatGroupId);
@@ -999,7 +1004,7 @@ export function App() {
       // Default-workspace sessions are plain chats; only named projects label the root crumb.
       sessionProject: activeProject && !activeProject.isDefault ? activeProject : undefined,
     };
-    // Chat mode hides the path, so history buttons must name their destinations.
+    // History buttons name their destinations even when the path cannot fit.
     const destinationLabel = (target: ViewLocation | null) =>
       target ? viewLocationBreadcrumb(target, deps).at(-1)?.label : undefined;
     return {
@@ -1114,7 +1119,7 @@ export function App() {
     });
   }, [api, approvalQueue.length, handleLoadSessionAndRefresh, handleViewSelect]);
 
-  // Settings remains inline in every app mode; reselecting it changes the tab without remounting.
+  // Settings remains inline at every width; reselecting it changes the tab without remounting.
   const onOpenSettings = useCallback((tab = "llm") => {
     setSettingsTab(normalizeSettingsTab(tab));
     setActiveView("settings");
@@ -1731,7 +1736,7 @@ export function App() {
                 context for the floating-card Sidebar, so the card's `top-0` reaches
                 the window top — extending UP into the traffic-light band and
                 reclaiming that vertical space on the left. */}
-            <div ref={shellRef} data-testid="app-shell" className="relative flex h-screen min-w-0 flex-col overflow-hidden">
+            <div ref={setShellElement} data-testid="app-shell" className="relative flex h-screen min-w-0 flex-col overflow-hidden">
               {/* Single top band — window controls + the app toolbar cluster live
                   together here. The toolbar content is passed as children so it
                   renders IN the band (no separate toolbar row below it). */}
@@ -2028,7 +2033,7 @@ export function App() {
                                     box, so anchoring the tiles to the row itself would eat
                                     the air that lines the chat group's bottom edge up with
                                     the sidebar's. */}
-                                <div ref={chatGroupCanvasRef} className="relative h-full w-full" data-testid="pane-canvas">
+                                <div ref={handleCanvasRef} className="relative h-full w-full" data-testid="pane-canvas">
                                 {chatGroups.groups.map((group) => {
                                 const paneView = (chatGroups.contentById[group.id]?.view ?? "home") as InlineViewKey;
                                 return (

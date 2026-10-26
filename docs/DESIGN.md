@@ -476,7 +476,7 @@ determine whether a tile can split or a panel can dock.
 - Tone: concise, operational, literal.
 - Terminology:
   - Use "tile" for a conversation area and "work panel" for its auxiliary tools.
-  - Describe layout changes by available width rather than an app mode.
+  - Describe layout changes by available width.
   - Use "provider", "model", "reasoning", "approval", "plugin", "MCP", and "local indexer" consistently.
 - Microcopy rules:
   - Do not add tutorial text inside normal app surfaces.

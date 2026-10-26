@@ -3,7 +3,6 @@ import "../../../../../test/renderer/setup.js";
 /** Docking follows its independent container with hysteresis. */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook } from "@testing-library/react";
-import { useRef } from "react";
 import { useContainerNarrow, sidePanelLayout } from "../use-container-narrow.js";
 import { SIDE_PANEL_MIN_RESERVE, SIDE_PANEL_MIN_WIDTH } from "../../../../shared/side-panel.js";
 import { DOCK_ENTER_WIDTH, DOCK_EXIT_WIDTH, MIN_DOCKED_TRANSCRIPT_WIDTH } from "../../../../shared/shell-geometry.js";
@@ -50,12 +49,8 @@ function installControllableResizeObserver() {
 }
 
 function renderContainerNarrow() {
-  return renderHook(() => {
-    const ref = useRef<HTMLDivElement | null>(null);
-    // Give the ref a real element so the effect attaches the observer.
-    if (!ref.current) ref.current = document.createElement("div");
-    return useContainerNarrow(ref);
-  });
+  const element = document.createElement("div");
+  return renderHook(() => useContainerNarrow(element));
 }
 
 describe("useContainerNarrow", () => {

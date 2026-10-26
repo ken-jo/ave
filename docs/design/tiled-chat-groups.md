@@ -182,10 +182,9 @@ the reading-column layout, with its composer spanning the available width
 below that column. The project selector and suggested tasks use their normal
 container layout wherever they fit.
 
-Settings no longer store an app mode. The one-time
-`system-app-mode-removed` migration removes the legacy `system.appMode` key
+The one-time settings migration removes the obsolete layout preference
 from disk, records completion, and preserves other settings. The former
-`"action"` app-mode alias has no replacement.
+`"action"` value has no replacement.
 
 ## Geometry: a split tree, not a list
 

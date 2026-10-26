@@ -662,8 +662,8 @@ function visibleTreeFor(tree: PaneNode, isSingleTile: boolean, focusedId: string
 
 /** Conversation-group and canvas-leaf ceilings count different resources; keep loop ownership separate from pane geometry
  * and displayed content. */
-export function useChatGroups(canvasRef: RefObject<HTMLElement | null>) {
-  const { isNarrow: isSingleTile } = useContainerNarrow(canvasRef, {
+export function useChatGroups(canvasElement: HTMLElement | null) {
+  const { isNarrow: isSingleTile } = useContainerNarrow(canvasElement, {
     enter: SINGLE_TILE_ENTER_WIDTH, exit: SINGLE_TILE_EXIT_WIDTH,
   });
   const [tree, setTree] = useState<PaneNode>(() => leaf(MAIN_CHAT_GROUP_ID));

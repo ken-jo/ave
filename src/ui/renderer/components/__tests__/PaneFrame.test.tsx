@@ -14,13 +14,12 @@ const t = ((key: string) => key) as never;
 function renderCanvasGroups(initialWidth = 1200) {
   let callback: ResizeObserverCallback;
   const canvas = document.createElement("div");
-  const canvasRef = { current: canvas };
   vi.stubGlobal("ResizeObserver", class {
     constructor(onResize: ResizeObserverCallback) { callback = onResize; }
     observe() {}
     disconnect() {}
   });
-  const hook = renderHook(() => useChatGroups(canvasRef));
+  const hook = renderHook(() => useChatGroups(canvas));
   const resizeCanvas = (width: number) => act(() => callback([
     { target: canvas, contentBoxSize: [{ inlineSize: width }] } as unknown as ResizeObserverEntry,
   ], {} as ResizeObserver));

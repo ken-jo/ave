@@ -424,7 +424,6 @@ describe("ChatView", () => {
     expect(dock).not.toBeNull();
     expect(dock).toHaveClass("w-full", "mx-auto", "max-w-(--reading-column-max)");
     expect(transcript).toHaveClass("chat-reading-column", "max-w-(--reading-column-max)");
-    expect(container.querySelector('[data-testid="app-mode-toggle"]')).toBeNull();
   });
 
   it("renders assistant text after stream text_delta event", async () => {
