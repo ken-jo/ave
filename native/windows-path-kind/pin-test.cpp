@@ -1,12 +1,14 @@
 #include <windows.h>
 #include <winternl.h>
 #include <winioctl.h>
+#include <aclapi.h>
 #include <cstdio>
 #include <cstring>
 #include <string>
 #include <vector>
 #include "pin.h"
 #pragma comment(lib, "ntdll.lib")
+#pragma comment(lib, "advapi32.lib")
 
 namespace {
 int fail(const char* stage) {
@@ -46,6 +48,69 @@ bool snapshot(const std::wstring& path, PinnedPath& pinned) {
   pinned.handles.emplace_back(handle);
   pinned.facts.emplace_back();
   return handle_facts(handle, pinned.facts.back());
+}
+
+bool pin_facts(const std::wstring& path, PathFacts& facts) {
+  PinnedPath pinned;
+  if (!pin_path(path.c_str(), pinned)) return false;
+  facts = pinned.facts.back();
+  return true;
+}
+
+bool same_identity(const PathFacts& before, const PathFacts& after) {
+  return before.id.VolumeSerialNumber == after.id.VolumeSerialNumber
+    && std::memcmp(&before.id.FileId, &after.id.FileId, sizeof(FILE_ID_128)) == 0;
+}
+
+bool add_fixture_ace(const std::wstring& path) {
+  HANDLE raw = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &raw)) return false;
+  PinnedHandle token(raw);
+  DWORD size = 0;
+  GetTokenInformation(raw, TokenUser, nullptr, 0, &size);
+  std::vector<BYTE> user(size);
+  if (!GetTokenInformation(raw, TokenUser, user.data(), size, &size)) return false;
+  const PSID sid = reinterpret_cast<TOKEN_USER*>(user.data())->User.Sid;
+  PinnedHandle file(CreateFileW(path.c_str(), READ_CONTROL | WRITE_DAC,
+    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, FILE_FLAG_OPEN_REPARSE_POINT, nullptr));
+  if (file.value == INVALID_HANDLE_VALUE) return false;
+  PACL previous = nullptr;
+  PSECURITY_DESCRIPTOR security = nullptr;
+  if (GetSecurityInfo(file.value, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+      nullptr, nullptr, &previous, nullptr, &security) != ERROR_SUCCESS) return false;
+  if (previous == nullptr) { LocalFree(security); return false; }
+  const DWORD ace_size = sizeof(ACCESS_ALLOWED_ACE) - sizeof(DWORD) + GetLengthSid(sid);
+  std::vector<BYTE> bytes(previous->AclSize + ace_size);
+  const auto updated = reinterpret_cast<PACL>(bytes.data());
+  bool success = InitializeAcl(updated, static_cast<DWORD>(bytes.size()), previous->AclRevision) != 0;
+  for (DWORD index = 0; success && index < previous->AceCount; ++index) {
+    void* ace = nullptr;
+    success = GetAce(previous, index, &ace) && AddAce(updated, previous->AclRevision, MAXDWORD,
+      ace, static_cast<ACE_HEADER*>(ace)->AceSize);
+  }
+  success = success && AddAccessAllowedAceEx(updated, previous->AclRevision, 0, FILE_READ_ATTRIBUTES, sid)
+    && SetSecurityInfo(file.value, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION,
+      nullptr, nullptr, updated, nullptr) == ERROR_SUCCESS;
+  LocalFree(security);
+  return success;
+}
+
+int change_time(const std::wstring& root) {
+  const std::wstring path = root + L"\\change-time", renamed = root + L"\\change-time-renamed";
+  { PinnedHandle file(CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW, 0, nullptr));
+    if (file.value == INVALID_HANDLE_VALUE) return fail("create changeTime fixture"); }
+  PathFacts original, unchanged, secured, moved;
+  if (!pin_facts(path, original) || !pin_facts(path, unchanged)) return fail("pin changeTime fixture");
+  if (original.change_time.QuadPart == 0 || original.change_time.QuadPart != unchanged.change_time.QuadPart
+      || !same_identity(original, unchanged)) return fail("stable changeTime");
+  Sleep(20);
+  if (!add_fixture_ace(path) || !pin_facts(path, secured)) return fail("pin after fixture ACL change");
+  if (original.change_time.QuadPart == secured.change_time.QuadPart || !same_identity(original, secured)) return fail("ACL changeTime and identity");
+  Sleep(20);
+  if (!MoveFileExW(path.c_str(), renamed.c_str(), 0) || !pin_facts(renamed, moved)) return fail("pin renamed fixture");
+  if (secured.change_time.QuadPart == moved.change_time.QuadPart || !same_identity(secured, moved)) return fail("rename changeTime and identity");
+  std::puts("native changeTime: stable pins; ACL and rename advance time while volume serial and file ID stay equal");
+  return 0;
 }
 
 int non_surrogate_child(const std::wstring& path) {
@@ -88,6 +153,7 @@ int non_surrogate_child(const std::wstring& path) {
 
 int wmain(int argc, wchar_t** argv) {
   if (argc != 2) return 2;
+  if (change_time(argv[1]) != 0) return 1;
   const std::wstring root = argv[1], parent = root + L"\\retag-parent", target = root + L"\\retag-target";
   if (!CreateDirectoryW(parent.c_str(), nullptr) || !CreateDirectoryW(target.c_str(), nullptr)) return fail("create fixture");
   const std::wstring child = target + L"\\child";

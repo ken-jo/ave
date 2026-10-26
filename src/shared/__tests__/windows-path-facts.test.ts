@@ -1,16 +1,22 @@
 import { execFileSync } from "node:child_process";
+import * as childProcess from "node:child_process";
 import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { configureHostResources } from "../../main/host-resources.js";
 import { removeLinksUnder } from "../../__tests__/support/tmp-dir-teardown.js";
 import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsObjectKey, windowsOwnerRules, windowsPathKey, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
 
+vi.mock("node:child_process", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:child_process")>();
+  return { ...actual, execFileSync: vi.fn(actual.execFileSync) };
+});
+
 const SID = "S-1-5-21-100-200-300-1001";
 const ORDINARY: WindowsPathFacts = { exists: true, canonical: "\\\\?\\C:\\fixture", volumeSerial: "0x0000000000000001",
   fileId: "0x00000000000000000000000000000001", volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001",
-  attributes: 16, reparseTag: 0, reparseTarget: null, directory: true, ancestors: [] };
+  changeTime: "0x0000000000000001", attributes: 16, reparseTag: 0, reparseTarget: null, directory: true, ancestors: [] };
 
 function descriptor(aces: WindowsDacl["aces"]): WindowsDacl {
   return { identity: { volumeSerial: ORDINARY.volumeSerial!, fileId: ORDINARY.fileId! }, owner: SID, group: SID, protected: true, nullDacl: false, aces };
@@ -124,6 +130,37 @@ describe.runIf(process.platform === "win32")("Windows path facts native boundary
     symlinkSync(join(fixture, "directory"), join(fixture, "junction"), "junction");
   });
   afterAll(() => { if (fixture) { removeLinksUnder(fixture); rmSync(fixture, { recursive: true, force: true }); } });
+
+  it("decodes a hex changeTime for targets and ancestors", () => {
+    const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
+    const row = { ...component, ancestors: [component] };
+    const output = vi.spyOn(childProcess, "execFileSync").mockReturnValue(JSON.stringify([row]));
+    try {
+      expect(pinWindowsPaths([fixture])).toEqual([row]);
+      const changed = { ...component, changeTime: "0x0000000000000002" };
+      expect(windowsObjectKey(component)).toBe(windowsObjectKey(changed));
+      const missing = { ...component, exists: false, canonical: null, volumeSerial: null, fileId: null,
+        volumeSerialNumber: null, fileIndex: null, changeTime: null, attributes: 0, directory: false, ancestors: [] };
+      output.mockReturnValue(JSON.stringify([missing]));
+      expect(pinWindowsPaths([fixture])).toEqual([missing]);
+    } finally { output.mockRestore(); }
+  });
+
+  it.each(["target", "ancestor"])("refuses malformed changeTime on a %s and names the field", (position) => {
+    const component = { ...ORDINARY, changeTime: "0x0123456789abcdef" };
+    const { changeTime: omitted, ...absent } = component;
+    expect(omitted).toBeDefined();
+    const invalid = [absent, ...["not-hex", "0x1", "0x0123456789ABCDEF", null].map(changeTime => ({ ...component, changeTime })),
+      { ...component, exists: false, canonical: null, volumeSerial: null, fileId: null, volumeSerialNumber: null,
+        fileIndex: null, attributes: 0, directory: false }];
+    const output = vi.spyOn(childProcess, "execFileSync");
+    try {
+      for (const value of invalid) {
+        output.mockReturnValue(JSON.stringify([position === "target" ? { ...value, ancestors: [] } : { ...component, ancestors: [value] }]));
+        expect(() => pinWindowsPaths([fixture])).toThrow(/changeTime/);
+      }
+    } finally { output.mockRestore(); }
+  });
 
   it("proves Node dev and ino use the legacy serial and file index for files and directories", () => {
     for (const path of [join(fixture, "directory"), join(fixture, "directory", "file")]) {
