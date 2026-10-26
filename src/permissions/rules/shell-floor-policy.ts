@@ -71,6 +71,15 @@ export class ShellFloorLimitError extends Error {}
 
 // Facts live for one decision, independently of execution time or machine load.
 export class ShellFloorContext {
+  readonly visits = { frames: 0, stages: 0, lexes: 0, transfers: 0, walk: 0, inventory: 0, commands: 0, feeder: 0, code: 0, coverage: 0, codeNodes: 0, codeWordLinks: 0, codeSourceChars: 0, codeTokenFacts: 0, codeTokenUses: 0, codeCoverage: 0, codeRangeSteps: 0 };
+  private readonly identities = new WeakMap<object, number>();
+  private nextIdentity = 0;
+
+  identity(node: object): number {
+    let value = this.identities.get(node);
+    if (value === undefined) { value = ++this.nextIdentity; this.identities.set(node, value); }
+    return value;
+  }
   readonly facts = new Map<string, unknown>();
   readonly canonicalize = createPathCanonicalizer();
   readonly locationUnder = createSensitiveLocationMatcher(this.canonicalize);

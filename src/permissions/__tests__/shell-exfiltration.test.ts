@@ -10,6 +10,7 @@ vi.mock("../../shared/shell-analysis.js", async (importOriginal) => {
 });
 import { homedir } from "node:os";
 import { shellExfiltrationSignal, shellSensitivePathSignal, shellScanOrdinaryAsk, sensitivePathInArgumentText } from "../rules/shell-exfiltration.js";
+import { prepareShellFloorInput } from "../rules/shell-literal-data.js";
 import { SHELL_FLOOR_BUDGET_REASON } from "../rules/shell-floor-policy.js";
 import { RuleBasedRiskClassifier, type ToolInvocationContext } from "../reviewer/risk-classifier.js";
 import { evaluateShellRules } from "../rules/shell-rule-matcher.js";
@@ -970,4 +971,37 @@ describe("one parse per decision", () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+});
+
+it("retains an ancestor path context before a child directory narrows", () => {
+  const root = realpathSync.native(mkdtempSync(join(tmpdir(), "ave-ancestor-path-")));
+  const home = join(root, "home");
+  const cwd = join(root, "project");
+  const safe = join(root, "safe");
+  try {
+    mkdirSync(join(home, ".ssh"), { recursive: true });
+    mkdirSync(cwd);
+    mkdirSync(safe);
+    writeFileSync(join(home, ".ssh", "config"), "credential fixture");
+    writeFileSync(join(safe, "link"), "ordinary fixture");
+    symlinkSync(join(home, ".ssh", "config"), join(cwd, "link"));
+    vi.stubEnv("HOME", home);
+    const manager = new PermissionManager(join(root, "permissions.json"));
+    manager.setMode("allow");
+    const check = (command: string) => manager.checkDetailed("bash", "builtin", "shell", null, {
+      ruleSubject: { kind: "shell", dialect: "bash", command, cwd }, shellExecution: { runsSandboxed: true },
+    });
+    expect(check(`cd '${safe}' && printf ./link`).decision).toBe("allow");
+    expect(check(`printf %s "$(cd '${safe}' && printf ./link)"`)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  } finally {
+    vi.unstubAllEnvs();
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+it("advances past an empty quoted heredoc inside a substitution", () => {
+  const command = "printf %s \"$(cat <<'EOF'\nEOF\n)\"";
+  const parsed = prepareShellFloorInput(command, "bash")?.parsed;
+  expect(parsed).toBeDefined();
+  expect(shellSensitivePathSignal(parsed!, CWD)).toBeNull();
 });
