@@ -1,0 +1,180 @@
+--- a/syntax/typedjson/json.go
++++ b/syntax/typedjson/json.go
+@@ -21,6 +21,7 @@
+ 	"io"
+ 	"math"
+ 	"reflect"
++	"sync"
+ 
+ 	"mvdan.cc/sh/v3/syntax"
+ )
+@@ -32,7 +33,9 @@
+ 
+ // EncodeOptions allows configuring how syntax nodes are encoded.
+ type EncodeOptions struct {
+-	Indent string // e.g. "\t"
++	// OffsetsOnly omits diagnostic coordinates while preserving original byte offsets.
++	OffsetsOnly bool
++	Indent      string // e.g. "\t"
+ 
+ 	// Allows us to add options later.
+ }
+@@ -41,7 +44,7 @@
+ // as described in the package documentation.
+ func (opts EncodeOptions) Encode(w io.Writer, node syntax.Node) error {
+ 	val := reflect.ValueOf(node)
+-	encVal, tname := encodeValue(val)
++	encVal, tname := encodeValue(val, opts.OffsetsOnly)
+ 	if tname == "" {
+ 		panic("node did not contain a named type?")
+ 	}
+@@ -54,18 +57,50 @@
+ 	return enc.Encode(encVal.Interface())
+ }
+ 
+-func encodeValue(val reflect.Value) (reflect.Value, string) {
++// Keys are the grammar's finite compile-time struct types, never source values or trees.
++type structEncodingKey struct {
++	typ         reflect.Type
++	offsetsOnly bool
++}
++
++var encoderStructTypes sync.Map
++
++func structEncodingType(typ reflect.Type, offsetsOnly bool) reflect.Type {
++	key := structEncodingKey{typ, offsetsOnly}
++	if cached, ok := encoderStructTypes.Load(key); ok {
++		return cached.(reflect.Type)
++	}
++	positionType := exportedPosType
++	if offsetsOnly {
++		positionType = offsetPosType
++	}
++	positionField, endPositionField := posField, endField
++	positionField.Type, endPositionField.Type = positionType, positionType
++	fields := []reflect.StructField{typeField, positionField, endPositionField}
++	for field := range typ.Fields() {
++		encodedType := anyType
++		if field.Type == posType {
++			encodedType = positionType
++		}
++		fields = append(fields, reflect.StructField{Name: field.Name, Type: encodedType, Tag: `json:",omitempty"`})
++	}
++	encodedType := reflect.StructOf(fields)
++	actual, _ := encoderStructTypes.LoadOrStore(key, encodedType)
++	return actual.(reflect.Type)
++}
++
++func encodeValue(val reflect.Value, offsetsOnly bool) (reflect.Value, string) {
+ 	switch val.Kind() {
+ 	case reflect.Pointer:
+ 		if val.IsNil() {
+ 			break
+ 		}
+-		return encodeValue(val.Elem())
++		return encodeValue(val.Elem(), offsetsOnly)
+ 	case reflect.Interface:
+ 		if val.IsNil() {
+ 			break
+ 		}
+-		enc, tname := encodeValue(val.Elem())
++		enc, tname := encodeValue(val.Elem(), offsetsOnly)
+ 		if tname == "" {
+ 			panic("interface did not contain a named type?")
+ 		}
+@@ -75,34 +110,22 @@
+ 		// Construct a new struct with an optional Type, Pos and End,
+ 		// and then all the visible fields which aren't positions.
+ 		typ := val.Type()
+-		fields := []reflect.StructField{typeField, posField, endField}
+-		for field := range typ.Fields() {
+-			typ := anyType
+-			if field.Type == posType {
+-				typ = exportedPosType
+-			}
+-			fields = append(fields, reflect.StructField{
+-				Name: field.Name,
+-				Type: typ,
+-				Tag:  `json:",omitempty"`,
+-			})
+-		}
+-		encTyp := reflect.StructOf(fields)
++		encTyp := structEncodingType(typ, offsetsOnly)
+ 		enc := reflect.New(encTyp).Elem()
+ 
+ 		// Node methods are defined on struct pointer receivers.
+ 		if node, _ := reflect.TypeAssert[syntax.Node](val.Addr()); node != nil {
+-			encodePos(enc.Field(1), node.Pos()) // posField
+-			encodePos(enc.Field(2), node.End()) // endField
++			encodePos(enc.Field(1), node.Pos(), offsetsOnly) // posField
++			encodePos(enc.Field(2), node.End(), offsetsOnly) // endField
+ 		}
+ 		// Do the rest of the fields.
+ 		for i := 3; i < encTyp.NumField(); i++ {
+ 			ftyp := encTyp.Field(i)
+-			fval := val.FieldByName(ftyp.Name)
+-			if ftyp.Type == exportedPosType {
+-				encodePos(enc.Field(i), fval.Interface().(syntax.Pos))
++			fval := val.Field(i - 3)
++			if ftyp.Type == exportedPosType || ftyp.Type == offsetPosType {
++				encodePos(enc.Field(i), fval.Interface().(syntax.Pos), offsetsOnly)
+ 			} else {
+-				encElem, _ := encodeValue(fval)
++				encElem, _ := encodeValue(fval, offsetsOnly)
+ 				if encElem.IsValid() {
+ 					enc.Field(i).Set(encElem)
+ 				}
+@@ -119,7 +142,7 @@
+ 		enc := reflect.MakeSlice(anySliceType, n, n)
+ 		for i := range n {
+ 			elem := val.Index(i)
+-			encElem, _ := encodeValue(elem)
++			encElem, _ := encodeValue(elem, offsetsOnly)
+ 			enc.Index(i).Set(encElem)
+ 		}
+ 		return enc, ""
+@@ -154,6 +177,7 @@
+ 	anySliceType    = reflect.TypeFor[[]any]()
+ 	posType         = reflect.TypeFor[syntax.Pos]()
+ 	exportedPosType = reflect.TypeFor[*exportedPos]()
++	offsetPosType   = reflect.TypeFor[*offsetPos]()
+ 
+ 	// TODO(v4): derived fields like Type, Pos, and End should have clearly
+ 	// different names to prevent confusion. For example: _type, _pos, _end.
+@@ -174,24 +198,32 @@
+ 	}
+ )
+ 
++type offsetPos struct{ Offset uint }
++
+ type exportedPos struct {
+ 	Offset, Line, Col uint
+ }
+ 
+-func encodePos(encPtr reflect.Value, val syntax.Pos) {
++func encodePos(encPtr reflect.Value, val syntax.Pos, offsetsOnly bool) {
+ 	// TODO: perhaps we should encode recovered positions, as that is still useful information.
+ 	// Note that decoding them back requires a way to build a recovered position,
+ 	// as [syntax.NewPos] clamps offsets and so can never produce one.
+ 	if !val.IsValid() {
+ 		return
+ 	}
+-	enc := reflect.New(exportedPosType.Elem())
++	positionType := exportedPosType
++	if offsetsOnly {
++		positionType = offsetPosType
++	}
++	enc := reflect.New(positionType.Elem())
+ 	encPtr.Set(enc)
+ 	enc = enc.Elem()
+ 
+ 	enc.Field(0).SetUint(uint64(val.Offset()))
+-	enc.Field(1).SetUint(uint64(val.Line()))
+-	enc.Field(2).SetUint(uint64(val.Col()))
++	if !offsetsOnly {
++		enc.Field(1).SetUint(uint64(val.Line()))
++		enc.Field(2).SetUint(uint64(val.Col()))
++	}
+ }
+ 
+ // posFieldNames are the fields of [exportedPos], which must all be present.

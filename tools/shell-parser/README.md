@@ -71,10 +71,8 @@ per-call trees, copied brace words and serialization buffers are reclaimed by th
 runtime. Missing assets, integrity failure or a runtime trap are initialization
 or internal failures, never permission to fall back to a second parser.
 
-`bounded-lexer-work.patch` adds opt-in limits to the existing lexer and command
-parser. Permission inspection counts actual rune/token advances and each real
-command's argument records before JSON serialization. Nested substitutions retain
-the outer command's count, and heredoc extent remains owned by the grammar. The
-bridge returns actual lexer steps so nested analysis consumes the same host work
-budget. General structural parsing leaves these permission limits disabled.
-Remove this patch when equivalent lexer and command limits are available upstream.
+The optional permission parser limit counts grammar word/value records across the complete original tree before serialization. It never resets at a command boundary. Nonempty scalar assignments contribute their value record; empty or naked assignments and declaration heads still contribute one record when the grammar represents them without a Word. Quoted heredoc body records are data rather than executable tokens. General structural parsing retains its existing source, node and recursion caps. No elapsed-time or lexer-step allowance decides permission.
+
+`literal-heredoc-ranges.patch` records original byte ranges and UTF-16 widths while the existing quoted-heredoc reader finds each terminator. Permission serialization retains the original nodes and positions while omitting literal body values. The host borrows the corresponding original source slice; it neither deletes source nor reparses a projection. Executable gaps alone require byte/code-unit position conversion. The native reader remains the only owner of quoting, tab-stripping and delimiter extent. General parsing retains the cooked body values.
+
+`cached-json-shapes.patch` retains the complete typed syntax wire format while caching immutable encoder shapes by the grammar's compile-time struct types. The finite type keys never contain command text, values or trees. Source fields use their original positional indexes instead of repeated name lookups. Type tags, offsets, optional syntax fields and scalar encoding remain unchanged; pre-change wire fixtures verify the complete serialized result. Permission-mode positions serialize only their original byte offset because permission consumers do not read diagnostic line/column coordinates. General parsing retains full diagnostic positions. The finite encoder cache has two coordinate formats per compile-time struct type; no format state is global or source-dependent.

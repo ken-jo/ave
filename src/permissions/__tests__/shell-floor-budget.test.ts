@@ -1,14 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { canonicalizePathForMatch } from "../sensitive-paths.js";
+import { canonicalizePathForMatch, createPathCanonicalizer } from "../sensitive-paths.js";
 import { PermissionManager } from "../permission-manager.js";
-import { ShellFloorWorkBudget, SHELL_FLOOR_WORK_LIMITS } from "../rules/shell-floor-work-budget.js";
+import { prepareShellFloorInput } from "../rules/shell-literal-data.js";
 import * as shellAnalysis from "../../shared/shell-analysis.js";
 import { parseShellSyntax, SHELL_ANALYSIS_LIMITS } from "../../shared/shell-parser.js";
+import { MAX_SHELL_ANALYSIS_TOKENS } from "../../shared/shell-analysis-limits.js";
 import * as shellFloors from "../rules/shell-exfiltration.js";
-import { inspectPowerShellCommand, inspectPowerShellVisibleText, _inspectPowerShellForTest, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
+import { inspectPowerShellCommand, inspectPowerShellVisibleText, parsePowerShellCommand, _recordPowerShellLexesForTest } from "../rules/powershell-exfiltration.js";
 import { SHELL_FLOOR_BUDGET_REASON, SHELL_FLOOR_INPUT_LIMIT, shellFloorInputExceeded } from "../rules/shell-floor-policy.js";
 
 const CWD = "/work/project";
@@ -24,16 +25,10 @@ describe("bounded visible floor inspection", () => {
     const bash = vi.spyOn(shellAnalysis, "analyzeShell");
     const powershell = _recordPowerShellLexesForTest();
     try {
-      for (const inspect of [shellFloors.inspectShellCommand, inspectPowerShellCommand, inspectPowerShellVisibleText]) {
-        expect(inspect(command, CWD)).toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON, analysisLimited: true });
-      }
+      for (const inspect of [shellFloors.inspectShellCommand, inspectPowerShellCommand, inspectPowerShellVisibleText]) expect(inspect(command, CWD)).toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON, analysisLimited: true });
       expect(bash).not.toHaveBeenCalled();
       expect(powershell.lexed).toEqual([]);
-      expect(shellFloors.sensitivePathInArgumentText(command, CWD)).toBe(SHELL_FLOOR_BUDGET_REASON);
-    } finally {
-      bash.mockRestore();
-      powershell.stop();
-    }
+    } finally { bash.mockRestore(); powershell.stop(); }
   });
 
   it("inspects floors beyond the literal-rule cap", () => {
@@ -42,10 +37,7 @@ describe("bounded visible floor inspection", () => {
     expect(inspectPowerShellCommand(command, CWD).sensitive).toContain(".ssh");
   });
 
-  it("distinguishes actual internal exhaustion from ordinary parse refusal", () => {
-    const command = `Get-Content (${"'a' + ".repeat(700)}'b')`;
-    const spent = _inspectPowerShellForTest(command, CWD);
-    expect(spent).toMatchObject({ analysisLimited: true, exhausted: true, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON });
+  it("keeps ordinary syntax refusal separate from structural limits", () => {
     for (const inspect of [shellFloors.inspectShellCommand, inspectPowerShellCommand]) {
       const refused = inspect("echo 'unterminated", CWD);
       expect(refused.analysisLimited).toBeUndefined();
@@ -53,186 +45,145 @@ describe("bounded visible floor inspection", () => {
     }
   });
 
-  it("treats a real shell parser recursion limit as spent floor work", () => {
+  it("closes a real parser recursion refusal", () => {
     const depth = Math.min(100, SHELL_ANALYSIS_LIMITS.depth);
     const command = `${"(".repeat(depth)}printf ready${")".repeat(depth)}`;
-    expect(command.length).toBeLessThan(SHELL_FLOOR_INPUT_LIMIT);
-    expect(shellAnalysis.analyzeShell(command)).toMatchObject({ ok: false, reason: expect.stringMatching(/^\d+:\d+: shell parser recursion limit exceeded$/) });
-    expect(shellFloors.inspectShellCommand(command, CWD)).toEqual({ sensitive: null, exfiltration: null, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON, analysisLimited: true });
-    const directory = mkdtempSync(join(tmpdir(), "shell-floor-budget-"));
+    expect(shellFloors.inspectShellCommand(command, CWD)).toMatchObject({ analysisLimited: true });
+    const directory = mkdtempSync(join(tmpdir(), "shell-floor-limits-"));
     try {
       const manager = new PermissionManager(join(directory, "permissions.json"));
       manager.setMode("allow");
-      manager.setRules([{ pattern: "Bash(printf *)", action: "allow" }]);
-      expect(manager.checkDetailed("bash", "builtin", "shell", null, {
-        ruleSubject: { kind: "shell", dialect: "bash", command, cwd: CWD },
-        shellExecution: { runsSandboxed: true },
-      })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+      expect(manager.checkDetailed("bash", "builtin", "shell", null, { ruleSubject: { kind: "shell", dialect: "bash", command, cwd: CWD }, shellExecution: { runsSandboxed: true } })).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
-  it("reports spent path work independently of sensitive evidence", () => {
-    const command = `printf ${Array.from({ length: 600 }, (_, index) => `data/path${index}`).join(" ")}`;
-    expect(command.length).toBeLessThanOrEqual(SHELL_FLOOR_INPUT_LIMIT);
-    expect(shellFloors.inspectShellCommand(command, CWD)).toMatchObject({ analysisLimited: true, ordinaryAsk: SHELL_FLOOR_BUDGET_REASON });
+  it("accepts literal paths without a speculative operation quota", () => {
+    const command = `printf ${Array.from({ length: Math.min(200, MAX_SHELL_ANALYSIS_TOKENS - 1) }, (_, index) => `p${index}`).join(" ")}`;
+    expect(shellFloors.inspectShellCommand(command, CWD).analysisLimited).toBeUndefined();
+    expect(inspectPowerShellCommand(command, CWD).analysisLimited).toBeUndefined();
   });
 
-  it.each(["wsl ls *.txt", `${"env ".repeat(17)}git status`])("does not charge delegated analysis for work it did not perform in %s", (command) => {
-    const result = _inspectPowerShellForTest(command, CWD);
-    expect(result.exhausted).toBe(false);
-    expect(result.analysisLimited).toBeUndefined();
-    expect(result.ordinaryAsk).not.toBe(SHELL_FLOOR_BUDGET_REASON);
+  it.each(["wsl ls *.txt", `${"env ".repeat(17)}git status`])("keeps ordinary delegated inspection for %s", (command) => {
+    expect(inspectPowerShellCommand(command, CWD).analysisLimited).toBeUndefined();
   });
 
   it("scans fallback path spans without overlapping source ranges", () => {
-    const source = `printf ${Array.from({ length: 4 }, (_, index) => `data/path${index}`).join(" ")}; echo 'unterminated`;
+    const source = `printf p0 p1 p2 p3; echo 'unterminated`;
     const paths = vi.spyOn(shellFloors, "sensitivePathInArgumentText");
     try {
-      const signals = inspectPowerShellVisibleText(source, CWD);
-      expect(signals.analysisLimited).toBeUndefined();
+      expect(inspectPowerShellVisibleText(source, CWD).analysisLimited).toBeUndefined();
       const scanned = paths.mock.calls.map(([text]) => text);
-      expect(scanned.length).toBeGreaterThan(1);
       expect(scanned.reduce((total, text) => total + text.length, 0)).toBeLessThanOrEqual(source.length);
-      expect(scanned.filter((text) => text.startsWith("data/path"))).toHaveLength(4);
     } finally { paths.mockRestore(); }
   });
 
-  it("stops fallback before completing the path pass when shared work is spent", () => {
-    const source = `printf ${Array.from({ length: 80 }, (_, index) => `data/path${index}`).join(" ")}; echo 'unterminated`;
-    const paths = vi.spyOn(shellFloors, "sensitivePathInArgumentText");
-    try {
-      expect(inspectPowerShellVisibleText(source, CWD)).toMatchObject({ analysisLimited: true });
-      expect(paths.mock.calls.length).toBeLessThan(80);
-    } finally { paths.mockRestore(); }
+  it("counts actual word records rather than whitespace inside a quote", () => {
+    const command = `git commit -m '${"word ".repeat(300)}message'`;
+    const parsed = shellFloors.parseShellFloorCommand(command);
+    expect(parsed.analysis).toMatchObject({ ok: true, totalTokens: 4 });
+    expect(parsePowerShellCommand(command).analysisLimited).toBe(false);
   });
 
-  it("keeps a spent budget closed across later analyses without parsing again", () => {
-    const budget = new ShellFloorWorkBudget();
-    budget.spend(SHELL_FLOOR_WORK_LIMITS.steps - 1);
-    expect(shellFloors.inspectShellCommand("printf ready", CWD, budget)).toMatchObject({ analysisLimited: true });
-    expect(budget.exhausted).toBe(true);
-    const bash = vi.spyOn(shellAnalysis, "analyzeShell");
-    const powershell = _recordPowerShellLexesForTest();
-    try {
-      expect(shellFloors.inspectShellCommand("printf later", CWD, budget)).toMatchObject({ analysisLimited: true });
-      expect(inspectPowerShellCommand("Write-Output later", CWD, budget)).toMatchObject({ analysisLimited: true });
-      expect(bash).not.toHaveBeenCalled();
-      expect(powershell.lexed).toEqual([]);
-    } finally { bash.mockRestore(); powershell.stop(); }
-  });
-
-  it("charges the characters actually inspected, preserving spaces inside quoted data", () => {
-    const source = `git commit -m '${"short ".repeat(245)}message'`;
-    const budget = new ShellFloorWorkBudget();
-    expect(shellFloors.parseShellFloorCommand(source, budget).analysis.ok).toBe(true);
-    expect(budget.exhausted).toBe(false);
-    expect(budget.steps).toBeLessThan(source.length * 4);
-  });
-
-  it("bounds emitted command records independently of spaces inside quoted words", () => {
-    for (const quoted of [false, true]) {
-      const source = `printf ${Array.from({ length: SHELL_FLOOR_WORK_LIMITS.commandTokens - 1 }, () => quoted ? "'two words'" : "word").join(" ")}`;
-      const budget = new ShellFloorWorkBudget();
-      expect(shellFloors.parseShellFloorCommand(source, budget).analysis.ok).toBe(true);
-      expect(() => shellFloors.parseShellFloorCommand(source + " another", new ShellFloorWorkBudget())).toThrow();
+  it.each(["; ", " | ", "\n"])("counts all simple commands across %j", (separator) => {
+    const groups: string[] = [];
+    for (let words = 0; words < MAX_SHELL_ANALYSIS_TOKENS;) {
+      const size = Math.min(20, MAX_SHELL_ANALYSIS_TOKENS - words);
+      groups.push(":" + " x".repeat(size - 1));
+      words += size;
     }
+    const commands = groups.join(separator);
+    expect(shellFloors.parseShellFloorCommand(commands).analysis.ok).toBe(true);
+    expect(shellFloors.inspectShellCommand(`${commands} x`, CWD).analysisLimited).toBe(true);
+    expect(parsePowerShellCommand(`${commands}${separator}:`).analysisLimited).toBe(true);
   });
 
-  it("resets command token records at pipeline and statement boundaries", () => {
-    const stage = "printf " + "word ".repeat(SHELL_FLOOR_WORK_LIMITS.commandTokens - 1);
-    for (const separator of [" | ", "; ", "\n"]) {
-      const source = stage + separator + stage;
-      expect(shellFloors.parseShellFloorCommand(source, new ShellFloorWorkBudget()).analysis.ok).toBe(true);
-      expect(inspectPowerShellCommand(source, CWD).analysisLimited).toBeUndefined();
-    }
+  it("counts nested execution records in the same native cap", () => {
+    const command = `echo $(:); ${":;".repeat(MAX_SHELL_ANALYSIS_TOKENS - 3)}`;
+    expect(shellFloors.parseShellFloorCommand(command).analysis.ok).toBe(true);
+    expect(shellFloors.inspectShellCommand(`${command}:`, CWD).analysisLimited).toBe(true);
   });
 
-  it("propagates exhausted path work without retrying the filesystem walk", () => {
-    const spent = new Error("spent work");
-    const charge = vi.fn(() => { throw spent; });
-    expect(() => canonicalizePathForMatch("/not-a-real-root/not-a-real-file", charge)).toThrow(spent);
-    expect(charge).toHaveBeenCalledTimes(1);
+  it("retains the total count on already parsed inputs", () => {
+    const command = ":;".repeat(MAX_SHELL_ANALYSIS_TOKENS + 1);
+    const parsed = { command, analysis: shellAnalysis.analyzeShell(command), facts: new Map() };
+    expect(() => shellFloors.parseShellFloorCommand(parsed)).toThrow();
   });
 
-  it("charges the actual native lexer count without a second source reader", () => {
-    const source = "printf 'one two three'";
-    const count = vi.fn();
-    parseShellSyntax(source, { commandWords: 64, lexerSteps: 16_384, onLexerSteps: count });
-    const budget = new ShellFloorWorkBudget();
-    expect(shellFloors.parseShellFloorCommand(source, budget).analysis.ok).toBe(true);
-    expect(count).toHaveBeenCalledTimes(1);
-    expect(budget.steps).toBe(count.mock.calls[0]![0]);
-    expect(budget.chars).toBe(source.length);
-  });
-
-  it("charges actual lexer work for syntax refusal and for successful parsing", () => {
-    for (const command of ["printf '" + "word ".repeat(900), "printf '" + "word ".repeat(900) + "'"]) {
-      const budget = new ShellFloorWorkBudget();
-      const result = shellFloors.parseShellFloorCommand(command, budget);
-      expect(result.analysis.ok).toBe(command.endsWith("'"));
-      expect(budget.steps).toBeGreaterThan(4_000);
-      expect(budget.exhausted).toBe(false);
-    }
-  });
-
-  it("charges failed parsing against remaining work without poisoning later parses", () => {
-    const command = "printf '" + "word ".repeat(900);
-    const count = vi.fn();
-    expect(() => parseShellSyntax(command, { commandWords: 64, lexerSteps: 16_384, onLexerSteps: count })).toThrow(/without closing quote/);
-    expect(count).toHaveBeenCalledTimes(1);
-    expect(count.mock.calls[0]![0]).toBeGreaterThan(4_000);
-    const budget = new ShellFloorWorkBudget();
-    budget.enterSource(command);
-    budget.spend(command.length * SHELL_FLOOR_WORK_LIMITS.stepsPerChar - 2);
-    expect(() => shellFloors.parseShellFloorCommand(command, budget)).toThrow();
-    expect(budget.exhausted).toBe(true);
-    const spent = new Error("caller spent after refusal");
-    expect(() => parseShellSyntax(command, { commandWords: 64, lexerSteps: 16_384, onLexerSteps: () => { throw spent; } })).toThrow(spent);
+  it("does not poison subsequent native parsing after a cap refusal", () => {
+    expect(() => parseShellSyntax("printf x y", { totalTokens: 2 })).toThrow(/total token limit/);
     expect(shellAnalysis.analyzeShell("printf ready").ok).toBe(true);
   });
 
-  it("keeps native lexer refusal and caller exhaustion separate from runtime integrity", () => {
-    expect(() => parseShellSyntax("printf ready", { commandWords: 64, lexerSteps: 1 })).toThrow(/lexer work limit/);
-    const spent = new Error("caller budget spent");
-    expect(() => parseShellSyntax("printf ready", { commandWords: 64, lexerSteps: 16_384, onLexerSteps: () => { throw spent; } })).toThrow(spent);
-    expect(shellAnalysis.analyzeShell("printf ready").ok).toBe(true);
-  });
-
-  it.each([
-    "cat <<'EOF'\nbody\nEOF\n" + "printf " + "word ".repeat(64),
-    "cat <<< data\n" + "printf " + "word ".repeat(64),
-    "printf " + "word ".repeat(40) + "$(printf x) " + "word ".repeat(40),
-  ])("uses each original command's records through redirects and substitutions: %s", (command) => {
-    const analysis = shellAnalysis.analyzeShell(command);
-    expect(analysis.ok).toBe(true);
-    expect(() => shellFloors.parseShellFloorCommand(command, new ShellFloorWorkBudget())).toThrow();
-    const parsed = { command, analysis, facts: new Map() };
-    expect(() => shellFloors.parseShellFloorCommand(parsed, new ShellFloorWorkBudget())).toThrow();
-  });
-
-  it("reuses the parsed command without charging its source twice", () => {
-    const budget = new ShellFloorWorkBudget();
-    const parsed = shellFloors.parseShellFloorCommand("printf ready", budget);
-    const before = { steps: budget.steps, chars: budget.chars };
+  it("reuses the original parsed command without another grammar call", () => {
+    const parsed = shellFloors.parseShellFloorCommand("printf ready");
     const parser = vi.spyOn(shellAnalysis, "analyzeShell");
     try {
-      expect(shellFloors.parseShellFloorCommand(parsed, budget)).toBe(parsed);
-      expect({ steps: budget.steps, chars: budget.chars }).toEqual(before);
-      expect(parser).not.toHaveBeenCalled();
-      expect(shellFloors.inspectShellCommand(parsed, CWD, budget).analysisLimited).toBeUndefined();
+      expect(shellFloors.parseShellFloorCommand(parsed)).toBe(parsed);
+      expect(shellFloors.inspectShellCommand(parsed, CWD).analysisLimited).toBeUndefined();
       expect(parser).not.toHaveBeenCalled();
     } finally { parser.mockRestore(); }
   });
 
-  it("shares the same work object with delegated native inspection", () => {
-    const budget = new ShellFloorWorkBudget();
-    const delegated = vi.spyOn(shellFloors, "inspectShellCommand");
+  it("shares the initial dialect lex with inspection and rule proof", () => {
+    const recorder = _recordPowerShellLexesForTest();
     try {
-      inspectPowerShellCommand("python -c 'print(1)'", CWD, budget);
-      expect(delegated).toHaveBeenCalled();
-      expect(delegated.mock.calls.every(([, , work]) => work === budget)).toBe(true);
-      expect(budget.steps).toBeGreaterThan(0);
-    } finally { delegated.mockRestore(); }
+      const parsed = parsePowerShellCommand("Write-Output ready");
+      expect(inspectPowerShellCommand(parsed, CWD).analysisLimited).toBeUndefined();
+      expect(recorder.lexed.filter((command) => command === parsed.command)).toHaveLength(1);
+    } finally { recorder.stop(); }
+  });
+
+  it("reuses failed ancestor observations across sibling paths", () => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "floor-path-cache-")));
+    try {
+      const first = join(directory, "missing", "deeper", "a");
+      const second = join(directory, "missing", "deeper", "b");
+      const expected = [canonicalizePathForMatch(first), canonicalizePathForMatch(second)];
+      const native = vi.spyOn(realpathSync, "native");
+      try {
+        const canonicalize = createPathCanonicalizer();
+        expect(canonicalize(first)).toBe(expected[0]);
+        const observed = native.mock.calls.length;
+        expect(canonicalize(second)).toBe(expected[1]);
+        expect(native).toHaveBeenCalledTimes(observed);
+      } finally { native.mockRestore(); }
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it("retains different symlink targets beneath an existing parent", () => {
+    const directory = realpathSync(mkdtempSync(join(tmpdir(), "floor-link-cache-")));
+    try {
+      mkdirSync(join(directory, "one")); mkdirSync(join(directory, "two"));
+      writeFileSync(join(directory, "one", "file"), "one"); writeFileSync(join(directory, "two", "file"), "two");
+      symlinkSync(join(directory, "one"), join(directory, "left"), "junction"); symlinkSync(join(directory, "two"), join(directory, "right"), "junction");
+      const canonicalize = createPathCanonicalizer();
+      for (const leaf of ["left", "right"]) expect(canonicalize(join(directory, leaf, "file"))).toBe(canonicalizePathForMatch(join(directory, leaf, "file")));
+      expect(canonicalize(join(directory, "left", "file"))).not.toBe(canonicalize(join(directory, "right", "file")));
+    } finally { rmSync(directory, { recursive: true, force: true }); }
+  });
+
+  it.each(["read HOME", "unset HOME"])("retains executable word order through quoted data for %s", (mutation) => {
+    const suffix = `${mutation}; cd "$HOME"/foo; grep -r x .`;
+    const expected = shellFloors.inspectShellCommand(suffix, CWD);
+    expect(expected.sensitive).not.toBeNull();
+    const prepared = prepareShellFloorInput(`cat <<'E'\ndata\nE\n${suffix}`, "bash");
+    expect(prepared?.parsed).toBeDefined();
+    const actual = shellFloors.inspectShellCommand(prepared!.parsed!, CWD);
+    expect(actual.sensitive).toBe(expected.sensitive);
+    expect(actual.ordinaryAsk).toBe(expected.ordinaryAsk);
+  });
+
+  it("closes unparsed tails over the global visible token cap", () => {
+    const command = `echo \0; ${"x ".repeat(MAX_SHELL_ANALYSIS_TOKENS + 1)}`;
+    expect(command.length).toBeLessThan(SHELL_FLOOR_INPUT_LIMIT);
+    expect(shellFloors.inspectShellCommand(command, CWD).analysisLimited).toBe(true);
+    expect(inspectPowerShellVisibleText(command, CWD).analysisLimited).toBe(true);
+  });
+
+  it("counts empty assignment declarations rather than treating them as no records", () => {
+    const command = "$a=;".repeat(MAX_SHELL_ANALYSIS_TOKENS);
+    expect(parsePowerShellCommand(command).analysisLimited).toBe(false);
+    expect(parsePowerShellCommand(command + "$a=;").analysisLimited).toBe(true);
   });
 
   it("preserves a quoted path with spaces during fallback inspection", () => {

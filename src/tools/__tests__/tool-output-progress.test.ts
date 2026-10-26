@@ -1,3 +1,4 @@
+import { SHELL_RULE_CANONICAL_VERSION } from "../../shared/shell-rule-version.js";
 import { mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -310,8 +311,8 @@ describe.skipIf(process.platform === "win32")("bash live output", () => {
     const token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8";
     const permissions = new PermissionManager(join(dir, "permissions.json"));
     permissions.setRules([
-      { pattern: "Bash(printf progress)", action: "allow" },
-      { pattern: `Bash(printf GH_TOKEN=%s ${token})`, action: "allow" },
+      { pattern: "Bash(printf progress)", action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION },
+      { pattern: `Bash(printf GH_TOKEN=%s ${token})`, action: "allow", shellRuleVersion: SHELL_RULE_CANONICAL_VERSION },
     ]);
     const executor = new ToolExecutor(
       registry, undefined, permissions, new BashAstValidator({ mode: "deny" }),

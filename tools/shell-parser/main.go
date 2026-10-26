@@ -20,12 +20,8 @@ const outputBytes = 67_108_864
 
 var parser = syntax.NewParser(syntax.Variant(syntax.LangBash), syntax.KeepComments(true))
 
-func failure(message string, steps ...int) string {
-	work := 0
-	if len(steps) > 0 {
-		work = steps[0]
-	}
-	result, _ := json.Marshal(map[string]any{"error": message, "lexerSteps": work})
+func failure(message string) string {
+	result, _ := json.Marshal(map[string]any{"error": message, "totalTokens": 0})
 	return string(result)
 }
 
@@ -39,13 +35,7 @@ func (b *boundedBuffer) Write(p []byte) (int, error) {
 }
 
 func parse(_ js.Value, args []js.Value) (result any) {
-	lexerStarted := false
-	fail := func(message string) string {
-		if lexerStarted {
-			return failure(message, parser.LexerWork())
-		}
-		return failure(message)
-	}
+	fail := failure
 	defer func() {
 		if recover() != nil {
 			result = fail("Shell parser failed")
@@ -54,18 +44,16 @@ func parse(_ js.Value, args []js.Value) (result any) {
 	if (len(args) != 1 && len(args) != 2) || args[0].Type() != js.TypeString {
 		return fail("Invalid shell parser input")
 	}
-	lexerSteps, commandWords := 0, 0
+	tokenLimit := 0
 	if len(args) == 2 {
 		if args[1].Type() != js.TypeObject {
 			return fail("Invalid shell parser limits")
 		}
-		lexerSteps = args[1].Get("lexerSteps").Int()
-		commandWords = args[1].Get("commandWords").Int()
-		if lexerSteps < 0 || commandWords < 0 {
+		tokenLimit = args[1].Get("totalTokens").Int()
+		if tokenLimit < 0 {
 			return fail("Invalid shell parser limits")
 		}
 	}
-	syntax.WorkLimits(lexerSteps, commandWords)(parser)
 	source := args[0].String()
 	if len(source) > sourceBytes {
 		return fail("Shell analysis source limit exceeded")
@@ -73,12 +61,12 @@ func parse(_ js.Value, args []js.Value) (result any) {
 	if strings.IndexByte(source, 0) >= 0 {
 		return fail("Shell command contains a NUL byte")
 	}
-	lexerStarted = true
 	file, err := parser.Parse(strings.NewReader(source), "")
 	if err != nil {
 		return fail(err.Error())
 	}
-	count, depth := 0, 0
+	count, depth, totalTokens := 0, 0, 0
+	literalWords := parser.LiteralHeredocWords()
 	excessive := false
 	braceWords := [][2]uint{}
 	braceWork := syntax.BraceBudget{PartWork: syntaxNodes, LiteralBytes: sourceBytes}
@@ -92,6 +80,26 @@ func parse(_ js.Value, args []js.Value) (result any) {
 		}
 		count++
 		depth++
+		switch node := node.(type) {
+		case *syntax.Word:
+			if node.LiteralData != nil {
+				depth--
+				return false
+			}
+			totalTokens++
+		case *syntax.DeclClause:
+			// Declaration heads are literal command tokens represented as Lit rather than Word.
+			totalTokens++
+		case *syntax.Assign:
+			// A scalar value owns the assignment record; empty and naked assignments still need one.
+			if node.Value == nil {
+				totalTokens++
+			}
+		}
+		if tokenLimit > 0 && totalTokens > tokenLimit {
+			annotationError = errors.New("Shell analysis total token limit exceeded")
+		}
+
 		if annotationError != nil {
 			depth--
 			return false
@@ -153,16 +161,36 @@ func parse(_ js.Value, args []js.Value) (result any) {
 	if annotationError != nil {
 		return fail(annotationError.Error())
 	}
+	literalHeredocs := [][4]uint{}
+	if tokenLimit > 0 {
+		byteOffset, utf16Offset := uint(0), uint(0)
+		for _, word := range literalWords {
+			body := *word.LiteralData
+			// Only executable gaps are traversed here; data width was recorded by the grammar's terminator reader.
+			utf16Offset += utf16Units(source[byteOffset:body[0]])
+			literalHeredocs = append(literalHeredocs, [4]uint{body[0], body[1], utf16Offset, utf16Offset + body[2]})
+			byteOffset, utf16Offset = body[1], utf16Offset+body[2]
+			for _, part := range word.Parts {
+				if literal, ok := part.(*syntax.Lit); ok {
+					literal.Value = ""
+				}
+			}
+		}
+	}
+	for _, word := range literalWords {
+		word.LiteralData = nil
+	}
 	var output boundedBuffer
-	if err := typedjson.Encode(&output, file); err != nil {
+	if err := (typedjson.EncodeOptions{OffsetsOnly: tokenLimit > 0}).Encode(&output, file); err != nil {
 		return fail(err.Error())
 	}
 	resultBytes, err := json.Marshal(struct {
-		Tree           json.RawMessage   `json:"tree"`
-		LexerSteps     int               `json:"lexerSteps"`
-		BraceWords     [][2]uint         `json:"braceWords"`
-		EscapedStrings map[string]string `json:"escapedStrings"`
-	}{json.RawMessage(output.Bytes()), parser.LexerWork(), braceWords, escapedStrings})
+		Tree            json.RawMessage   `json:"tree"`
+		TotalTokens     int               `json:"totalTokens"`
+		LiteralHeredocs [][4]uint         `json:"literalHeredocs"`
+		BraceWords      [][2]uint         `json:"braceWords"`
+		EscapedStrings  map[string]string `json:"escapedStrings"`
+	}{json.RawMessage(output.Bytes()), totalTokens, literalHeredocs, braceWords, escapedStrings})
 	if err != nil {
 		return fail(err.Error())
 	}
@@ -170,6 +198,18 @@ func parse(_ js.Value, args []js.Value) (result any) {
 		return fail("Shell syntax output limit exceeded")
 	}
 	return string(resultBytes)
+}
+
+func utf16Units(text string) uint {
+	count := uint(0)
+	for _, r := range text {
+		if r > 0xffff {
+			count += 2
+		} else {
+			count++
+		}
+	}
+	return count
 }
 
 func containsBrace(parts []syntax.WordPart) bool {

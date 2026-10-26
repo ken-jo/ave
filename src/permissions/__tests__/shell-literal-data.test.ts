@@ -4,7 +4,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PermissionManager } from "../permission-manager.js";
 import { prepareShellFloorInput, SHELL_LITERAL_DATA_LIMIT } from "../rules/shell-literal-data.js";
-import { ShellFloorWorkBudget } from "../rules/shell-floor-work-budget.js";
 import * as shellFloors from "../rules/shell-exfiltration.js";
 
 let root: string;
@@ -28,9 +27,21 @@ function check(command: string, runsSandboxed = true) {
 }
 
 describe("literal heredoc data bounds", () => {
+  it("keeps quoted data inside substitutions out of destructive text inspection", () => {
+    const command = 'echo "$(cat <<\'EOF\'\nrm -rf /\nEOF\n)"';
+    expect(prepareShellFloorInput(command, "bash")?.destructive).toBe(false);
+    expect(check(command)).toMatchObject({ decision: "allow", layer: 3 });
+  });
+
+  it("retains executable destructive commands beside nested quoted data", () => {
+    const command = 'echo "$(cat <<\'EOF\'\ndata\nEOF\nrm -rf /\n)"';
+    expect(prepareShellFloorInput(command, "bash")?.destructive).toBe(true);
+    expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
+  });
+
   it.each([8_001, 16_384, SHELL_LITERAL_DATA_LIMIT])("admits %i bytes of quoted data with a small executable envelope", (bytes) => {
     const command = hereDocument(bytes);
-    const prepared = prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget());
+    const prepared = prepareShellFloorInput(command, "bash");
     expect(prepared?.literalDataBytes).toBe(bytes);
     expect(prepared?.command).toBe(command);
     expect(prepared?.parsed?.analysis.ok).toBe(true);
@@ -80,27 +91,27 @@ describe("literal heredoc data bounds", () => {
   });
   it.each(["bash", "python3 -", "env bash", "( bash )"])("keeps a known code consumer under the analysis limit: %s", (receiver) => {
     const command = `${receiver} <<'EOF'\n# ${"a".repeat(9_000)}\nrm -rf /\nEOF\n`;
-    expect(prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget())).toBeNull();
+    expect(prepareShellFloorInput(command, "bash")).toBeNull();
     expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
   it("keeps original source and all expansion checks when heredoc quoting is mixed", () => {
     const command = "cat <<X <<'Y'\nkeep\\\nX\n$(rm -rf /)\nY\nX\nY\n";
-    const prepared = prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget());
+    const prepared = prepareShellFloorInput(command, "bash");
     expect(prepared?.command).toBe(command);
     expect(prepared?.literalDataBytes).toBe(0);
     expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
     const large = command.replace("$(rm -rf /)", "# " + "a".repeat(9_000) + "\n$(rm -rf /)");
-    expect(prepareShellFloorInput(large, "bash", new ShellFloorWorkBudget())).toBeNull();
+    expect(prepareShellFloorInput(large, "bash")).toBeNull();
     expect(check(large)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
   it("keeps later unquoted heredocs from sharing a quoted-data allowance", () => {
     const command = hereDocument(9_000) + "cat <<X\nplain data\nX\n";
-    expect(prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget())).toBeNull();
+    expect(prepareShellFloorInput(command, "bash")).toBeNull();
     expect(check(command)).toMatchObject({ decision: "ask", layer: 2, forceModal: true });
   });
   it("uses the original grammar for a backslash quoted delimiter", () => {
     const command = hereDocument(9_000, "\\EOF");
-    const prepared = prepareShellFloorInput(command, "bash", new ShellFloorWorkBudget());
+    const prepared = prepareShellFloorInput(command, "bash");
     expect(prepared?.command).toBe(command);
     expect(prepared?.literalDataBytes).toBe(9_000);
     expect(check(command)).toMatchObject({ decision: "allow", layer: 3 });

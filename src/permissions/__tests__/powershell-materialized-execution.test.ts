@@ -242,9 +242,8 @@ describe("file execution provenance", () => {
         "Unknown-Runner 'Invoke-Item ProjectDocs'",
       ]) expect(inspectPowerShellCommand(command, root)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
       const repeated = _inspectPowerShellForTest("Invoke-Item ProjectDocs; ".repeat(40), root);
-      expect(repeated).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-      expect(repeated.exhausted).toBe(true);
-      expect(repeated.steps).toBeLessThanOrEqual(repeated.limits.steps);
+      expect(repeated).toMatchObject({ sensitive: null, exfiltration: null, limited: false });
+      expect(repeated.ordinaryAsk).toBeUndefined();
     });
   });
 
@@ -252,11 +251,10 @@ describe("file execution provenance", () => {
     expect(inspectPowerShellCommand("./build.ps1", CWD)).toMatchObject({ sensitive: null, exfiltration: null, ordinaryAsk: expect.any(String) });
   });
 
-  it("bounds provenance work with the shared counter", () => {
+  it("refuses provenance input above the whole-command token cap", () => {
     const command = "Copy-Item a b; ".repeat(300) + "b";
     const result = _inspectPowerShellForTest(command, CWD);
     expect(result).toMatchObject({ exfiltration: null, ordinaryAsk: expect.any(String) });
-    expect(result.exhausted).toBe(true);
-    expect(result.steps).toBeLessThanOrEqual(result.limits.steps);
+    expect(result.limited).toBe(true);
   });
 });
