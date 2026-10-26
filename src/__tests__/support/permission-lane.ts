@@ -1,5 +1,10 @@
 import type { PermissionManager } from "../../permissions/permission-manager.js";
 import type { ShellRuleDialect } from "../../shared/permissions-events.js";
+import { canonicalRuleSpecifier } from "../../permissions/rules/rule-specifier.js";
+
+export function literalShellRulePattern(dialect: ShellRuleDialect, command: string): string {
+  return canonicalRuleSpecifier(`${dialect === "bash" ? "Bash" : "PowerShell"}(${command})`);
+}
 
 export function distinctPathArguments(length: number): string {
   let command = "printf %s";

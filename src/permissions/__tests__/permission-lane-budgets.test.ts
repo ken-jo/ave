@@ -124,8 +124,8 @@ describe.each(["bash", "powershell"] as const)("sandbox floor bounds (%s)", (dia
     seedExactAllow(command, dialect);
     const spies = analysisSpies();
     // Keep this test about input routing; actual work exhaustion has its own refusal case.
-    if (dialect === "bash") vi.mocked(shellFloors.inspectShellCommand).mockReturnValue({ sensitive: null, exfiltration: null });
-    else vi.mocked(powerShellPolicy.inspectPowerShellCommand).mockReturnValue({ sensitive: null, exfiltration: null });
+    if (dialect === "bash") vi.mocked(shellFloors.inspectShellCommand).mockReturnValue({ outcome: "static-complete", sensitive: null, exfiltration: null });
+    else vi.mocked(powerShellPolicy.inspectPowerShellCommand).mockReturnValue({ outcome: "static-complete", sensitive: null, exfiltration: null });
     try {
       const result = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, true);
       if (length > FLOOR_INPUT_LIMIT) {
@@ -158,7 +158,7 @@ describe.each(["bash", "powershell"] as const)("floor work exhaustion (%s)", (di
     inspect.mockImplementation(() => {
       parsesBeforeBudget = bashParse.mock.calls.length;
       floorParsesBeforeBudget = floorParse.mock.calls.length;
-      return { sensitive: null, exfiltration: null, analysisLimited: true };
+      return { outcome: "unproven", sensitive: null, exfiltration: null, analysisLimited: true };
     });
     try {
       expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(runsSandboxed

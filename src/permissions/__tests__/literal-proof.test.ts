@@ -112,9 +112,14 @@ describe("literal exact-rule proof", () => {
     expect(evaluateShellSubject({ command, exactAllowOnly: true }, [withCurrentShellRuleVersion({ pattern, action: "allow" }), { pattern: "Bash(unrelated *)", action: "deny" }]).decision).toBe("allow");
   });
 
-  it.each(["find . -maxdepth 0 -exec sh -c 'printf ready' ';'", "xargs -I X env X -c 'printf ready'", "xargs rg --files", "make build", "sh build.sh", "python3 https://example.invalid/code.py"])("accepts literal file, stdin and network indirection: %s", (command) => {
+  it.each(["make build", "sh build.sh", "python3 https://example.invalid/code.py"])("accepts literal file and network indirection: %s", (command) => {
     expect(proveLiteralShell(command).proven).toBe(true);
     expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).not.toBeNull();
+  });
+
+  it.each(["xargs -I X env X -c 'printf ready'", "xargs rg --files", "find . -maxdepth 0 -exec sh -c 'printf ready' ';'"])("refuses runtime-completed callback argv: %s", (command) => {
+    expect(proveLiteralShell(command).proven).toBe(false);
+    expect(buildShellRuleApproval("bash", command, projectDirectory(), { allow: true, deny: true }).exactRule).toBeNull();
   });
 
   it.each(["git status < input", "git status >/dev/null"])("keeps redirects outside exact argv identity: %s", (command) => {
@@ -164,7 +169,9 @@ describe("literal exact-rule proof", () => {
     const command = `printf ${Array<string>(20).fill("a").join(" ")}`;
     const pattern = `PowerShell(${command})`;
     expect(proveLiteralPowerShell(command).proven).toBe(true);
-    expect(inspectPowerShellCommand(command, cwd)).toEqual({ sensitive: null, exfiltration: null });
+    expect(inspectPowerShellCommand(command, cwd)).toEqual({
+      outcome: "static-complete", sensitive: null, exfiltration: null,
+    });
     expect(buildShellRuleApproval("powershell", command, cwd, { allow: true, deny: true }).exactRule).toBe(pattern);
     expect(shellRuleCoversCommand("powershell", pattern, "allow", command, cwd)).toBe(true);
     const manager = new PermissionManager(join(cwd, "permissions.json"));

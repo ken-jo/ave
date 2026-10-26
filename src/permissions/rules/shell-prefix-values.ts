@@ -21,8 +21,6 @@ export const WRAPPERS = [
   // A multi-call binary runs whichever applet its first argument names.
   "busybox",
 ];
-// Wrappers that join their arguments into a string a shell runs (`watch 'rm x'`, `parallel 'rm {}' ::: a`, `flock f -c 'rm x'`).
-export const STRING_JOINING_WRAPPERS = new Set(["watch", "parallel", "sg"]);
 // Runner identities and literal prefixes that can introduce another command.
 export type RunnerCommandPrefix = string | readonly [verb: string, interpreter: string];
 export const RUNNER_COMMAND_PREFIXES: Readonly<Record<string, true | readonly RunnerCommandPrefix[]>> = {

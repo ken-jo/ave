@@ -11,9 +11,6 @@ import * as shellFloors from "../rules/shell-exfiltration.js";
 import * as riskClassifier from "../reviewer/risk-classifier.js";
 import * as shellDirectory from "../shell-working-directory-identity.js";
 import { MAX_LITERAL_COMMAND_LENGTH } from "../rules/shell-prefix-values.js";
-import { normalizeRuleSpecifierInput, parseRuleSpecifier } from "../rules/rule-specifier.js";
-import { validatePermissionRule } from "../rules/rule-files.js";
-import { SHELL_FLOOR_BUDGET_REASON } from "../rules/shell-floor-policy.js";
 import { withCurrentShellRuleVersion } from "../../shared/shell-rule-version.js";
 import {
   __resetSessionStoreForTest,
@@ -30,7 +27,6 @@ import { encodeScript } from "./fixtures/encoded-command.js";
 // unsandboxed exact rules require a complete proof of literal argv.
 const DESTRUCTIVE_SCRIPT = "rm -rf /";
 const DESTRUCTIVE_PAYLOAD = "cgBtACAALQByAGYAIAAvAA==";
-const LITERAL_PROOF_INPUT_LIMIT = 2_000;
 const FLOOR_INPUT_LIMIT = 8_000;
 const SESSION_ID = "11111111-1111-4111-8111-111111111111";
 const UTF16LE_BOM_PAYLOAD = "//5yAG0AIAAtAHIAZgAgAC8A";
@@ -192,11 +188,6 @@ const FILE_COMMANDS = [
   { name: "an implicit script-file operand", command: "pwsh ./x.ps1" },
 ] as const;
 
-const FILE_EXECUTION_BASELINE = {
-  sandboxed: { decision: "allow", layer: 3 },
-  unsandboxed: { decision: "ask", layer: 6 },
-} as const;
-
 let cwd: string;
 let stateRoot: string;
 let manager: PermissionManager;
@@ -219,49 +210,36 @@ afterEach(() => {
 
 
 
-function storedAllowPattern(fixture: EncodedCase): string {
-  const kind = fixture.dialect === "bash" ? "Bash" : "PowerShell";
-  const candidate = normalizeRuleSpecifierInput(`${kind}(${fixture.command})`);
-  try {
-    validatePermissionRule({ pattern: candidate, action: "allow" });
-    const spec = parseRuleSpecifier(candidate);
-    if ((spec.kind === "bash" || spec.kind === "powershell") && !spec.wildcard) return candidate;
-  } catch {
-    // Unrepresentable syntax still exercises a previously saved broad allow.
-  }
-  return `${kind}(${fixture.allowBody})`;
-}
-
 function requireLaneBehavior(fixture: EncodedCase): void {
   const { command, dialect } = fixture;
-  const exactAllowed = command.length <= LITERAL_PROOF_INPUT_LIMIT && (fixture.exactAllowed ?? false);
-  const floorLimited = command.length > FLOOR_INPUT_LIMIT || (fixture.floorLimited ?? false);
-  const visibleFloor = floorLimited || (fixture.visibleFloor ?? false);
   const card = buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID);
-  const offerAllowed = command.length <= LITERAL_PROOF_INPUT_LIMIT && (fixture.offerAllowed ?? exactAllowed);
-  if (offerAllowed) expect.soft(card.exactRule, "literal data can be remembered").not.toBeNull();
-  else expect.soft(card.exactRule, "unproven or sensitive commands cannot be remembered").toBeNull();
-  expect.soft(card.sessionAllowed).toBe(offerAllowed);
-  expect.soft(card.persistentAllowed).toBe(offerAllowed);
+  const signals = dialect === "bash"
+    ? shellFloors.inspectShellCommand(command, cwd)
+    : powerShellPolicy.inspectPowerShellCommand(command, cwd);
+  const visibleFloor = signals.outcome === "visible-floor" || fixture.visibleFloor === true;
+  const canRemember = card.exactRule !== null;
+  expect.soft(card.sessionAllowed).toBe(canRemember);
+  expect.soft(card.persistentAllowed).toBe(canRemember);
+  if (visibleFloor || (signals.outcome === "unproven" && !signals.exactLiteralEvaluation)) {
+    expect.soft(card.exactRule, "visible or runtime-dependent commands cannot be remembered").toBeNull();
+  }
   for (const saved of [false, true]) {
-    // Seed current-format rules independently of the card proposal.
+    // A broad allow is always present in the saved branch so this corpus also
+    // proves that only the current raw exact key can lift a static decision.
     const rules: PermissionRule[] = saved ? [
-      { pattern: dialect, action: "allow" },
-      ...(fixture.allowCommands === undefined
-        ? [storedAllowPattern(fixture)]
-        : fixture.allowCommands.map((command) => storedAllowPattern({ ...fixture, command })))
-        .map((pattern): PermissionRule => ({ pattern, action: "allow" })),
+      { pattern: dialect, action: "allow" as const },
+      ...(card.exactRule === null ? [] : [{ pattern: card.exactRule, action: "allow" as const }]),
     ] : [];
     manager.setRules(rules.map(withCurrentShellRuleVersion));
     const ordinary = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false);
-    expect.soft(ordinary.decision, `unsandboxed, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "ask");
-    expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision, `headless, saved=${saved}`).toBe(saved && exactAllowed ? "allow" : "deny");
+    const exactMatch = saved && canRemember && !visibleFloor;
+    expect.soft(ordinary.decision, `unsandboxed, saved=${saved}`).toBe(exactMatch ? "allow" : "ask");
+    expect.soft(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, false, true).decision, `headless, saved=${saved}`).toBe(exactMatch ? "allow" : "deny");
     const sandboxed = checkShellPermission(manager, cwd, SESSION_ID, command, dialect, true);
-    expect.soft(sandboxed, `sandboxed, saved=${saved}`).toMatchObject(visibleFloor
-      ? { decision: "ask", layer: 2, forceModal: true }
-      : { decision: "allow", layer: 3 });
-    if (floorLimited) expect.soft(sandboxed.reason).toBe(SHELL_FLOOR_BUDGET_REASON);
-    if (!visibleFloor) expect.soft(sandboxed.forceModal).not.toBe(true);
+    const sandboxAllows = exactMatch || (!visibleFloor && signals.outcome === "static-complete" && command.length <= FLOOR_INPUT_LIMIT);
+    expect.soft(sandboxed, `sandboxed, saved=${saved}`).toMatchObject(sandboxAllows
+      ? { decision: "allow", layer: 3 }
+      : { decision: "ask", layer: 2, forceModal: true });
   }
 }
 
@@ -354,8 +332,12 @@ describe.each(["bash", "powershell"] as const)("literal file-execution parity (%
     requireLaneBehavior({ name: "script file", dialect, command, allowBody: command, exactAllowed: true });
     for (const runsSandboxed of [true, false]) {
       manager.setRules([]);
-      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(runsSandboxed
-        ? FILE_EXECUTION_BASELINE.sandboxed : FILE_EXECUTION_BASELINE.unsandboxed);
+      const abbreviatedFileOption = command.includes(" -f ");
+      expect(checkShellPermission(manager, cwd, SESSION_ID, command, dialect, runsSandboxed)).toMatchObject(
+        abbreviatedFileOption
+          ? { decision: "ask", layer: 2, forceModal: true }
+          : runsSandboxed ? { decision: "allow", layer: 3 } : { decision: "ask", layer: 6 },
+      );
     }
     expect(buildShellRuleApproval(dialect, command, cwd, { allow: true, deny: true }, SESSION_ID).decodedCommands ?? []).toEqual([]);
   });

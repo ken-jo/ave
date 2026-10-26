@@ -8,7 +8,7 @@ import { isMissingPathError } from "../../lib/atomic-file.js";
 import type { PermissionRule } from "../permission-manager.js";
 import { isRuleSpecifier, literalRuleWord, parseRuleSpecifier, type RuleSpecifier } from "./rule-specifier.js";
 import { canonicalPowerShellName, POWERSHELL_COMMAND_POLICIES } from "./powershell-command-policy.js";
-import { powerShellRuleShape, type PowerShellCommandInput } from "./powershell-exfiltration.js";
+import { inspectPowerShellCommand, parsePowerShellCommand, powerShellRuleShape, type PowerShellCommandInput } from "./powershell-exfiltration.js";
 import { PermissionRulesFileCorruptError, storedRuleInvalidReason, validatePermissionRule } from "./rule-files.js";
 import { projectRulesLocation, storedFileRulesLocation, readProjectRulesFile, updateProjectRulesFile } from "./project-rule-files.js";
 import { evaluateShellRules, type ShellRuleEvaluation, type ShellRuleInput, type ShellRuleSet } from "./shell-rule-matcher.js";
@@ -204,14 +204,16 @@ function restrictionTokens<T extends string | null>(tokens: readonly T[]): T[] {
 
 // `PowerShell(...)` rules for a PowerShell call, with the same precedence and strictness as `Bash(...)` rules (`evaluateShellRules`): a deny that matches a visible command wins; input the matcher cannot fully read asks when any deny or ask rule exists; an allow covers the call only when every command is a literal simple command matched by an allow rule and no floor signal is present. `exactAllowOnly` (no sandbox for this call) keeps only exact allow rules.
 export function evaluatePowerShellSubject(
-  subject: { command: PowerShellCommandInput; exactAllowOnly: boolean; floorSignal: string | null },
+  subject: { command: PowerShellCommandInput; cwd?: string; exactAllowOnly: boolean; floorSignal: string | null },
   ...scopes: ReadonlyArray<readonly PermissionRule[]>
 ): ShellRuleEvaluation {
   const rules = collectPowerShellRules(...scopes);
   if (subject.exactAllowOnly) rules.allow = rules.allow.filter((rule) => !rule.spec.wildcard);
   const hasRestrictions = rules.deny.length > 0 || rules.ask.length > 0;
   if (!hasRestrictions && rules.allow.length === 0) return { decision: null, reason: "no powershell rules" };
-  const shape = powerShellRuleShape(subject.command);
+  const parsed = typeof subject.command === "string" ? parsePowerShellCommand(subject.command)
+    : "syntax" in subject.command ? subject.command : parsePowerShellCommand(subject.command.command);
+  const shape = powerShellRuleShape(parsed);
   if (hasRestrictions) {
     // A restriction also meets the command under every spelling of its name (`restrictionTokens`): over-matching a deny or ask only narrows, so the
     // normalization that rule identity refuses (an allow compares the literal name) is safe here.
@@ -231,6 +233,12 @@ export function evaluatePowerShellSubject(
   if (!shape.ok) return { decision: null, reason: `unreadable: ${shape.reason}` };
   if (shape.opaque !== null) return { decision: null, reason: shape.opaque };
   if (shape.commands.length === 0) return { decision: null, reason: "no command" };
+  const inspection = inspectPowerShellCommand(parsed, subject.cwd);
+  if (inspection.outcome === "visible-floor" || inspection.analysisLimited
+    || (inspection.outcome === "unproven" && inspection.exactLiteralEvaluation !== true)) {
+    return { decision: null, reason: inspection.exfiltration ?? inspection.sensitive ?? inspection.ordinaryAsk ?? "Shell command requires runtime evaluation" };
+  }
+  if (inspection.exactLiteralEvaluation === true) rules.allow = rules.allow.filter((rule) => !rule.spec.wildcard);
   if (subject.floorSignal !== null) return { decision: null, reason: subject.floorSignal };
   const patterns: string[] = [];
   for (const argv of shape.commands) {
