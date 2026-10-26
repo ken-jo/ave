@@ -45,6 +45,7 @@
     "docs/design/model-capability-catalog.md",
     "docs/design/plugin-alerts.md",
     "docs/design/tiled-chat-groups.md",
+    "docs/development/main-process-bundle.md",
     "docs/development/mcp-resources-policy.md",
     "docs/development/skill-loading-policy.md",
     "docs/development/theme-system.md",
