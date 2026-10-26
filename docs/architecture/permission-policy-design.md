@@ -239,6 +239,18 @@ refusal. Identified floors retain their precedence over ordinary reasons.
 Existing hard-deny, destructive, explicit-ask, origin and explicit-host-execution
 requirements keep their own authority.
 
+Decision cost is bounded by these structural limits, not by elapsed time or a
+work-step verdict. Within one permission decision, the floor compiles immutable
+facts for each parsed source node once per semantic context. State-dependent
+analysis reuses those facts under the complete incoming scope instead of walking
+the node's source again. POSIX-shell directory, taint and path transfers are
+memoized by their full incoming state; a loop or function may replay a transfer
+only for a new state in the bounded candidate set. Nested literal commands share
+the same request context. PowerShell script blocks reuse their parsed group in a
+separate semantic frame, and wrapper or runner traversal visits each distinct
+argv suffix once per context. Derived text with a different grammar remains a
+distinct, bounded input. A wall-clock deadline cannot change a permission result.
+
 | Bucket | Evidence | Permission behavior |
 | --- | --- | --- |
 | Floor | Sensitive/credential paths in argv, redirects, file-input values or literal inline code; retained credential-store, certificate-export and transport/sink catalogue effects | Per-call ask with `forceModal`, before allow rules or saved grants; never remembered |

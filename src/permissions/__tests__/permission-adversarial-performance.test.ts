@@ -46,6 +46,22 @@ const TIMING_CASES = [
 ];
 
 describe("adversarial complete manager timing", () => {
+  it("visits nested PowerShell script blocks without repeated subtree analysis", () => {
+    const depth = 14;
+    const command = "& { ".repeat(depth) + "Write-Output ready" + " }".repeat(depth);
+    const samples: number[] = [];
+    const results = [];
+    for (let observation = 0; observation < 3; observation += 1) {
+      const start = performance.now();
+      results.push(checkShellPermission(manager, cwd, SESSION_ID, command, "powershell", true));
+      samples.push(performance.now() - start);
+    }
+    const median = [...samples].sort((left, right) => left - right)[1]!;
+    process.stdout.write(`permission nested timing ${JSON.stringify({ depth, chars: command.length, samples, median, results: results.map(({ decision, layer, forceModal }) => ({ decision, layer, forceModal: forceModal === true })) })}\n`);
+    for (const result of results) expect(result).toMatchObject({ decision: "allow", layer: 3 });
+    expect(median).toBeLessThan(permissionDecisionCostTargetMs);
+  });
+
   it.each(TIMING_CASES)("$dialect sandboxed=$runsSandboxed radix=$radix nested=$nested", ({ dialect, runsSandboxed, radix, nested, length }) => {
     const command = distinctRelativePaths(length, radix, nested);
     expect(command.length).toBe(length);
