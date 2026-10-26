@@ -2,7 +2,7 @@
 // Output must contain only the resolved mapping.
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -76,3 +76,99 @@ try {
   rmSync(target, { recursive: true, force: true });
 }
 console.log("windows-path-kind: ok");
+
+const fixture = mkdtempSync(join(tmpdir(), "ave-path-facts-"));
+try {
+  const directory = join(fixture, "directory");
+  mkdirSync(directory);
+  const file = join(directory, "file");
+  writeFileSync(file, "pinned bytes");
+  const link = join(fixture, "junction");
+  symlinkSync(directory, link, "junction");
+  const paths = [file, directory, join(directory, "missing"), link, join(link, "file"), join(link, "nested", "unopened")];
+  const pins = run("--pin", ...paths);
+  assert.equal(pins.code, 0, pins.stderr);
+  const rows = JSON.parse(pins.stdout);
+  assert.equal(rows.length, paths.length);
+  for (const [index, path] of paths.slice(0, 2).entries()) {
+    const stat = lstatSync(path, { bigint: true });
+    assert.equal(BigInt(rows[index].volumeSerialNumber), stat.dev, "Node dev is the legacy 32-bit volume serial");
+    assert.equal(BigInt(rows[index].fileIndex), stat.ino, "Node ino is the legacy 64-bit file index");
+    assert.match(rows[index].fileId, /^0x[0-9a-f]{32}$/u);
+    assert.match(rows[index].volumeSerial, /^0x[0-9a-f]{16}$/u);
+    assert.equal(rows[index].canonical.toLowerCase(), `\\\\?\\${path}`.toLowerCase());
+    assert.ok(rows[index].ancestors.length > 1);
+    assert.ok(rows[index].ancestors.every(ancestor => ancestor.exists));
+  }
+  const descriptor = openSync(file, "r");
+  try {
+    assert.equal(BigInt(rows[0].fileIndex), fstatSync(descriptor, { bigint: true }).ino);
+    assert.equal(BigInt(rows[0].volumeSerialNumber), fstatSync(descriptor, { bigint: true }).dev);
+  } finally { closeSync(descriptor); }
+  assert.equal(rows[2].exists, false);
+  assert.equal(rows[3].reparseTag, 0xa0000003);
+  assert.equal(rows[4].exists, null, "a reparse ancestor prevents opening the target");
+  assert.equal(rows[5].ancestors.at(-1).exists, null);
+  // A GUID-owned tag has no link semantics known to the filesystem runtime.
+  const unfamiliar = join(fixture, "unfamiliar");
+  writeFileSync(unfamiliar, "");
+  execFileSync(join(process.env.SystemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), [
+    "-NoProfile", "-NonInteractive", "-Command", `$ErrorActionPreference='Stop'; Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+public static class FixtureReparse {
+  [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)]
+  private static extern SafeFileHandle CreateFile(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+  [DllImport("kernel32.dll", SetLastError=true)]
+  private static extern bool DeviceIoControl(SafeFileHandle handle, uint code, byte[] input, int length, IntPtr output, int size, out int returned, IntPtr overlapped);
+  public static void Set(string path) {
+    using(var handle=CreateFile(path,0x40000000,7,IntPtr.Zero,3,0x00200000,IntPtr.Zero)) {
+      if(handle.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
+      var data=new byte[24]; data[0]=0x42;
+      new Guid("db26d866-5321-4f43-977f-4591ca0bf0ee").ToByteArray().CopyTo(data,8);
+      int returned;
+      if(!DeviceIoControl(handle,0x900a4,data,data.Length,IntPtr.Zero,0,out returned,IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+    }
+  }
+}
+'@; [FixtureReparse]::Set('${unfamiliar.replaceAll("'", "''")}')`,
+  ], { windowsHide: true });
+  let classification;
+  try { classification = lstatSync(unfamiliar).isSymbolicLink(); }
+  catch (error) { classification = error.code; assert.ok(["EACCES", "EINVAL"].includes(error.code)); }
+  assert.notEqual(classification, true, "an unfamiliar tag cannot be admitted by a symbolic-link predicate");
+  const unfamiliarPin = run("--pin", unfamiliar);
+  assert.equal(unfamiliarPin.code, 0, unfamiliarPin.stderr);
+  const [unfamiliarFacts] = JSON.parse(unfamiliarPin.stdout);
+  assert.equal(unfamiliarFacts.reparseTag, 0x42);
+  assert.equal(unfamiliarFacts.attributes & 0x400, 0x400);
+  const unfamiliarDacl = run("--dacl", unfamiliar);
+  assert.equal(unfamiliarDacl.code, 0, unfamiliarDacl.stderr);
+  assert.equal(JSON.parse(unfamiliarDacl.stdout)[0].reparseTag, 0x42);
+  console.log(`unfamiliar reparse tag: lstat=${classification}; native reparseTag=66`);
+  const dacls = run("--dacl", "--parent", "--content", file);
+  assert.equal(dacls.code, 0, dacls.stderr);
+  const [dacl] = JSON.parse(dacls.stdout);
+  assert.deepEqual(dacl.identity, { volumeSerial: rows[0].volumeSerial, fileId: rows[0].fileId });
+  assert.equal(Buffer.from(dacl.contentHex, "hex").toString(), "pinned bytes");
+  assert.equal(typeof dacl.owner, "string");
+  assert.ok(Array.isArray(dacl.aces));
+  assert.ok(dacl.parent);
+  const writer = openSync(file, "r+");
+  try {
+    const locked = run("--dacl", "--parent", "--content", file);
+    assert.equal(locked.code, 4, "a concurrent write handle prevents a policy snapshot");
+    assert.equal(locked.stdout, "");
+  } finally { closeSync(writer); }
+  assert.equal(JSON.parse(run("--dacl", paths[2]).stdout)[0].exists, false);
+  for (const mode of ["--pin", "--dacl"]) {
+    const failed = run(mode, file, join(fixture, "invalid|target"));
+    assert.equal(failed.code, 4);
+    assert.equal(failed.stdout, "", "failed batches emit no partial data");
+    assert.equal(run(mode).code, 2);
+    assert.notEqual(run(mode, "relative").code, 0);
+  }
+  console.log("windows-path-facts: pin, DACL, content, reparse, missing and Node identity checks passed");
+} finally { rmSync(fixture, { recursive: true, force: true }); }

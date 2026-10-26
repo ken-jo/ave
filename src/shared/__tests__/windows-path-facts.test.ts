@@ -1,0 +1,126 @@
+import { execFileSync } from "node:child_process";
+import { closeSync, fstatSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { configureHostResources } from "../../main/host-resources.js";
+import { admitWindowsReparse, evaluateWindowsReadDacl, isOwnerOnlyDacl, leadingWindowsDenies, mapWindowsGenericRights, pinWindowsPaths, readWindowsDacls, windowsOwnerRules, type WindowsDacl, type WindowsPathFacts } from "../windows-path-facts.js";
+
+const SID = "S-1-5-21-100-200-300-1001";
+const ORDINARY: WindowsPathFacts = { exists: true, canonical: "\\\\?\\C:\\fixture", volumeSerial: "0x0000000000000001",
+  fileId: "0x00000000000000000000000000000001", volumeSerialNumber: "0x0000000000000001", fileIndex: "0x0000000000000001",
+  attributes: 16, reparseTag: 0, directory: true, ancestors: [] };
+
+function descriptor(aces: WindowsDacl["aces"]): WindowsDacl {
+  return { identity: { volumeSerial: ORDINARY.volumeSerial!, fileId: ORDINARY.fileId! }, owner: SID, group: SID, protected: true, nullDacl: false, aces };
+}
+
+describe("Windows path facts admission and evaluation", () => {
+  it("refuses unfamiliar tags and every reparse ancestor through one admission rule", () => {
+    expect(admitWindowsReparse(ORDINARY)).toBe(true);
+    for (const reparseTag of [0xa0000003, 0xa000000c, 0x80000042]) {
+      const link = { ...ORDINARY, reparseTag, attributes: 0x410 };
+      expect(admitWindowsReparse(link)).toBe(false);
+      expect(admitWindowsReparse({ ...ORDINARY, exists: null, ancestors: [link] })).toBe(false);
+    }
+    expect(admitWindowsReparse({ ...ORDINARY, attributes: 0x410 })).toBe(false);
+  });
+
+  it("keeps every migrated consumer on the common reparse admission rule", () => {
+    for (const path of ["src/permissions/windows-deny-acl.ts", "src/shared/ave-home.ts", "src/shared/windows-admin-policy.ts", "src/shared/windows-read-deny-evidence.ts"]) {
+      const source = readFileSync(resolve(path), "utf8");
+      expect(source).toContain("admitWindowsReparse(");
+      expect(source).not.toMatch(/reparseTag|FILE_ATTRIBUTE_REPARSE_POINT|isSymbolicLink|FileAttributes\]::ReparsePoint/);
+      expect(source).not.toMatch(/Get-Acl|GetAccessControl|GetSecurityInfo/);
+    }
+  });
+
+  it("maps generic rights without losing ordinary or standard rights", () => {
+    expect(mapWindowsGenericRights(0x80000000)).toBe(0x120089);
+    expect(mapWindowsGenericRights(0x40000000)).toBe(0x120116);
+    expect(mapWindowsGenericRights(0x20000000)).toBe(0x1200a0);
+    expect(mapWindowsGenericRights(0x10000000)).toBe(0x1f01ff);
+    expect(mapWindowsGenericRights(0x80040000)).toBe(0x160089);
+  });
+
+  it("counts only leading explicit ordinary denies with complete propagation", () => {
+    const ace = { type: 1, flags: 3, mask: 0x80000001, sid: SID };
+    expect(leadingWindowsDenies(descriptor([ace]), SID)).toEqual({ mask: 0x80000001, inheritable: 0x80000001 });
+    for (const flags of [7, 11, 19]) expect(leadingWindowsDenies(descriptor([{ ...ace, flags }]), SID).inheritable).toBe(0);
+    for (const first of [{ ...ace, type: 0 }, { ...ace, flags: 16 }, { ...ace, type: 6 }]) {
+      expect(leadingWindowsDenies(descriptor([first, ace]), SID)).toEqual({ mask: 0, inheritable: 0 });
+    }
+    expect(leadingWindowsDenies(descriptor([{ ...ace, sid: "S-1-1-0" }, ace]), SID).mask).toBe(0x80000001);
+    expect(leadingWindowsDenies(descriptor([{ ...ace, sid: "S-1-5-18" }]), "S-1-5-00018").mask).toBe(0x80000001);
+    for (const sid of ["invalid", "S-1-5-4294967296", "S-1-281474976710656-1"]) {
+      expect(() => leadingWindowsDenies(null, sid)).toThrow("Invalid deny DACL SID");
+    }
+  });
+
+  it("preserves owner-only rules and elevated administrator ownership", () => {
+    const dacl = descriptor([{ type: 0, flags: 3, mask: 0x1f01ff, sid: SID }]);
+    const value = { ownerSid: SID, rules: windowsOwnerRules(dacl) };
+    expect(isOwnerOnlyDacl(value, SID)).toBe(true);
+    expect(isOwnerOnlyDacl({ ...value, ownerSid: "S-1-5-18" }, SID)).toBe(false);
+    expect(isOwnerOnlyDacl({ ...value, ownerSid: "S-1-5-32-544", elevated: true }, SID)).toBe(true);
+    expect(isOwnerOnlyDacl({ ...value, rules: windowsOwnerRules({ ...dacl, aces: [{ ...dacl.aces[0]!, flags: 19 }] }) }, SID)).toBe(false);
+  });
+});
+
+describe.runIf(process.platform === "win32")("Windows path facts native boundary", () => {
+  let fixture: string;
+  beforeAll(() => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
+    fixture = mkdtempSync(join(tmpdir(), "ave-path-facts-"));
+    mkdirSync(join(fixture, "directory"));
+    writeFileSync(join(fixture, "directory", "file"), "pinned policy bytes");
+    symlinkSync(join(fixture, "directory"), join(fixture, "junction"), "junction");
+  });
+  afterAll(() => { if (fixture) rmSync(fixture, { recursive: true, force: true }); });
+
+  it("proves Node dev and ino use the legacy serial and file index for files and directories", () => {
+    for (const path of [join(fixture, "directory"), join(fixture, "directory", "file")]) {
+      const [pin] = pinWindowsPaths([path]);
+      const stat = lstatSync(path, { bigint: true });
+      expect(BigInt(pin!.volumeSerialNumber!)).toBe(stat.dev);
+      expect(BigInt(pin!.fileIndex!)).toBe(stat.ino);
+      expect(pin!.fileId).toMatch(/^0x[0-9a-f]{32}$/);
+      const handle = openSync(path, "r");
+      try {
+        const opened = fstatSync(handle, { bigint: true });
+        expect(BigInt(pin!.volumeSerialNumber!)).toBe(opened.dev);
+        expect(BigInt(pin!.fileIndex!)).toBe(opened.ino);
+      } finally { closeSync(handle); }
+    }
+  });
+
+  it("reports target tags and never opens a descendant through them", () => {
+    const [target, child] = pinWindowsPaths([join(fixture, "junction"), join(fixture, "junction", "file")]);
+    expect(target!.reparseTag).toBe(0xa0000003);
+    expect(target!.exists).toBe(true);
+    expect(child!.exists).toBeNull();
+    expect(child!.canonical).toBeNull();
+    expect(admitWindowsReparse(target!)).toBe(false);
+    expect(admitWindowsReparse(child!)).toBe(false);
+  });
+
+  it("reads raw DACL and bounded bytes from one pinned file without writing", () => {
+    const file = join(fixture, "directory", "file");
+    const icacls = join(process.env.SystemRoot!, "System32", "icacls.exe");
+    const before = execFileSync(icacls, [fixture, "/T"], { encoding: "utf8", windowsHide: true });
+    const [row] = readWindowsDacls([file], { parent: true, content: true });
+    expect(row!.dacl!.identity).toEqual({ volumeSerial: row!.volumeSerial, fileId: row!.fileId });
+    expect(Buffer.from(row!.contentHex!, "hex").toString()).toBe("pinned policy bytes");
+    expect(row!.parent).toBeTruthy();
+    expect(evaluateWindowsReadDacl(row!).status).toMatch(/private|readable/);
+    expect(execFileSync(icacls, [fixture, "/T"], { encoding: "utf8", windowsHide: true })).toBe(before);
+  });
+
+  it("distinguishes missing paths from native failures and returns no partial batch", () => {
+    expect(readWindowsDacls([join(fixture, "missing")])[0]!.exists).toBe(false);
+    expect(() => readWindowsDacls([join(fixture, "directory"), join(fixture, "invalid|target")])).toThrow();
+    expect(pinWindowsPaths([])).toEqual([]);
+    expect(readWindowsDacls([])).toEqual([]);
+    expect(() => pinWindowsPaths(["relative"])).toThrow(/absolute/);
+  });
+});

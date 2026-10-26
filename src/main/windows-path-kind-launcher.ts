@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 import { getHostResources } from "./host-resources.js";
 
-// How long one lookup may take; the helper opens nothing, so this only bounds a hung process.
+// The drive query opens nothing, so its lookup timeout only bounds a hung process.
 const QUERY_TIMEOUT_MS = 5_000;
 
 // The helper's one answer about a drive: the OS has no mapping for it (native/windows-path-kind/README.md).

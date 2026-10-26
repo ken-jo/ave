@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { loadPolicy, getAdminPolicyPath } from "../policy-store.js";
 import { buildSandboxConfig } from "../asrt-sandbox.js";
 import { loadMarketplacePolicy } from "../../marketplace/sources/policy.js";
@@ -12,6 +12,7 @@ import { readWindowsDirectoryDacls, win32SystemBinary, type WindowsDirectoryDacl
 import { initAdminPolicyAudit } from "../../lib/admin-policy-file.js";
 import { setProcessPlatform } from "../../__tests__/support/process-platform.js";
 import * as sensitivePaths from "../sensitive-paths.js";
+import { configureHostResources } from "../../main/host-resources.js";
 
 describe.skipIf(process.platform !== "win32")("Windows administrative policy trust", () => {
   let root: string;
@@ -20,6 +21,7 @@ describe.skipIf(process.platform !== "win32")("Windows administrative policy tru
   let token: WindowsDirectoryDacl;
 
   beforeEach(async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     root = await mkdtemp(join(tmpdir(), "policy-trust-"));
     vi.stubEnv("ProgramData", join(root, "machine"));
     vi.stubEnv("AVE_HOME", join(root, "home"));

@@ -6,6 +6,8 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { win32SystemBinary } from "../ave-home.js";
+import { configureHostResources } from "../../main/host-resources.js";
+import { resolve } from "node:path";
 import { cleanupTmpDir } from "../../__tests__/support/tmp-dir-teardown.js";
 import { readWindowsReadDenyEvidence, windowsReadDenyEvidence, windowsReadDenyKey, type WindowsReadDenySnapshot } from "../windows-read-deny-evidence.js";
 
@@ -16,6 +18,7 @@ describe.runIf(process.platform === "win32")("Windows read deny native evidence"
   let beforeAcl: string;
 
   beforeAll(async () => {
+    configureHostResources({ resourcePath: resolve("resources"), isPackaged: false });
     fixture = mkdtempSync(join(tmpdir(), "ave-read-deny-"));
     const identity = execFileSync(win32SystemBinary("whoami"), ["/user", "/fo", "csv", "/nh"], { encoding: "utf8", windowsHide: true });
     const sid = identity.match(/S-1-[0-9-]+/)?.[0];
