@@ -444,7 +444,7 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
   it("keeps an allowlisted Kimi verification URL in main and opens it only after an explicit request", async () => {
     const { client, child } = createLoginHarness();
     const verificationUrl = "https://auth.kimi.com/device?user_code=ABCD-EFGH&state=main-process-only";
-    const openExternal = vi.fn(async (_url: string) => undefined);
+    const openExternal = vi.fn(async (_url: string, _login: import("../oauth-login.js").OAuthLoginOptions) => undefined);
 
     await client.startDeviceCodeLogin();
     child.stderr.write("Open this page: https://auth.kimi.com/device?user_");
@@ -465,15 +465,22 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
     const afterOpen = await client.openPendingVerificationUrl(openExternal);
 
     expect(openExternal).toHaveBeenCalledOnce();
-    expect(openExternal).toHaveBeenCalledWith(verificationUrl);
+    expect(openExternal).toHaveBeenCalledWith(verificationUrl, expect.objectContaining({
+      completion: expect.any(Promise), onCancel: expect.any(Function), timeoutMs: expect.any(Number),
+    }));
     expect(JSON.stringify(afterOpen)).not.toContain("auth.kimi.com");
     expect(JSON.stringify(afterOpen)).not.toContain("main-process-only");
+    await client.openPendingVerificationUrl(openExternal);
+    expect(openExternal).toHaveBeenCalledOnce();
+    const login = openExternal.mock.calls[0][1];
+    child.emit("close", 0);
+    await expect(login.completion).resolves.toBeUndefined();
   });
 
   it("accepts the official Grok Build device page without projecting its URL", async () => {
     const { client, child, spawnCalls } = createLoginHarness("grok-build");
     const verificationUrl = "https://accounts.x.ai/device?user_code=GROK-1234&state=main-process-only";
-    const openExternal = vi.fn(async (_url: string) => undefined);
+    const openExternal = vi.fn(async (_url: string, _login: import("../oauth-login.js").OAuthLoginOptions) => undefined);
 
     await client.startDeviceCodeLogin();
     child.stdout.write(`${verificationUrl}\n`);
@@ -494,7 +501,12 @@ describe("AcpSubscriptionRuntimeClient security boundary", () => {
 
     await client.openPendingVerificationUrl(openExternal);
 
-    expect(openExternal).toHaveBeenCalledWith(verificationUrl);
+    expect(openExternal).toHaveBeenCalledWith(verificationUrl, expect.objectContaining({
+      completion: expect.any(Promise), onCancel: expect.any(Function), timeoutMs: expect.any(Number),
+    }));
+    openExternal.mock.calls[0][1].onCancel();
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalled());
+    expect(client.getCachedStatus().connection).toBe("signed-out");
   });
   it("does not extract a verification URL or device code from an untrusted host", async () => {
     const { client, child } = createLoginHarness();

@@ -34,11 +34,12 @@ std::string file_id(const FILE_ID_128& id) {
 
 std::string facts_json(const PathFacts& facts) {
   if (facts.exists != 1) return std::string("{\"exists\":") + (facts.exists == 0 ? "false" : "null")
-    + ",\"canonical\":null,\"volumeSerial\":null,\"fileId\":null,\"volumeSerialNumber\":null,\"fileIndex\":null,\"attributes\":0,\"reparseTag\":0,\"reparseTarget\":null,\"directory\":false}";
+    + ",\"canonical\":null,\"volumeSerial\":null,\"fileId\":null,\"volumeSerialNumber\":null,\"fileIndex\":null,\"changeTime\":null,\"attributes\":0,\"reparseTag\":0,\"reparseTarget\":null,\"directory\":false}";
   return "{\"exists\":true,\"canonical\":" + json_string(facts.canonical)
     + ",\"volumeSerial\":" + hex_number(facts.id.VolumeSerialNumber) + ",\"fileId\":" + file_id(facts.id.FileId)
     + ",\"volumeSerialNumber\":" + hex_number(facts.legacy.dwVolumeSerialNumber)
     + ",\"fileIndex\":" + hex_number((static_cast<ULONGLONG>(facts.legacy.nFileIndexHigh) << 32) | facts.legacy.nFileIndexLow)
+    + ",\"changeTime\":" + hex_number(static_cast<ULONGLONG>(facts.change_time.QuadPart))
     + ",\"attributes\":" + std::to_string(facts.tag.FileAttributes) + ",\"reparseTag\":" + std::to_string(facts.tag.ReparseTag)
     + ",\"reparseTarget\":" + (facts.reparse_target.empty() ? "null" : json_string(facts.reparse_target))
     + ",\"directory\":" + ((facts.tag.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0 ? "true}" : "false}");

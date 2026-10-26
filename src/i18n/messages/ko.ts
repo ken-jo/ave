@@ -5,6 +5,13 @@ import type { SeedMessageKey } from "./en.js";
 export const ko: Record<SeedMessageKey, string> = {
   "providerSettingsError.title": "공급자 설정을 불러올 수 없습니다",
   "providerSettingsError.detail": "설정 파일에 올바르지 않은 필드가 있습니다.\n\n파일: {path}\n필드: {field}\n\n이 필드를 수정한 뒤 Ave를 다시 시작하세요. 파일은 변경되지 않았습니다.",
+  "oauthWindow.title": "로그인",
+  "oauthWindow.systemBrowser": "시스템 브라우저에서 로그인을 계속합니다.",
+  "oauthWindow.address": "현재 주소",
+  "oauthWindow.secure": "보안 연결 (HTTPS)",
+  "oauthWindow.insecure": "암호화되지 않은 연결 (HTTP / 루프백)",
+  "oauthWindow.certificateError": "인증서 오류",
+  "oauthWindow.loadError": "페이지를 불러올 수 없습니다",
   "mainToolbar.hideSidebar": "사이드바 숨기기",
   "mainToolbar.showSidebar": "사이드바 표시",
   "sidebar.generalLabel": "일반",

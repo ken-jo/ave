@@ -863,7 +863,6 @@ export async function bootstrap(
     },
   });
   ctx.subscriptionProviderFactory = createSubscriptionChatLoopBindings({
-    shellOpenExternal: (url) => requireDesktopHost(host).shellOpenExternal(url),
     auditLogger: ctx.bootAuditLogger,
   }).subscriptionProviderFactory;
 

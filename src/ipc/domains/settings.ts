@@ -1,6 +1,7 @@
 /** Settings domain IPC handlers. Covers: ave:settings:*, ave:shell:open-external, ave:telemetry:consent-answer */
-import { dialog, ipcMain, shell, type IpcMainInvokeEvent } from "electron";
+import { dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 import { validateExternalUrl } from "../../shared/external-url.js";
+import type { OpenOAuthLogin } from "../../main/oauth-login.js";
 import { canonicalStringify } from "../../shared/canonical-json.js";
 import { SETTINGS } from "../../shared/ipc-channels.js";
 import { envForcedSettingsPaths } from "../../shared/env-backed-settings.js";
@@ -531,15 +532,18 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
       input: JSON.stringify({ action, provider, outcome, ...(error ? { error } : {}) }),
     });
   };
-  const openSubscriptionExternal = async (url: string): Promise<void> => {
+  const openSubscriptionLogin: OpenOAuthLogin = async (url, options) => {
     const validated = validateExternalUrl(url);
     if (!validated.ok) {
       throw new SubscriptionRuntimeServiceError("subscription-verification-url-unavailable");
     }
-    await shell.openExternal(validated.url);
+    const parent = deps.getMainWindow();
+    if (!parent || parent.isDestroyed()) throw new Error("OAuth login requires a main window");
+    const { openOAuthInAuthWindow } = await import("../../main/auth-window-service.js");
+    await openOAuthInAuthWindow(parent, validated.url, options);
   };
   const getSubscriptionRuntime = (): Promise<SubscriptionRuntimeService> =>
-    getSubscriptionRuntimeService(openSubscriptionExternal, {
+    getSubscriptionRuntimeService(openSubscriptionLogin, {
       audit: (event) => {
         auditLogger.log({
           timestamp: new Date().toISOString(),
@@ -1201,7 +1205,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
     }
     const result = await runSubscriptionMutation(
       providerValue,
-      (runtime, provider) => runtime.openPendingVerificationUrl(provider, openSubscriptionExternal),
+      (runtime, provider) => runtime.openPendingVerificationUrl(provider, openSubscriptionLogin),
     );
     auditSubscriptionMutation("open-login-browser", providerValue, result.ok ? "succeeded" : "failed", result.ok ? undefined : result.error);
     return result;
@@ -1460,7 +1464,7 @@ export function registerSettingsHandlers(deps: IpcDeps, hooks?: SettingsHandlerH
   );
   ipcMain.handle(
     CHANNELS.settings.acpSubscriptionOpenLoginBrowser,
-    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionOpenLoginBrowser, "legacy-open-login-browser", (runtime, provider) => runtime.openPendingVerificationUrl(provider, openSubscriptionExternal)),
+    hostAcpSubscriptionHandler(CHANNELS.settings.acpSubscriptionOpenLoginBrowser, "legacy-open-login-browser", (runtime, provider) => runtime.openPendingVerificationUrl(provider, openSubscriptionLogin)),
   );
   ipcMain.handle(
     CHANNELS.settings.acpSubscriptionCancelLogin,

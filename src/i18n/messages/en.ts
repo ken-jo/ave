@@ -3,6 +3,13 @@
 export const en = {
   "providerSettingsError.title": "Unable to load provider settings",
   "providerSettingsError.detail": "The settings file contains an invalid field.\n\nFile: {path}\nField: {field}\n\nCorrect this field and restart Ave. The file has not been changed.",
+  "oauthWindow.title": "Sign in",
+  "oauthWindow.systemBrowser": "Sign-in continues in your system browser.",
+  "oauthWindow.address": "Current address",
+  "oauthWindow.secure": "Secure connection (HTTPS)",
+  "oauthWindow.insecure": "Not encrypted (HTTP / loopback)",
+  "oauthWindow.certificateError": "Certificate error",
+  "oauthWindow.loadError": "Page could not be loaded",
   "mainToolbar.hideSidebar": "Hide sidebar",
   "mainToolbar.showSidebar": "Show sidebar",
   "sidebar.generalLabel": "General",

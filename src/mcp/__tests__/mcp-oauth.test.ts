@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { AuthRedirectCatchers } from "../../main/auth-redirect-catcher.js";
 import { MCP_CLIENT_METADATA_DOCUMENT_URL, McpOAuthSession, type McpOAuthSecrets } from "../mcp-oauth.js";
 import type { McpHttpServerConfig } from "../types.js";
+import type { OAuthLoginOptions } from "../../main/oauth-login.js";
 import { MCP_PROTOCOL_VERSION } from "../protocol-constants.js";
 
 interface Fixture {
@@ -231,11 +232,19 @@ function createSession(state: Fixture, options: { store?: Map<string, string>; c
     canStoreEncrypted: options.canStoreEncrypted ?? (() => true),
   };
   const catchers = new AuthRedirectCatchers();
-  const openAuthorizationUrl = vi.fn(async (url: string) => {
+  const openAuthorizationUrl = vi.fn(async (url: string, login: OAuthLoginOptions) => {
     const auth = await fetch(url, { redirect: "manual" });
     const redirect = new URL(auth.headers.get("location") ?? "");
     redirect.hostname = "127.0.0.1";
-    await fetch(redirect, { redirect: "manual" });
+    let completed = false;
+    void login.completion.then(() => { completed = true; }, () => undefined);
+    const response = await fetch(redirect, { redirect: "manual" });
+    if (state.callbackState !== undefined) {
+      expect(response.status).toBe(404);
+      expect(completed).toBe(false);
+      login.onCancel();
+    }
+    await login.completion;
   });
   const networkFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => fetch(input, init)) as typeof fetch;
   const config: McpHttpServerConfig = { id: "remote", transport: "http", url: state.resource, auth: "oauth",
@@ -246,6 +255,21 @@ function createSession(state: Fixture, options: { store?: Map<string, string>; c
 }
 
 describe("remote authorization", () => {
+  it("releases the loopback catcher and reports failure when the login window cancels", async () => {
+    const state = await fixture();
+    const { session, openAuthorizationUrl, catchers } = createSession(state);
+    const close = vi.spyOn(catchers, "close");
+    let cancelled = false;
+    openAuthorizationUrl.mockImplementation(async (_url, login) => {
+      login.onCancel();
+      cancelled = true;
+      await login.completion;
+    });
+    await expect(session.authenticate()).rejects.toThrow("MCP authentication failed");
+    expect(close).toHaveBeenCalled();
+    expect(cancelled).toBe(true);
+    expect(session.getStatus()).toBe("error");
+  });
   it("restores the challenged metadata location for an expired grant after restart", async () => {
     const state = await fixture();
     state.wellKnownMetadataUnavailable = true;
@@ -652,8 +676,8 @@ describe("remote authorization", () => {
     const { session, catchers } = createSession(state);
     await session.authenticate();
     const registeredRedirect = state.authorizations[0].searchParams.get("redirect_uri")!;
-    vi.spyOn(catchers, "open").mockImplementationOnce(async function (this: typeof catchers, ownerKey: string) {
-      const opened = await (Object.getPrototypeOf(catchers) as typeof catchers).open.call(catchers, ownerKey);
+    vi.spyOn(catchers, "open").mockImplementationOnce(async function (this: typeof catchers, ownerKey: string, options) {
+      const opened = await (Object.getPrototypeOf(catchers) as typeof catchers).open.call(catchers, ownerKey, options);
       return { ...opened, redirectUri: registeredRedirect };
     });
     state.rejectAccess = true;

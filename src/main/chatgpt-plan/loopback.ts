@@ -5,7 +5,6 @@ import { listenFetchLoopback } from "../../shared/fetch-loopback-listener.js";
 import {
   CHATGPT_PLAN_CALLBACK_HOST,
   CHATGPT_PLAN_CALLBACK_PATH,
-  CHATGPT_PLAN_PREFERRED_CALLBACK_PORT,
 } from "./endpoints.js";
 
 const CALLBACK_PAGE = "<!doctype html><meta charset=\"utf-8\"><title>Ave</title>"
@@ -44,8 +43,8 @@ function listen(server: Server, port: number): Promise<number> {
 
 /**
  * Start the loopback listener before the browser opens. It binds 127.0.0.1
- * only, prefers the documented port and takes any free port when that one is
- * busy; scheme, host and path never change. Only a GET to the callback path,
+ * only, on an ephemeral port by default; scheme, host and path never change.
+ * Only a GET to the callback path,
  * addressed to `127.0.0.1:<port>` and carrying this attempt's `state`,
  * completes it, and only once. Anything else (another page probing the port,
  * a rebinding host name, a stale or forged state) is refused and the listener
@@ -53,7 +52,7 @@ function listen(server: Server, port: number): Promise<number> {
  */
 export async function startChatGptPlanCallbackListener(
   expectedState: string,
-  preferredPort: number = CHATGPT_PLAN_PREFERRED_CALLBACK_PORT,
+  preferredPort: number = 0,
 ): Promise<ChatGptPlanCallbackListener> {
   let deliver: (url: URL) => void = () => undefined;
   let fail: (error: Error) => void = () => undefined;

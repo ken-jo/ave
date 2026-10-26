@@ -20,7 +20,7 @@ async function open(
   catchers: AuthRedirectCatchers,
   owner = OWNER,
 ): Promise<{ handle: string; redirectUri: string }> {
-  const result = await catchers.open(owner);
+  const result = await catchers.open(owner, { state: "xyz" });
   openCatchers.push({ catchers, owner, handle: result.handle });
   return result;
 }
@@ -92,7 +92,7 @@ describe("the listener it binds", () => {
 
   it("can name the listener by the RFC 8252 loopback IP literal and still catch the redirect there", async () => {
     const catchers = new AuthRedirectCatchers();
-    const result = await catchers.open(OWNER, { redirectHost: "127.0.0.1" });
+    const result = await catchers.open(OWNER, { state: "xyz", redirectHost: "127.0.0.1" });
     openCatchers.push({ catchers, owner: OWNER, handle: result.handle });
     expect(result.redirectUri).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/u);
     const waiting = catchers.wait(OWNER, result.handle);
@@ -104,10 +104,10 @@ describe("the listener it binds", () => {
   it("refuses a second open for the same plugin rather than replacing the first", async () => {
     const catchers = new AuthRedirectCatchers();
     const first = await open(catchers);
-    await expect(catchers.open(OWNER)).rejects.toThrow(/already open/u);
+    await expect(catchers.open(OWNER, { state: "xyz" })).rejects.toThrow(/already open/u);
     // The first is still live: replacing it would have stranded a sign-in already in flight, whose redirect would then arrive at a closed port AFTER the
     // user had typed their password.
-    await expect(hit(first.redirectUri, "/")).resolves.toMatchObject({ status: 200 });
+    await expect(hit(first.redirectUri, "/")).resolves.toMatchObject({ status: 404 });
   });
 
   it("lets a different plugin open its own, on its own port", async () => {
@@ -119,6 +119,18 @@ describe("the listener it binds", () => {
 });
 
 describe("what it accepts", () => {
+  it("round-trips a prototype-named parameter as an own frozen data property", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const { handle, redirectUri } = await open(catchers);
+    expect((await hit(redirectUri, "/?state=xyz&__proto__=x")).status).toBe(303);
+    const params = await catchers.wait(OWNER, handle);
+    expect(Object.hasOwn(params, "__proto__")).toBe(true);
+    expect(params["__proto__"]).toBe("x");
+    expect(Object.getPrototypeOf(params)).toBe(Object.prototype);
+    expect(Object.isFrozen(params)).toBe(true);
+    expect(Object.getOwnPropertyDescriptor(params, "__proto__")).toEqual({ value: "x", writable: false, enumerable: true, configurable: false });
+  });
+
   it("resolves the wait with the redirect's query parameters", async () => {
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
@@ -132,8 +144,8 @@ describe("what it accepts", () => {
     // and the hang would look like a user who never signed in.
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
-    await hit(redirectUri, "/?code=early");
-    await expect(catchers.wait(OWNER, handle)).resolves.toEqual({ code: "early" });
+    await hit(redirectUri, "/?code=early&state=xyz");
+    await expect(catchers.wait(OWNER, handle)).resolves.toEqual({ code: "early", state: "xyz" });
   });
 
   it("sends the browser away from the URL that carries the code", async () => {
@@ -141,7 +153,7 @@ describe("what it accepts", () => {
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
     const waiting = catchers.wait(OWNER, handle);
-    const response = await hit(redirectUri, "/?code=abc123");
+    const response = await hit(redirectUri, "/?code=abc123&state=xyz");
     expect(response.status).toBe(303);
     expect(response.location).toBe(redirectUri);
     expect(response.body).not.toContain("abc123");
@@ -151,6 +163,7 @@ describe("what it accepts", () => {
   it("serves the host's own page, never markup the caller supplied", async () => {
     const catchers = new AuthRedirectCatchers();
     const { redirectUri } = await open(catchers);
+    await hit(redirectUri, "/?code=abc123&state=xyz");
     const landing = await hit(redirectUri, "/");
     expect(landing.status).toBe(200);
     expect(landing.body).toContain("Sign-in complete");
@@ -164,7 +177,7 @@ describe("what it accepts", () => {
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers);
     const waiting = catchers.wait(OWNER, handle);
-    await hit(redirectUri, "/?error=access_denied&error_description=User+cancelled");
+    await hit(redirectUri, "/?error=access_denied&error_description=User+cancelled&state=xyz");
     await expect(waiting).resolves.toMatchObject({ error: "access_denied" });
     const landing = await hit(redirectUri, "/");
     expect(landing.body).toContain("Sign-in failed");
@@ -173,6 +186,58 @@ describe("what it accepts", () => {
 });
 
 describe("what it refuses", () => {
+  it.each(["__proto__", "constructor"])("refuses duplicate %s parameters without consuming the callback", async name => {
+    const catchers = new AuthRedirectCatchers();
+    const { handle, redirectUri } = await open(catchers);
+    let completed = false;
+    const waiting = catchers.wait(OWNER, handle);
+    void waiting.then(() => { completed = true; }, () => undefined);
+    expect((await hit(redirectUri, `/?state=xyz&${name}=x&${name}=y`)).status).toBe(404);
+    expect(completed).toBe(false);
+    expect((await hit(redirectUri, "/?code=real&state=xyz")).status).toBe(303);
+    await expect(waiting).resolves.toEqual({ code: "real", state: "xyz" });
+  });
+
+  it("keeps waiting after unrelated paths and wrong states, then consumes only one matching callback", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const result = await catchers.open(OWNER, { state: "expected-state" });
+    openCatchers.push({ catchers, owner: OWNER, handle: result.handle });
+    let completed = false;
+    const waiting = catchers.wait(OWNER, result.handle);
+    void waiting.then(() => { completed = true; }, () => undefined);
+    for (const path of ["/unrelated?x=1", "/unrelated?code=forged&state=expected-state", "/?code=forged&state=wrong", "/?code=forged", "/?state=wrong&state=expected-state&code=forged"]) {
+      expect((await hit(result.redirectUri, path)).status, path).toBe(404);
+      expect(completed).toBe(false);
+    }
+    expect((await hit(result.redirectUri, "/?code=real&state=expected-state")).status).toBe(303);
+    await expect(waiting).resolves.toEqual({ code: "real", state: "expected-state" });
+    expect((await hit(result.redirectUri, "/?code=replay&state=expected-state")).status).toBe(404);
+    await expect(catchers.wait(OWNER, result.handle)).resolves.toEqual({ code: "real", state: "expected-state" });
+  });
+
+  it("holds a catcher opened without a state (the plugin contract) to its exact callback path", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const result = await catchers.open(OWNER);
+    openCatchers.push({ catchers, owner: OWNER, handle: result.handle });
+    let completed = false;
+    const waiting = catchers.wait(OWNER, result.handle);
+    void waiting.then(() => { completed = true; }, () => undefined);
+    expect((await hit(result.redirectUri, "/unrelated?x=1")).status).toBe(404);
+    expect(completed).toBe(false);
+    expect((await hit(result.redirectUri, "/?code=plugin&state=any")).status).toBe(303);
+    await expect(waiting).resolves.toEqual({ code: "plugin", state: "any" });
+  });
+
+  it("authenticates an error callback with the reserved state", async () => {
+    const catchers = new AuthRedirectCatchers();
+    const result = await catchers.open(OWNER, { state: "expected-error" });
+    openCatchers.push({ catchers, owner: OWNER, handle: result.handle });
+    expect((await hit(result.redirectUri, "/?error=access_denied&state=wrong")).status).toBe(404);
+    expect((await hit(result.redirectUri, "/?error=access_denied&state=expected-error")).status).toBe(303);
+    await expect(catchers.wait(OWNER, result.handle)).resolves.toEqual({ error: "access_denied", state: "expected-error" });
+    expect((await hit(result.redirectUri, "/")).body).toContain("Sign-in failed");
+  });
+
   it("refuses a non-GET request", async () => {
     const catchers = new AuthRedirectCatchers();
     const { redirectUri } = await open(catchers);
@@ -261,7 +326,7 @@ describe("closing", () => {
     const catchers = new AuthRedirectCatchers();
     const { handle, redirectUri } = await open(catchers, OWNER);
     catchers.close(OTHER_OWNER, handle);
-    await expect(hit(redirectUri, "/")).resolves.toMatchObject({ status: 200 });
+    await expect(hit(redirectUri, "/")).resolves.toMatchObject({ status: 404 });
   });
 
   it("is idempotent, including for a handle that never existed", () => {

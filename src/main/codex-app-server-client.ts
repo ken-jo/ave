@@ -1,4 +1,6 @@
 import type { ChildProcess } from "node:child_process";
+import { OAuthLoginAttempt, type OpenOAuthLogin } from "./oauth-login.js";
+import { TOOL_TIMEOUT_POLICY } from "../shared/tool-timeout-policy.js";
 import {
   type CodexSubscriptionConnectionState,
   type CodexSubscriptionLoginMethod,
@@ -43,8 +45,8 @@ export class CodexAppServerError extends Error {
 }
 
 export interface CodexAppServerClientOptions {
-  // Opens a trusted ChatGPT/OpenAI URL in the system browser.
-  openExternal: (url: string) => Promise<void> | void;
+  // Opens a trusted login URL with the runtime-owned completion signal.
+  openAuthorizationUrl: OpenOAuthLogin;
   // Existing isolated directory owned by the host integration's runtime.
   runtimeHome: string;
 
@@ -64,6 +66,7 @@ export interface CodexAppServerClientOptions {
 }
 
 interface PendingLogin {
+  window: OAuthLoginAttempt;
   loginId: string;
   method: CodexSubscriptionLoginMethod;
   deviceCode: string | null;
@@ -125,7 +128,7 @@ function runtimeResolutionError(error: unknown): CodexAppServerError {
 // Main-process adapter for the stable App Server account APIs. The server owns browser callbacks, credential persistence, and token refresh. This client
 // intentionally never reads Codex auth files or token values.
 export class CodexAppServerClient {
-  private readonly openExternal: (url: string) => Promise<void> | void;
+  private readonly openAuthorizationUrl: OpenOAuthLogin;
   private readonly resolveRuntime: () => Promise<CodexResolvedRuntime>;
   private readonly lastKnownVersion: () => string | null;
   private readonly spawn: CodexSpawnAppServer;
@@ -144,7 +147,7 @@ export class CodexAppServerClient {
 
   private loginLock: Promise<void> = Promise.resolve();
   constructor(options: CodexAppServerClientOptions) {
-    this.openExternal = options.openExternal;
+    this.openAuthorizationUrl = options.openAuthorizationUrl;
     this.resolveRuntime = options.resolveRuntime;
     this.lastKnownVersion = options.lastKnownVersion ?? (() => null);
     this.spawn = options.spawn
@@ -169,6 +172,7 @@ export class CodexAppServerClient {
     const result = await this.request("account/read", { refreshToken: false });
     this.accountStatus = this.projectAccountStatus(result);
     if (this.accountStatus.connection === "connected") {
+      this.pendingLogin?.window.finish();
       this.pendingLogin = null;
       this.completedLoginError = null;
     }
@@ -201,13 +205,8 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgpt" || !loginId || !authUrl) {
         throw new CodexAppServerError("codex-login-failed");
       }
-      this.pendingLogin = { loginId, method: "browser", deviceCode: null };
-      try {
-        await this.openExternal(authUrl);
-      } catch {
-        await this.cancelPendingLoginQuietly(loginId);
-        throw new CodexAppServerError("codex-login-failed");
-      }
+      this.pendingLogin = { loginId, method: "browser", deviceCode: null, window: new OAuthLoginAttempt() };
+      this.openLoginWindow(authUrl, this.pendingLogin);
       return this.currentStatus();
     });
   }
@@ -227,13 +226,8 @@ export class CodexAppServerClient {
       if (response?.type !== "chatgptDeviceCode" || !loginId || !verificationUrl || !userCode) {
         throw new CodexAppServerError("codex-login-failed");
       }
-      this.pendingLogin = { loginId, method: "device-code", deviceCode: userCode };
-      try {
-        await this.openExternal(verificationUrl);
-      } catch {
-        await this.cancelPendingLoginQuietly(loginId);
-        throw new CodexAppServerError("codex-login-failed");
-      }
+      this.pendingLogin = { loginId, method: "device-code", deviceCode: userCode, window: new OAuthLoginAttempt() };
+      this.openLoginWindow(verificationUrl, this.pendingLogin);
       return { status: this.currentStatus(), userCode };
     });
   }
@@ -246,6 +240,7 @@ export class CodexAppServerClient {
       try {
         await this.request("account/login/cancel", { loginId: pending.loginId });
       } finally {
+        pending.window.finish();
         if (this.pendingLogin?.loginId === pending.loginId) this.pendingLogin = null;
       }
       return this.currentStatus();
@@ -257,6 +252,7 @@ export class CodexAppServerClient {
       await this.ensureStarted();
       // Do not leave an abandoned login attempt blocking future sign-ins when the server rejects logout. The account projection remains unchanged until the
       // parameterless logout request succeeds.
+      this.pendingLogin?.window.finish();
       this.pendingLogin = null;
       this.completedLoginError = null;
       await this.request("account/logout");
@@ -552,6 +548,7 @@ export class CodexAppServerClient {
     const payload = isCodexJsonRecord(params) ? params : null;
     if (method === "account/updated" && payload) {
       if (payload.authMode === "chatgpt") {
+        this.pendingLogin?.window.finish();
         this.pendingLogin = null;
         this.completedLoginError = null;
         this.accountStatus = {
@@ -563,6 +560,7 @@ export class CodexAppServerClient {
           version: null,
         };
       } else {
+        this.pendingLogin?.window.finish();
         this.pendingLogin = null;
         this.accountStatus = blankStatus("ready");
       }
@@ -570,6 +568,7 @@ export class CodexAppServerClient {
     }
     if (method === "account/login/completed" && payload) {
       const loginId = boundedString(payload.loginId, 128);
+      if (loginId && this.pendingLogin?.loginId === loginId) this.pendingLogin.window.finish();
       if (loginId && this.pendingLogin?.loginId === loginId && payload.success !== true) {
         this.pendingLogin = null;
         this.completedLoginError = "codex-login-failed";
@@ -602,9 +601,18 @@ export class CodexAppServerClient {
     this.transportReader?.close();
     this.transportReader = null;
     this.startPromise = null;
+    this.pendingLogin?.window.finish();
     this.pendingLogin = null;
     this.accountStatus = blankStatus("ready");
     this.completedLoginError = null;
     this.pendingRequests.rejectAll(error);
+  }
+
+  private openLoginWindow(url: string, pending: PendingLogin): void {
+    pending.window.open(url, this.openAuthorizationUrl, TOOL_TIMEOUT_POLICY.approvalGateUserWaitMs, () => {
+      if (this.pendingLogin !== pending) return;
+      this.completedLoginError = "codex-login-failed";
+      void this.cancelPendingLoginQuietly(pending.loginId);
+    });
   }
 }
